@@ -283,6 +283,13 @@ async function getConfig(db) {
 }
 
 async function sendNotification(env, config) {
+  // Check if silent mode is enabled (suppresses all automated emails)
+  const silentMode = await getConfigValue(env.NEXUS_DB, 'silent_mode', 'false');
+  if (silentMode === 'true') {
+    await logToD1(env.NEXUS_DB, 'info', 'Silent mode enabled - skipping shutdown notification email');
+    return;
+  }
+
   // Check if shutdown notifications are enabled
   const notifyOnShutdown = await getConfigValue(env.NEXUS_DB, 'notify_on_shutdown', 'true');
   if (notifyOnShutdown !== 'true') {

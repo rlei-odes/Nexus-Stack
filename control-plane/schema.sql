@@ -79,4 +79,5 @@ INSERT OR IGNORE INTO config (key, value) VALUES
     ('server_type', 'cax31'),
     ('server_location', 'fsn1'),
     ('notify_on_shutdown', 'true'),
-    ('notify_on_spinup', 'true');
+    ('notify_on_spinup', 'true'),
+    ('silent_mode', 'false');

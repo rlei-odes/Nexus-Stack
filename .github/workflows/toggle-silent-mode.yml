@@ -1,0 +1,38 @@
+name: Toggle Silent Mode
+
+on:
+  workflow_dispatch:
+    inputs:
+      enabled:
+        description: 'Silent mode state (true = suppress all automated emails, false = re-enable emails)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  toggle:
+    name: Toggle Silent Mode in D1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set silent_mode in D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+        run: |
+          D1_DB_NAME="nexus-${DOMAIN//./-}-db"
+          npx wrangler@latest d1 execute "$D1_DB_NAME" --remote \
+            --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('silent_mode', '${{ inputs.enabled }}', datetime('now'))"
+
+          if [ "${{ inputs.enabled }}" = "true" ]; then
+            echo "🔇 Silent mode ENABLED - automated emails suppressed"
+            echo "   Run this workflow with enabled=false to re-enable emails"
+          else
+            echo "🔔 Silent mode DISABLED - automated emails re-enabled"
+          fi
