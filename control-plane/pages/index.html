@@ -938,7 +938,10 @@
         <!-- Email Notifications Panel -->
         <div class="scheduled-teardown-panel">
             <h2><span class="icon">📧</span> Email Notifications</h2>
-            <div class="scheduled-teardown-controls">
+            <div id="silent-mode-banner" style="display:none; background: rgba(255,180,0,0.08); border: 1px solid rgba(255,180,0,0.3); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.8rem; color: #ffb400;">
+                🔇 Silent mode active — no automated emails will be sent. Enable a toggle below to disable silent mode.
+            </div>
+            <div class="scheduled-teardown-controls" id="email-toggles-container">
                 <div class="scheduled-teardown-toggle">
                     <div>
                         <div style="font-weight: bold; margin-bottom: 0.3rem;">Shutdown Warning Email</div>
@@ -1350,6 +1353,17 @@
                     else shutdownToggle.classList.remove('active');
                     if (data.settings.notifyOnSpinup) spinupToggle.classList.add('active');
                     else spinupToggle.classList.remove('active');
+
+                    // Show/hide silent mode banner and dim toggles
+                    const banner = document.getElementById('silent-mode-banner');
+                    const container = document.getElementById('email-toggles-container');
+                    if (data.settings.silentMode) {
+                        banner.style.display = 'block';
+                        container.style.opacity = '0.45';
+                    } else {
+                        banner.style.display = 'none';
+                        container.style.opacity = '';
+                    }
                 }
             } catch (error) {
                 console.error('Failed to load email settings:', error);
@@ -1377,8 +1391,23 @@
                         else document.getElementById('toggle-notify-shutdown').classList.remove('active');
                         if (data.settings.notifyOnSpinup) document.getElementById('toggle-notify-spinup').classList.add('active');
                         else document.getElementById('toggle-notify-spinup').classList.remove('active');
+
+                        // Update silent mode banner
+                        const banner = document.getElementById('silent-mode-banner');
+                        const container = document.getElementById('email-toggles-container');
+                        if (data.settings.silentMode) {
+                            banner.style.display = 'block';
+                            container.style.opacity = '0.45';
+                        } else {
+                            banner.style.display = 'none';
+                            container.style.opacity = '';
+                        }
+
                         const label = key === 'notifyOnShutdown' ? 'Shutdown warning email' : 'Stack online email';
-                        showToast(`${label} ${newState ? 'enabled' : 'disabled'}`, 'success');
+                        const wasInSilentMode = !data.settings.silentMode && newState;
+                        showToast(wasInSilentMode
+                            ? `${label} enabled — silent mode deactivated`
+                            : `${label} ${newState ? 'enabled' : 'disabled'}`, 'success');
                     }
                 }
             } catch (error) {

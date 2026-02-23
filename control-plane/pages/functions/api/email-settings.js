@@ -25,12 +25,14 @@ export async function onRequestGet(context) {
 
     const notifyOnShutdown = await getConfig(db, 'notify_on_shutdown', 'true');
     const notifyOnSpinup = await getConfig(db, 'notify_on_spinup', 'true');
+    const silentMode = await getConfig(db, 'silent_mode', 'false');
 
     return new Response(JSON.stringify({
       success: true,
       settings: {
         notifyOnShutdown: notifyOnShutdown === 'true',
         notifyOnSpinup: notifyOnSpinup === 'true',
+        silentMode: silentMode === 'true',
       }
     }), {
       headers: { 'Content-Type': 'application/json' }
@@ -53,21 +55,31 @@ export async function onRequestPost(context) {
 
     if (body.notifyOnShutdown !== undefined) {
       await setConfig(db, 'notify_on_shutdown', body.notifyOnShutdown ? 'true' : 'false');
+      // Enabling a toggle implicitly disables silent mode
+      if (body.notifyOnShutdown) {
+        await setConfig(db, 'silent_mode', 'false');
+      }
     }
 
     if (body.notifyOnSpinup !== undefined) {
       await setConfig(db, 'notify_on_spinup', body.notifyOnSpinup ? 'true' : 'false');
+      // Enabling a toggle implicitly disables silent mode
+      if (body.notifyOnSpinup) {
+        await setConfig(db, 'silent_mode', 'false');
+      }
     }
 
     // Return updated state
     const notifyOnShutdown = await getConfig(db, 'notify_on_shutdown', 'true');
     const notifyOnSpinup = await getConfig(db, 'notify_on_spinup', 'true');
+    const silentMode = await getConfig(db, 'silent_mode', 'false');
 
     return new Response(JSON.stringify({
       success: true,
       settings: {
         notifyOnShutdown: notifyOnShutdown === 'true',
         notifyOnSpinup: notifyOnSpinup === 'true',
+        silentMode: silentMode === 'true',
       }
     }), {
       headers: { 'Content-Type': 'application/json' }
