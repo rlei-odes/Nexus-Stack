@@ -935,6 +935,30 @@
             </div>
         </div>
 
+        <!-- Email Notifications Panel -->
+        <div class="scheduled-teardown-panel">
+            <h2><span class="icon">📧</span> Email Notifications</h2>
+            <div id="silent-mode-banner" style="display:none; background: rgba(255,180,0,0.08); border: 1px solid rgba(255,180,0,0.3); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.8rem; color: #ffb400;">
+                🔇 Silent mode active — no automated emails will be sent. Enable a toggle below to disable silent mode.
+            </div>
+            <div class="scheduled-teardown-controls" id="email-toggles-container">
+                <div class="scheduled-teardown-toggle">
+                    <div>
+                        <div style="font-weight: bold; margin-bottom: 0.3rem;">Shutdown Warning Email</div>
+                        <div class="scheduled-info">Sends an email before the scheduled daily teardown</div>
+                    </div>
+                    <div class="toggle-switch" id="toggle-notify-shutdown"></div>
+                </div>
+                <div class="scheduled-teardown-toggle" style="margin-top: 0.5rem;">
+                    <div>
+                        <div style="font-weight: bold; margin-bottom: 0.3rem;">Stack Online Email</div>
+                        <div class="scheduled-info">Sends an email when the stack is back online after spin-up</div>
+                    </div>
+                    <div class="toggle-switch" id="toggle-notify-spinup"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Services Panel -->
         <div class="services-panel">
             <h2><span class="icon">🧩</span> Services</h2>
@@ -1315,6 +1339,85 @@
             }
         }
 
+        // Email Notification Settings
+        async function loadEmailSettings() {
+            try {
+                const response = await fetch(`${API_URL}/api/email-settings`, { credentials: 'same-origin' });
+                if (!response.ok) return;
+
+                const data = await response.json();
+                if (data.success) {
+                    const shutdownToggle = document.getElementById('toggle-notify-shutdown');
+                    const spinupToggle = document.getElementById('toggle-notify-spinup');
+                    if (data.settings.notifyOnShutdown) shutdownToggle.classList.add('active');
+                    else shutdownToggle.classList.remove('active');
+                    if (data.settings.notifyOnSpinup) spinupToggle.classList.add('active');
+                    else spinupToggle.classList.remove('active');
+
+                    // Show/hide silent mode banner and dim toggles
+                    const banner = document.getElementById('silent-mode-banner');
+                    const container = document.getElementById('email-toggles-container');
+                    if (data.settings.silentMode) {
+                        banner.style.display = 'block';
+                        container.style.opacity = '0.45';
+                    } else {
+                        banner.style.display = 'none';
+                        container.style.opacity = '';
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load email settings:', error);
+            }
+        }
+
+        async function toggleEmailSetting(key) {
+            const toggleId = key === 'notifyOnShutdown' ? 'toggle-notify-shutdown' : 'toggle-notify-spinup';
+            const toggle = document.getElementById(toggleId);
+            const isEnabled = toggle.classList.contains('active');
+            const newState = !isEnabled;
+            // Capture banner state before the POST so the toast reflects what was true at click time
+            const wasSilentModeActive = document.getElementById('silent-mode-banner').style.display !== 'none';
+
+            try {
+                const response = await fetch(`${API_URL}/api/email-settings`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [key]: newState })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        if (data.settings.notifyOnShutdown) document.getElementById('toggle-notify-shutdown').classList.add('active');
+                        else document.getElementById('toggle-notify-shutdown').classList.remove('active');
+                        if (data.settings.notifyOnSpinup) document.getElementById('toggle-notify-spinup').classList.add('active');
+                        else document.getElementById('toggle-notify-spinup').classList.remove('active');
+
+                        // Update silent mode banner
+                        const banner = document.getElementById('silent-mode-banner');
+                        const container = document.getElementById('email-toggles-container');
+                        if (data.settings.silentMode) {
+                            banner.style.display = 'block';
+                            container.style.opacity = '0.45';
+                        } else {
+                            banner.style.display = 'none';
+                            container.style.opacity = '';
+                        }
+
+                        const label = key === 'notifyOnShutdown' ? 'Shutdown warning email' : 'Stack online email';
+                        const silentModeDeactivated = wasSilentModeActive && newState && !data.settings.silentMode;
+                        showToast(silentModeDeactivated
+                            ? `${label} enabled — silent mode deactivated`
+                            : `${label} ${newState ? 'enabled' : 'disabled'}`, 'success');
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to update email setting:', error);
+                showToast('Failed to update email setting', 'error');
+            }
+        }
+
         async function delayTeardown() {
             const delayBtn = document.getElementById('btn-delay-teardown');
             delayBtn.disabled = true;
@@ -1653,6 +1756,8 @@
         document.getElementById('btn-teardown').addEventListener('click', () => showConfirmModal('teardown'));
         document.getElementById('toggle-scheduled-teardown').addEventListener('click', toggleScheduledTeardown);
         document.getElementById('btn-delay-teardown').addEventListener('click', delayTeardown);
+        document.getElementById('toggle-notify-shutdown').addEventListener('click', () => toggleEmailSetting('notifyOnShutdown'));
+        document.getElementById('toggle-notify-spinup').addEventListener('click', () => toggleEmailSetting('notifyOnSpinup'));
         
         document.getElementById('modal-cancel').addEventListener('click', hideModal);
         document.getElementById('modal-confirm').addEventListener('click', () => {
@@ -1675,9 +1780,10 @@
             }
         }
 
-        // Load scheduled teardown config on page load
+        // Load config on page load
         loadServices();
         loadScheduledTeardownConfig();
+        loadEmailSettings();
 
         // Polling with exponential backoff on errors
         let consecutiveErrors = 0;

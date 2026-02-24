@@ -8,6 +8,11 @@ on:
         required: false
         default: ''
         type: string
+      silent_mode:
+        description: 'Suppress all automated emails during initial setup (persists in D1 until reset via toggle-silent-mode workflow)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -101,4 +106,5 @@ jobs:
       ssh_private_key: ${{ needs.setup-control-plane.outputs.ssh_private_key }}
       # Pass enabled services (if configured, otherwise spin-up reads from D1)
       enabled_services: ${{ needs.configure-initial-services.outputs.enabled_services || '' }}
+      silent_mode: ${{ inputs.silent_mode }}
     secrets: inherit

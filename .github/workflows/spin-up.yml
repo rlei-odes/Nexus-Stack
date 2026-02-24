@@ -8,6 +8,11 @@ on:
         required: false
         default: ''
         type: string
+      silent_mode:
+        description: 'Suppress all automated emails for this run (persists in D1 until reset via toggle-silent-mode workflow)'
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       enabled_services:
@@ -15,6 +20,11 @@ on:
         required: false
         default: ''
         type: string
+      silent_mode:
+        description: 'Suppress all automated emails (passed from initial-setup)'
+        required: false
+        default: false
+        type: boolean
       r2_access_key_id:
         description: 'R2 Access Key ID (from setup-control-plane)'
         required: false
@@ -490,7 +500,12 @@ jobs:
           npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_location', '$ESCAPED_SERVER_LOCATION', datetime('now'))"
           npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('domain', '$ESCAPED_DOMAIN', datetime('now'))"
           npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('last_spin_up', datetime('now'), datetime('now'))"
-          
+
+          if [ "${{ inputs.silent_mode }}" = "true" ]; then
+            npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('silent_mode', 'true', datetime('now'))"
+            echo "🔇 Silent mode enabled - automated emails suppressed"
+          fi
+
           echo "✅ Infrastructure config written to D1"
 
       - name: Log infrastructure provisioned
@@ -659,8 +674,30 @@ jobs:
           ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
           USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -n "$RESEND_API_KEY" ]; then
+            D1_DB_NAME="nexus-${DOMAIN//./-}-db"
+
+            # Check if silent mode is enabled (suppresses all automated emails)
+            SILENT_MODE=$(npx wrangler@latest d1 execute "$D1_DB_NAME" --remote --json \
+              --command "SELECT value FROM config WHERE key = 'silent_mode'" 2>/dev/null \
+              | jq -r '.[0].results[0].value // "false"' 2>/dev/null || echo "false")
+            if [ "$SILENT_MODE" = "true" ]; then
+              echo "🔇 Silent mode enabled - skipping stack online email"
+              exit 0
+            fi
+
+            # Check if stack-online email is enabled in D1
+            NOTIFY_ON_SPINUP=$(npx wrangler@latest d1 execute "$D1_DB_NAME" --remote --json \
+              --command "SELECT value FROM config WHERE key = 'notify_on_spinup'" 2>/dev/null \
+              | jq -r '.[0].results[0].value // "true"' 2>/dev/null || echo "true")
+            if [ "$NOTIFY_ON_SPINUP" != "true" ]; then
+              echo "📧 Stack online email disabled by user - skipping"
+              exit 0
+            fi
+
             echo "📧 Sending stack online email..."
             
             EMAIL_HTML='<div style="font-family:monospace;background:#0a0a0f;color:#00ff88;padding:20px"><h1 style="color:#00ff88">✅ Nexus-Stack is Online</h1><p>Your stack is back online at <strong>DOMAIN_PLACEHOLDER</strong></p><h2>🔗 Quick Links</h2><ul><li><a href="https://info.DOMAIN_PLACEHOLDER" style="color:#00ff88">Info Page</a> - All services &amp; credentials</li><li><a href="https://control.DOMAIN_PLACEHOLDER" style="color:#00ff88">Control Plane</a> - Manage infrastructure</li></ul><p style="color:#999;font-size:12px;margin-top:1rem">Need credentials? Click "Send Credentials" in the Control Plane.</p></div>'
