@@ -1375,6 +1375,8 @@
             const toggle = document.getElementById(toggleId);
             const isEnabled = toggle.classList.contains('active');
             const newState = !isEnabled;
+            // Capture banner state before the POST so the toast reflects what was true at click time
+            const wasSilentModeActive = document.getElementById('silent-mode-banner').style.display !== 'none';
 
             try {
                 const response = await fetch(`${API_URL}/api/email-settings`, {
@@ -1404,8 +1406,8 @@
                         }
 
                         const label = key === 'notifyOnShutdown' ? 'Shutdown warning email' : 'Stack online email';
-                        const wasInSilentMode = !data.settings.silentMode && newState;
-                        showToast(wasInSilentMode
+                        const silentModeDeactivated = wasSilentModeActive && newState && !data.settings.silentMode;
+                        showToast(silentModeDeactivated
                             ? `${label} enabled — silent mode deactivated`
                             : `${label} ${newState ? 'enabled' : 'disabled'}`, 'success');
                     }

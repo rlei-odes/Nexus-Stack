@@ -20,9 +20,15 @@ async function setConfig(db, key, value) {
 }
 
 export async function onRequestGet(context) {
-  try {
-    const db = context.env.NEXUS_DB;
+  const db = context.env.NEXUS_DB;
+  if (!db) {
+    return new Response(JSON.stringify({ success: false, error: 'D1 database not configured' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
 
+  try {
     const notifyOnShutdown = await getConfig(db, 'notify_on_shutdown', 'true');
     const notifyOnSpinup = await getConfig(db, 'notify_on_spinup', 'true');
     const silentMode = await getConfig(db, 'silent_mode', 'false');
@@ -49,11 +55,24 @@ export async function onRequestGet(context) {
 }
 
 export async function onRequestPost(context) {
+  const db = context.env.NEXUS_DB;
+  if (!db) {
+    return new Response(JSON.stringify({ success: false, error: 'D1 database not configured' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   try {
-    const db = context.env.NEXUS_DB;
     const body = await context.request.json();
 
     if (body.notifyOnShutdown !== undefined) {
+      if (typeof body.notifyOnShutdown !== 'boolean') {
+        return new Response(JSON.stringify({ success: false, error: 'notifyOnShutdown must be a boolean' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       await setConfig(db, 'notify_on_shutdown', body.notifyOnShutdown ? 'true' : 'false');
       // Enabling a toggle implicitly disables silent mode
       if (body.notifyOnShutdown) {
@@ -62,6 +81,12 @@ export async function onRequestPost(context) {
     }
 
     if (body.notifyOnSpinup !== undefined) {
+      if (typeof body.notifyOnSpinup !== 'boolean') {
+        return new Response(JSON.stringify({ success: false, error: 'notifyOnSpinup must be a boolean' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       await setConfig(db, 'notify_on_spinup', body.notifyOnSpinup ? 'true' : 'false');
       // Enabling a toggle implicitly disables silent mode
       if (body.notifyOnSpinup) {
