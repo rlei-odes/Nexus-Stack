@@ -402,17 +402,40 @@ jobs:
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 
           for BUCKET in "${RESOURCE_PREFIX}-lakefs" "${RESOURCE_PREFIX}"; do
-            # Only act if bucket exists in Hetzner but is absent from Terraform state
             RESOURCE=$([ "$BUCKET" = "${RESOURCE_PREFIX}-lakefs" ] \
               && echo "minio_s3_bucket.lakefs[0]" \
               || echo "minio_s3_bucket.general[0]")
+            RES_NAME=$([ "$BUCKET" = "${RESOURCE_PREFIX}-lakefs" ] && echo "lakefs" || echo "general")
 
             if tofu state show "$RESOURCE" >/dev/null 2>&1; then
-              echo "  $BUCKET: in state - skipping"
+              # Resource is in state - check if it is tainted (must be replaced)
+              INSTANCE_STATUS=$(tofu state pull 2>/dev/null | jq -r \
+                --arg name "$RES_NAME" \
+                '.resources[]? | select(.type == "minio_s3_bucket" and .name == $name) | .instances[]?.status // "ok"' \
+                2>/dev/null | head -1 || echo "ok")
+
+              if [ "$INSTANCE_STATUS" != "tainted" ]; then
+                echo "  $BUCKET: in state and healthy - skipping"
+                continue
+              fi
+
+              echo "  $BUCKET: in state but tainted - removing for clean replacement..."
+              AWS_ACCESS_KEY_ID="$HZ_ACCESS_KEY" \
+              AWS_SECRET_ACCESS_KEY="$HZ_SECRET_KEY" \
+              AWS_DEFAULT_REGION="eu-central-1" \
+              aws s3 rm "s3://${BUCKET}" --recursive \
+                --endpoint-url="$HZ_ENDPOINT" 2>/dev/null || true
+              AWS_ACCESS_KEY_ID="$HZ_ACCESS_KEY" \
+              AWS_SECRET_ACCESS_KEY="$HZ_SECRET_KEY" \
+              AWS_DEFAULT_REGION="eu-central-1" \
+              aws s3api delete-bucket --bucket "$BUCKET" \
+                --endpoint-url="$HZ_ENDPOINT" 2>/dev/null || true
+              tofu state rm "$RESOURCE" 2>/dev/null || true
+              echo "  ✅ $BUCKET removed from state and Hetzner - Terraform will recreate it"
               continue
             fi
 
-            # Switch to Hetzner credentials for aws s3api calls
+            # Resource not in state - check if bucket exists on Hetzner (orphaned)
             if ! AWS_ACCESS_KEY_ID="$HZ_ACCESS_KEY" \
                AWS_SECRET_ACCESS_KEY="$HZ_SECRET_KEY" \
                AWS_DEFAULT_REGION="eu-central-1" \
