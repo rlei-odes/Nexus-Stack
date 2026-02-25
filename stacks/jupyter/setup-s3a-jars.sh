@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -eo pipefail
 # =============================================================================
 # Download and install hadoop-aws + AWS SDK v2 JARs for S3A filesystem support.
 # Runs as root via Jupyter's before-notebook.d hook (before user switch).
