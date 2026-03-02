@@ -989,14 +989,15 @@ fi
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
     # Use user credentials for service Git integration (not admin)
     GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
-    # Determine workspace repo: fork of WORKSPACE_GIT_REPO or default empty repo
-    if [ -n "$WORKSPACE_GIT_REPO" ]; then
-        # WORKSPACE_GIT_REPO is the original repo name (e.g. Bsc_EDS_GIS_FS2026).
-        # The mirror in Gitea is at admin/mirror-readonly-<name>.
-        # Fork name: <originalname>_<username> with special chars replaced by _
-        # e.g. Bsc_EDS_GIS_FS2026_stefan_koch
+    # Determine workspace repo: fork of first GH_MIRROR_REPOS entry, or default empty repo
+    if [ -n "${GH_MIRROR_REPOS:-}" ]; then
+        # Derive repo name from first mirror URL (e.g. https://github.com/user/Bsc_EDS_GIS_FS2026)
+        FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
+        WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
+        # Fork source: admin/mirror-readonly-<name>
+        # Fork name: <originalname>_<sanitized_username> (e.g. Bsc_EDS_GIS_FS2026_stefan_koch)
         GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
-        REPO_NAME="${WORKSPACE_GIT_REPO}_${GITEA_USER_SANITIZED}"
+        REPO_NAME="${WORKSPACE_REPO_NAME}_${GITEA_USER_SANITIZED}"
         GITEA_REPO_OWNER="${GITEA_USER_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     else
@@ -2542,13 +2543,15 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         if [ -n "$GITEA_TOKEN" ]; then
             GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
 
-            if [ -n "$WORKSPACE_GIT_REPO" ]; then
-                # --- Fork existing repo as workspace ---
+            if [ -n "${GH_MIRROR_REPOS:-}" ]; then
+                # --- Fork first mirror repo as workspace ---
                 # Mirror is at admin/mirror-readonly-<name>; fork into user namespace as <name>_<user>
+                FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
+                WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
                 FORK_OWNER="${ADMIN_USERNAME}"
-                FORK_REPO="mirror-readonly-${WORKSPACE_GIT_REPO}"
+                FORK_REPO="mirror-readonly-${WORKSPACE_REPO_NAME}"
                 GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
-                REPO_NAME="${WORKSPACE_GIT_REPO}_${GITEA_USER_SANITIZED}"
+                REPO_NAME="${WORKSPACE_REPO_NAME}_${GITEA_USER_SANITIZED}"
                 echo "  Forking ${FORK_OWNER}/${FORK_REPO} into ${GITEA_USER_USERNAME}/${REPO_NAME}..."
 
                 # Create a user token so the fork lands in the user's namespace (not admin's)
