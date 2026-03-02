@@ -2543,56 +2543,9 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         if [ -n "$GITEA_TOKEN" ]; then
             GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
 
-            if [ -n "${GH_MIRROR_REPOS:-}" ]; then
-                # --- Fork first mirror repo as workspace ---
-                # Mirror is at admin/mirror-readonly-<name>; fork into user namespace as <name>_<user>
-                FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
-                WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
-                FORK_OWNER="${ADMIN_USERNAME}"
-                FORK_REPO="mirror-readonly-${WORKSPACE_REPO_NAME}"
-                GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
-                REPO_NAME="${WORKSPACE_REPO_NAME}_${GITEA_USER_SANITIZED}"
-                echo "  Forking ${FORK_OWNER}/${FORK_REPO} into ${GITEA_USER_USERNAME}/${REPO_NAME}..."
-
-                # Create a user token so the fork lands in the user's namespace (not admin's)
-                USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
-                    -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-                    -H 'Content-Type: application/json' \
-                    -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
-
-                if [ -z "$USER_TOKEN" ]; then
-                    # Token may already exist, delete and recreate
-                    ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
-                        -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
-                    USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
-                        -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-                        -H 'Content-Type: application/json' \
-                        -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
-                fi
-
-                if [ -n "$USER_TOKEN" ]; then
-                    FORK_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                        -X POST 'http://localhost:3200/api/v1/repos/${FORK_OWNER}/${FORK_REPO}/forks' \
-                        -H 'Authorization: token $USER_TOKEN' \
-                        -H 'Content-Type: application/json' \
-                        -d '{\"name\":\"$REPO_NAME\"}'")
-
-                    if [ "$FORK_RESULT" = "202" ]; then
-                        echo -e "${GREEN}  ✓ Forked ${WORKSPACE_GIT_REPO} into ${GITEA_USER_USERNAME}/${REPO_NAME}${NC}"
-                    elif [ "$FORK_RESULT" = "409" ]; then
-                        echo -e "${YELLOW}  ⚠ Fork ${GITEA_USER_USERNAME}/${REPO_NAME} already exists${NC}"
-                    else
-                        echo -e "${YELLOW}  ⚠ Fork returned HTTP $FORK_RESULT${NC}"
-                    fi
-
-                    # Clean up temporary user token
-                    ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
-                        -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
-                else
-                    echo -e "${YELLOW}  ⚠ Could not create user token for fork${NC}"
-                fi
-            else
+            if [ -z "${GH_MIRROR_REPOS:-}" ]; then
                 # --- Create default empty workspace repo ---
+                # (When GH_MIRROR_REPOS is set, the fork is created after the mirror is ready)
                 REPO_NAME="nexus-${DOMAIN//./-}-gitea"
                 echo "  Creating shared workspace repo: $REPO_NAME..."
 
@@ -2826,6 +2779,48 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
 
             if echo "$MIRROR_RESULT" | jq -e '.id' >/dev/null 2>&1; then
                 echo -e "${GREEN}  ✓ Mirror '$REPO_NAME' created (syncs every 10 min)${NC}"
+
+                # Fork the first mirror as the user's workspace repo
+                # FORKED_WORKSPACE flag ensures we only fork once (the first mirror)
+                if [ "${FORKED_WORKSPACE:-}" != "1" ] && [ -n "${GITEA_USER_USERNAME:-}" ]; then
+                    FORKED_WORKSPACE=1
+                    ORIG_NAME=$(basename "$REPO_URL" .git)
+                    GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
+                    FORK_NAME="${ORIG_NAME}_${GITEA_USER_SANITIZED}"
+                    echo "  Forking ${ADMIN_USERNAME}/${REPO_NAME} into ${GITEA_USER_USERNAME}/${FORK_NAME}..."
+
+                    # Create a user token so the fork lands in the user's namespace (not admin's)
+                    USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
+                        -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
+                        -H 'Content-Type: application/json' \
+                        -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
+                    if [ -z "$USER_TOKEN" ]; then
+                        ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
+                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
+                        USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
+                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
+                            -H 'Content-Type: application/json' \
+                            -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
+                    fi
+                    if [ -n "$USER_TOKEN" ]; then
+                        FORK_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                            -X POST 'http://localhost:3200/api/v1/repos/${ADMIN_USERNAME}/${REPO_NAME}/forks' \
+                            -H 'Authorization: token $USER_TOKEN' \
+                            -H 'Content-Type: application/json' \
+                            -d '{\"name\":\"$FORK_NAME\"}'")
+                        if [ "$FORK_RESULT" = "202" ]; then
+                            echo -e "${GREEN}  ✓ Forked into ${GITEA_USER_USERNAME}/${FORK_NAME}${NC}"
+                        elif [ "$FORK_RESULT" = "409" ]; then
+                            echo -e "${YELLOW}  ⚠ Fork ${GITEA_USER_USERNAME}/${FORK_NAME} already exists${NC}"
+                        else
+                            echo -e "${YELLOW}  ⚠ Fork returned HTTP $FORK_RESULT${NC}"
+                        fi
+                        ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
+                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
+                    else
+                        echo -e "${YELLOW}  ⚠ Could not create user token for fork${NC}"
+                    fi
+                fi
 
                 # Grant student user (gitea_user) read-only access
                 if [ -n "$GITEA_USER_USERNAME" ]; then
