@@ -991,10 +991,12 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
     # Determine workspace repo: fork of WORKSPACE_GIT_REPO or default empty repo
     if [ -n "$WORKSPACE_GIT_REPO" ]; then
-        # Strip mirror- prefix and append username for a clear fork name
-        # e.g. admin/mirror-Bsc_EDS_GIS_FS2026 → Bsc_EDS_GIS_FS2026_stefan.koch
-        FORK_REPO="${WORKSPACE_GIT_REPO##*/}"
-        REPO_NAME="${FORK_REPO#mirror-}_${GITEA_USER_USERNAME}"
+        # WORKSPACE_GIT_REPO is the original repo name (e.g. Bsc_EDS_GIS_FS2026).
+        # The mirror in Gitea is at admin/mirror-readonly-<name>.
+        # Fork name: <originalname>_<username> with special chars replaced by _
+        # e.g. Bsc_EDS_GIS_FS2026_stefan_koch
+        GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
+        REPO_NAME="${WORKSPACE_GIT_REPO}_${GITEA_USER_SANITIZED}"
         GITEA_REPO_OWNER="${GITEA_USER_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     else
@@ -2542,10 +2544,12 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
 
             if [ -n "$WORKSPACE_GIT_REPO" ]; then
                 # --- Fork existing repo as workspace ---
-                FORK_OWNER="${WORKSPACE_GIT_REPO%%/*}"
-                FORK_REPO="${WORKSPACE_GIT_REPO##*/}"
-                REPO_NAME="${FORK_REPO#mirror-}_${GITEA_USER_USERNAME}"
-                echo "  Forking ${WORKSPACE_GIT_REPO} into ${GITEA_USER_USERNAME}/${REPO_NAME}..."
+                # Mirror is at admin/mirror-readonly-<name>; fork into user namespace as <name>_<user>
+                FORK_OWNER="${ADMIN_USERNAME}"
+                FORK_REPO="mirror-readonly-${WORKSPACE_GIT_REPO}"
+                GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
+                REPO_NAME="${WORKSPACE_GIT_REPO}_${GITEA_USER_SANITIZED}"
+                echo "  Forking ${FORK_OWNER}/${FORK_REPO} into ${GITEA_USER_USERNAME}/${REPO_NAME}..."
 
                 # Create a user token so the fork lands in the user's namespace (not admin's)
                 USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
@@ -2782,7 +2786,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
         for REPO_URL in "${MIRROR_REPOS[@]}"; do
             REPO_URL=$(echo "$REPO_URL" | tr -d ' ')
             [ -z "$REPO_URL" ] && continue
-            REPO_NAME="mirror-$(basename "$REPO_URL" .git)"
+            REPO_NAME="mirror-readonly-$(basename "$REPO_URL" .git)"
 
             echo "  Mirroring: $REPO_NAME..."
 
