@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.27.1...v0.28.0) (2026-03-03)
+
+
+### 🚀 Features
+
+* **control-plane:** Add email notification toggles ([98d6021](https://github.com/stefanko-ch/Nexus-Stack/commit/98d6021b4c1fd70560dea1c4d6c81eb204223280))
+* **control-plane:** Add Silent Mode to suppress automated emails ([1e93a44](https://github.com/stefanko-ch/Nexus-Stack/commit/1e93a44cd2a4c05f29074289688f3d0af5725f06)), closes [#242](https://github.com/stefanko-ch/Nexus-Stack/issues/242)
+* **control-plane:** Email notification toggles and Silent Mode ([6758583](https://github.com/stefanko-ch/Nexus-Stack/commit/675858369e23281e8591f2ed1bbe401450d55337))
+* **control-plane:** Show silent mode state in email toggles UI ([c006faa](https://github.com/stefanko-ch/Nexus-Stack/commit/c006faa097d92df092fcaf9b3f2a63b1b1aa1ccc))
+* **stacks:** Add optional workspace Git repo fork with custom naming ([1c01444](https://github.com/stefanko-ch/Nexus-Stack/commit/1c01444457374ab4c0d6fe4a672689b0915c6fa7))
+* **stacks:** Add workspace Git repo fork from GitHub mirror ([f7afb7a](https://github.com/stefanko-ch/Nexus-Stack/commit/f7afb7afb571ab8bd578b4a5f299a2071ed40f7e))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Handle tainted Hetzner buckets in cleanup step ([22dd450](https://github.com/stefanko-ch/Nexus-Stack/commit/22dd45018279498a01b22375aef9bacfb92b4d10))
+* **control-plane:** Address Copilot review comments on email-settings API ([e596176](https://github.com/stefanko-ch/Nexus-Stack/commit/e596176487e101407590f03ed93a6f0c41f02913))
+* **stacks:** Address PR review comments ([e3f7f1d](https://github.com/stefanko-ch/Nexus-Stack/commit/e3f7f1d0a051ae80b5979ed0de9e859b54a62064))
+* **stacks:** Fix Jupyter crash due to nounset flag in sourced hook ([f3e3fa3](https://github.com/stefanko-ch/Nexus-Stack/commit/f3e3fa38b34ba35c0d88da16e2633c26fd1a289e))
+* **stacks:** Fix Jupyter crash due to nounset flag in sourced hook ([c6f3142](https://github.com/stefanko-ch/Nexus-Stack/commit/c6f3142addf66bafefc33f8277e0ba5c69c500a3))
+* **stacks:** Fork workspace repo after mirror is created, not before ([e8d8fd7](https://github.com/stefanko-ch/Nexus-Stack/commit/e8d8fd70d712e205eb27c0403f812883bfed88ba))
+* **stacks:** Fork workspace repo even when mirror already exists ([c3e057c](https://github.com/stefanko-ch/Nexus-Stack/commit/c3e057c2a681af5485ab975a2c8d251a36c438c4))
+* **stacks:** Restart git services after fork, not before ([11db7de](https://github.com/stefanko-ch/Nexus-Stack/commit/11db7de77129f4ecec04b4b8f247764aa74b19e8))
+* **stacks:** Save/restore shell options in sourced Jupyter hook ([1bbeb22](https://github.com/stefanko-ch/Nexus-Stack/commit/1bbeb221631bca1634751387d029cad3033481a0))
+* **tofu:** Pin minio provider to v3.20.0 ([5658e58](https://github.com/stefanko-ch/Nexus-Stack/commit/5658e587973989ea9ba89307b4b435b746db6be5))
+
+
+### ♻️ Refactoring
+
+* **stacks:** Derive workspace repo from GH_MIRROR_REPOS automatically ([94ab49b](https://github.com/stefanko-ch/Nexus-Stack/commit/94ab49ba9e2a8f19efe3a57cfa788d1a33907255))
+* **stacks:** Simplify WORKSPACE_GIT_REPO to plain repo name ([c363ccd](https://github.com/stefanko-ch/Nexus-Stack/commit/c363ccd18fc1653e2e853c8dfd3128e58b5bfcc5))
+
 ## [0.27.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.27.0...v0.27.1) (2026-02-19)
 
 
