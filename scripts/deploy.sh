@@ -987,11 +987,24 @@ fi
 # Security: Credentials are passed via GITEA_USERNAME/GITEA_PASSWORD env vars and
 # injected into containers via .netrc at startup (not embedded in the repo URL).
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
-    REPO_NAME="nexus-${DOMAIN//./-}-gitea"
     # Use user credentials for service Git integration (not admin)
     GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
-    # Repo URL without credentials (auth via .netrc inside containers)
-    GITEA_REPO_URL="http://gitea:3000/${ADMIN_USERNAME}/${REPO_NAME}.git"
+    # Determine workspace repo: fork of first GH_MIRROR_REPOS entry, or default empty repo
+    if [ -n "${GH_MIRROR_REPOS:-}" ]; then
+        # Derive repo name from first mirror URL (e.g. https://github.com/user/Bsc_EDS_GIS_FS2026)
+        FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
+        WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
+        # Fork source: admin/mirror-readonly-<name>
+        # Fork name: <originalname>_<sanitized_username> (e.g. Bsc_EDS_GIS_FS2026_stefan_koch)
+        GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
+        REPO_NAME="${WORKSPACE_REPO_NAME}_${GITEA_USER_SANITIZED}"
+        GITEA_REPO_OWNER="${GITEA_USER_USERNAME}"
+        GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
+    else
+        REPO_NAME="nexus-${DOMAIN//./-}-gitea"
+        GITEA_REPO_OWNER="${ADMIN_USERNAME}"
+        GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
+    fi
     if [ -n "$GITEA_USER_PASS" ]; then
         GITEA_GIT_USER="${GITEA_USER_USERNAME}"
         GITEA_GIT_PASS="${GITEA_USER_PASS}"
@@ -1751,7 +1764,7 @@ EOF
     {"secretKey": "GITEA_ADMIN_PASSWORD", "secretValue": "$GITEA_ADMIN_PASS", "tagIds": ["$GITEA_TAG"]},
     {"secretKey": "GITEA_USER_USERNAME", "secretValue": "$GITEA_USER_USERNAME", "tagIds": ["$GITEA_TAG"]},
     {"secretKey": "GITEA_USER_PASSWORD", "secretValue": "$GITEA_USER_PASS", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "GITEA_REPO_URL", "secretValue": "https://git.${DOMAIN}/${ADMIN_USERNAME}/nexus-${DOMAIN//./-}-gitea.git", "tagIds": ["$GITEA_TAG"]},
+    {"secretKey": "GITEA_REPO_URL", "secretValue": "https://git.${DOMAIN}/${GITEA_REPO_OWNER:-$ADMIN_USERNAME}/${REPO_NAME:-nexus-${DOMAIN//./-}-gitea}.git", "tagIds": ["$GITEA_TAG"]},
     {"secretKey": "GITEA_DB_PASSWORD", "secretValue": "$GITEA_DB_PASS", "tagIds": ["$GITEA_TAG"]},
     {"secretKey": "CLICKHOUSE_USERNAME", "secretValue": "nexus-clickhouse", "tagIds": ["$CLICKHOUSE_TAG"]},
     {"secretKey": "CLICKHOUSE_PASSWORD", "secretValue": "$CLICKHOUSE_ADMIN_PASS", "tagIds": ["$CLICKHOUSE_TAG"]},
@@ -2510,10 +2523,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
 
         # --- Create shared workspace repo ---
-        REPO_NAME="nexus-${DOMAIN//./-}-gitea"
-        echo "  Creating shared workspace repo: $REPO_NAME..."
-
-        # Create API token for automation (reuse existing if present)
+        # Create admin API token for automation (reuse existing if present)
         # Use curl -s (not -sf) to avoid exit code 22 on HTTP errors with set -e
         GITEA_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$ADMIN_USERNAME/tokens' \
             -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
@@ -2531,58 +2541,71 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
 
         if [ -n "$GITEA_TOKEN" ]; then
-            # Create private repo (requires auth for clone and push)
-            # Use curl -s (not -sf) - repo may already exist (409), which is fine
-            REPO_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/user/repos' \
-                -H 'Authorization: token $GITEA_TOKEN' \
-                -H 'Content-Type: application/json' \
-                -d '{
-                    \"name\": \"$REPO_NAME\",
-                    \"description\": \"Shared workspace for notebooks, workflows, and pipelines\",
-                    \"private\": true,
-                    \"auto_init\": true,
-                    \"default_branch\": \"main\"
-                }'" 2>/dev/null || echo "")
+            GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
 
-            if echo "$REPO_RESULT" | jq -e '.id' >/dev/null 2>&1; then
-                echo -e "${GREEN}  ✓ Shared repo '$REPO_NAME' created (private)${NC}"
-            elif echo "$REPO_RESULT" | grep -q "already exists"; then
-                echo -e "${YELLOW}  ⚠ Repo '$REPO_NAME' already exists${NC}"
-                # Ensure existing repo is set to private
-                ssh nexus "curl -s -X PATCH 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME' \
+            if [ -z "${GH_MIRROR_REPOS:-}" ]; then
+                # --- Create default empty workspace repo ---
+                # (When GH_MIRROR_REPOS is set, the fork is created after the mirror is ready)
+                REPO_NAME="nexus-${DOMAIN//./-}-gitea"
+                echo "  Creating shared workspace repo: $REPO_NAME..."
+
+                # Create private repo (requires auth for clone and push)
+                # Use curl -s (not -sf) - repo may already exist (409), which is fine
+                REPO_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/user/repos' \
                     -H 'Authorization: token $GITEA_TOKEN' \
                     -H 'Content-Type: application/json' \
-                    -d '{\"private\": true}'" >/dev/null 2>&1 || true
-            else
-                echo -e "${YELLOW}  ⚠ Repo creation returned unexpected response${NC}"
-            fi
+                    -d '{
+                        \"name\": \"$REPO_NAME\",
+                        \"description\": \"Shared workspace for notebooks, workflows, and pipelines\",
+                        \"private\": true,
+                        \"auto_init\": true,
+                        \"default_branch\": \"main\"
+                    }'" 2>/dev/null || echo "")
 
-            # --- Add user as collaborator to the repo ---
-            if [ -n "$GITEA_USER_USERNAME" ] && [ -n "$GITEA_USER_PASS" ]; then
-                ssh nexus "curl -s -X PUT 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/collaborators/$GITEA_USER_USERNAME' \
-                    -H 'Authorization: token $GITEA_TOKEN' \
-                    -H 'Content-Type: application/json' \
-                    -d '{\"permission\": \"write\"}'" >/dev/null 2>&1 || true
-                echo -e "${GREEN}  ✓ User '$GITEA_USER_USERNAME' added as collaborator${NC}"
+                if echo "$REPO_RESULT" | jq -e '.id' >/dev/null 2>&1; then
+                    echo -e "${GREEN}  ✓ Shared repo '$REPO_NAME' created (private)${NC}"
+                elif echo "$REPO_RESULT" | grep -q "already exists"; then
+                    echo -e "${YELLOW}  ⚠ Repo '$REPO_NAME' already exists${NC}"
+                    # Ensure existing repo is set to private
+                    ssh nexus "curl -s -X PATCH 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME' \
+                        -H 'Authorization: token $GITEA_TOKEN' \
+                        -H 'Content-Type: application/json' \
+                        -d '{\"private\": true}'" >/dev/null 2>&1 || true
+                else
+                    echo -e "${YELLOW}  ⚠ Repo creation returned unexpected response${NC}"
+                fi
+
+                # --- Add user as collaborator to the repo ---
+                if [ -n "$GITEA_USER_USERNAME" ] && [ -n "$GITEA_USER_PASS" ]; then
+                    ssh nexus "curl -s -X PUT 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/collaborators/$GITEA_USER_USERNAME' \
+                        -H 'Authorization: token $GITEA_TOKEN' \
+                        -H 'Content-Type: application/json' \
+                        -d '{\"permission\": \"write\"}'" >/dev/null 2>&1 || true
+                    echo -e "${GREEN}  ✓ User '$GITEA_USER_USERNAME' added as collaborator${NC}"
+                fi
             fi
 
             # --- Restart services that have Git integration (to pick up .env vars) ---
             # Services had their Git .env vars generated in Step 3 but Gitea wasn't
             # ready yet. Now that the repo exists, restart them to trigger git clone.
-            RESTART_SERVICES=""
-            for SERVICE in jupyter marimo code-server meltano prefect; do
-                if echo "$ENABLED_SERVICES" | grep -qw "$SERVICE"; then
-                    RESTART_SERVICES="$RESTART_SERVICES $SERVICE"
-                fi
-            done
-
-            if [ -n "$RESTART_SERVICES" ]; then
-                echo "  Restarting services with Git integration..."
-                for SERVICE in $RESTART_SERVICES; do
-                    ssh nexus "cd $REMOTE_STACKS_DIR/$SERVICE && docker compose restart" >/dev/null 2>&1 || true
-                    echo "    Restarted $SERVICE"
+            # When GH_MIRROR_REPOS is set, the fork doesn't exist yet at this point -
+            # services are restarted later in the mirror setup block after fork creation.
+            if [ -z "${GH_MIRROR_REPOS:-}" ]; then
+                RESTART_SERVICES=""
+                for SERVICE in jupyter marimo code-server meltano prefect; do
+                    if echo "$ENABLED_SERVICES" | grep -qw "$SERVICE"; then
+                        RESTART_SERVICES="$RESTART_SERVICES $SERVICE"
+                    fi
                 done
-                echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+
+                if [ -n "$RESTART_SERVICES" ]; then
+                    echo "  Restarting services with Git integration..."
+                    for SERVICE in $RESTART_SERVICES; do
+                        ssh nexus "cd $REMOTE_STACKS_DIR/$SERVICE && docker compose restart" >/dev/null 2>&1 || true
+                        echo "    Restarted $SERVICE"
+                    done
+                    echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+                fi
             fi
 
             # --- Configure Kestra Git sync flow ---
@@ -2723,45 +2746,96 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
         for REPO_URL in "${MIRROR_REPOS[@]}"; do
             REPO_URL=$(echo "$REPO_URL" | tr -d ' ')
             [ -z "$REPO_URL" ] && continue
-            REPO_NAME="mirror-$(basename "$REPO_URL" .git)"
+            REPO_NAME="mirror-readonly-$(basename "$REPO_URL" .git)"
 
             echo "  Mirroring: $REPO_NAME..."
 
-            # Skip if mirror already exists (idempotent re-deploy)
+            # Check if mirror already exists (idempotent re-deploy)
             HTTP_CODE=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME' \
                 -H 'Authorization: token $GITEA_TOKEN'")
 
+            MIRROR_OK=0
             if [ "$HTTP_CODE" = "200" ]; then
-                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' already exists, skipping${NC}"
-                continue
+                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' already exists, skipping creation${NC}"
+                MIRROR_OK=1
+            else
+                MIGRATE_PAYLOAD=$(jq -n \
+                    --arg clone_addr "$REPO_URL" \
+                    --arg repo_name "$REPO_NAME" \
+                    --arg auth_token "$GH_MIRROR_TOKEN" \
+                    --argjson uid "$GITEA_ADMIN_UID" \
+                    '{
+                        clone_addr: $clone_addr,
+                        repo_name: $repo_name,
+                        private: true,
+                        mirror: true,
+                        mirror_interval: "10m0s",
+                        auth_token: $auth_token,
+                        uid: $uid
+                    }')
+
+                MIRROR_RESULT=$(printf '%s' "$MIGRATE_PAYLOAD" | ssh nexus "curl -s -X POST \
+                    'http://localhost:3200/api/v1/repos/migrate' \
+                    -H 'Authorization: token $GITEA_TOKEN' \
+                    -H 'Content-Type: application/json' \
+                    -d @-" 2>/dev/null || echo "")
+
+                if echo "$MIRROR_RESULT" | jq -e '.id' >/dev/null 2>&1; then
+                    echo -e "${GREEN}  ✓ Mirror '$REPO_NAME' created (syncs every 10 min)${NC}"
+                    MIRROR_OK=1
+                else
+                    echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' setup failed${NC}"
+                    echo -e "${YELLOW}    Verify GH_MIRROR_TOKEN has Contents:read permission${NC}"
+                    echo -e "${YELLOW}    and GH_MIRROR_REPOS contains valid GitHub HTTPS URLs${NC}"
+                fi
             fi
 
-            MIGRATE_PAYLOAD=$(jq -n \
-                --arg clone_addr "$REPO_URL" \
-                --arg repo_name "$REPO_NAME" \
-                --arg auth_token "$GH_MIRROR_TOKEN" \
-                --argjson uid "$GITEA_ADMIN_UID" \
-                '{
-                    clone_addr: $clone_addr,
-                    repo_name: $repo_name,
-                    private: true,
-                    mirror: true,
-                    mirror_interval: "10m0s",
-                    auth_token: $auth_token,
-                    uid: $uid
-                }')
+            if [ "$MIRROR_OK" = "1" ]; then
+                # Fork the first mirror as the user's workspace repo (idempotent)
+                # FORKED_WORKSPACE flag ensures we only fork once (the first mirror)
+                if [ "${FORKED_WORKSPACE:-}" != "1" ] && [ -n "${GITEA_USER_USERNAME:-}" ]; then
+                    ORIG_NAME=$(basename "$REPO_URL" .git)
+                    GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
+                    FORK_NAME="${ORIG_NAME}_${GITEA_USER_SANITIZED}"
+                    echo "  Forking ${ADMIN_USERNAME}/${REPO_NAME} into ${GITEA_USER_USERNAME}/${FORK_NAME}..."
 
-            MIRROR_RESULT=$(printf '%s' "$MIGRATE_PAYLOAD" | ssh nexus "curl -s -X POST \
-                'http://localhost:3200/api/v1/repos/migrate' \
-                -H 'Authorization: token $GITEA_TOKEN' \
-                -H 'Content-Type: application/json' \
-                -d @-" 2>/dev/null || echo "")
+                    # Create a user token so the fork lands in the user's namespace (not admin's)
+                    USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
+                        -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
+                        -H 'Content-Type: application/json' \
+                        -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
+                    if [ -z "$USER_TOKEN" ]; then
+                        ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
+                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
+                        USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
+                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
+                            -H 'Content-Type: application/json' \
+                            -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
+                    fi
+                    if [ -n "$USER_TOKEN" ]; then
+                        FORK_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                            -X POST 'http://localhost:3200/api/v1/repos/${ADMIN_USERNAME}/${REPO_NAME}/forks' \
+                            -H 'Authorization: token $USER_TOKEN' \
+                            -H 'Content-Type: application/json' \
+                            -d '{\"name\":\"$FORK_NAME\"}'")
+                        if [ "$FORK_RESULT" = "202" ]; then
+                            echo -e "${GREEN}  ✓ Forked into ${GITEA_USER_USERNAME}/${FORK_NAME}${NC}"
+                            FORKED_WORKSPACE=1
+                        elif [ "$FORK_RESULT" = "409" ]; then
+                            echo -e "${YELLOW}  ⚠ Fork ${GITEA_USER_USERNAME}/${FORK_NAME} already exists${NC}"
+                            FORKED_WORKSPACE=1
+                        else
+                            echo -e "${YELLOW}  ⚠ Fork returned HTTP $FORK_RESULT${NC}"
+                        fi
+                        ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
+                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
+                    else
+                        echo -e "${YELLOW}  ⚠ Could not create user token for fork${NC}"
+                    fi
+                fi
 
-            if echo "$MIRROR_RESULT" | jq -e '.id' >/dev/null 2>&1; then
-                echo -e "${GREEN}  ✓ Mirror '$REPO_NAME' created (syncs every 10 min)${NC}"
-
-                # Grant student user (gitea_user) read-only access
+                # Grant student user (gitea_user) read-only access to the mirror
                 if [ -n "$GITEA_USER_USERNAME" ]; then
                     COLLAB_PAYLOAD=$(jq -n '{permission: "read"}')
                     printf '%s' "$COLLAB_PAYLOAD" | ssh nexus "curl -s -X PUT \
@@ -2771,10 +2845,28 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                         -d @-" >/dev/null 2>&1 || true
                     echo -e "${GREEN}  ✓ Read access granted to '$GITEA_USER_USERNAME'${NC}"
                 fi
-            else
-                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' setup failed${NC}"
-                echo -e "${YELLOW}    Verify GH_MIRROR_TOKEN has Contents:read permission${NC}"
-                echo -e "${YELLOW}    and GH_MIRROR_REPOS contains valid GitHub HTTPS URLs${NC}"
+
+                # Restart git-integrated services now that the fork repo is available.
+                # Deferred from the Gitea setup block above so services start only after
+                # the fork exists and can be cloned successfully.
+                # Only runs once (for the first mirror) using the RESTARTED_GIT_SERVICES flag.
+                if [ "${FORKED_WORKSPACE:-}" = "1" ] && [ "${RESTARTED_GIT_SERVICES:-}" != "1" ]; then
+                    RESTARTED_GIT_SERVICES=1
+                    GIT_RESTART_SVCS=""
+                    for SVC in jupyter marimo code-server meltano prefect; do
+                        if echo "$ENABLED_SERVICES" | grep -qw "$SVC"; then
+                            GIT_RESTART_SVCS="$GIT_RESTART_SVCS $SVC"
+                        fi
+                    done
+                    if [ -n "$GIT_RESTART_SVCS" ]; then
+                        echo "  Restarting services with Git integration (fork ready)..."
+                        for SVC in $GIT_RESTART_SVCS; do
+                            ssh nexus "cd $REMOTE_STACKS_DIR/$SVC && docker compose restart" >/dev/null 2>&1 || true
+                            echo "    Restarted $SVC"
+                        done
+                        echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+                    fi
+                fi
             fi
         done
     fi
