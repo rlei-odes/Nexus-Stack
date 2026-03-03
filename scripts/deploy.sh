@@ -2795,7 +2795,6 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                 # Fork the first mirror as the user's workspace repo (idempotent)
                 # FORKED_WORKSPACE flag ensures we only fork once (the first mirror)
                 if [ "${FORKED_WORKSPACE:-}" != "1" ] && [ -n "${GITEA_USER_USERNAME:-}" ]; then
-                    FORKED_WORKSPACE=1
                     ORIG_NAME=$(basename "$REPO_URL" .git)
                     GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
                     FORK_NAME="${ORIG_NAME}_${GITEA_USER_SANITIZED}"
@@ -2822,8 +2821,10 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                             -d '{\"name\":\"$FORK_NAME\"}'")
                         if [ "$FORK_RESULT" = "202" ]; then
                             echo -e "${GREEN}  ✓ Forked into ${GITEA_USER_USERNAME}/${FORK_NAME}${NC}"
+                            FORKED_WORKSPACE=1
                         elif [ "$FORK_RESULT" = "409" ]; then
                             echo -e "${YELLOW}  ⚠ Fork ${GITEA_USER_USERNAME}/${FORK_NAME} already exists${NC}"
+                            FORKED_WORKSPACE=1
                         else
                             echo -e "${YELLOW}  ⚠ Fork returned HTTP $FORK_RESULT${NC}"
                         fi
