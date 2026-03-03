@@ -2588,20 +2588,24 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             # --- Restart services that have Git integration (to pick up .env vars) ---
             # Services had their Git .env vars generated in Step 3 but Gitea wasn't
             # ready yet. Now that the repo exists, restart them to trigger git clone.
-            RESTART_SERVICES=""
-            for SERVICE in jupyter marimo code-server meltano prefect; do
-                if echo "$ENABLED_SERVICES" | grep -qw "$SERVICE"; then
-                    RESTART_SERVICES="$RESTART_SERVICES $SERVICE"
-                fi
-            done
-
-            if [ -n "$RESTART_SERVICES" ]; then
-                echo "  Restarting services with Git integration..."
-                for SERVICE in $RESTART_SERVICES; do
-                    ssh nexus "cd $REMOTE_STACKS_DIR/$SERVICE && docker compose restart" >/dev/null 2>&1 || true
-                    echo "    Restarted $SERVICE"
+            # When GH_MIRROR_REPOS is set, the fork doesn't exist yet at this point -
+            # services are restarted later in the mirror setup block after fork creation.
+            if [ -z "${GH_MIRROR_REPOS:-}" ]; then
+                RESTART_SERVICES=""
+                for SERVICE in jupyter marimo code-server meltano prefect; do
+                    if echo "$ENABLED_SERVICES" | grep -qw "$SERVICE"; then
+                        RESTART_SERVICES="$RESTART_SERVICES $SERVICE"
+                    fi
                 done
-                echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+
+                if [ -n "$RESTART_SERVICES" ]; then
+                    echo "  Restarting services with Git integration..."
+                    for SERVICE in $RESTART_SERVICES; do
+                        ssh nexus "cd $REMOTE_STACKS_DIR/$SERVICE && docker compose restart" >/dev/null 2>&1 || true
+                        echo "    Restarted $SERVICE"
+                    done
+                    echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+                fi
             fi
 
             # --- Configure Kestra Git sync flow ---
@@ -2839,6 +2843,28 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                         -H 'Content-Type: application/json' \
                         -d @-" >/dev/null 2>&1 || true
                     echo -e "${GREEN}  ✓ Read access granted to '$GITEA_USER_USERNAME'${NC}"
+                fi
+
+                # Restart git-integrated services now that the fork repo is available.
+                # Deferred from the Gitea setup block above so services start only after
+                # the fork exists and can be cloned successfully.
+                # Only runs once (for the first mirror) using the RESTARTED_GIT_SERVICES flag.
+                if [ "${FORKED_WORKSPACE:-}" = "1" ] && [ "${RESTARTED_GIT_SERVICES:-}" != "1" ]; then
+                    RESTARTED_GIT_SERVICES=1
+                    GIT_RESTART_SVCS=""
+                    for SVC in jupyter marimo code-server meltano prefect; do
+                        if echo "$ENABLED_SERVICES" | grep -qw "$SVC"; then
+                            GIT_RESTART_SVCS="$GIT_RESTART_SVCS $SVC"
+                        fi
+                    done
+                    if [ -n "$GIT_RESTART_SVCS" ]; then
+                        echo "  Restarting services with Git integration (fork ready)..."
+                        for SVC in $GIT_RESTART_SVCS; do
+                            ssh nexus "cd $REMOTE_STACKS_DIR/$SVC && docker compose restart" >/dev/null 2>&1 || true
+                            echo "    Restarted $SVC"
+                        done
+                        echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+                    fi
                 fi
             fi
         done
