@@ -2746,41 +2746,49 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
 
             echo "  Mirroring: $REPO_NAME..."
 
-            # Skip if mirror already exists (idempotent re-deploy)
+            # Check if mirror already exists (idempotent re-deploy)
             HTTP_CODE=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME' \
                 -H 'Authorization: token $GITEA_TOKEN'")
 
+            MIRROR_OK=0
             if [ "$HTTP_CODE" = "200" ]; then
-                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' already exists, skipping${NC}"
-                continue
+                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' already exists, skipping creation${NC}"
+                MIRROR_OK=1
+            else
+                MIGRATE_PAYLOAD=$(jq -n \
+                    --arg clone_addr "$REPO_URL" \
+                    --arg repo_name "$REPO_NAME" \
+                    --arg auth_token "$GH_MIRROR_TOKEN" \
+                    --argjson uid "$GITEA_ADMIN_UID" \
+                    '{
+                        clone_addr: $clone_addr,
+                        repo_name: $repo_name,
+                        private: true,
+                        mirror: true,
+                        mirror_interval: "10m0s",
+                        auth_token: $auth_token,
+                        uid: $uid
+                    }')
+
+                MIRROR_RESULT=$(printf '%s' "$MIGRATE_PAYLOAD" | ssh nexus "curl -s -X POST \
+                    'http://localhost:3200/api/v1/repos/migrate' \
+                    -H 'Authorization: token $GITEA_TOKEN' \
+                    -H 'Content-Type: application/json' \
+                    -d @-" 2>/dev/null || echo "")
+
+                if echo "$MIRROR_RESULT" | jq -e '.id' >/dev/null 2>&1; then
+                    echo -e "${GREEN}  ✓ Mirror '$REPO_NAME' created (syncs every 10 min)${NC}"
+                    MIRROR_OK=1
+                else
+                    echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' setup failed${NC}"
+                    echo -e "${YELLOW}    Verify GH_MIRROR_TOKEN has Contents:read permission${NC}"
+                    echo -e "${YELLOW}    and GH_MIRROR_REPOS contains valid GitHub HTTPS URLs${NC}"
+                fi
             fi
 
-            MIGRATE_PAYLOAD=$(jq -n \
-                --arg clone_addr "$REPO_URL" \
-                --arg repo_name "$REPO_NAME" \
-                --arg auth_token "$GH_MIRROR_TOKEN" \
-                --argjson uid "$GITEA_ADMIN_UID" \
-                '{
-                    clone_addr: $clone_addr,
-                    repo_name: $repo_name,
-                    private: true,
-                    mirror: true,
-                    mirror_interval: "10m0s",
-                    auth_token: $auth_token,
-                    uid: $uid
-                }')
-
-            MIRROR_RESULT=$(printf '%s' "$MIGRATE_PAYLOAD" | ssh nexus "curl -s -X POST \
-                'http://localhost:3200/api/v1/repos/migrate' \
-                -H 'Authorization: token $GITEA_TOKEN' \
-                -H 'Content-Type: application/json' \
-                -d @-" 2>/dev/null || echo "")
-
-            if echo "$MIRROR_RESULT" | jq -e '.id' >/dev/null 2>&1; then
-                echo -e "${GREEN}  ✓ Mirror '$REPO_NAME' created (syncs every 10 min)${NC}"
-
-                # Fork the first mirror as the user's workspace repo
+            if [ "$MIRROR_OK" = "1" ]; then
+                # Fork the first mirror as the user's workspace repo (idempotent)
                 # FORKED_WORKSPACE flag ensures we only fork once (the first mirror)
                 if [ "${FORKED_WORKSPACE:-}" != "1" ] && [ -n "${GITEA_USER_USERNAME:-}" ]; then
                     FORKED_WORKSPACE=1
@@ -2822,7 +2830,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                     fi
                 fi
 
-                # Grant student user (gitea_user) read-only access
+                # Grant student user (gitea_user) read-only access to the mirror
                 if [ -n "$GITEA_USER_USERNAME" ]; then
                     COLLAB_PAYLOAD=$(jq -n '{permission: "read"}')
                     printf '%s' "$COLLAB_PAYLOAD" | ssh nexus "curl -s -X PUT \
@@ -2832,10 +2840,6 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                         -d @-" >/dev/null 2>&1 || true
                     echo -e "${GREEN}  ✓ Read access granted to '$GITEA_USER_USERNAME'${NC}"
                 fi
-            else
-                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' setup failed${NC}"
-                echo -e "${YELLOW}    Verify GH_MIRROR_TOKEN has Contents:read permission${NC}"
-                echo -e "${YELLOW}    and GH_MIRROR_REPOS contains valid GitHub HTTPS URLs${NC}"
             fi
         done
     fi
