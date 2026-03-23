@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.28.0...v0.28.1) (2026-03-23)
+
+
+### 🐛 Bug Fixes
+
+* Add admin link to info panel and fix Filestash password ([45e712b](https://github.com/stefanko-ch/Nexus-Stack/commit/45e712b5243e0ce557c040be23d8396181d696a2))
+* Address PR review comments ([39b0766](https://github.com/stefanko-ch/Nexus-Stack/commit/39b076607e0ce1f4939877b624aa35608a3b2347))
+* **stacks:** Fix MinIO image tag and Filestash admin password ([f9c041a](https://github.com/stefanko-ch/Nexus-Stack/commit/f9c041adb9df134516331fd80505b308f3df3b29))
+* **stacks:** Update MinIO image to valid quay.io tag ([3085caf](https://github.com/stefanko-ch/Nexus-Stack/commit/3085caf53851f60ccea28ec2d18514ef8d1f1c28))
+
 ## [0.28.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.27.1...v0.28.0) (2026-03-03)
 
 
