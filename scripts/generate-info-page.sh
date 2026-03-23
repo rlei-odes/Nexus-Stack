@@ -196,8 +196,9 @@ TOTAL_COUNT=$(echo "$SERVICES_JSON" | python3 -c "import sys, json; d=json.load(
 
 echo -e "  Services: ${GREEN}$ACTIVE_COUNT${NC} active / $TOTAL_COUNT total"
 
-# Extract image versions from services.yaml using YAML parser
+# Extract image versions and admin paths from services.yaml using YAML parser
 IMAGE_VERSIONS_JSON="{}"
+ADMIN_PATHS_JSON="{}"
 if [ -f "$SERVICES_YAML_FILE" ]; then
     IMAGE_VERSIONS_JSON=$(python3 << PYEOF
 import yaml
@@ -237,6 +238,28 @@ print(json.dumps(versions, indent=2))
 PYEOF
 )
     echo -e "  Image versions: ${GREEN}loaded from services.yaml${NC}"
+
+    # Extract admin_path entries from services.yaml
+    ADMIN_PATHS_JSON=$(python3 << PYEOF
+import yaml
+import json
+
+with open("$SERVICES_YAML_FILE", 'r') as f:
+    data = yaml.safe_load(f)
+
+if not data or 'services' not in data:
+    print("{}")
+    exit(0)
+
+paths = {}
+for name, config in data['services'].items():
+    admin_path = config.get('admin_path', '')
+    if admin_path:
+        paths[name] = admin_path
+
+print(json.dumps(paths, indent=2))
+PYEOF
+)
 else
     echo -e "  ${YELLOW}Warning: services.yaml not found - image versions not available${NC}"
 fi
@@ -261,6 +284,7 @@ generated_date = "$GENERATED_DATE"
 version = "$VERSION"
 services_json = '''$SERVICES_JSON'''
 image_versions_json = '''$IMAGE_VERSIONS_JSON'''
+admin_paths_json = '''$ADMIN_PATHS_JSON'''
 
 with open(template_path, 'r') as f:
     content = f.read()
@@ -271,6 +295,7 @@ content = content.replace('__GENERATED_DATE__', generated_date)
 content = content.replace('__VERSION__', version)
 content = content.replace('__SERVICES_JSON__', services_json)
 content = content.replace('__IMAGE_VERSIONS_JSON__', image_versions_json)
+content = content.replace('__ADMIN_PATHS_JSON__', admin_paths_json)
 
 with open(output_path, 'w') as f:
     f.write(content)

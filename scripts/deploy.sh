@@ -826,8 +826,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
             echo "❌ ERROR: Failed to generate Filestash admin password hash with 'htpasswd'."
             exit 1
         fi
+        # Escape $ in bcrypt hash for Docker Compose .env ($ → $$)
+        FILESTASH_ADMIN_HASH_ESCAPED=$(echo "$FILESTASH_ADMIN_HASH" | sed 's/\$/\$\$/g')
     else
         FILESTASH_ADMIN_HASH=""
+        FILESTASH_ADMIN_HASH_ESCAPED=""
     fi
 
     # Check if Hetzner Object Storage is configured
@@ -864,7 +867,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
         cat > "$STACKS_DIR/filestash/.env" << EOF
 # Auto-generated from OpenTofu secrets - DO NOT COMMIT
 CONFIG_JSON=${CONFIG_BASE64}
-ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH}
+ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH_ESCAPED}
 DOMAIN=${DOMAIN}
 EOF
         echo -e "${GREEN}  ✓ Filestash .env generated (S3 + admin password pre-configured)${NC}"
@@ -873,7 +876,7 @@ EOF
         cat > "$STACKS_DIR/filestash/.env" << EOF
 # Auto-generated - DO NOT COMMIT
 # Note: S3 backend must be configured manually at /admin
-ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH}
+ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH_ESCAPED}
 DOMAIN=${DOMAIN}
 EOF
         echo -e "${YELLOW}  ⚠ Filestash .env generated (admin password set, configure S3 at /admin)${NC}"
