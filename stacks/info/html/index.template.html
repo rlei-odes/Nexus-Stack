@@ -265,6 +265,21 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .service-admin-link {
+            font-size: 0.7rem;
+            padding: 0.1rem 0.4rem;
+            background: rgba(255, 170, 0, 0.15);
+            border: 1px solid rgba(255, 170, 0, 0.3);
+            border-radius: 3px;
+            color: #ffaa00;
+            text-decoration: none;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .service-admin-link:hover {
+            background: rgba(255, 170, 0, 0.3);
+        }
+
         .service-card.disabled {
             opacity: 0.5;
             border-color: rgba(255, 100, 100, 0.2);
@@ -390,6 +405,11 @@
             return IMAGE_VERSIONS[serviceName] || null;
         }
 
+        // Services with an admin panel at a separate path
+        const adminPaths = {
+            'filestash': '/admin'
+        };
+
         // Services without a web UI (backend/infrastructure services)
         const noLinkServices = ['git-proxy', 'redpanda', 'redpanda-connect', 'redpanda-datagen'];
 
@@ -433,6 +453,12 @@
             // Badge for services without web UI
             const internalBadge = hasNoLink ? `<span class="service-status" style="background: rgba(100, 112, 128, 0.2); border-color: rgba(100, 112, 128, 0.4); color: #607080;">${badgeText}</span>` : '';
 
+            // Admin link if service has an admin panel
+            const adminPath = adminPaths[name];
+            const adminLink = (isActive && adminPath && hasSubdomain)
+                ? `<a href="${url}${adminPath}" target="_blank" class="service-admin-link" onclick="event.stopPropagation();">Admin</a>`
+                : '';
+
             if (isActive && !hasNoLink) {
                 card.innerHTML = `
                     <a href="${url}" target="_blank">
@@ -443,6 +469,7 @@
                         <p class="service-description">${description}</p>
                         <div class="service-footer">
                             <span class="service-url">${url}</span>
+                            ${adminLink}
                             ${versionTag}
                         </div>
                     </a>
