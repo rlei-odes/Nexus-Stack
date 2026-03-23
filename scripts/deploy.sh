@@ -830,6 +830,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
         FILESTASH_ADMIN_HASH_ESCAPED=$(echo "$FILESTASH_ADMIN_HASH" | sed 's/\$/\$\$/g')
     else
         FILESTASH_ADMIN_HASH=""
+        FILESTASH_ADMIN_HASH_ESCAPED=""
     fi
 
     # Check if Hetzner Object Storage is configured

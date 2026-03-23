@@ -389,10 +389,11 @@
     </div>
 
     <script>
-        // Service configuration - generated from config.tfvars
+        // Service configuration - generated from config.tfvars and services.yaml
         const SERVICES = __SERVICES_JSON__;
         const DOMAIN = "__DOMAIN__";
         const IMAGE_VERSIONS = __IMAGE_VERSIONS_JSON__;
+        const ADMIN_PATHS = __ADMIN_PATHS_JSON__;
 
         const activeServices = Object.entries(SERVICES).filter(([_, s]) => s.enabled);
         const disabledServices = Object.entries(SERVICES).filter(([_, s]) => !s.enabled);
@@ -404,11 +405,6 @@
             // Service names match image version keys directly
             return IMAGE_VERSIONS[serviceName] || null;
         }
-
-        // Services with an admin panel at a separate path
-        const adminPaths = {
-            'filestash': '/admin'
-        };
 
         // Services without a web UI (backend/infrastructure services)
         const noLinkServices = ['git-proxy', 'redpanda', 'redpanda-connect', 'redpanda-datagen'];
@@ -454,26 +450,30 @@
             const internalBadge = hasNoLink ? `<span class="service-status" style="background: rgba(100, 112, 128, 0.2); border-color: rgba(100, 112, 128, 0.4); color: #607080;">${badgeText}</span>` : '';
 
             // Admin link if service has an admin panel
-            const adminPath = adminPaths[name];
+            const adminPath = ADMIN_PATHS[name];
             const adminLink = (isActive && adminPath && hasSubdomain)
-                ? `<a href="${url}${adminPath}" target="_blank" class="service-admin-link" onclick="event.stopPropagation();">Admin</a>`
+                ? `<a href="${url}${adminPath}" target="_blank" rel="noopener noreferrer" class="service-admin-link">Admin</a>`
                 : '';
 
             if (isActive && !hasNoLink) {
                 card.innerHTML = `
-                    <a href="${url}" target="_blank">
-                        <div class="service-header">
-                            <span class="service-name">${displayName}</span>
-                            <span class="service-status active">Online</span>
-                        </div>
-                        <p class="service-description">${description}</p>
-                        <div class="service-footer">
-                            <span class="service-url">${url}</span>
-                            ${adminLink}
-                            ${versionTag}
-                        </div>
-                    </a>
+                    <div class="service-header">
+                        <span class="service-name">${displayName}</span>
+                        <span class="service-status active">Online</span>
+                    </div>
+                    <p class="service-description">${description}</p>
+                    <div class="service-footer">
+                        <span class="service-url">${url}</span>
+                        ${adminLink}
+                        ${versionTag}
+                    </div>
                 `;
+                card.style.cursor = 'pointer';
+                card.addEventListener('click', (e) => {
+                    if (!e.target.closest('.service-admin-link')) {
+                        window.open(url, '_blank', 'noopener,noreferrer');
+                    }
+                });
             } else if (isActive && hasNoLink) {
                 // Internal-only service without clickable link
                 card.innerHTML = `
