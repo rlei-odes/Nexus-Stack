@@ -1,0 +1,19 @@
+FROM codercom/code-server:latest
+
+USER root
+
+# Install Python 3 and dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 python3-venv python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install uv (fast Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+USER coder
+
+# Install Jupyter via uv into a persistent global tool environment
+RUN uv tool install jupyter --with jupyterlab
+
+# Add uv tool bin to PATH
+ENV PATH="/home/coder/.local/bin:${PATH}"
