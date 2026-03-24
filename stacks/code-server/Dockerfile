@@ -12,8 +12,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 
 USER coder
 
-# Install Jupyter via uv into a persistent global tool environment
-RUN uv tool install jupyter --with jupyterlab
+# Install JupyterLab via uv (provides the jupyter CLI)
+RUN uv tool install jupyterlab
 
 # Add uv tool bin to PATH
 ENV PATH="/home/coder/.local/bin:${PATH}"
