@@ -15,7 +15,7 @@
 services:
   code-server:
     build: .
-    image: nexus-code-server:latest
+    image: ${IMAGE_CODE_SERVER:-nexus-code-server:latest}
     container_name: code-server
     restart: unless-stopped
     entrypoint: >
