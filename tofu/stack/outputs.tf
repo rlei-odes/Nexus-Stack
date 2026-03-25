@@ -234,6 +234,14 @@ output "secrets" {
     hetzner_s3_bucket         = var.hetzner_s3_bucket
     hetzner_s3_bucket_general = var.hetzner_s3_bucket_general
 
+    # External S3 (optional - for Filestash multi-backend)
+    external_s3_endpoint   = var.external_s3_endpoint
+    external_s3_region     = var.external_s3_region
+    external_s3_access_key = var.external_s3_access_key
+    external_s3_secret_key = var.external_s3_secret_key
+    external_s3_bucket     = var.external_s3_bucket
+    external_s3_label      = var.external_s3_label
+
     # Docker Hub (optional)
     dockerhub_username = var.dockerhub_username
     dockerhub_token    = var.dockerhub_token

@@ -118,6 +118,13 @@ HETZNER_S3_ACCESS_KEY=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_access_key // 
 HETZNER_S3_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_secret_key // empty')
 HETZNER_S3_BUCKET=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_bucket // empty')
 HETZNER_S3_BUCKET_GENERAL=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_bucket_general // empty')
+EXTERNAL_S3_ENDPOINT=$(echo "$SECRETS_JSON" | jq -r '.external_s3_endpoint // empty')
+EXTERNAL_S3_REGION=$(echo "$SECRETS_JSON" | jq -r '.external_s3_region // empty')
+EXTERNAL_S3_ACCESS_KEY=$(echo "$SECRETS_JSON" | jq -r '.external_s3_access_key // empty')
+EXTERNAL_S3_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.external_s3_secret_key // empty')
+EXTERNAL_S3_BUCKET=$(echo "$SECRETS_JSON" | jq -r '.external_s3_bucket // empty')
+EXTERNAL_S3_LABEL=$(echo "$SECRETS_JSON" | jq -r '.external_s3_label // empty')
+EXTERNAL_S3_LABEL=${EXTERNAL_S3_LABEL:-External Storage}
 FILESTASH_ADMIN_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.filestash_admin_password // empty')
 WINDMILL_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.windmill_admin_password // empty')
 WINDMILL_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.windmill_db_password // empty')
@@ -833,9 +840,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
         FILESTASH_ADMIN_HASH_ESCAPED=""
     fi
 
-    # Check if Hetzner Object Storage is configured
+    # Determine which S3 backends are configured
+    HAS_HETZNER=false
+    HAS_EXTERNAL=false
     if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_BUCKET_GENERAL" ]; then
-        echo "  Pre-configuring Filestash with Hetzner Object Storage backend..."
+        HAS_HETZNER=true
+    fi
+    if [ -n "$EXTERNAL_S3_ENDPOINT" ] && [ -n "$EXTERNAL_S3_ACCESS_KEY" ] && [ -n "$EXTERNAL_S3_SECRET_KEY" ] && [ -n "$EXTERNAL_S3_BUCKET" ]; then
+        HAS_EXTERNAL=true
+    fi
+
+    if [ "$HAS_HETZNER" = "true" ] || [ "$HAS_EXTERNAL" = "true" ]; then
+        echo "  Pre-configuring Filestash with S3 backend(s)..."
 
         # Create CONFIG_JSON with passthrough middleware for auto-connect (base64 encoded)
         # This skips the login form - users connect directly to S3
@@ -843,25 +859,64 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
         # IMPORTANT: middleware params MUST be JSON strings (not objects) because
         # Filestash encrypts/decrypts these fields, and Config.Get().String()
         # returns empty for object values in the form tree
-        CONFIG_JSON=$(jq -n \
-          --arg access_key "${HETZNER_S3_ACCESS_KEY}" \
-          --arg secret_key "${HETZNER_S3_SECRET_KEY}" \
-          --arg endpoint "https://${HETZNER_S3_SERVER}" \
-          --arg region "${HETZNER_S3_REGION}" \
-          --arg bucket "${HETZNER_S3_BUCKET_GENERAL}" \
-          '{
-            connections: [{"type":"s3","label":"Hetzner Storage"}],
-            middleware: {
-              identity_provider: {
-                type: "passthrough",
-                params: ({"strategy":"direct"} | tojson)
-              },
-              attribute_mapping: {
-                related_backend: "Hetzner Storage",
-                params: ({"Hetzner Storage":{"type":"s3","access_key_id":$access_key,"secret_access_key":$secret_key,"endpoint":$endpoint,"region":$region,"path":("/"+$bucket+"/")}} | tojson)
-              }
-            }
-          }')
+        if [ "$HAS_HETZNER" = "true" ] && [ "$HAS_EXTERNAL" = "true" ]; then
+            CONFIG_JSON=$(jq -n \
+              --arg h_ak "${HETZNER_S3_ACCESS_KEY}" --arg h_sk "${HETZNER_S3_SECRET_KEY}" \
+              --arg h_ep "https://${HETZNER_S3_SERVER}" --arg h_rg "${HETZNER_S3_REGION}" \
+              --arg h_bk "${HETZNER_S3_BUCKET_GENERAL}" \
+              --arg e_ak "${EXTERNAL_S3_ACCESS_KEY}" --arg e_sk "${EXTERNAL_S3_SECRET_KEY}" \
+              --arg e_ep "${EXTERNAL_S3_ENDPOINT}" --arg e_rg "${EXTERNAL_S3_REGION}" \
+              --arg e_bk "${EXTERNAL_S3_BUCKET}" --arg e_lb "${EXTERNAL_S3_LABEL}" \
+              '{
+                connections: [{"type":"s3","label":"Hetzner Storage"},{"type":"s3","label":$e_lb}],
+                middleware: {
+                  identity_provider: {
+                    type: "passthrough",
+                    params: ({"strategy":"direct"} | tojson)
+                  },
+                  attribute_mapping: {
+                    related_backend: "Hetzner Storage",
+                    params: ({"Hetzner Storage":{"type":"s3","access_key_id":$h_ak,"secret_access_key":$h_sk,"endpoint":$h_ep,"region":$h_rg,"path":("/"+$h_bk+"/")},($e_lb):{"type":"s3","access_key_id":$e_ak,"secret_access_key":$e_sk,"endpoint":$e_ep,"region":$e_rg,"path":("/"+$e_bk+"/")}} | tojson)
+                  }
+                }
+              }')
+        elif [ "$HAS_HETZNER" = "true" ]; then
+            CONFIG_JSON=$(jq -n \
+              --arg h_ak "${HETZNER_S3_ACCESS_KEY}" --arg h_sk "${HETZNER_S3_SECRET_KEY}" \
+              --arg h_ep "https://${HETZNER_S3_SERVER}" --arg h_rg "${HETZNER_S3_REGION}" \
+              --arg h_bk "${HETZNER_S3_BUCKET_GENERAL}" \
+              '{
+                connections: [{"type":"s3","label":"Hetzner Storage"}],
+                middleware: {
+                  identity_provider: {
+                    type: "passthrough",
+                    params: ({"strategy":"direct"} | tojson)
+                  },
+                  attribute_mapping: {
+                    related_backend: "Hetzner Storage",
+                    params: ({"Hetzner Storage":{"type":"s3","access_key_id":$h_ak,"secret_access_key":$h_sk,"endpoint":$h_ep,"region":$h_rg,"path":("/"+$h_bk+"/")}} | tojson)
+                  }
+                }
+              }')
+        else
+            CONFIG_JSON=$(jq -n \
+              --arg e_ak "${EXTERNAL_S3_ACCESS_KEY}" --arg e_sk "${EXTERNAL_S3_SECRET_KEY}" \
+              --arg e_ep "${EXTERNAL_S3_ENDPOINT}" --arg e_rg "${EXTERNAL_S3_REGION}" \
+              --arg e_bk "${EXTERNAL_S3_BUCKET}" --arg e_lb "${EXTERNAL_S3_LABEL}" \
+              '{
+                connections: [{"type":"s3","label":$e_lb}],
+                middleware: {
+                  identity_provider: {
+                    type: "passthrough",
+                    params: ({"strategy":"direct"} | tojson)
+                  },
+                  attribute_mapping: {
+                    related_backend: $e_lb,
+                    params: ({($e_lb):{"type":"s3","access_key_id":$e_ak,"secret_access_key":$e_sk,"endpoint":$e_ep,"region":$e_rg,"path":("/"+$e_bk+"/")}} | tojson)
+                  }
+                }
+              }')
+        fi
         CONFIG_BASE64=$(echo "$CONFIG_JSON" | base64 | tr -d '\n')
 
         cat > "$STACKS_DIR/filestash/.env" << EOF
@@ -870,7 +925,13 @@ CONFIG_JSON=${CONFIG_BASE64}
 ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH_ESCAPED}
 DOMAIN=${DOMAIN}
 EOF
-        echo -e "${GREEN}  ✓ Filestash .env generated (S3 + admin password pre-configured)${NC}"
+        if [ "$HAS_HETZNER" = "true" ] && [ "$HAS_EXTERNAL" = "true" ]; then
+            echo -e "${GREEN}  ✓ Filestash .env generated (Hetzner S3 + ${EXTERNAL_S3_LABEL} pre-configured)${NC}"
+        elif [ "$HAS_HETZNER" = "true" ]; then
+            echo -e "${GREEN}  ✓ Filestash .env generated (S3 + admin password pre-configured)${NC}"
+        else
+            echo -e "${GREEN}  ✓ Filestash .env generated (${EXTERNAL_S3_LABEL} pre-configured)${NC}"
+        fi
     else
         # Create minimal .env without S3 pre-configuration
         cat > "$STACKS_DIR/filestash/.env" << EOF
@@ -1909,39 +1970,53 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
             if [ "$FILESTASH_RESTARTED" = "false" ]; then
                 echo -e "${YELLOW}  ⚠ Filestash not ready after restart - skipping S3 configuration${NC}"
             else
-                # Add S3 connection if Hetzner is configured (AFTER restart)
+                # Add S3 connection(s) if configured (AFTER restart)
+                HAS_HETZNER_POST=false
+                HAS_EXTERNAL_POST=false
                 if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_BUCKET_GENERAL" ]; then
-                    # Check if Hetzner Storage connection already exists
-                    HAS_HETZNER=$(ssh nexus "docker exec filestash cat /app/data/state/config/config.json" 2>/dev/null | grep -o '"label"[[:space:]]*:[[:space:]]*"Hetzner Storage"' || echo "")
+                    HAS_HETZNER_POST=true
+                fi
+                if [ -n "$EXTERNAL_S3_ENDPOINT" ] && [ -n "$EXTERNAL_S3_ACCESS_KEY" ] && [ -n "$EXTERNAL_S3_SECRET_KEY" ] && [ -n "$EXTERNAL_S3_BUCKET" ]; then
+                    HAS_EXTERNAL_POST=true
+                fi
 
-                    # Configure S3 auto-connect via passthrough middleware
-                    echo "  Configuring Hetzner S3 backend in Filestash..."
+                if [ "$HAS_HETZNER_POST" = "true" ] || [ "$HAS_EXTERNAL_POST" = "true" ]; then
+                    echo "  Configuring S3 backend(s) in Filestash..."
 
-                    # Create temporary file with updated config
                     ssh nexus "docker exec filestash cat /app/data/state/config/config.json" > /tmp/filestash-config.json 2>/dev/null || true
 
                     if [ -f /tmp/filestash-config.json ] && [ -s /tmp/filestash-config.json ]; then
-                        # Configure passthrough middleware with S3 auto-connect
-                        # This skips the login form - users connect directly to S3
-                        # Authentication is handled by Cloudflare Access upstream
                         # IMPORTANT: params MUST be JSON strings (tojson) because Filestash
                         # encrypts/decrypts these fields, and Config.Get().String() returns
                         # empty for object values in the form tree
-                        jq --arg endpoint "https://${HETZNER_S3_SERVER}" \
-                           --arg access_key "${HETZNER_S3_ACCESS_KEY}" \
-                           --arg secret_key "${HETZNER_S3_SECRET_KEY}" \
-                           --arg region "${HETZNER_S3_REGION}" \
-                           --arg bucket "${HETZNER_S3_BUCKET_GENERAL}" \
-                           '.connections = [{"type":"s3","label":"Hetzner Storage"}] | .middleware.identity_provider = {"type":"passthrough","params":({"strategy":"direct"} | tojson)} | .middleware.attribute_mapping = {"related_backend":"Hetzner Storage","params":({"Hetzner Storage":{"type":"s3","access_key_id":$access_key,"secret_access_key":$secret_key,"endpoint":$endpoint,"region":$region,"path":("/"+$bucket+"/")}} | tojson)}' /tmp/filestash-config.json > /tmp/filestash-config-updated.json 2>/dev/null || true
+                        if [ "$HAS_HETZNER_POST" = "true" ] && [ "$HAS_EXTERNAL_POST" = "true" ]; then
+                            jq --arg h_ak "${HETZNER_S3_ACCESS_KEY}" --arg h_sk "${HETZNER_S3_SECRET_KEY}" \
+                               --arg h_ep "https://${HETZNER_S3_SERVER}" --arg h_rg "${HETZNER_S3_REGION}" \
+                               --arg h_bk "${HETZNER_S3_BUCKET_GENERAL}" \
+                               --arg e_ak "${EXTERNAL_S3_ACCESS_KEY}" --arg e_sk "${EXTERNAL_S3_SECRET_KEY}" \
+                               --arg e_ep "${EXTERNAL_S3_ENDPOINT}" --arg e_rg "${EXTERNAL_S3_REGION}" \
+                               --arg e_bk "${EXTERNAL_S3_BUCKET}" --arg e_lb "${EXTERNAL_S3_LABEL}" \
+                               '.connections = [{"type":"s3","label":"Hetzner Storage"},{"type":"s3","label":$e_lb}] | .middleware.identity_provider = {"type":"passthrough","params":({"strategy":"direct"} | tojson)} | .middleware.attribute_mapping = {"related_backend":"Hetzner Storage","params":({"Hetzner Storage":{"type":"s3","access_key_id":$h_ak,"secret_access_key":$h_sk,"endpoint":$h_ep,"region":$h_rg,"path":("/"+$h_bk+"/")},($e_lb):{"type":"s3","access_key_id":$e_ak,"secret_access_key":$e_sk,"endpoint":$e_ep,"region":$e_rg,"path":("/"+$e_bk+"/")}} | tojson)}' \
+                               /tmp/filestash-config.json > /tmp/filestash-config-updated.json 2>/dev/null || true
+                        elif [ "$HAS_HETZNER_POST" = "true" ]; then
+                            jq --arg h_ak "${HETZNER_S3_ACCESS_KEY}" --arg h_sk "${HETZNER_S3_SECRET_KEY}" \
+                               --arg h_ep "https://${HETZNER_S3_SERVER}" --arg h_rg "${HETZNER_S3_REGION}" \
+                               --arg h_bk "${HETZNER_S3_BUCKET_GENERAL}" \
+                               '.connections = [{"type":"s3","label":"Hetzner Storage"}] | .middleware.identity_provider = {"type":"passthrough","params":({"strategy":"direct"} | tojson)} | .middleware.attribute_mapping = {"related_backend":"Hetzner Storage","params":({"Hetzner Storage":{"type":"s3","access_key_id":$h_ak,"secret_access_key":$h_sk,"endpoint":$h_ep,"region":$h_rg,"path":("/"+$h_bk+"/")}} | tojson)}' \
+                               /tmp/filestash-config.json > /tmp/filestash-config-updated.json 2>/dev/null || true
+                        else
+                            jq --arg e_ak "${EXTERNAL_S3_ACCESS_KEY}" --arg e_sk "${EXTERNAL_S3_SECRET_KEY}" \
+                               --arg e_ep "${EXTERNAL_S3_ENDPOINT}" --arg e_rg "${EXTERNAL_S3_REGION}" \
+                               --arg e_bk "${EXTERNAL_S3_BUCKET}" --arg e_lb "${EXTERNAL_S3_LABEL}" \
+                               '.connections = [{"type":"s3","label":$e_lb}] | .middleware.identity_provider = {"type":"passthrough","params":({"strategy":"direct"} | tojson)} | .middleware.attribute_mapping = {"related_backend":$e_lb,"params":({($e_lb):{"type":"s3","access_key_id":$e_ak,"secret_access_key":$e_sk,"endpoint":$e_ep,"region":$e_rg,"path":("/"+$e_bk+"/")}} | tojson)}' \
+                               /tmp/filestash-config.json > /tmp/filestash-config-updated.json 2>/dev/null || true
+                        fi
 
-                        # Upload updated config back to container and restart
                         if [ -f /tmp/filestash-config-updated.json ] && [ -s /tmp/filestash-config-updated.json ]; then
                             cat /tmp/filestash-config-updated.json | ssh nexus "docker exec -i filestash sh -c 'cat > /app/data/state/config/config.json'" 2>/dev/null || true
                             rm -f /tmp/filestash-config.json /tmp/filestash-config-updated.json
-
-                            # Restart to load the new middleware config
                             ssh nexus "docker restart filestash" >/dev/null 2>&1 || true
-                            echo -e "${GREEN}  ✓ Hetzner S3 backend configured (passthrough auto-connect)${NC}"
+                            echo -e "${GREEN}  ✓ S3 backend(s) configured (passthrough auto-connect)${NC}"
                         else
                             echo -e "${YELLOW}  ⚠ Failed to update Filestash config - configure S3 manually at /admin${NC}"
                             rm -f /tmp/filestash-config.json /tmp/filestash-config-updated.json
