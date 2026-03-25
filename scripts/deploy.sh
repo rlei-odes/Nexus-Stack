@@ -125,6 +125,7 @@ EXTERNAL_S3_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.external_s3_secret_key /
 EXTERNAL_S3_BUCKET=$(echo "$SECRETS_JSON" | jq -r '.external_s3_bucket // empty')
 EXTERNAL_S3_LABEL=$(echo "$SECRETS_JSON" | jq -r '.external_s3_label // empty')
 EXTERNAL_S3_LABEL=${EXTERNAL_S3_LABEL:-External Storage}
+EXTERNAL_S3_REGION=${EXTERNAL_S3_REGION:-auto}
 FILESTASH_ADMIN_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.filestash_admin_password // empty')
 WINDMILL_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.windmill_admin_password // empty')
 WINDMILL_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.windmill_db_password // empty')
@@ -1735,20 +1736,24 @@ EOF
             "ADMIN_EMAIL" "$ADMIN_EMAIL" \
             "ADMIN_USERNAME" "$ADMIN_USERNAME"
 
-        build_folder "hetzner-s3" \
-            "HETZNER_S3_ENDPOINT" "https://$HETZNER_S3_SERVER" \
-            "HETZNER_S3_REGION" "$HETZNER_S3_REGION" \
-            "HETZNER_S3_ACCESS_KEY" "$HETZNER_S3_ACCESS_KEY" \
-            "HETZNER_S3_SECRET_KEY" "$HETZNER_S3_SECRET_KEY" \
-            "HETZNER_S3_BUCKET" "$HETZNER_S3_BUCKET_GENERAL"
+        if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_BUCKET_GENERAL" ]; then
+            build_folder "hetzner-s3" \
+                "HETZNER_S3_ENDPOINT" "https://$HETZNER_S3_SERVER" \
+                "HETZNER_S3_REGION" "$HETZNER_S3_REGION" \
+                "HETZNER_S3_ACCESS_KEY" "$HETZNER_S3_ACCESS_KEY" \
+                "HETZNER_S3_SECRET_KEY" "$HETZNER_S3_SECRET_KEY" \
+                "HETZNER_S3_BUCKET" "$HETZNER_S3_BUCKET_GENERAL"
+        fi
 
-        build_folder "external-s3" \
-            "EXTERNAL_S3_ENDPOINT" "$EXTERNAL_S3_ENDPOINT" \
-            "EXTERNAL_S3_REGION" "$EXTERNAL_S3_REGION" \
-            "EXTERNAL_S3_ACCESS_KEY" "$EXTERNAL_S3_ACCESS_KEY" \
-            "EXTERNAL_S3_SECRET_KEY" "$EXTERNAL_S3_SECRET_KEY" \
-            "EXTERNAL_S3_BUCKET" "$EXTERNAL_S3_BUCKET" \
-            "EXTERNAL_S3_LABEL" "$EXTERNAL_S3_LABEL"
+        if [ -n "$EXTERNAL_S3_ENDPOINT" ] && [ -n "$EXTERNAL_S3_ACCESS_KEY" ] && [ -n "$EXTERNAL_S3_SECRET_KEY" ] && [ -n "$EXTERNAL_S3_BUCKET" ]; then
+            build_folder "external-s3" \
+                "EXTERNAL_S3_ENDPOINT" "$EXTERNAL_S3_ENDPOINT" \
+                "EXTERNAL_S3_REGION" "$EXTERNAL_S3_REGION" \
+                "EXTERNAL_S3_ACCESS_KEY" "$EXTERNAL_S3_ACCESS_KEY" \
+                "EXTERNAL_S3_SECRET_KEY" "$EXTERNAL_S3_SECRET_KEY" \
+                "EXTERNAL_S3_BUCKET" "$EXTERNAL_S3_BUCKET" \
+                "EXTERNAL_S3_LABEL" "$EXTERNAL_S3_LABEL"
+        fi
 
         build_folder "infisical" \
             "INFISICAL_USERNAME" "$ADMIN_EMAIL" \

@@ -33,7 +33,7 @@ jobs:
       TF_VAR_hetzner_object_storage_access_key: ${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}
       TF_VAR_hetzner_object_storage_secret_key: ${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}
       TF_VAR_external_s3_endpoint: ${{ secrets.EXTERNAL_S3_ENDPOINT }}
-      TF_VAR_external_s3_region: ${{ secrets.EXTERNAL_S3_REGION }}
+      TF_VAR_external_s3_region: ${{ secrets.EXTERNAL_S3_REGION || 'auto' }}
       TF_VAR_external_s3_access_key: ${{ secrets.EXTERNAL_S3_ACCESS_KEY }}
       TF_VAR_external_s3_secret_key: ${{ secrets.EXTERNAL_S3_SECRET_KEY }}
       TF_VAR_external_s3_bucket: ${{ secrets.EXTERNAL_S3_BUCKET }}
