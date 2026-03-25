@@ -1621,22 +1621,18 @@ echo -e "${YELLOW}[7/7] Auto-configuring services...${NC}"
 # Initialize array for background configuration jobs
 CONFIG_JOBS=()
 
-# Configure Infisical admin and push secrets
+# Configure Infisical admin and push secrets (idempotent - runs on every spin-up)
 if echo "$ENABLED_SERVICES" | grep -qw "infisical"; then
     echo "  Configuring Infisical..."
-    
+
     # Wait for Infisical to be ready (optimized: check container status first)
     echo "  Waiting for Infisical to be ready (may take up to 2min)..."
     INFISICAL_READY=false
-    # First check if container is running (faster than HTTP)
     for i in $(seq 1 20); do
         CONTAINER_STATUS=$(ssh nexus "docker inspect --format='{{.State.Status}}' infisical 2>/dev/null" || echo "")
-        if [ "$CONTAINER_STATUS" = "running" ]; then
-            break
-        fi
+        if [ "$CONTAINER_STATUS" = "running" ]; then break; fi
         sleep 2
     done
-    # Then check HTTP endpoint (allow up to 120s total)
     for i in $(seq 1 40); do
         if ssh nexus "curl -s --connect-timeout 3 'http://localhost:8070/api/v1/admin/config'" 2>/dev/null | grep -q 'initialized'; then
             INFISICAL_READY=true
@@ -1644,236 +1640,53 @@ if echo "$ENABLED_SERVICES" | grep -qw "infisical"; then
         fi
         sleep 3
     done
-    
+
     if [ "$INFISICAL_READY" = "false" ]; then
         echo -e "${YELLOW}  ⚠ Infisical not responding after 120s - skipping config${NC}"
     else
-    # Check if already initialized
+    INFISICAL_TOKEN=""
+    PROJECT_ID=""
     INIT_CHECK=$(ssh nexus "curl -s 'http://localhost:8070/api/v1/admin/config'" 2>/dev/null || echo "")
-    
+
     if echo "$INIT_CHECK" | grep -q '"initialized":true'; then
-        echo -e "${YELLOW}  ⚠ Infisical already configured - skipping setup${NC}"
-        # WARNING: Infisical will NOT auto-populate secrets for newly enabled services.
-        # After initial bootstrap, new service secrets (e.g. MinIO) must be added
-        # manually via the Infisical UI, or perform a full destroy/spin-up cycle
-        # to bootstrap fresh with all current service credentials.
+        # Existing instance - load saved credentials
+        echo "  Infisical already initialized - loading saved credentials..."
+        INFISICAL_TOKEN=$(ssh nexus "cat /opt/docker-server/.infisical-token 2>/dev/null" || echo "")
+        PROJECT_ID=$(ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" || echo "")
+        if [ -z "$INFISICAL_TOKEN" ] || [ -z "$PROJECT_ID" ]; then
+            echo -e "${YELLOW}  ⚠ No saved credentials - run destroy-all + initial-setup to re-bootstrap${NC}"
+        else
+            echo -e "${GREEN}  ✓ Loaded Infisical credentials${NC}"
+        fi
     else
-        # Build JSON payload locally and base64 encode to avoid escaping issues
+        # New instance - bootstrap admin + create project
         BOOTSTRAP_JSON=$(cat <<EOF
 {"email": "$ADMIN_EMAIL", "password": "$INFISICAL_PASS", "organization": "Nexus"}
 EOF
 )
-        # Bootstrap with admin user
         BOOTSTRAP_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8070/api/v1/admin/bootstrap' \
             -H 'Content-Type: application/json' \
             -d '$(echo "$BOOTSTRAP_JSON" | tr -d '\n')'" 2>&1 || echo "")
-        
+
         if echo "$BOOTSTRAP_RESULT" | grep -q '"user"'; then
             echo -e "${GREEN}  ✓ Infisical admin created (user: $ADMIN_EMAIL)${NC}"
-            
-            # Extract token and org ID for pushing secrets
             INFISICAL_TOKEN=$(echo "$BOOTSTRAP_RESULT" | jq -r '.identity.credentials.token // empty')
             ORG_ID=$(echo "$BOOTSTRAP_RESULT" | jq -r '.organization.id // empty')
-            
+
             if [ -n "$INFISICAL_TOKEN" ] && [ -n "$ORG_ID" ]; then
                 echo "  Creating Nexus secrets project..."
-                
-                # Create a project for Nexus secrets
-                PROJECT_JSON="{\"projectName\": \"Nexus Stack\", \"organizationId\": \"$ORG_ID\"}"
                 PROJECT_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8070/api/v2/workspace' \
                     -H 'Authorization: Bearer $INFISICAL_TOKEN' \
                     -H 'Content-Type: application/json' \
-                    -d '$PROJECT_JSON'" 2>&1 || echo "")
-                
+                    -d '{\"projectName\": \"Nexus Stack\", \"organizationId\": \"$ORG_ID\"}'" 2>&1 || echo "")
                 PROJECT_ID=$(echo "$PROJECT_RESULT" | jq -r '.project.id // .workspace.id // empty')
-                
+
                 if [ -n "$PROJECT_ID" ] && [ "$PROJECT_ID" != "null" ]; then
                     echo -e "${GREEN}  ✓ Project 'Nexus Stack' created${NC}"
-                    
-                    # Create tags for organizing secrets
-                    echo "  Creating tags..."
-                    for TAG_NAME in "infisical" "portainer" "uptime-kuma" "grafana" "n8n" "kestra" "metabase" "cloudbeaver" "clickhouse" "mage" "minio" "nocodb" "dify" "rustfs" "seaweedfs" "garage" "lakefs" "filestash" "redpanda" "meltano" "postgres" "pgadmin" "prefect" "windmill" "openmetadata" "gitea" "wikijs" "woodpecker" "config" "ssh"; do
-                        TAG_JSON="{\"slug\": \"$TAG_NAME\", \"color\": \"#3b82f6\"}"
-                        ssh nexus "curl -s -X POST 'http://localhost:8070/api/v1/projects/$PROJECT_ID/tags' \
-                            -H 'Authorization: Bearer $INFISICAL_TOKEN' \
-                            -H 'Content-Type: application/json' \
-                            -d '$TAG_JSON'" >/dev/null 2>&1 || true
-                    done
-                    
-                    # Get tag IDs
-                    TAGS_RESULT=$(ssh nexus "curl -s 'http://localhost:8070/api/v1/projects/$PROJECT_ID/tags' \
-                        -H 'Authorization: Bearer $INFISICAL_TOKEN'" 2>/dev/null || echo "{}")
-                    
-                    INFISICAL_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="infisical") | .id // empty' 2>/dev/null)
-                    PORTAINER_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="portainer") | .id // empty' 2>/dev/null)
-                    KUMA_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="uptime-kuma") | .id // empty' 2>/dev/null)
-                    GRAFANA_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="grafana") | .id // empty' 2>/dev/null)
-                    N8N_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="n8n") | .id // empty' 2>/dev/null)
-                    KESTRA_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="kestra") | .id // empty' 2>/dev/null)
-                    METABASE_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="metabase") | .id // empty' 2>/dev/null)
-                    CLOUDBEAVER_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="cloudbeaver") | .id // empty' 2>/dev/null)
-                    CLICKHOUSE_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="clickhouse") | .id // empty' 2>/dev/null)
-                    MAGE_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="mage") | .id // empty' 2>/dev/null)
-                    MINIO_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="minio") | .id // empty' 2>/dev/null)
-                    NOCODB_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="nocodb") | .id // empty' 2>/dev/null)
-                    DIFY_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="dify") | .id // empty' 2>/dev/null)
-                    RUSTFS_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="rustfs") | .id // empty' 2>/dev/null)
-                    SEAWEEDFS_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="seaweedfs") | .id // empty' 2>/dev/null)
-                    GARAGE_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="garage") | .id // empty' 2>/dev/null)
-                    LAKEFS_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="lakefs") | .id // empty' 2>/dev/null)
-                    FILESTASH_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="filestash") | .id // empty' 2>/dev/null)
-                    REDPANDA_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="redpanda") | .id // empty' 2>/dev/null)
-                    MELTANO_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="meltano") | .id // empty' 2>/dev/null)
-                    POSTGRES_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="postgres") | .id // empty' 2>/dev/null)
-                    PGADMIN_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="pgadmin") | .id // empty' 2>/dev/null)
-                    PREFECT_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="prefect") | .id // empty' 2>/dev/null)
-                    WINDMILL_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="windmill") | .id // empty' 2>/dev/null)
-                    OPENMETADATA_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="openmetadata") | .id // empty' 2>/dev/null)
-                    GITEA_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="gitea") | .id // empty' 2>/dev/null)
-                    WIKIJS_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="wikijs") | .id // empty' 2>/dev/null)
-                    WOODPECKER_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="woodpecker") | .id // empty' 2>/dev/null)
-                    CONFIG_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="config") | .id // empty' 2>/dev/null)
-                    SSH_TAG=$(echo "$TAGS_RESULT" | jq -r '.tags[] | select(.slug=="ssh") | .id // empty' 2>/dev/null)
-                    
-                    echo -e "${GREEN}  ✓ Tags created${NC}"
-                    echo "  Pushing secrets to Infisical..."
-                    
-                    # Build secrets payload with usernames and tags
-                    # Prepare optional secrets as pre-built JSON fragments
-                    # (avoids ${:+} brace conflicts inside heredoc that produce invalid JSON)
-                    WOODPECKER_GITEA_SECRETS=""
-                    if [ -n "${WOODPECKER_GITEA_CLIENT:-}" ]; then
-                        WOODPECKER_GITEA_SECRETS=",{\"secretKey\": \"WOODPECKER_GITEA_CLIENT\", \"secretValue\": \"$WOODPECKER_GITEA_CLIENT\", \"tagIds\": [\"$WOODPECKER_TAG\"]}"
-                    fi
-                    if [ -n "${WOODPECKER_GITEA_SECRET:-}" ]; then
-                        WOODPECKER_GITEA_SECRETS="$WOODPECKER_GITEA_SECRETS,{\"secretKey\": \"WOODPECKER_GITEA_SECRET\", \"secretValue\": \"$WOODPECKER_GITEA_SECRET\", \"tagIds\": [\"$WOODPECKER_TAG\"]}"
-                    fi
-                    SSH_KEY_SECRET=""
-                    if [ -n "${SSH_PRIVATE_KEY_CONTENT:-}" ]; then
-                        SSH_KEY_BASE64=$(echo "$SSH_PRIVATE_KEY_CONTENT" | base64 | tr -d '\n')
-                        SSH_KEY_SECRET=",{\"secretKey\": \"SSH_PRIVATE_KEY_BASE64\", \"secretValue\": \"$SSH_KEY_BASE64\", \"tagIds\": [\"$SSH_TAG\"]}"
-                    fi
-                    
-                    # Using v4 batch API which supports tagIds
-                    # Environment can be overridden via INFISICAL_ENV (default: dev)
-                    # Note: "prod" may not exist in new Infisical projects
-                    SECRETS_PAYLOAD=$(cat <<SECRETS_EOF
-{
-  "projectId": "$PROJECT_ID",
-  "environment": "${INFISICAL_ENV:-dev}",
-  "secretPath": "/",
-  "secrets": [
-    {"secretKey": "DOMAIN", "secretValue": "$DOMAIN", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "ADMIN_EMAIL", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "ADMIN_USERNAME", "secretValue": "$ADMIN_USERNAME", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "INFISICAL_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$INFISICAL_TAG"]},
-    {"secretKey": "INFISICAL_PASSWORD", "secretValue": "$INFISICAL_PASS", "tagIds": ["$INFISICAL_TAG"]},
-    {"secretKey": "PORTAINER_USERNAME", "secretValue": "$ADMIN_USERNAME", "tagIds": ["$PORTAINER_TAG"]},
-    {"secretKey": "PORTAINER_PASSWORD", "secretValue": "$PORTAINER_PASS", "tagIds": ["$PORTAINER_TAG"]},
-    {"secretKey": "UPTIME_KUMA_USERNAME", "secretValue": "$ADMIN_USERNAME", "tagIds": ["$KUMA_TAG"]},
-    {"secretKey": "UPTIME_KUMA_PASSWORD", "secretValue": "$KUMA_PASS", "tagIds": ["$KUMA_TAG"]},
-    {"secretKey": "GRAFANA_USERNAME", "secretValue": "$ADMIN_USERNAME", "tagIds": ["$GRAFANA_TAG"]},
-    {"secretKey": "GRAFANA_PASSWORD", "secretValue": "$GRAFANA_PASS", "tagIds": ["$GRAFANA_TAG"]},
-    {"secretKey": "N8N_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$N8N_TAG"]},
-    {"secretKey": "N8N_PASSWORD", "secretValue": "$N8N_PASS", "tagIds": ["$N8N_TAG"]},
-    {"secretKey": "KESTRA_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$KESTRA_TAG"]},
-    {"secretKey": "KESTRA_PASSWORD", "secretValue": "$KESTRA_PASS", "tagIds": ["$KESTRA_TAG"]},
-    {"secretKey": "METABASE_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$METABASE_TAG"]},
-    {"secretKey": "METABASE_PASSWORD", "secretValue": "$METABASE_PASS", "tagIds": ["$METABASE_TAG"]},
-    {"secretKey": "CLOUDBEAVER_USERNAME", "secretValue": "$ADMIN_USERNAME", "tagIds": ["$CLOUDBEAVER_TAG"]},
-    {"secretKey": "CLOUDBEAVER_PASSWORD", "secretValue": "$CLOUDBEAVER_PASS", "tagIds": ["$CLOUDBEAVER_TAG"]},
-    {"secretKey": "MAGE_USERNAME", "secretValue": "${USER_EMAIL:-$ADMIN_EMAIL}", "tagIds": ["$MAGE_TAG"]},
-    {"secretKey": "MAGE_PASSWORD", "secretValue": "$MAGE_PASS", "tagIds": ["$MAGE_TAG"]},
-    {"secretKey": "MINIO_ROOT_USER", "secretValue": "nexus-minio", "tagIds": ["$MINIO_TAG"]},
-    {"secretKey": "MINIO_ROOT_PASSWORD", "secretValue": "$MINIO_ROOT_PASS", "tagIds": ["$MINIO_TAG"]},
-    {"secretKey": "NOCODB_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$NOCODB_TAG"]},
-    {"secretKey": "NOCODB_PASSWORD", "secretValue": "$NOCODB_ADMIN_PASS", "tagIds": ["$NOCODB_TAG"]},
-    {"secretKey": "NOCODB_DB_PASSWORD", "secretValue": "$NOCODB_DB_PASS", "tagIds": ["$NOCODB_TAG"]},
-    {"secretKey": "NOCODB_JWT_SECRET", "secretValue": "$NOCODB_JWT_SECRET", "tagIds": ["$NOCODB_TAG"]},
-    {"secretKey": "DIFY_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_PASSWORD", "secretValue": "$DIFY_ADMIN_PASS", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_DB_PASSWORD", "secretValue": "$DIFY_DB_PASS", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_SECRET_KEY", "secretValue": "$DIFY_SECRET_KEY", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_REDIS_PASSWORD", "secretValue": "$DIFY_REDIS_PASS", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_WEAVIATE_API_KEY", "secretValue": "$DIFY_WEAVIATE_API_KEY", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_SANDBOX_API_KEY", "secretValue": "$DIFY_SANDBOX_API_KEY", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_PLUGIN_DAEMON_KEY", "secretValue": "$DIFY_PLUGIN_DAEMON_KEY", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "DIFY_PLUGIN_INNER_API_KEY", "secretValue": "$DIFY_PLUGIN_INNER_API_KEY", "tagIds": ["$DIFY_TAG"]},
-    {"secretKey": "RUSTFS_ACCESS_KEY", "secretValue": "nexus-rustfs", "tagIds": ["$RUSTFS_TAG"]},
-    {"secretKey": "RUSTFS_SECRET_KEY", "secretValue": "$RUSTFS_ROOT_PASS", "tagIds": ["$RUSTFS_TAG"]},
-    {"secretKey": "SEAWEEDFS_ACCESS_KEY", "secretValue": "nexus-seaweedfs", "tagIds": ["$SEAWEEDFS_TAG"]},
-    {"secretKey": "SEAWEEDFS_SECRET_KEY", "secretValue": "$SEAWEEDFS_ADMIN_PASS", "tagIds": ["$SEAWEEDFS_TAG"]},
-    {"secretKey": "GARAGE_ADMIN_TOKEN", "secretValue": "$GARAGE_ADMIN_TOKEN", "tagIds": ["$GARAGE_TAG"]},
-    {"secretKey": "LAKEFS_DB_PASSWORD", "secretValue": "$LAKEFS_DB_PASS", "tagIds": ["$LAKEFS_TAG"]},
-    {"secretKey": "LAKEFS_ACCESS_KEY_ID", "secretValue": "$LAKEFS_ADMIN_ACCESS_KEY", "tagIds": ["$LAKEFS_TAG"]},
-    {"secretKey": "LAKEFS_SECRET_ACCESS_KEY", "secretValue": "$LAKEFS_ADMIN_SECRET_KEY", "tagIds": ["$LAKEFS_TAG"]},
-    {"secretKey": "FILESTASH_S3_BUCKET", "secretValue": "$HETZNER_S3_BUCKET_GENERAL", "tagIds": ["$FILESTASH_TAG"]},
-    {"secretKey": "FILESTASH_ADMIN_PASSWORD", "secretValue": "$FILESTASH_ADMIN_PASSWORD", "tagIds": ["$FILESTASH_TAG"]},
-    {"secretKey": "HETZNER_S3_ENDPOINT", "secretValue": "https://$HETZNER_S3_SERVER", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "HETZNER_S3_REGION", "secretValue": "$HETZNER_S3_REGION", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "HETZNER_S3_ACCESS_KEY", "secretValue": "$HETZNER_S3_ACCESS_KEY", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "HETZNER_S3_SECRET_KEY", "secretValue": "$HETZNER_S3_SECRET_KEY", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "HETZNER_S3_BUCKET", "secretValue": "$HETZNER_S3_BUCKET_GENERAL", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "EXTERNAL_S3_ENDPOINT", "secretValue": "$EXTERNAL_S3_ENDPOINT", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "EXTERNAL_S3_REGION", "secretValue": "$EXTERNAL_S3_REGION", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "EXTERNAL_S3_ACCESS_KEY", "secretValue": "$EXTERNAL_S3_ACCESS_KEY", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "EXTERNAL_S3_SECRET_KEY", "secretValue": "$EXTERNAL_S3_SECRET_KEY", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "EXTERNAL_S3_BUCKET", "secretValue": "$EXTERNAL_S3_BUCKET", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "EXTERNAL_S3_LABEL", "secretValue": "$EXTERNAL_S3_LABEL", "tagIds": ["$CONFIG_TAG"]},
-    {"secretKey": "REDPANDA_SASL_USERNAME", "secretValue": "nexus-redpanda", "tagIds": ["$REDPANDA_TAG"]},
-    {"secretKey": "REDPANDA_SASL_PASSWORD", "secretValue": "$REDPANDA_ADMIN_PASS", "tagIds": ["$REDPANDA_TAG"]},
-    {"secretKey": "MELTANO_DB_PASSWORD", "secretValue": "$MELTANO_DB_PASS", "tagIds": ["$MELTANO_TAG"]},
-    {"secretKey": "POSTGRES_USERNAME", "secretValue": "nexus-postgres", "tagIds": ["$POSTGRES_TAG"]},
-    {"secretKey": "POSTGRES_PASSWORD", "secretValue": "$POSTGRES_PASS", "tagIds": ["$POSTGRES_TAG"]},
-    {"secretKey": "PGADMIN_USERNAME", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$PGADMIN_TAG"]},
-    {"secretKey": "PGADMIN_PASSWORD", "secretValue": "$PGADMIN_PASS", "tagIds": ["$PGADMIN_TAG"]},
-    {"secretKey": "PREFECT_DB_PASSWORD", "secretValue": "$PREFECT_DB_PASS", "tagIds": ["$PREFECT_TAG"]},
-    {"secretKey": "WINDMILL_ADMIN_EMAIL", "secretValue": "$ADMIN_EMAIL", "tagIds": ["$WINDMILL_TAG"]},
-    {"secretKey": "WINDMILL_ADMIN_PASSWORD", "secretValue": "$WINDMILL_ADMIN_PASS", "tagIds": ["$WINDMILL_TAG"]},
-    {"secretKey": "WINDMILL_DB_PASSWORD", "secretValue": "$WINDMILL_DB_PASS", "tagIds": ["$WINDMILL_TAG"]},
-    {"secretKey": "WINDMILL_SUPERADMIN_SECRET", "secretValue": "$WINDMILL_SUPERADMIN_SECRET", "tagIds": ["$WINDMILL_TAG"]},
-    {"secretKey": "OPENMETADATA_USERNAME", "secretValue": "admin@$OM_PRINCIPAL_DOMAIN", "tagIds": ["$OPENMETADATA_TAG"]},
-    {"secretKey": "OPENMETADATA_PASSWORD", "secretValue": "$OPENMETADATA_ADMIN_PASS", "tagIds": ["$OPENMETADATA_TAG"]},
-    {"secretKey": "OPENMETADATA_DB_PASSWORD", "secretValue": "$OPENMETADATA_DB_PASS", "tagIds": ["$OPENMETADATA_TAG"]},
-    {"secretKey": "GITEA_ADMIN_USERNAME", "secretValue": "$ADMIN_USERNAME", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "GITEA_ADMIN_PASSWORD", "secretValue": "$GITEA_ADMIN_PASS", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "GITEA_USER_USERNAME", "secretValue": "$GITEA_USER_USERNAME", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "GITEA_USER_PASSWORD", "secretValue": "$GITEA_USER_PASS", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "GITEA_REPO_URL", "secretValue": "https://git.${DOMAIN}/${GITEA_REPO_OWNER:-$ADMIN_USERNAME}/${REPO_NAME:-nexus-${DOMAIN//./-}-gitea}.git", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "GITEA_DB_PASSWORD", "secretValue": "$GITEA_DB_PASS", "tagIds": ["$GITEA_TAG"]},
-    {"secretKey": "CLICKHOUSE_USERNAME", "secretValue": "nexus-clickhouse", "tagIds": ["$CLICKHOUSE_TAG"]},
-    {"secretKey": "CLICKHOUSE_PASSWORD", "secretValue": "$CLICKHOUSE_ADMIN_PASS", "tagIds": ["$CLICKHOUSE_TAG"]},
-    {"secretKey": "WIKIJS_USERNAME", "secretValue": "${USER_EMAIL:-$ADMIN_EMAIL}", "tagIds": ["$WIKIJS_TAG"]},
-    {"secretKey": "WIKIJS_PASSWORD", "secretValue": "$WIKIJS_ADMIN_PASS", "tagIds": ["$WIKIJS_TAG"]},
-    {"secretKey": "WIKIJS_DB_PASSWORD", "secretValue": "$WIKIJS_DB_PASS", "tagIds": ["$WIKIJS_TAG"]},
-    {"secretKey": "WOODPECKER_AGENT_SECRET", "secretValue": "$WOODPECKER_AGENT_SECRET", "tagIds": ["$WOODPECKER_TAG"]}$WOODPECKER_GITEA_SECRETS$SSH_KEY_SECRET
-  ]
-}
-SECRETS_EOF
-)
-                    
-                    # Write payload to temp file on server to avoid SSH/shell quoting issues
-                    echo "$SECRETS_PAYLOAD" | ssh nexus "cat > /tmp/infisical-secrets.json"
-                    SECRETS_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8070/api/v4/secrets/batch' \
-                        -H 'Authorization: Bearer $INFISICAL_TOKEN' \
-                        -H 'Content-Type: application/json' \
-                        -d @/tmp/infisical-secrets.json; rm -f /tmp/infisical-secrets.json" 2>&1 || echo "")
-                    
-                    # Check for actual success (secrets array present) and no error
-                    if echo "$SECRETS_RESULT" | grep -q '"error"'; then
-                        echo -e "${YELLOW}  ⚠ Failed to push secrets - API error${NC}"
-                        echo -e "${DIM}    Response: $(echo "$SECRETS_RESULT" | head -c 300)${NC}"
-                    elif echo "$SECRETS_RESULT" | jq -e '.secrets | length > 0' >/dev/null 2>&1; then
-                        SECRETS_COUNT=$(echo "$SECRETS_RESULT" | jq '.secrets | length' 2>/dev/null || echo "?")
-                        echo -e "${GREEN}  ✓ $SECRETS_COUNT secrets pushed to Infisical (dev environment)${NC}"
-                        if [ -n "${SSH_PRIVATE_KEY_CONTENT:-}" ]; then
-                            echo -e "${GREEN}  ✓ SSH private key stored (base64 encoded)${NC}"
-                            echo -e "${DIM}    Decode with: base64 -d <<< \"\$SSH_PRIVATE_KEY_BASE64\" > ~/.ssh/nexus_key${NC}"
-                        fi
-                    else
-                        echo -e "${YELLOW}  ⚠ Failed to push secrets - unexpected response${NC}"
-                        echo -e "${DIM}    Response: $(echo "$SECRETS_RESULT" | head -c 300)${NC}"
-                    fi
+                    # Save credentials for subsequent spin-ups
+                    echo "$INFISICAL_TOKEN" | ssh nexus "cat > /opt/docker-server/.infisical-token && chmod 600 /opt/docker-server/.infisical-token"
+                    echo "$PROJECT_ID" | ssh nexus "cat > /opt/docker-server/.infisical-project-id && chmod 600 /opt/docker-server/.infisical-project-id"
+                    echo -e "${GREEN}  ✓ Credentials saved for subsequent deployments${NC}"
                 else
                     echo -e "${YELLOW}  ⚠ Failed to create project${NC}"
                 fi
@@ -1882,6 +1695,231 @@ SECRETS_EOF
             echo -e "${YELLOW}  ⚠ Infisical already configured${NC}"
         else
             echo -e "${YELLOW}  ⚠ Infisical bootstrap failed${NC}"
+        fi
+    fi
+
+    # ==========================================================================
+    # Push secrets to Infisical (folder-based, idempotent via upsert)
+    # ==========================================================================
+    if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+        echo "  Pushing secrets to Infisical (folder-based)..."
+        INFISICAL_ENV="${INFISICAL_ENV:-dev}"
+        PUSH_DIR="/tmp/infisical-push"
+        mkdir -p "$PUSH_DIR"
+
+        # Helper: build folder creation + secrets payload JSON files
+        # Usage: build_folder "folder-name" "KEY1" "val1" "KEY2" "val2" ...
+        build_folder() {
+            local folder=$1; shift
+            # Folder creation payload
+            jq -n --arg pid "$PROJECT_ID" --arg env "$INFISICAL_ENV" --arg name "$folder" \
+                '{projectId: $pid, environment: $env, name: $name, path: "/"}' \
+                > "$PUSH_DIR/f-$folder.json"
+            # Secrets payload with upsert
+            local jq_args=("--arg" "pid" "$PROJECT_ID" "--arg" "env" "$INFISICAL_ENV")
+            local jq_filter='{projectId: $pid, environment: $env, secretPath: ("/'"$folder"'"), mode: "upsert", secrets: ['
+            local i=0
+            while [ $# -ge 2 ]; do
+                jq_args+=("--arg" "k$i" "$1" "--arg" "v$i" "$2")
+                [ $i -gt 0 ] && jq_filter+=","
+                jq_filter+='{secretKey: $k'"$i"', secretValue: $v'"$i"'}'
+                shift 2; i=$((i+1))
+            done
+            jq_filter+=']}'
+            jq -n "${jq_args[@]}" "$jq_filter" > "$PUSH_DIR/s-$folder.json"
+        }
+
+        # Build payloads for each folder
+        build_folder "config" \
+            "DOMAIN" "$DOMAIN" \
+            "ADMIN_EMAIL" "$ADMIN_EMAIL" \
+            "ADMIN_USERNAME" "$ADMIN_USERNAME"
+
+        build_folder "hetzner-s3" \
+            "HETZNER_S3_ENDPOINT" "https://$HETZNER_S3_SERVER" \
+            "HETZNER_S3_REGION" "$HETZNER_S3_REGION" \
+            "HETZNER_S3_ACCESS_KEY" "$HETZNER_S3_ACCESS_KEY" \
+            "HETZNER_S3_SECRET_KEY" "$HETZNER_S3_SECRET_KEY" \
+            "HETZNER_S3_BUCKET" "$HETZNER_S3_BUCKET_GENERAL"
+
+        build_folder "external-s3" \
+            "EXTERNAL_S3_ENDPOINT" "$EXTERNAL_S3_ENDPOINT" \
+            "EXTERNAL_S3_REGION" "$EXTERNAL_S3_REGION" \
+            "EXTERNAL_S3_ACCESS_KEY" "$EXTERNAL_S3_ACCESS_KEY" \
+            "EXTERNAL_S3_SECRET_KEY" "$EXTERNAL_S3_SECRET_KEY" \
+            "EXTERNAL_S3_BUCKET" "$EXTERNAL_S3_BUCKET" \
+            "EXTERNAL_S3_LABEL" "$EXTERNAL_S3_LABEL"
+
+        build_folder "infisical" \
+            "INFISICAL_USERNAME" "$ADMIN_EMAIL" \
+            "INFISICAL_PASSWORD" "$INFISICAL_PASS"
+
+        build_folder "portainer" \
+            "PORTAINER_USERNAME" "$ADMIN_USERNAME" \
+            "PORTAINER_PASSWORD" "$PORTAINER_PASS"
+
+        build_folder "uptime-kuma" \
+            "UPTIME_KUMA_USERNAME" "$ADMIN_USERNAME" \
+            "UPTIME_KUMA_PASSWORD" "$KUMA_PASS"
+
+        build_folder "grafana" \
+            "GRAFANA_USERNAME" "$ADMIN_USERNAME" \
+            "GRAFANA_PASSWORD" "$GRAFANA_PASS"
+
+        build_folder "n8n" \
+            "N8N_USERNAME" "$ADMIN_EMAIL" \
+            "N8N_PASSWORD" "$N8N_PASS"
+
+        build_folder "kestra" \
+            "KESTRA_USERNAME" "$ADMIN_EMAIL" \
+            "KESTRA_PASSWORD" "$KESTRA_PASS"
+
+        build_folder "metabase" \
+            "METABASE_USERNAME" "$ADMIN_EMAIL" \
+            "METABASE_PASSWORD" "$METABASE_PASS"
+
+        build_folder "cloudbeaver" \
+            "CLOUDBEAVER_USERNAME" "$ADMIN_USERNAME" \
+            "CLOUDBEAVER_PASSWORD" "$CLOUDBEAVER_PASS"
+
+        build_folder "mage" \
+            "MAGE_USERNAME" "${USER_EMAIL:-$ADMIN_EMAIL}" \
+            "MAGE_PASSWORD" "$MAGE_PASS"
+
+        build_folder "minio" \
+            "MINIO_ROOT_USER" "nexus-minio" \
+            "MINIO_ROOT_PASSWORD" "$MINIO_ROOT_PASS"
+
+        build_folder "nocodb" \
+            "NOCODB_USERNAME" "$ADMIN_EMAIL" \
+            "NOCODB_PASSWORD" "$NOCODB_ADMIN_PASS" \
+            "NOCODB_DB_PASSWORD" "$NOCODB_DB_PASS" \
+            "NOCODB_JWT_SECRET" "$NOCODB_JWT_SECRET"
+
+        build_folder "dify" \
+            "DIFY_USERNAME" "$ADMIN_EMAIL" \
+            "DIFY_PASSWORD" "$DIFY_ADMIN_PASS" \
+            "DIFY_DB_PASSWORD" "$DIFY_DB_PASS" \
+            "DIFY_SECRET_KEY" "$DIFY_SECRET_KEY" \
+            "DIFY_REDIS_PASSWORD" "$DIFY_REDIS_PASS" \
+            "DIFY_WEAVIATE_API_KEY" "$DIFY_WEAVIATE_API_KEY" \
+            "DIFY_SANDBOX_API_KEY" "$DIFY_SANDBOX_API_KEY" \
+            "DIFY_PLUGIN_DAEMON_KEY" "$DIFY_PLUGIN_DAEMON_KEY" \
+            "DIFY_PLUGIN_INNER_API_KEY" "$DIFY_PLUGIN_INNER_API_KEY"
+
+        build_folder "rustfs" \
+            "RUSTFS_ACCESS_KEY" "nexus-rustfs" \
+            "RUSTFS_SECRET_KEY" "$RUSTFS_ROOT_PASS"
+
+        build_folder "seaweedfs" \
+            "SEAWEEDFS_ACCESS_KEY" "nexus-seaweedfs" \
+            "SEAWEEDFS_SECRET_KEY" "$SEAWEEDFS_ADMIN_PASS"
+
+        build_folder "garage" \
+            "GARAGE_ADMIN_TOKEN" "$GARAGE_ADMIN_TOKEN"
+
+        build_folder "lakefs" \
+            "LAKEFS_DB_PASSWORD" "$LAKEFS_DB_PASS" \
+            "LAKEFS_ACCESS_KEY_ID" "$LAKEFS_ADMIN_ACCESS_KEY" \
+            "LAKEFS_SECRET_ACCESS_KEY" "$LAKEFS_ADMIN_SECRET_KEY"
+
+        build_folder "filestash" \
+            "FILESTASH_S3_BUCKET" "$HETZNER_S3_BUCKET_GENERAL" \
+            "FILESTASH_ADMIN_PASSWORD" "$FILESTASH_ADMIN_PASSWORD"
+
+        build_folder "redpanda" \
+            "REDPANDA_SASL_USERNAME" "nexus-redpanda" \
+            "REDPANDA_SASL_PASSWORD" "$REDPANDA_ADMIN_PASS"
+
+        build_folder "meltano" \
+            "MELTANO_DB_PASSWORD" "$MELTANO_DB_PASS"
+
+        build_folder "postgres" \
+            "POSTGRES_USERNAME" "nexus-postgres" \
+            "POSTGRES_PASSWORD" "$POSTGRES_PASS"
+
+        build_folder "pgadmin" \
+            "PGADMIN_USERNAME" "$ADMIN_EMAIL" \
+            "PGADMIN_PASSWORD" "$PGADMIN_PASS"
+
+        build_folder "prefect" \
+            "PREFECT_DB_PASSWORD" "$PREFECT_DB_PASS"
+
+        build_folder "windmill" \
+            "WINDMILL_ADMIN_EMAIL" "$ADMIN_EMAIL" \
+            "WINDMILL_ADMIN_PASSWORD" "$WINDMILL_ADMIN_PASS" \
+            "WINDMILL_DB_PASSWORD" "$WINDMILL_DB_PASS" \
+            "WINDMILL_SUPERADMIN_SECRET" "$WINDMILL_SUPERADMIN_SECRET"
+
+        build_folder "openmetadata" \
+            "OPENMETADATA_USERNAME" "admin@$OM_PRINCIPAL_DOMAIN" \
+            "OPENMETADATA_PASSWORD" "$OPENMETADATA_ADMIN_PASS" \
+            "OPENMETADATA_DB_PASSWORD" "$OPENMETADATA_DB_PASS"
+
+        build_folder "gitea" \
+            "GITEA_ADMIN_USERNAME" "$ADMIN_USERNAME" \
+            "GITEA_ADMIN_PASSWORD" "$GITEA_ADMIN_PASS" \
+            "GITEA_USER_USERNAME" "$GITEA_USER_USERNAME" \
+            "GITEA_USER_PASSWORD" "$GITEA_USER_PASS" \
+            "GITEA_REPO_URL" "https://git.${DOMAIN}/${GITEA_REPO_OWNER:-$ADMIN_USERNAME}/${REPO_NAME:-nexus-${DOMAIN//./-}-gitea}.git" \
+            "GITEA_DB_PASSWORD" "$GITEA_DB_PASS"
+
+        build_folder "clickhouse" \
+            "CLICKHOUSE_USERNAME" "nexus-clickhouse" \
+            "CLICKHOUSE_PASSWORD" "$CLICKHOUSE_ADMIN_PASS"
+
+        build_folder "wikijs" \
+            "WIKIJS_USERNAME" "${USER_EMAIL:-$ADMIN_EMAIL}" \
+            "WIKIJS_PASSWORD" "$WIKIJS_ADMIN_PASS" \
+            "WIKIJS_DB_PASSWORD" "$WIKIJS_DB_PASS"
+
+        # Woodpecker (with optional Gitea OAuth secrets)
+        WOODPECKER_ARGS=("WOODPECKER_AGENT_SECRET" "$WOODPECKER_AGENT_SECRET")
+        [ -n "${WOODPECKER_GITEA_CLIENT:-}" ] && WOODPECKER_ARGS+=("WOODPECKER_GITEA_CLIENT" "$WOODPECKER_GITEA_CLIENT")
+        [ -n "${WOODPECKER_GITEA_SECRET:-}" ] && WOODPECKER_ARGS+=("WOODPECKER_GITEA_SECRET" "$WOODPECKER_GITEA_SECRET")
+        build_folder "woodpecker" "${WOODPECKER_ARGS[@]}"
+
+        # SSH (optional)
+        if [ -n "${SSH_PRIVATE_KEY_CONTENT:-}" ]; then
+            SSH_KEY_BASE64=$(echo "$SSH_PRIVATE_KEY_CONTENT" | base64 | tr -d '\n')
+            build_folder "ssh" "SSH_PRIVATE_KEY_BASE64" "$SSH_KEY_BASE64"
+        fi
+
+        # Upload all payloads to server and process
+        rsync -aq "$PUSH_DIR/" "nexus:/tmp/infisical-push/"
+
+        PUSH_RESULT=$(ssh nexus "
+            TOKEN=\$(cat /opt/docker-server/.infisical-token 2>/dev/null || echo '$INFISICAL_TOKEN')
+            OK=0; FAIL=0
+            for f in /tmp/infisical-push/f-*.json; do
+                curl -s -X POST 'http://localhost:8070/api/v2/folders' \
+                    -H \"Authorization: Bearer \$TOKEN\" \
+                    -H 'Content-Type: application/json' \
+                    -d @\$f >/dev/null 2>&1 || true
+            done
+            for f in /tmp/infisical-push/s-*.json; do
+                RESULT=\$(curl -s -X PATCH 'http://localhost:8070/api/v4/secrets/batch' \
+                    -H \"Authorization: Bearer \$TOKEN\" \
+                    -H 'Content-Type: application/json' \
+                    -d @\$f 2>&1)
+                if echo \"\$RESULT\" | grep -q '\"error\"'; then
+                    FAIL=\$((FAIL+1))
+                else
+                    OK=\$((OK+1))
+                fi
+            done
+            rm -rf /tmp/infisical-push
+            echo \"\$OK:\$FAIL\"
+        " 2>&1 || echo "0:0")
+
+        rm -rf "$PUSH_DIR"
+
+        PUSH_OK=$(echo "$PUSH_RESULT" | tail -1 | cut -d: -f1)
+        PUSH_FAIL=$(echo "$PUSH_RESULT" | tail -1 | cut -d: -f2)
+        if [ "$PUSH_FAIL" = "0" ] || [ -z "$PUSH_FAIL" ]; then
+            echo -e "${GREEN}  ✓ Secrets pushed to $PUSH_OK folders in Infisical${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ Pushed to $PUSH_OK folders, $PUSH_FAIL failed${NC}"
         fi
     fi
     fi  # End of INFISICAL_READY check
