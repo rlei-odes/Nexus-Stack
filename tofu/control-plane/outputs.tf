@@ -66,3 +66,12 @@ output "persistent_volume_name" {
   description = "Hetzner Cloud Volume name"
   value       = hcloud_volume.persistent.name
 }
+
+# -----------------------------------------------------------------------------
+# KV Namespace
+# -----------------------------------------------------------------------------
+
+output "kv_namespace_id" {
+  description = "Cloudflare KV namespace ID for persistent config"
+  value       = cloudflare_workers_kv_namespace.config.id
+}
