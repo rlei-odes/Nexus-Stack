@@ -185,6 +185,13 @@ jobs:
             SECRETS=$(ssh nexus "curl -s '${API}/api/v3/secrets/raw?environment=${ENV}&projectId=${PROJECT_ID}&secretPath=/${FOLDER}' \
                 -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" 2>/dev/null)
 
+            # Debug: show secret count (not values)
+            SECRET_COUNT=$(echo "$SECRETS" | jq '.secrets | length' 2>/dev/null || echo "parse-error")
+            echo "    Infisical returned: $SECRET_COUNT secrets"
+            if [ "$SECRET_COUNT" = "parse-error" ] || [ "$SECRET_COUNT" = "0" ] || [ "$SECRET_COUNT" = "null" ]; then
+              echo "    Response preview: $(echo "$SECRETS" | head -c 200)"
+            fi
+
             # Push each secret to Databricks
             echo "$SECRETS" | jq -c '.secrets[]' 2>/dev/null | while read -r SECRET; do
               KEY=$(echo "$SECRET" | jq -r '.secretKey')
