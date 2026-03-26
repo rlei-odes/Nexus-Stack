@@ -63,20 +63,23 @@ jobs:
 
       - name: Initialize OpenTofu and setup SSH
         run: |
-          cd tofu/control-plane
-          source ../.r2-credentials
+          source tofu/.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+
+          # Init control-plane state (for KV namespace ID)
+          cd tofu/control-plane
           tofu init -backend-config=../backend.hcl
-
-          # Get SSH service token for headless auth
-          SSH_TOKEN_JSON=$(tofu output -json ssh_service_token 2>/dev/null || echo "{}")
-          CF_ACCESS_CLIENT_ID=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_id // empty')
-          CF_ACCESS_CLIENT_SECRET=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_secret // empty')
-
-          # Get KV namespace ID for reading Databricks credentials
           KV_NAMESPACE_ID=$(tofu output -raw kv_namespace_id 2>/dev/null || echo "")
           echo "KV_NAMESPACE_ID=$KV_NAMESPACE_ID" >> "$GITHUB_ENV"
+
+          # Init stack state (for SSH service token)
+          cd ../stack
+          tofu init -backend-config=../backend.hcl
+          SSH_TOKEN_JSON=$(tofu output -json ssh_service_token 2>/dev/null || echo "{}")
+          CF_ACCESS_CLIENT_ID=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_id // empty' 2>/dev/null || echo "")
+          CF_ACCESS_CLIENT_SECRET=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_secret // empty' 2>/dev/null || echo "")
+          cd ../..
 
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -139,7 +142,6 @@ jobs:
 
       - name: Sync secrets from Infisical to Databricks
         run: |
-          # shellcheck disable=SC2029
           echo "Reading secrets from Infisical on server..."
 
           # Read Infisical credentials from server
@@ -155,6 +157,7 @@ jobs:
           API="http://localhost:8070"
 
           # Get all folders from Infisical (variables expanded locally, sent via SSH)
+          # shellcheck disable=SC2029
           FOLDERS=$(ssh nexus "curl -s '${API}/api/v2/folders?environment=${ENV}&projectId=${PROJECT_ID}&path=/' \
               -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" | jq -r '.folders[].name // empty' 2>/dev/null)
 
@@ -178,6 +181,7 @@ jobs:
               -d "{\"scope\": \"${FOLDER}\"}" >/dev/null 2>&1 || true
 
             # Read secrets from Infisical via SSH (double quotes for local expansion)
+            # shellcheck disable=SC2029
             SECRETS=$(ssh nexus "curl -s '${API}/api/v3/secrets/raw?environment=${ENV}&projectId=${PROJECT_ID}&secretPath=/${FOLDER}' \
                 -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" 2>/dev/null)
 

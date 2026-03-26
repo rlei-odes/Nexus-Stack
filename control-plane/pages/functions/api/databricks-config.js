@@ -69,6 +69,33 @@ export async function onRequestPost(context) {
       });
     }
 
+    // Test connection before saving
+    try {
+      const testRes = await fetch(`${host}/api/2.0/clusters/list`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (testRes.status === 401) {
+        return new Response(JSON.stringify({ success: false, error: 'Invalid or expired token (401)' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (testRes.status === 403) {
+        // 403 = token valid but lacks permissions — still save since token works
+        // (user may have restricted RBAC but secrets API could still work)
+      } else if (!testRes.ok) {
+        return new Response(JSON.stringify({ success: false, error: `Connection failed (HTTP ${testRes.status})` }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: `Cannot reach ${host} — check the URL` }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     await env.NEXUS_KV.put('databricks_host', host);
     await env.NEXUS_KV.put('databricks_token', token);
 
@@ -77,7 +104,7 @@ export async function onRequestPost(context) {
       host,
     });
 
-    return new Response(JSON.stringify({ success: true, message: 'Databricks configuration saved' }), {
+    return new Response(JSON.stringify({ success: true, message: 'Connection verified and configuration saved' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

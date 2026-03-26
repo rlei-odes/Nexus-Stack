@@ -569,10 +569,10 @@ jobs:
               echo "✅ $BUCKET already exists in Hetzner"
             else
               echo "🪣 Creating $BUCKET (endpoint: $HZ_ENDPOINT)..."
+              CREATE_RC=0
               CREATE_OUTPUT=$(AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
-                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>&1)
-              CREATE_RC=$?
-              if [ $CREATE_RC -eq 0 ]; then
+                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>&1) || CREATE_RC=$?
+              if [ "$CREATE_RC" -eq 0 ]; then
                 echo "✅ $BUCKET created"
               elif echo "$CREATE_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|BucketAlreadyExists"; then
                 echo "✅ $BUCKET already exists"
