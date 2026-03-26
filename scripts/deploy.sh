@@ -1891,10 +1891,11 @@ EOF
         fi
 
         # Upload all payloads to server and process
-        rsync -aq "$PUSH_DIR/" "nexus:/tmp/infisical-push/"
+        rsync -aq --delete "$PUSH_DIR/" "nexus:/tmp/infisical-push/"
 
         PUSH_RESULT=$(ssh nexus "
             TOKEN=\$(cat /opt/docker-server/.infisical-token 2>/dev/null || echo '$INFISICAL_TOKEN')
+            if [ -z \"\$TOKEN\" ]; then echo '0:0'; exit 0; fi
             OK=0; FAIL=0
             for f in /tmp/infisical-push/f-*.json; do
                 curl -s -X POST 'http://localhost:8070/api/v2/folders' \
