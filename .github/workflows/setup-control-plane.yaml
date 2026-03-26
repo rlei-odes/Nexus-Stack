@@ -536,17 +536,16 @@ jobs:
             else
               echo "🪣 Creating $BUCKET (endpoint: $HZ_ENDPOINT)..."
               CREATE_OUTPUT=$(AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
-                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>&1) && {
+                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>&1)
+              CREATE_RC=$?
+              if [ $CREATE_RC -eq 0 ]; then
                 echo "✅ $BUCKET created"
-              } || {
+              elif echo "$CREATE_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|BucketAlreadyExists"; then
+                echo "✅ $BUCKET already exists"
+              else
                 echo "⚠️  Failed to create $BUCKET: $CREATE_OUTPUT"
-                # If bucket already exists (BucketAlreadyOwnedByYou), that's OK
-                if echo "$CREATE_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|BucketAlreadyExists"; then
-                  echo "  (bucket already exists - continuing)"
-                else
-                  continue
-                fi
-              }
+                continue
+              fi
             fi
 
             # Import into state so tofu apply doesn't try to create (and fail on ACL)
