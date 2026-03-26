@@ -1991,7 +1991,7 @@
             for (let i = 0; i < 30; i++) {
                 await new Promise(r => setTimeout(r, 10000));
                 const s = await fetchSyncStatus();
-                if (s === 'success' || s === 'failure') {
+                if (s !== 'queued' && s !== 'in_progress') {
                     btn.disabled = false;
                     return;
                 }

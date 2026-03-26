@@ -30,8 +30,8 @@ export async function onRequestGet(context) {
     });
 
     if (!res.ok) {
-      return new Response(JSON.stringify({ success: true, status: 'unknown', message: 'No sync runs found' }), {
-        status: 200, headers: { 'Content-Type': 'application/json' },
+      return new Response(JSON.stringify({ success: false, error: `GitHub API returned ${res.status}` }), {
+        status: 502, headers: { 'Content-Type': 'application/json' },
       });
     }
 

@@ -74,13 +74,16 @@ export async function onRequestPost(context) {
       const testRes = await fetch(`${host}/api/2.0/clusters/list`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
-      if (testRes.status === 401 || testRes.status === 403) {
-        return new Response(JSON.stringify({ success: false, error: 'Invalid token — authentication failed' }), {
+      if (testRes.status === 401) {
+        return new Response(JSON.stringify({ success: false, error: 'Invalid or expired token (401)' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      if (!testRes.ok && testRes.status !== 404) {
+      if (testRes.status === 403) {
+        // 403 = token valid but lacks permissions — still save since token works
+        // (user may have restricted RBAC but secrets API could still work)
+      } else if (!testRes.ok) {
         return new Response(JSON.stringify({ success: false, error: `Connection failed (HTTP ${testRes.status})` }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
