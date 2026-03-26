@@ -95,6 +95,17 @@ resource "cloudflare_workers_cron_trigger" "scheduled_teardown" {
 }
 
 # -----------------------------------------------------------------------------
+# Cloudflare KV Namespace (persistent config)
+# -----------------------------------------------------------------------------
+# Used for Databricks integration credentials and other config.
+# Protected from destroy-all via state rm + re-import on next setup.
+
+resource "cloudflare_workers_kv_namespace" "config" {
+  account_id = var.cloudflare_account_id
+  title      = "${local.resource_prefix}-config"
+}
+
+# -----------------------------------------------------------------------------
 # Cloudflare Pages Project (Frontend + API Functions)
 # -----------------------------------------------------------------------------
 
@@ -125,7 +136,11 @@ resource "cloudflare_pages_project" "control_plane" {
       d1_databases = {
         NEXUS_DB = cloudflare_d1_database.nexus.id
       }
-      
+
+      kv_namespaces = {
+        NEXUS_KV = cloudflare_workers_kv_namespace.config.id
+      }
+
       # Note: GITHUB_TOKEN, RESEND_API_KEY, and CREDENTIALS_JSON are set via wrangler secret
       # (secrets block in Terraform isn't supported for Pages yet)
     }
@@ -144,6 +159,10 @@ resource "cloudflare_pages_project" "control_plane" {
       
       d1_databases = {
         NEXUS_DB = cloudflare_d1_database.nexus.id
+      }
+
+      kv_namespaces = {
+        NEXUS_KV = cloudflare_workers_kv_namespace.config.id
       }
     }
   }
