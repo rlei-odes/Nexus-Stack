@@ -534,14 +534,19 @@ jobs:
                aws s3api head-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>/dev/null; then
               echo "✅ $BUCKET already exists in Hetzner"
             else
-              echo "🪣 Creating $BUCKET..."
-              if AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
-                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>/dev/null; then
+              echo "🪣 Creating $BUCKET (endpoint: $HZ_ENDPOINT)..."
+              CREATE_OUTPUT=$(AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
+                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>&1) && {
                 echo "✅ $BUCKET created"
-              else
-                echo "⚠️  Failed to create $BUCKET - tofu apply will retry"
-                continue
-              fi
+              } || {
+                echo "⚠️  Failed to create $BUCKET: $CREATE_OUTPUT"
+                # If bucket already exists (BucketAlreadyOwnedByYou), that's OK
+                if echo "$CREATE_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|BucketAlreadyExists"; then
+                  echo "  (bucket already exists - continuing)"
+                else
+                  continue
+                fi
+              }
             fi
 
             # Import into state so tofu apply doesn't try to create (and fail on ACL)
