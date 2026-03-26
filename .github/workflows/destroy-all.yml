@@ -50,10 +50,10 @@ jobs:
           echo "⚠️  DESTRUCTION CONFIRMED - This will delete ALL infrastructure and state!"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install OpenTofu
-        uses: opentofu/setup-opentofu@v1
+        uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: 1.10.0
 
