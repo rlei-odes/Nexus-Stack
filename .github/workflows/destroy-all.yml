@@ -197,6 +197,10 @@ jobs:
           echo "💾 Protecting persistent volume from destroy..."
           tofu state rm hcloud_volume.persistent 2>/dev/null || true
 
+          # Protect KV namespace from destruction (keeps Databricks config etc.)
+          echo "💾 Protecting KV namespace from destroy..."
+          tofu state rm cloudflare_workers_kv_namespace.config 2>/dev/null || true
+
           echo "🗑️  Destroying Control Plane (Pages, Worker, DNS)..."
           if ! tofu destroy -var-file=config.tfvars -auto-approve; then
             echo "❌ ERROR: Failed to destroy Control Plane infrastructure"

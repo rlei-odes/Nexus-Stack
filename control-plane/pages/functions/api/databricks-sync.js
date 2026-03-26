@@ -2,9 +2,9 @@
  * Trigger Databricks Secret Sync
  * POST /api/databricks-sync
  *
- * Reads Databricks credentials from KV, triggers the GitHub Actions
- * databricks-sync.yml workflow which reads secrets from Infisical
- * and pushes them to Databricks Secret Scopes.
+ * Validates that Databricks credentials exist in KV, then triggers the
+ * GitHub Actions databricks-sync.yml workflow. The workflow reads
+ * credentials directly from KV via Cloudflare API (no secrets in inputs).
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
@@ -31,9 +31,9 @@ export async function onRequestPost(context) {
     }
 
     const host = await env.NEXUS_KV.get('databricks_host');
-    const token = await env.NEXUS_KV.get('databricks_token');
+    const hasToken = !!(await env.NEXUS_KV.get('databricks_token'));
 
-    if (!host || !token) {
+    if (!host || !hasToken) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Databricks not configured. Save host and token first.',
@@ -48,7 +48,7 @@ export async function onRequestPost(context) {
       host,
     });
 
-    // Trigger the sync workflow with credentials as inputs
+    // Trigger workflow without secrets — workflow reads from KV via Cloudflare API
     const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/databricks-sync.yml/dispatches`;
 
     const response = await fetch(url, {
@@ -59,13 +59,7 @@ export async function onRequestPost(context) {
         'User-Agent': 'Nexus-Stack-Control-Plane',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        ref: 'main',
-        inputs: {
-          databricks_host: host,
-          databricks_token: token,
-        },
-      }),
+      body: JSON.stringify({ ref: 'main' }),
     });
 
     if (response.status === 204) {

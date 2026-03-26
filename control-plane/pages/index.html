@@ -1892,7 +1892,14 @@
                         document.getElementById('databricks-status').style.color = '#00ff88';
                     }
                 }
-            } catch {}
+            } catch (error) {
+                console.error('Failed to load Databricks configuration:', error);
+                const statusEl = document.getElementById('databricks-status');
+                if (statusEl) {
+                    statusEl.textContent = 'Failed to load configuration';
+                    statusEl.style.color = '#ff6060';
+                }
+            }
         }
 
         async function saveDatabricksConfig() {

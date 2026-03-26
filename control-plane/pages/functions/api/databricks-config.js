@@ -3,7 +3,7 @@
  * GET /api/databricks-config - Get current configuration (host only, never return token)
  * POST /api/databricks-config - Save host + token to Cloudflare KV
  *
- * Credentials persist in KV (survives destroy-all, unlike D1)
+ * Credentials persist in KV across normal stack teardown (unlike D1)
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
@@ -52,10 +52,18 @@ export async function onRequestPost(context) {
     }
 
     const body = await request.json();
-    const { host, token } = body;
+    const host = typeof body.host === 'string' ? body.host.trim().replace(/\/+$/, '') : '';
+    const token = typeof body.token === 'string' ? body.token.trim() : '';
 
     if (!host || !token) {
       return new Response(JSON.stringify({ success: false, error: 'Both host and token are required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!host.startsWith('https://')) {
+      return new Response(JSON.stringify({ success: false, error: 'Host must start with https://' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });

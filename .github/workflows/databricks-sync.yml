@@ -2,15 +2,6 @@ name: Sync Secrets to Databricks
 
 on:
   workflow_dispatch:
-    inputs:
-      databricks_host:
-        description: 'Databricks workspace URL'
-        required: true
-        type: string
-      databricks_token:
-        description: 'Databricks personal access token'
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -25,30 +16,28 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      DATABRICKS_HOST: ${{ inputs.databricks_host }}
-      DATABRICKS_TOKEN: ${{ inputs.databricks_token }}
+      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_domain: ${{ secrets.DOMAIN }}
+      TF_VAR_hetzner_object_storage_access_key: ${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}
+      TF_VAR_hetzner_object_storage_secret_key: ${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}
+      TF_VAR_external_s3_endpoint: ${{ secrets.EXTERNAL_S3_ENDPOINT }}
+      TF_VAR_external_s3_region: ${{ secrets.EXTERNAL_S3_REGION || 'auto' }}
+      TF_VAR_external_s3_access_key: ${{ secrets.EXTERNAL_S3_ACCESS_KEY }}
+      TF_VAR_external_s3_secret_key: ${{ secrets.EXTERNAL_S3_SECRET_KEY }}
+      TF_VAR_external_s3_bucket: ${{ secrets.EXTERNAL_S3_BUCKET }}
+      TF_VAR_external_s3_label: ${{ secrets.EXTERNAL_S3_LABEL }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup SSH access
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-          # Configure SSH to use Cloudflare Tunnel
-          DOMAIN="${{ secrets.DOMAIN }}"
-          cat >> ~/.ssh/config << EOF
-          Host nexus
-            HostName $DOMAIN
-            User root
-            IdentityFile ~/.ssh/id_ed25519
-            StrictHostKeyChecking no
-            ProxyCommand cloudflared access ssh --hostname ssh.${DOMAIN}
-          EOF
-          sed -i 's/^          //' ~/.ssh/config
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: 1.10.0
 
       - name: Install cloudflared
         run: |
@@ -56,10 +45,100 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
+      - name: Create R2 credentials from secrets
+        run: |
+          mkdir -p tofu
+          BUCKET_NAME=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')-terraform-state
+          cat > tofu/.r2-credentials << EOF
+          R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}"
+          R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}"
+          EOF
+          cat > tofu/backend.hcl << EOF
+          endpoints = {
+            s3 = "https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          }
+          bucket = "${BUCKET_NAME}"
+          EOF
+          sed -i 's/^          //' tofu/.r2-credentials tofu/backend.hcl
+
+      - name: Initialize OpenTofu and setup SSH
+        run: |
+          cd tofu/control-plane
+          source ../.r2-credentials
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+          tofu init -backend-config=../backend.hcl
+
+          # Get SSH service token for headless auth
+          SSH_TOKEN_JSON=$(tofu output -json ssh_service_token 2>/dev/null || echo "{}")
+          CF_ACCESS_CLIENT_ID=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_id // empty')
+          CF_ACCESS_CLIENT_SECRET=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_secret // empty')
+
+          # Get KV namespace ID for reading Databricks credentials
+          KV_NAMESPACE_ID=$(tofu output -raw kv_namespace_id 2>/dev/null || echo "")
+          echo "KV_NAMESPACE_ID=$KV_NAMESPACE_ID" >> "$GITHUB_ENV"
+
+          # Setup SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          # Configure SSH with Cloudflare service token
+          DOMAIN="${{ secrets.DOMAIN }}"
+          SSH_HOST="ssh.${DOMAIN}"
+          if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
+            cat >> ~/.ssh/config << SSHEOF
+          Host nexus
+            HostName ${SSH_HOST}
+            User root
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+            ProxyCommand bash -c 'TUNNEL_SERVICE_TOKEN_ID=${CF_ACCESS_CLIENT_ID} TUNNEL_SERVICE_TOKEN_SECRET=${CF_ACCESS_CLIENT_SECRET} cloudflared access ssh --hostname %h'
+          SSHEOF
+          else
+            cat >> ~/.ssh/config << SSHEOF
+          Host nexus
+            HostName ${SSH_HOST}
+            User root
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+            ProxyCommand cloudflared access ssh --hostname %h
+          SSHEOF
+          fi
+          sed -i 's/^          //' ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Read Databricks credentials from KV
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$KV_NAMESPACE_ID" ]; then
+            echo "KV namespace not found in Terraform output"
+            exit 1
+          fi
+
+          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values"
+
+          DATABRICKS_HOST=$(curl -sf "${API}/databricks_host" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" 2>/dev/null || echo "")
+          DATABRICKS_TOKEN=$(curl -sf "${API}/databricks_token" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" 2>/dev/null || echo "")
+
+          if [ -z "$DATABRICKS_HOST" ] || [ -z "$DATABRICKS_TOKEN" ]; then
+            echo "Databricks credentials not found in KV. Configure them in the Control Panel first."
+            exit 1
+          fi
+
+          echo "::add-mask::$DATABRICKS_TOKEN"
+          echo "DATABRICKS_HOST=$DATABRICKS_HOST" >> "$GITHUB_ENV"
+          echo "DATABRICKS_TOKEN=$DATABRICKS_TOKEN" >> "$GITHUB_ENV"
+          echo "Databricks credentials loaded from KV"
+
       - name: Sync secrets from Infisical to Databricks
         run: |
-          echo "::add-mask::$DATABRICKS_TOKEN"
-
           echo "Reading secrets from Infisical on server..."
 
           # Read Infisical credentials from server
@@ -74,8 +153,7 @@ jobs:
           ENV="${INFISICAL_ENV:-dev}"
           API="http://localhost:8070"
 
-          # Get all folders from Infisical
-          # shellcheck disable=SC2029
+          # Get all folders from Infisical (variables expanded locally, sent via SSH)
           FOLDERS=$(ssh nexus "curl -s '${API}/api/v2/folders?environment=${ENV}&projectId=${PROJECT_ID}&path=/' \
               -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" | jq -r '.folders[].name // empty' 2>/dev/null)
 
@@ -84,8 +162,10 @@ jobs:
             exit 1
           fi
 
+          SYNC_OK=0
+          SYNC_FAIL=0
+
           for FOLDER in $FOLDERS; do
-            # Skip the databricks folder itself
             [ "$FOLDER" = "databricks" ] && continue
 
             echo "  Syncing folder: $FOLDER"
@@ -94,10 +174,9 @@ jobs:
             curl -s -X POST "${DATABRICKS_HOST}/api/2.0/secrets/scopes/create" \
               -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "{\"scope\": \"$FOLDER\"}" >/dev/null 2>&1 || true
+              -d "{\"scope\": \"${FOLDER}\"}" >/dev/null 2>&1 || true
 
-            # Read secrets from Infisical via SSH
-            # shellcheck disable=SC2029
+            # Read secrets from Infisical via SSH (double quotes for local expansion)
             SECRETS=$(ssh nexus "curl -s '${API}/api/v3/secrets/raw?environment=${ENV}&projectId=${PROJECT_ID}&secretPath=/${FOLDER}' \
                 -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" 2>/dev/null)
 
@@ -109,15 +188,20 @@ jobs:
               RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DATABRICKS_HOST}/api/2.0/secrets/put" \
                 -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
                 -H "Content-Type: application/json" \
-                -d "{\"scope\":\"$FOLDER\",\"key\":\"$KEY\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
+                -d "{\"scope\":\"${FOLDER}\",\"key\":\"${KEY}\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
 
               if [ "$RESULT" = "200" ]; then
-                echo "    $KEY -> OK"
+                echo "    ${KEY} -> OK"
+                SYNC_OK=$((SYNC_OK+1))
               else
-                echo "    $KEY -> FAILED ($RESULT)"
+                echo "    ${KEY} -> FAILED (${RESULT})"
+                SYNC_FAIL=$((SYNC_FAIL+1))
               fi
             done
           done
 
           echo ""
-          echo "Databricks sync complete"
+          echo "Databricks sync complete (${SYNC_OK} OK, ${SYNC_FAIL} failed)"
+          if [ "$SYNC_FAIL" -gt 0 ] 2>/dev/null; then
+            exit 1
+          fi

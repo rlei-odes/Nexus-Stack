@@ -95,10 +95,10 @@ resource "cloudflare_workers_cron_trigger" "scheduled_teardown" {
 }
 
 # -----------------------------------------------------------------------------
-# Cloudflare KV Namespace (for persistent config that survives destroy-all)
+# Cloudflare KV Namespace (persistent config)
 # -----------------------------------------------------------------------------
-# Used for Databricks integration credentials and other config that must
-# persist across full infrastructure destroy/recreate cycles.
+# Used for Databricks integration credentials and other config.
+# Protected from destroy-all via state rm + re-import on next setup.
 
 resource "cloudflare_workers_kv_namespace" "config" {
   account_id = var.cloudflare_account_id
