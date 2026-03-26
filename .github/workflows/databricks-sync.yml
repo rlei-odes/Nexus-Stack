@@ -139,6 +139,7 @@ jobs:
 
       - name: Sync secrets from Infisical to Databricks
         run: |
+          # shellcheck disable=SC2029
           echo "Reading secrets from Infisical on server..."
 
           # Read Infisical credentials from server
