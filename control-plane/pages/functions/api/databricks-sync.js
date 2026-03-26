@@ -1,6 +1,7 @@
 /**
- * Trigger Databricks Secret Sync
- * POST /api/databricks-sync
+ * Databricks Secret Sync
+ * GET  /api/databricks-sync - Get latest sync workflow status
+ * POST /api/databricks-sync - Trigger sync workflow
  *
  * Validates that Databricks credentials exist in KV, then triggers the
  * GitHub Actions databricks-sync.yml workflow. The workflow reads
@@ -8,6 +9,57 @@
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
+
+export async function onRequestGet(context) {
+  const { env } = context;
+
+  if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
+    return new Response(JSON.stringify({ success: false, error: 'Missing env vars' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/databricks-sync.yml/runs?per_page=1`;
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Nexus-Stack-Control-Plane',
+      },
+    });
+
+    if (!res.ok) {
+      return new Response(JSON.stringify({ success: true, status: 'unknown', message: 'No sync runs found' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const data = await res.json();
+    const run = data.workflow_runs?.[0];
+
+    if (!run) {
+      return new Response(JSON.stringify({ success: true, status: 'never', message: 'No sync has been run yet' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      status: run.status === 'completed' ? run.conclusion : run.status,
+      updated_at: run.updated_at,
+      message: run.status === 'completed'
+        ? `Last sync: ${run.conclusion} (${new Date(run.updated_at).toLocaleString()})`
+        : `Sync ${run.status}...`,
+    }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: true, status: 'unknown', message: 'Could not fetch status' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
 
 export async function onRequestPost(context) {
   const { env } = context;

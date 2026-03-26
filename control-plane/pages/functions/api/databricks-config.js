@@ -69,6 +69,30 @@ export async function onRequestPost(context) {
       });
     }
 
+    // Test connection before saving
+    try {
+      const testRes = await fetch(`${host}/api/2.0/clusters/list`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (testRes.status === 401 || testRes.status === 403) {
+        return new Response(JSON.stringify({ success: false, error: 'Invalid token — authentication failed' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (!testRes.ok && testRes.status !== 404) {
+        return new Response(JSON.stringify({ success: false, error: `Connection failed (HTTP ${testRes.status})` }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: `Cannot reach ${host} — check the URL` }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     await env.NEXUS_KV.put('databricks_host', host);
     await env.NEXUS_KV.put('databricks_token', token);
 
@@ -77,7 +101,7 @@ export async function onRequestPost(context) {
       host,
     });
 
-    return new Response(JSON.stringify({ success: true, message: 'Databricks configuration saved' }), {
+    return new Response(JSON.stringify({ success: true, message: 'Connection verified and configuration saved' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

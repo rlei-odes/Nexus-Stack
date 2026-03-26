@@ -1949,20 +1949,58 @@
                 const res = await fetch('/api/databricks-sync', { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
-                    status.textContent = 'Sync workflow triggered. Check GitHub Actions for progress.';
-                    status.style.color = '#00ff88';
+                    status.textContent = 'Sync triggered — polling status...';
+                    status.style.color = '#ffaa00';
+                    pollSyncStatus();
                 } else {
                     status.textContent = data.error || 'Sync failed';
                     status.style.color = '#ff6060';
+                    btn.disabled = false;
                 }
             } catch {
                 status.textContent = 'Failed to trigger sync';
                 status.style.color = '#ff6060';
+                btn.disabled = false;
+            }
+        }
+
+        async function fetchSyncStatus() {
+            const status = document.getElementById('databricks-status');
+            try {
+                const res = await fetch('/api/databricks-sync');
+                const data = await res.json();
+                if (data.success && data.status) {
+                    status.textContent = data.message;
+                    if (data.status === 'success') {
+                        status.style.color = '#00ff88';
+                    } else if (data.status === 'failure') {
+                        status.style.color = '#ff6060';
+                    } else if (data.status === 'in_progress' || data.status === 'queued') {
+                        status.style.color = '#ffaa00';
+                    } else {
+                        status.style.color = '#607080';
+                    }
+                    return data.status;
+                }
+            } catch {}
+            return 'unknown';
+        }
+
+        async function pollSyncStatus() {
+            const btn = document.getElementById('btn-sync-databricks');
+            for (let i = 0; i < 30; i++) {
+                await new Promise(r => setTimeout(r, 10000));
+                const s = await fetchSyncStatus();
+                if (s === 'success' || s === 'failure') {
+                    btn.disabled = false;
+                    return;
+                }
             }
             btn.disabled = false;
         }
 
         loadDatabricksConfig();
+        fetchSyncStatus();
 
         // Initial health check and status fetch
         checkHealth();
