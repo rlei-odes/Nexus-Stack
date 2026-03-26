@@ -1,0 +1,123 @@
+name: Sync Secrets to Databricks
+
+on:
+  workflow_dispatch:
+    inputs:
+      databricks_host:
+        description: 'Databricks workspace URL'
+        required: true
+        type: string
+      databricks_token:
+        description: 'Databricks personal access token'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: databricks-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync Infisical Secrets to Databricks
+    runs-on: ubuntu-latest
+
+    env:
+      DATABRICKS_HOST: ${{ inputs.databricks_host }}
+      DATABRICKS_TOKEN: ${{ inputs.databricks_token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup SSH access
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          # Configure SSH to use Cloudflare Tunnel
+          DOMAIN="${{ secrets.DOMAIN }}"
+          cat >> ~/.ssh/config << EOF
+          Host nexus
+            HostName $DOMAIN
+            User root
+            IdentityFile ~/.ssh/id_ed25519
+            StrictHostKeyChecking no
+            ProxyCommand cloudflared access ssh --hostname ssh.${DOMAIN}
+          EOF
+          sed -i 's/^          //' ~/.ssh/config
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+
+      - name: Sync secrets from Infisical to Databricks
+        run: |
+          echo "::add-mask::$DATABRICKS_TOKEN"
+
+          echo "Reading secrets from Infisical on server..."
+
+          # Read Infisical credentials from server
+          INFISICAL_TOKEN=$(ssh nexus "cat /opt/docker-server/.infisical-token 2>/dev/null" || echo "")
+          PROJECT_ID=$(ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" || echo "")
+
+          if [ -z "$INFISICAL_TOKEN" ] || [ -z "$PROJECT_ID" ]; then
+            echo "No Infisical credentials found on server"
+            exit 1
+          fi
+
+          ENV="${INFISICAL_ENV:-dev}"
+          API="http://localhost:8070"
+          SYNC_OK=0
+          SYNC_FAIL=0
+
+          # Get all folders from Infisical
+          FOLDERS=$(ssh nexus "curl -s '$API/api/v2/folders?environment=$ENV&projectId=$PROJECT_ID&path=/' \
+              -H 'Authorization: Bearer $INFISICAL_TOKEN'" | jq -r '.folders[].name // empty' 2>/dev/null)
+
+          if [ -z "$FOLDERS" ]; then
+            echo "No folders found in Infisical"
+            exit 1
+          fi
+
+          for FOLDER in $FOLDERS; do
+            # Skip the databricks folder itself
+            [ "$FOLDER" = "databricks" ] && continue
+
+            echo "  Syncing folder: $FOLDER"
+
+            # Create Databricks scope (ignore if exists)
+            curl -s -X POST "${DATABRICKS_HOST}/api/2.0/secrets/scopes/create" \
+              -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"scope\": \"$FOLDER\"}" >/dev/null 2>&1 || true
+
+            # Read secrets from Infisical via SSH
+            SECRETS=$(ssh nexus "curl -s '$API/api/v3/secrets/raw?environment=$ENV&projectId=$PROJECT_ID&secretPath=/$FOLDER' \
+                -H 'Authorization: Bearer $INFISICAL_TOKEN'" 2>/dev/null)
+
+            # Push each secret to Databricks
+            echo "$SECRETS" | jq -c '.secrets[]' 2>/dev/null | while read -r SECRET; do
+              KEY=$(echo "$SECRET" | jq -r '.secretKey')
+              VALUE=$(echo "$SECRET" | jq -r '.secretValue')
+
+              RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DATABRICKS_HOST}/api/2.0/secrets/put" \
+                -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "{\"scope\":\"$FOLDER\",\"key\":\"$KEY\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
+
+              if [ "$RESULT" = "200" ]; then
+                echo "    $KEY -> OK"
+              else
+                echo "    $KEY -> FAILED ($RESULT)"
+              fi
+            done
+          done
+
+          echo ""
+          echo "Databricks sync complete"

@@ -1,0 +1,83 @@
+/**
+ * Databricks Configuration API
+ * GET /api/databricks-config - Get current configuration (host only, never return token)
+ * POST /api/databricks-config - Save host + token to Cloudflare KV
+ *
+ * Credentials persist in KV (survives destroy-all, unlike D1)
+ */
+
+import { logApiCall, logError } from './_utils/logger.js';
+
+export async function onRequestGet(context) {
+  const { env } = context;
+
+  try {
+    if (!env.NEXUS_KV) {
+      return new Response(JSON.stringify({ success: false, error: 'KV not configured' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = await env.NEXUS_KV.get('databricks_host') || '';
+    const hasToken = !!(await env.NEXUS_KV.get('databricks_token'));
+
+    return new Response(JSON.stringify({
+      success: true,
+      configured: !!(host && hasToken),
+      host,
+      hasToken,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    await logError(env.NEXUS_DB, '/api/databricks-config', 'Failed to read config', error);
+    return new Response(JSON.stringify({ success: false, error: 'Failed to read config' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+export async function onRequestPost(context) {
+  const { env, request } = context;
+
+  try {
+    if (!env.NEXUS_KV) {
+      return new Response(JSON.stringify({ success: false, error: 'KV not configured' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json();
+    const { host, token } = body;
+
+    if (!host || !token) {
+      return new Response(JSON.stringify({ success: false, error: 'Both host and token are required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    await env.NEXUS_KV.put('databricks_host', host);
+    await env.NEXUS_KV.put('databricks_token', token);
+
+    await logApiCall(env.NEXUS_DB, '/api/databricks-config', 'POST', {
+      action: 'save_databricks_config',
+      host,
+    });
+
+    return new Response(JSON.stringify({ success: true, message: 'Databricks configuration saved' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    await logError(env.NEXUS_DB, '/api/databricks-config', 'Failed to save config', error);
+    return new Response(JSON.stringify({ success: false, error: 'Failed to save config' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

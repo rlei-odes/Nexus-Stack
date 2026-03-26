@@ -959,6 +959,32 @@
             </div>
         </div>
 
+        <!-- Databricks Integration Panel -->
+        <div class="scheduled-teardown-panel">
+            <h2><span class="icon">🔗</span> Databricks Integration</h2>
+            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                <div>
+                    <label style="font-size: 0.75rem; color: #607080; display: block; margin-bottom: 0.3rem;">Workspace URL</label>
+                    <input type="text" id="databricks-host" placeholder="https://dbc-xxxxx.cloud.databricks.com"
+                        style="width: 100%; padding: 0.5rem; background: rgba(0,10,5,0.8); border: 1px solid rgba(0,255,136,0.2); color: #c0d0c0; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; border-radius: 3px;">
+                </div>
+                <div>
+                    <label style="font-size: 0.75rem; color: #607080; display: block; margin-bottom: 0.3rem;">Personal Access Token</label>
+                    <input type="password" id="databricks-token" placeholder="dapi..."
+                        style="width: 100%; padding: 0.5rem; background: rgba(0,10,5,0.8); border: 1px solid rgba(0,255,136,0.2); color: #c0d0c0; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; border-radius: 3px;">
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="action-btn" id="btn-save-databricks" onclick="saveDatabricksConfig()" style="flex: 1; font-size: 0.75rem; padding: 0.5rem;">
+                        Save Configuration
+                    </button>
+                    <button class="action-btn" id="btn-sync-databricks" onclick="syncDatabricks()" style="flex: 1; font-size: 0.75rem; padding: 0.5rem;" disabled>
+                        Sync Secrets to Databricks
+                    </button>
+                </div>
+                <div id="databricks-status" style="font-size: 0.75rem; color: #607080;"></div>
+            </div>
+        </div>
+
         <!-- Services Panel -->
         <div class="services-panel">
             <h2><span class="icon">🧩</span> Services</h2>
@@ -1850,6 +1876,86 @@
                 // Version fetch is non-critical
             }
         }
+
+        // =====================================================================
+        // Databricks Integration
+        // =====================================================================
+        async function loadDatabricksConfig() {
+            try {
+                const res = await fetch('/api/databricks-config');
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('databricks-host').value = data.host || '';
+                    document.getElementById('btn-sync-databricks').disabled = !data.configured;
+                    if (data.configured) {
+                        document.getElementById('databricks-status').textContent = 'Configured';
+                        document.getElementById('databricks-status').style.color = '#00ff88';
+                    }
+                }
+            } catch {}
+        }
+
+        async function saveDatabricksConfig() {
+            const host = document.getElementById('databricks-host').value.trim();
+            const token = document.getElementById('databricks-token').value.trim();
+            const status = document.getElementById('databricks-status');
+
+            if (!host || !token) {
+                status.textContent = 'Both fields are required';
+                status.style.color = '#ff6060';
+                return;
+            }
+
+            try {
+                status.textContent = 'Saving...';
+                status.style.color = '#ffaa00';
+                const res = await fetch('/api/databricks-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ host, token }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = 'Configuration saved';
+                    status.style.color = '#00ff88';
+                    document.getElementById('btn-sync-databricks').disabled = false;
+                    document.getElementById('databricks-token').value = '';
+                } else {
+                    status.textContent = data.error || 'Failed to save';
+                    status.style.color = '#ff6060';
+                }
+            } catch {
+                status.textContent = 'Failed to save configuration';
+                status.style.color = '#ff6060';
+            }
+        }
+
+        async function syncDatabricks() {
+            const btn = document.getElementById('btn-sync-databricks');
+            const status = document.getElementById('databricks-status');
+
+            btn.disabled = true;
+            status.textContent = 'Triggering sync workflow...';
+            status.style.color = '#ffaa00';
+
+            try {
+                const res = await fetch('/api/databricks-sync', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = 'Sync workflow triggered. Check GitHub Actions for progress.';
+                    status.style.color = '#00ff88';
+                } else {
+                    status.textContent = data.error || 'Sync failed';
+                    status.style.color = '#ff6060';
+                }
+            } catch {
+                status.textContent = 'Failed to trigger sync';
+                status.style.color = '#ff6060';
+            }
+            btn.disabled = false;
+        }
+
+        loadDatabricksConfig();
 
         // Initial health check and status fetch
         checkHealth();
