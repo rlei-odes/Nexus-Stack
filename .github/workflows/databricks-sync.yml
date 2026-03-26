@@ -73,12 +73,11 @@ jobs:
 
           ENV="${INFISICAL_ENV:-dev}"
           API="http://localhost:8070"
-          SYNC_OK=0
-          SYNC_FAIL=0
 
           # Get all folders from Infisical
-          FOLDERS=$(ssh nexus "curl -s '$API/api/v2/folders?environment=$ENV&projectId=$PROJECT_ID&path=/' \
-              -H 'Authorization: Bearer $INFISICAL_TOKEN'" | jq -r '.folders[].name // empty' 2>/dev/null)
+          # shellcheck disable=SC2029
+          FOLDERS=$(ssh nexus "curl -s '${API}/api/v2/folders?environment=${ENV}&projectId=${PROJECT_ID}&path=/' \
+              -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" | jq -r '.folders[].name // empty' 2>/dev/null)
 
           if [ -z "$FOLDERS" ]; then
             echo "No folders found in Infisical"
@@ -98,8 +97,9 @@ jobs:
               -d "{\"scope\": \"$FOLDER\"}" >/dev/null 2>&1 || true
 
             # Read secrets from Infisical via SSH
-            SECRETS=$(ssh nexus "curl -s '$API/api/v3/secrets/raw?environment=$ENV&projectId=$PROJECT_ID&secretPath=/$FOLDER' \
-                -H 'Authorization: Bearer $INFISICAL_TOKEN'" 2>/dev/null)
+            # shellcheck disable=SC2029
+            SECRETS=$(ssh nexus "curl -s '${API}/api/v3/secrets/raw?environment=${ENV}&projectId=${PROJECT_ID}&secretPath=/${FOLDER}' \
+                -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" 2>/dev/null)
 
             # Push each secret to Databricks
             echo "$SECRETS" | jq -c '.secrets[]' 2>/dev/null | while read -r SECRET; do
