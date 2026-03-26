@@ -45,7 +45,7 @@ jobs:
           echo "   - Keep the Control Plane active for re-deployment"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Log teardown start
         env:
@@ -59,7 +59,7 @@ jobs:
           fi
 
       - name: Install OpenTofu
-        uses: opentofu/setup-opentofu@v1
+        uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: 1.10.0
 
