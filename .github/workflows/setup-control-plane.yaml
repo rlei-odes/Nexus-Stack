@@ -528,7 +528,7 @@ jobs:
 
           if [ -n "$KV_ID" ]; then
             echo "💾 Found existing KV namespace (ID: $KV_ID) - importing into state..."
-            if tofu import -var-file=config.tfvars cloudflare_workers_kv_namespace.config "$KV_ID"; then
+            if tofu import -var-file=config.tfvars cloudflare_workers_kv_namespace.config "${CLOUDFLARE_ACCOUNT_ID}/${KV_ID}"; then
               echo "✅ KV namespace imported (Databricks config preserved)"
             else
               echo "⚠️  Import failed - a new KV namespace will be created"
