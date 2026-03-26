@@ -199,6 +199,50 @@ variable "hetzner_s3_bucket_general" {
   default     = ""
 }
 
+# =============================================================================
+# External S3 Storage (optional - for Filestash multi-backend)
+# =============================================================================
+# Optional S3-compatible storage (e.g., Cloudflare R2, AWS S3, MinIO).
+# When configured, auto-mounted as an additional Filestash backend.
+
+variable "external_s3_endpoint" {
+  description = "External S3-compatible endpoint URL, e.g. https://<account>.r2.cloudflarestorage.com"
+  type        = string
+  default     = ""
+}
+
+variable "external_s3_region" {
+  description = "External S3 region, e.g. auto for R2, us-east-1 for AWS"
+  type        = string
+  default     = "auto"
+}
+
+variable "external_s3_access_key" {
+  description = "External S3 access key"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "external_s3_secret_key" {
+  description = "External S3 secret key"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "external_s3_bucket" {
+  description = "External S3 bucket name"
+  type        = string
+  default     = ""
+}
+
+variable "external_s3_label" {
+  description = "Display label in Filestash for external storage, e.g. 'Cloudflare R2'"
+  type        = string
+  default     = "External Storage"
+}
+
 variable "persistent_volume_id" {
   description = "Hetzner Cloud Volume ID for persistent storage (from control-plane output, 0 = no volume)"
   type        = number
