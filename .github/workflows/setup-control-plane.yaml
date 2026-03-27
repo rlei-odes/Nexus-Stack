@@ -841,17 +841,23 @@ jobs:
           # --commit-message prevents UTF-8 issues with git commit messages
           DEPLOY_OK=false
           for ATTEMPT in 1 2 3; do
-            if npx wrangler@4 pages deploy . \
+            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy . \
               --project-name="$PROJECT_NAME" \
               --branch=main \
               --commit-dirty=true \
-              --commit-message="Deploy Control Plane"; then
+              --commit-message="Deploy Control Plane" 2>&1) && {
               DEPLOY_OK=true
               break
-            fi
-            if [ "$ATTEMPT" -lt 3 ]; then
-              echo "⚠️  Deploy attempt $ATTEMPT failed - retrying in 15s..."
-              sleep 15
+            }
+            echo "$DEPLOY_OUTPUT"
+            if echo "$DEPLOY_OUTPUT" | grep -q "504\|Gateway Timeout\|upstream request timeout"; then
+              if [ "$ATTEMPT" -lt 3 ]; then
+                echo "⚠️  Cloudflare timeout on attempt $ATTEMPT - retrying in 15s..."
+                sleep 15
+              fi
+            else
+              echo "❌ Deploy failed (non-timeout error) - not retrying"
+              break
             fi
           done
 
