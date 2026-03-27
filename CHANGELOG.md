@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.28.1...v0.29.0) (2026-03-27)
+
+
+### 🚀 Features
+
+* Add connection test and sync status to Databricks integration ([b163728](https://github.com/stefanko-ch/Nexus-Stack/commit/b163728386910f5b6886096a59e3e99cb8e0f8cb))
+* Add external S3/R2 storage auto-mount for Filestash ([fd1807d](https://github.com/stefanko-ch/Nexus-Stack/commit/fd1807d77ff3d3310364b008cb6be25665ccb692)), closes [#261](https://github.com/stefanko-ch/Nexus-Stack/issues/261)
+* External S3 storage, Infisical folders, and volume protection ([67fa4fd](https://github.com/stefanko-ch/Nexus-Stack/commit/67fa4fdabfafb4d60c7eb97eab2d9f42e86b1820))
+* Push external S3/R2 credentials to Infisical ([368135a](https://github.com/stefanko-ch/Nexus-Stack/commit/368135a8601a5d197611ffcee353f0616f7f4ea2))
+* Push Hetzner Object Storage credentials to Infisical ([cfc5fe8](https://github.com/stefanko-ch/Nexus-Stack/commit/cfc5fe8d915be375f7f03bce9b7960a262d52131))
+* **stacks:** Add Python, uv, and Jupyter to code-server ([c6acbec](https://github.com/stefanko-ch/Nexus-Stack/commit/c6acbec1942b4804cbe6f3f449dc366732ce47fb))
+* **stacks:** Add Python, uv, and Jupyter to code-server ([5eb9021](https://github.com/stefanko-ch/Nexus-Stack/commit/5eb9021e78ca41e45182578753f4db515da7c674))
+* **stacks:** Enable Grafana anonymous access with Viewer role ([6cb3aa8](https://github.com/stefanko-ch/Nexus-Stack/commit/6cb3aa817c0a835365913d92646bdbe7438266c6)), closes [#233](https://github.com/stefanko-ch/Nexus-Stack/issues/233)
+* **stacks:** Grafana anonymous access (skip double login) ([7304255](https://github.com/stefanko-ch/Nexus-Stack/commit/73042551bfddc6fdd5fe5c46fa9ad0afb93d04e4))
+* Sync Infisical secrets to Databricks Secret Scopes ([8182a7b](https://github.com/stefanko-ch/Nexus-Stack/commit/8182a7bbb136edef1d7c423d39066e3d942fa8a8)), closes [#175](https://github.com/stefanko-ch/Nexus-Stack/issues/175)
+* Sync Infisical secrets to Databricks via Control Panel ([12fa194](https://github.com/stefanko-ch/Nexus-Stack/commit/12fa19448594e1b3d54e68704f4d0d53c33e7e35))
+
+
+### 🐛 Bug Fixes
+
+* Add --delete to rsync and guard empty Infisical token ([2b8e4dc](https://github.com/stefanko-ch/Nexus-Stack/commit/2b8e4dc35975239ea8e118af0f5d35b0652dcc6d))
+* Add KV namespace binding to wrangler.toml for Pages deploy ([c4063b0](https://github.com/stefanko-ch/Nexus-Stack/commit/c4063b06b16f5b91d96672211efa295502b906ca))
+* Address all PR review comments for Databricks sync ([41a3d68](https://github.com/stefanko-ch/Nexus-Stack/commit/41a3d68ebedadb4ef72ed8ad151a58e6ca5f4317))
+* Address PR review — connection test, poll, and error handling ([10d9c6a](https://github.com/stefanko-ch/Nexus-Stack/commit/10d9c6acd97181e92073d2c3c9ff48ebc870e399))
+* Address PR review — guard empty S3 secrets, default region ([524fd6b](https://github.com/stefanko-ch/Nexus-Stack/commit/524fd6be7aac763cf0360c4b9146960b4e44f925))
+* **ci:** Add KV binding to spin-up Pages redeploy ([6759a70](https://github.com/stefanko-ch/Nexus-Stack/commit/6759a700cf5226e02c4173a937686325ede61287))
+* **ci:** Add retry for Cloudflare Pages deploy (504 timeouts) ([00d152a](https://github.com/stefanko-ch/Nexus-Stack/commit/00d152a43bffe8aade32501a78ce5fdbeeafbee7))
+* **ci:** Add retry logic for Cloudflare Pages deploy (504 timeouts) ([bc64413](https://github.com/stefanko-ch/Nexus-Stack/commit/bc64413c539e54d154879e8781fb76d5edb4f495))
+* **ci:** Delete R2 bucket before revoking R2 API token ([08dca5b](https://github.com/stefanko-ch/Nexus-Stack/commit/08dca5bf8eabe173307cff3c3a588f6993b7a339))
+* **ci:** Import existing S3 buckets instead of deleting them ([1e9c803](https://github.com/stefanko-ch/Nexus-Stack/commit/1e9c8036194d2ff5ab89d20ace75bdf009d17d28))
+* **ci:** Init both control-plane and stack state in databricks-sync ([7284e67](https://github.com/stefanko-ch/Nexus-Stack/commit/7284e6743108aadd506f8dcb362268a28e62b67e))
+* **ci:** Pin wrangler to [@4](https://github.com/4) instead of [@latest](https://github.com/latest) ([247cdf8](https://github.com/stefanko-ch/Nexus-Stack/commit/247cdf8ee0e60bf080044572123ea79549ec1b70))
+* **ci:** Pin wrangler to major version 4 instead of [@latest](https://github.com/latest) ([962495e](https://github.com/stefanko-ch/Nexus-Stack/commit/962495e67356bac91f424bdb0cc191efe351f03c))
+* **ci:** Place shellcheck disable directly before each ssh line ([b5f2854](https://github.com/stefanko-ch/Nexus-Stack/commit/b5f28547051518bbbb51fb9d48161e62694c1c71))
+* **ci:** Pre-create Hetzner S3 buckets to avoid provider ACL error ([d716ffe](https://github.com/stefanko-ch/Nexus-Stack/commit/d716ffe01a2e762299d2e5de2383efaaed421784))
+* **ci:** Prevent set -e from killing script on aws bucket creation failure ([9fb9c75](https://github.com/stefanko-ch/Nexus-Stack/commit/9fb9c754a36514730d36ac81f3c71f1139c81279))
+* **ci:** Replace A && B || C pattern with proper if-else ([eaa5ff4](https://github.com/stefanko-ch/Nexus-Stack/commit/eaa5ff42dce953598bc4b297f92b4cde297dc249))
+* **ci:** Show actual error when bucket pre-creation fails ([7c42343](https://github.com/stefanko-ch/Nexus-Stack/commit/7c42343016485a807c6ca5638a0da64e65388214))
+* **ci:** Suppress SC2029 in databricks-sync (intentional local expansion) ([2d61b92](https://github.com/stefanko-ch/Nexus-Stack/commit/2d61b922ef014bee67ed8f03bdee7ce2a78676fc))
+* **ci:** Suppress shellcheck warnings in databricks-sync workflow ([cc0665e](https://github.com/stefanko-ch/Nexus-Stack/commit/cc0665e9caa806a62f084c9ec9f3f70c60ac1cc4))
+* **ci:** Use accountID/namespaceID format for KV import ([38af6b4](https://github.com/stefanko-ch/Nexus-Stack/commit/38af6b4618a513053154199946bba0ac538c614f))
+* **ci:** Use accountID/namespaceID format for KV import ([2cbc3c0](https://github.com/stefanko-ch/Nexus-Stack/commit/2cbc3c0ad16f7a5ef46fc4244a4fd888ca0f7c78))
+* Databricks sync fixes, connection test, and status polling ([f724f2a](https://github.com/stefanko-ch/Nexus-Stack/commit/f724f2a794040892c26fd1c860f36e7cf42e0ba8))
+* Merge read+push steps (trap EXIT deleted file) and use 24h time ([2ba10f0](https://github.com/stefanko-ch/Nexus-Stack/commit/2ba10f09137a671237ae33ec23e6cf39c64e69da))
+* Only retry on 504 timeouts, use ISO timestamp for sync status ([253fb62](https://github.com/stefanko-ch/Nexus-Stack/commit/253fb620a43bffd5a4f92c9aa3ed865d8c3657ac))
+* Protect persistent volume from destroy-all ([6a40dad](https://github.com/stefanko-ch/Nexus-Stack/commit/6a40dadab1cd04bf41561adee3bf2392d1976368))
+* Protect S3 buckets from destroy-all and use single Databricks scope ([8fb7625](https://github.com/stefanko-ch/Nexus-Stack/commit/8fb762513967f744fd5e8480295612735743f25e))
+* Protect S3 buckets from destroy-all, single Databricks scope ([5000b53](https://github.com/stefanko-ch/Nexus-Stack/commit/5000b53eebe2a649c3c2283c16285b60d2394678))
+* Read secrets from OpenTofu state for Databricks sync ([d083b5f](https://github.com/stefanko-ch/Nexus-Stack/commit/d083b5f9178cbd66fb0639f28f274c8e4a9c885d))
+* Read secrets from OpenTofu state instead of Infisical API ([019bfc0](https://github.com/stefanko-ch/Nexus-Stack/commit/019bfc0ed8721977b9381cc70dd2809b17219761))
+* Remove secret values from debug output, show only keys/count ([0574000](https://github.com/stefanko-ch/Nexus-Stack/commit/0574000aa4b4a8a2ea6187500e02e2bb3262b2cd))
+* Rename hetzner_s3_bucket to hetzner_s3_bucket_lakefs in secrets output ([68fff6b](https://github.com/stefanko-ch/Nexus-Stack/commit/68fff6b0105b6b03d5695b5675c68a7eb7a67686))
+* Secure temp file permissions and use printf for secret values ([bc3a239](https://github.com/stefanko-ch/Nexus-Stack/commit/bc3a2397cc748aca6565de9ff4564d9f463e6597))
+* Skip sleep after final retry attempt, fix deploy log messages ([3e77a0c](https://github.com/stefanko-ch/Nexus-Stack/commit/3e77a0c8bda6bc9c692de73e3437646566e3ac99))
+* **stacks:** Add env_file and anonymous access to CloudBeaver ([7da00f2](https://github.com/stefanko-ch/Nexus-Stack/commit/7da00f21d7b539b834d06bce89b35ed18896fdca))
+* **stacks:** Address PR review — pin versions, restore image override ([bfcb46b](https://github.com/stefanko-ch/Nexus-Stack/commit/bfcb46b8829d97a21cadef393a3439fc8b6837b8))
+* **stacks:** Auto-configure CloudBeaver to skip initial setup wizard ([dc5b549](https://github.com/stefanko-ch/Nexus-Stack/commit/dc5b5490d94b0a39f984fccd8e180c42e124f583))
+* **stacks:** Fix CloudBeaver env_file and enable anonymous access ([458177d](https://github.com/stefanko-ch/Nexus-Stack/commit/458177d42ec9d05768706e967356be9e0d537269))
+* **stacks:** Use jupyterlab package for uv tool install ([490ed12](https://github.com/stefanko-ch/Nexus-Stack/commit/490ed12968acc8a381c74669d15cff2f4197e923))
+
+
+### ♻️ Refactoring
+
+* Reorganize Infisical secrets into folders with idempotent push ([891ddc3](https://github.com/stefanko-ch/Nexus-Stack/commit/891ddc38bab920f4631bd5359453b59c41c163f5))
+
+
+### 🔧 Maintenance
+
+* **ci:** Update GitHub Actions from Node.js 20 to Node.js 24 ([6e60511](https://github.com/stefanko-ch/Nexus-Stack/commit/6e605110cf81a4f8294b9228c1f1aed5c022137d))
+* **ci:** Update GitHub Actions to Node.js 24 ([4f8f8c3](https://github.com/stefanko-ch/Nexus-Stack/commit/4f8f8c3545fedc691f65745c75bd6088c742c5e3)), closes [#251](https://github.com/stefanko-ch/Nexus-Stack/issues/251)
+
 ## [0.28.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.28.0...v0.28.1) (2026-03-23)
 
 
