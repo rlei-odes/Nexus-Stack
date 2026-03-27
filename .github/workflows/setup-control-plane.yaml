@@ -620,25 +620,25 @@ jobs:
           
           # Set secrets for the Worker (different from Pages!)
           echo "  Setting GITHUB_TOKEN..."
-          echo "$GITHUB_TOKEN" | npx wrangler@latest secret put GITHUB_TOKEN --name="$WORKER_NAME" || echo "⚠️  Failed"
+          echo "$GITHUB_TOKEN" | npx wrangler@4 secret put GITHUB_TOKEN --name="$WORKER_NAME" || echo "⚠️  Failed"
           
           echo "  Setting GITHUB_OWNER..."
-          echo "$GITHUB_OWNER" | npx wrangler@latest secret put GITHUB_OWNER --name="$WORKER_NAME" || echo "⚠️  Failed"
+          echo "$GITHUB_OWNER" | npx wrangler@4 secret put GITHUB_OWNER --name="$WORKER_NAME" || echo "⚠️  Failed"
           
           echo "  Setting GITHUB_REPO..."
-          echo "$GITHUB_REPO" | npx wrangler@latest secret put GITHUB_REPO --name="$WORKER_NAME" || echo "⚠️  Failed"
+          echo "$GITHUB_REPO" | npx wrangler@4 secret put GITHUB_REPO --name="$WORKER_NAME" || echo "⚠️  Failed"
           
           echo "  Setting DOMAIN..."
-          echo "$DOMAIN" | npx wrangler@latest secret put DOMAIN --name="$WORKER_NAME" || echo "⚠️  Failed"
+          echo "$DOMAIN" | npx wrangler@4 secret put DOMAIN --name="$WORKER_NAME" || echo "⚠️  Failed"
           
           if [ -n "$RESEND_API_KEY" ]; then
             echo "  Setting RESEND_API_KEY..."
-            echo "$RESEND_API_KEY" | npx wrangler@latest secret put RESEND_API_KEY --name="$WORKER_NAME" || echo "⚠️  Failed"
+            echo "$RESEND_API_KEY" | npx wrangler@4 secret put RESEND_API_KEY --name="$WORKER_NAME" || echo "⚠️  Failed"
           fi
           
           if [ -n "$ADMIN_EMAIL" ]; then
             echo "  Setting ADMIN_EMAIL..."
-            echo "$ADMIN_EMAIL" | npx wrangler@latest secret put ADMIN_EMAIL --name="$WORKER_NAME" || echo "⚠️  Failed"
+            echo "$ADMIN_EMAIL" | npx wrangler@4 secret put ADMIN_EMAIL --name="$WORKER_NAME" || echo "⚠️  Failed"
           fi
           
           echo "✅ Worker secrets configured"
@@ -669,7 +669,7 @@ jobs:
           
           if [ -n "$GITHUB_TOKEN" ]; then
             echo "  Setting GITHUB_TOKEN secret..."
-            if ! echo "$GITHUB_TOKEN" | npx wrangler@latest pages secret put GITHUB_TOKEN \
+            if ! echo "$GITHUB_TOKEN" | npx wrangler@4 pages secret put GITHUB_TOKEN \
               --project-name="$PROJECT_NAME" 2>&1; then
               echo "⚠️  Failed to set GITHUB_TOKEN secret (check token validity and project name)"
             fi
@@ -678,17 +678,17 @@ jobs:
           fi
           
           echo "  Setting GITHUB_OWNER secret..."
-          echo "$GITHUB_OWNER" | npx wrangler@latest pages secret put GITHUB_OWNER \
+          echo "$GITHUB_OWNER" | npx wrangler@4 pages secret put GITHUB_OWNER \
             --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set GITHUB_OWNER (may already be set)"
           
           echo "  Setting GITHUB_REPO secret..."
-          echo "$GITHUB_REPO" | npx wrangler@latest pages secret put GITHUB_REPO \
+          echo "$GITHUB_REPO" | npx wrangler@4 pages secret put GITHUB_REPO \
             --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set GITHUB_REPO (may already be set)"
           
           # Set DOMAIN (required for service URLs and email sender)
           if [ -n "$DOMAIN" ]; then
             echo "  Setting DOMAIN secret..."
-            echo "$DOMAIN" | npx wrangler@latest pages secret put DOMAIN \
+            echo "$DOMAIN" | npx wrangler@4 pages secret put DOMAIN \
               --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set DOMAIN"
           else
             echo "⚠️  DOMAIN not provided - Service URLs will show 'unknown'!"
@@ -697,7 +697,7 @@ jobs:
           # Set RESEND_API_KEY for email sending (optional)
           if [ -n "$RESEND_API_KEY" ]; then
             echo "  Setting RESEND_API_KEY secret..."
-            echo "$RESEND_API_KEY" | npx wrangler@latest pages secret put RESEND_API_KEY \
+            echo "$RESEND_API_KEY" | npx wrangler@4 pages secret put RESEND_API_KEY \
               --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set RESEND_API_KEY"
           else
             echo "  ⏭️  RESEND_API_KEY not provided - email sending will be disabled"
@@ -706,7 +706,7 @@ jobs:
           # Set ADMIN_EMAIL for email sending (optional)
           if [ -n "$ADMIN_EMAIL" ]; then
             echo "  Setting ADMIN_EMAIL secret..."
-            echo "$ADMIN_EMAIL" | npx wrangler@latest pages secret put ADMIN_EMAIL \
+            echo "$ADMIN_EMAIL" | npx wrangler@4 pages secret put ADMIN_EMAIL \
               --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set ADMIN_EMAIL"
           else
             echo "  ⏭️  ADMIN_EMAIL not provided - email sending will be disabled"
@@ -715,7 +715,7 @@ jobs:
           # Set USER_EMAIL for email sending (optional)
           if [ -n "$USER_EMAIL" ]; then
             echo "  Setting USER_EMAIL secret..."
-            echo "$USER_EMAIL" | npx wrangler@latest pages secret put USER_EMAIL \
+            echo "$USER_EMAIL" | npx wrangler@4 pages secret put USER_EMAIL \
               --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set USER_EMAIL"
           else
             echo "  ⏭️  USER_EMAIL not provided - emails go to admin only"
@@ -723,11 +723,11 @@ jobs:
           
           # Set SERVER_TYPE and SERVER_LOCATION for info panel
           echo "  Setting SERVER_TYPE secret..."
-          echo "cax31" | npx wrangler@latest pages secret put SERVER_TYPE \
+          echo "cax31" | npx wrangler@4 pages secret put SERVER_TYPE \
             --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set SERVER_TYPE"
           
           echo "  Setting SERVER_LOCATION secret..."
-          echo "fsn1" | npx wrangler@latest pages secret put SERVER_LOCATION \
+          echo "fsn1" | npx wrangler@4 pages secret put SERVER_LOCATION \
             --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set SERVER_LOCATION"
           
           echo "✅ All secrets set (applies to both production and preview environments)"
@@ -757,19 +757,19 @@ jobs:
           cd ../..
           
           # Initialize schema (creates tables if they don't exist)
-          npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --file=control-plane/schema.sql --remote
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --file=control-plane/schema.sql --remote
 
           # Schema migrations for existing databases
           # admin_only column added for services that can only be toggled via GitHub Actions
-          npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "ALTER TABLE services ADD COLUMN admin_only INTEGER DEFAULT 0" 2>/dev/null || true
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "ALTER TABLE services ADD COLUMN admin_only INTEGER DEFAULT 0" 2>/dev/null || true
           
           # Store domain in D1 config (escape single quotes)
           ESCAPED_DOMAIN=${DOMAIN//\'/\'\'}
-          npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('domain', '$ESCAPED_DOMAIN', datetime('now'))"
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('domain', '$ESCAPED_DOMAIN', datetime('now'))"
           
           # Add initial log entry (sanitize run_id as numeric)
           RUN_ID=$(printf '%d' "${{ github.run_id }}" 2>/dev/null || echo "0")
-          npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT INTO logs (source, level, message, metadata) VALUES ('github-action', 'info', 'Control Plane initialized', '{\"workflow\": \"setup-control-plane\", \"run_id\": $RUN_ID}')"
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT INTO logs (source, level, message, metadata) VALUES ('github-action', 'info', 'Control Plane initialized', '{\"workflow\": \"setup-control-plane\", \"run_id\": $RUN_ID}')"
           
           echo "✅ D1 database schema initialized!"
 
@@ -836,19 +836,43 @@ jobs:
           echo "  Generated wrangler.toml with bindings"
           cat wrangler.toml
           
-          # Deploy to production with D1 binding
+          # Deploy to production with D1 + optional KV bindings (with retry for Cloudflare API timeouts)
           # --commit-dirty=true suppresses warning about uncommitted wrangler.toml
           # --commit-message prevents UTF-8 issues with git commit messages
-          npx wrangler@latest pages deploy . \
-            --project-name="$PROJECT_NAME" \
-            --branch=main \
-            --commit-dirty=true \
-            --commit-message="Deploy Control Plane"
-          
-          # Clean up generated wrangler.toml
+          DEPLOY_OK=false
+          for ATTEMPT in 1 2 3; do
+            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy . \
+              --project-name="$PROJECT_NAME" \
+              --branch=main \
+              --commit-dirty=true \
+              --commit-message="Deploy Control Plane" 2>&1) && {
+              DEPLOY_OK=true
+              break
+            }
+            echo "$DEPLOY_OUTPUT"
+            if echo "$DEPLOY_OUTPUT" | grep -q "504\|Gateway Timeout\|upstream request timeout"; then
+              if [ "$ATTEMPT" -lt 3 ]; then
+                echo "⚠️  Cloudflare timeout on attempt $ATTEMPT - retrying in 15s..."
+                sleep 15
+              fi
+            else
+              echo "❌ Deploy failed (non-timeout error) - not retrying"
+              break
+            fi
+          done
+
           rm wrangler.toml
-          
-          echo "✅ Control Plane deployed with D1 bindings!"
+
+          if [ "$DEPLOY_OK" = "true" ]; then
+            if [ -n "$KV_NAMESPACE_ID" ]; then
+              echo "✅ Control Plane deployed with D1 + KV bindings!"
+            else
+              echo "✅ Control Plane deployed with D1 bindings!"
+            fi
+          else
+            echo "❌ Control Plane deploy failed after 3 attempts"
+            exit 1
+          fi
 
       - name: Show setup info
         run: |

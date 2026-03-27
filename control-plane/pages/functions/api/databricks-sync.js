@@ -49,7 +49,7 @@ export async function onRequestGet(context) {
       status: run.status === 'completed' ? run.conclusion : run.status,
       updated_at: run.updated_at,
       message: run.status === 'completed'
-        ? `Last sync: ${run.conclusion} (${new Date(run.updated_at).toLocaleString()})`
+        ? `Last sync: ${run.conclusion} (${run.updated_at.replace('T', ' ').replace('Z', ' UTC')})`
         : `Sync ${run.status}...`,
     }), {
       status: 200, headers: { 'Content-Type': 'application/json' },

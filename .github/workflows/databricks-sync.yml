@@ -39,12 +39,6 @@ jobs:
         with:
           tofu_version: 1.10.0
 
-      - name: Install cloudflared
-        run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/
-
       - name: Create R2 credentials from secrets
         run: |
           mkdir -p tofu
@@ -61,7 +55,7 @@ jobs:
           EOF
           sed -i 's/^          //' tofu/.r2-credentials tofu/backend.hcl
 
-      - name: Initialize OpenTofu and setup SSH
+      - name: Initialize OpenTofu
         run: |
           source tofu/.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
@@ -73,45 +67,9 @@ jobs:
           KV_NAMESPACE_ID=$(tofu output -raw kv_namespace_id 2>/dev/null || echo "")
           echo "KV_NAMESPACE_ID=$KV_NAMESPACE_ID" >> "$GITHUB_ENV"
 
-          # Init stack state (for SSH service token)
+          # Init stack state (for secrets)
           cd ../stack
           tofu init -backend-config=../backend.hcl
-          SSH_TOKEN_JSON=$(tofu output -json ssh_service_token 2>/dev/null || echo "{}")
-          CF_ACCESS_CLIENT_ID=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_id // empty' 2>/dev/null || echo "")
-          CF_ACCESS_CLIENT_SECRET=$(echo "$SSH_TOKEN_JSON" | jq -r '.client_secret // empty' 2>/dev/null || echo "")
-          cd ../..
-
-          # Setup SSH key
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-          # Configure SSH with Cloudflare service token
-          DOMAIN="${{ secrets.DOMAIN }}"
-          SSH_HOST="ssh.${DOMAIN}"
-          if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
-            cat >> ~/.ssh/config << SSHEOF
-          Host nexus
-            HostName ${SSH_HOST}
-            User root
-            IdentityFile ~/.ssh/id_ed25519
-            IdentitiesOnly yes
-            StrictHostKeyChecking no
-            ProxyCommand bash -c 'TUNNEL_SERVICE_TOKEN_ID=${CF_ACCESS_CLIENT_ID} TUNNEL_SERVICE_TOKEN_SECRET=${CF_ACCESS_CLIENT_SECRET} cloudflared access ssh --hostname %h'
-          SSHEOF
-          else
-            cat >> ~/.ssh/config << SSHEOF
-          Host nexus
-            HostName ${SSH_HOST}
-            User root
-            IdentityFile ~/.ssh/id_ed25519
-            IdentitiesOnly yes
-            StrictHostKeyChecking no
-            ProxyCommand cloudflared access ssh --hostname %h
-          SSHEOF
-          fi
-          sed -i 's/^          //' ~/.ssh/config
-          chmod 600 ~/.ssh/config
 
       - name: Read Databricks credentials from KV
         env:
@@ -140,34 +98,26 @@ jobs:
           echo "DATABRICKS_TOKEN=$DATABRICKS_TOKEN" >> "$GITHUB_ENV"
           echo "Databricks credentials loaded from KV"
 
-      - name: Sync secrets from Infisical to Databricks
+      - name: Read secrets and push to Databricks
         run: |
-          echo "Reading secrets from Infisical on server..."
+          cd tofu/stack
+          source ../.r2-credentials
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 
-          # Read Infisical credentials from server
-          INFISICAL_TOKEN=$(ssh nexus "cat /opt/docker-server/.infisical-token 2>/dev/null" || echo "")
-          PROJECT_ID=$(ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" || echo "")
+          # Read all secrets from the stack state (same source as deploy.sh)
+          SECRETS_JSON=$(tofu output -json secrets 2>/dev/null || echo "{}")
+          SECRET_COUNT=$(echo "$SECRETS_JSON" | jq 'length' 2>/dev/null || echo "0")
+          echo "Read $SECRET_COUNT secrets from OpenTofu state"
 
-          if [ -z "$INFISICAL_TOKEN" ] || [ -z "$PROJECT_ID" ]; then
-            echo "No Infisical credentials found on server"
+          if [ "$SECRET_COUNT" = "0" ]; then
+            echo "No secrets found in OpenTofu state"
             exit 1
           fi
 
-          ENV="${INFISICAL_ENV:-dev}"
-          API="http://localhost:8070"
-
-          # Get all folders from Infisical (variables expanded locally, sent via SSH)
-          # shellcheck disable=SC2029
-          FOLDERS=$(ssh nexus "curl -s '${API}/api/v2/folders?environment=${ENV}&projectId=${PROJECT_ID}&path=/' \
-              -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" | jq -r '.folders[].name // empty' 2>/dev/null)
-
-          if [ -z "$FOLDERS" ]; then
-            echo "No folders found in Infisical"
-            exit 1
-          fi
-
-          # Create single Databricks scope "nexus" (ignore if exists)
           SCOPE="nexus"
+
+          # Create single scope (ignore if exists)
           curl -s -X POST "${DATABRICKS_HOST}/api/2.0/secrets/scopes/create" \
             -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -176,47 +126,28 @@ jobs:
           SYNC_OK=0
           SYNC_FAIL=0
 
-          for FOLDER in $FOLDERS; do
-            [ "$FOLDER" = "databricks" ] && continue
+          # Push each secret with its key name
+          for KEY in $(echo "$SECRETS_JSON" | jq -r 'keys[]' 2>/dev/null); do
+            VALUE=$(echo "$SECRETS_JSON" | jq -r --arg k "$KEY" '.[$k]' 2>/dev/null)
 
-            echo "  Syncing folder: $FOLDER"
+            # Skip empty values
+            [ -z "$VALUE" ] && continue
 
-            # Read secrets from Infisical via SSH (double quotes for local expansion)
-            # shellcheck disable=SC2029
-            SECRETS=$(ssh nexus "curl -s '${API}/api/v3/secrets/raw?environment=${ENV}&projectId=${PROJECT_ID}&secretPath=/${FOLDER}' \
-                -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" 2>/dev/null)
+            RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DATABRICKS_HOST}/api/2.0/secrets/put" \
+              -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"scope\":\"${SCOPE}\",\"key\":\"${KEY}\",\"string_value\":$(printf '%s' "$VALUE" | jq -Rs '.')}" 2>/dev/null)
 
-            # Debug: show secret count
-            SECRET_COUNT=$(echo "$SECRETS" | jq '.secrets | length' 2>/dev/null || echo "parse-error")
-            echo "    Infisical returned: $SECRET_COUNT secrets"
-            if [ "$SECRET_COUNT" = "parse-error" ]; then
-              echo "    Failed to parse Infisical response as JSON."
-              echo "    Response size: $(echo -n "$SECRETS" | wc -c) bytes"
-            elif [ "$SECRET_COUNT" = "0" ] || [ "$SECRET_COUNT" = "null" ]; then
-              echo "    No secrets found. Top-level keys:"
-              echo "$SECRETS" | jq -c 'keys' 2>/dev/null || echo "    (non-JSON response)"
+            if [ "$RESULT" = "200" ]; then
+              echo "  ${KEY} -> OK"
+              SYNC_OK=$((SYNC_OK+1))
+            else
+              echo "  ${KEY} -> FAILED (${RESULT})"
+              SYNC_FAIL=$((SYNC_FAIL+1))
             fi
-
-            # Push each secret to Databricks with folder prefix
-            echo "$SECRETS" | jq -c '.secrets[]' 2>/dev/null | while read -r SECRET; do
-              KEY=$(echo "$SECRET" | jq -r '.secretKey')
-              VALUE=$(echo "$SECRET" | jq -r '.secretValue')
-              PREFIXED_KEY="${FOLDER}_${KEY}"
-
-              RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DATABRICKS_HOST}/api/2.0/secrets/put" \
-                -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "{\"scope\":\"${SCOPE}\",\"key\":\"${PREFIXED_KEY}\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
-
-              if [ "$RESULT" = "200" ]; then
-                echo "    ${PREFIXED_KEY} -> OK"
-                SYNC_OK=$((SYNC_OK+1))
-              else
-                echo "    ${PREFIXED_KEY} -> FAILED (${RESULT})"
-                SYNC_FAIL=$((SYNC_FAIL+1))
-              fi
-            done
           done
+
+          rm -f /tmp/nexus-secrets.json
 
           echo ""
           echo "Databricks sync complete (${SYNC_OK} OK, ${SYNC_FAIL} failed)"
