@@ -166,6 +166,13 @@ jobs:
             exit 1
           fi
 
+          # Create single Databricks scope "nexus" (ignore if exists)
+          SCOPE="nexus"
+          curl -s -X POST "${DATABRICKS_HOST}/api/2.0/secrets/scopes/create" \
+            -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"scope\": \"${SCOPE}\"}" >/dev/null 2>&1 || true
+
           SYNC_OK=0
           SYNC_FAIL=0
 
@@ -174,32 +181,38 @@ jobs:
 
             echo "  Syncing folder: $FOLDER"
 
-            # Create Databricks scope (ignore if exists)
-            curl -s -X POST "${DATABRICKS_HOST}/api/2.0/secrets/scopes/create" \
-              -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{\"scope\": \"${FOLDER}\"}" >/dev/null 2>&1 || true
-
             # Read secrets from Infisical via SSH (double quotes for local expansion)
             # shellcheck disable=SC2029
             SECRETS=$(ssh nexus "curl -s '${API}/api/v3/secrets/raw?environment=${ENV}&projectId=${PROJECT_ID}&secretPath=/${FOLDER}' \
                 -H 'Authorization: Bearer ${INFISICAL_TOKEN}'" 2>/dev/null)
 
-            # Push each secret to Databricks
+            # Debug: show secret count
+            SECRET_COUNT=$(echo "$SECRETS" | jq '.secrets | length' 2>/dev/null || echo "parse-error")
+            echo "    Infisical returned: $SECRET_COUNT secrets"
+            if [ "$SECRET_COUNT" = "parse-error" ]; then
+              echo "    Failed to parse Infisical response as JSON."
+              echo "    Response size: $(echo -n "$SECRETS" | wc -c) bytes"
+            elif [ "$SECRET_COUNT" = "0" ] || [ "$SECRET_COUNT" = "null" ]; then
+              echo "    No secrets found. Top-level keys:"
+              echo "$SECRETS" | jq -c 'keys' 2>/dev/null || echo "    (non-JSON response)"
+            fi
+
+            # Push each secret to Databricks with folder prefix
             echo "$SECRETS" | jq -c '.secrets[]' 2>/dev/null | while read -r SECRET; do
               KEY=$(echo "$SECRET" | jq -r '.secretKey')
               VALUE=$(echo "$SECRET" | jq -r '.secretValue')
+              PREFIXED_KEY="${FOLDER}_${KEY}"
 
               RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DATABRICKS_HOST}/api/2.0/secrets/put" \
                 -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
                 -H "Content-Type: application/json" \
-                -d "{\"scope\":\"${FOLDER}\",\"key\":\"${KEY}\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
+                -d "{\"scope\":\"${SCOPE}\",\"key\":\"${PREFIXED_KEY}\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
 
               if [ "$RESULT" = "200" ]; then
-                echo "    ${KEY} -> OK"
+                echo "    ${PREFIXED_KEY} -> OK"
                 SYNC_OK=$((SYNC_OK+1))
               else
-                echo "    ${KEY} -> FAILED (${RESULT})"
+                echo "    ${PREFIXED_KEY} -> FAILED (${RESULT})"
                 SYNC_FAIL=$((SYNC_FAIL+1))
               fi
             done
