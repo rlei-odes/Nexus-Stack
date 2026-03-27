@@ -217,45 +217,6 @@ jobs:
       # Note: Hetzner S3 buckets are intentionally preserved (student data).
       # They are re-imported into Terraform state on the next initial-setup.
 
-      - name: Delete R2 secrets from GitHub
-        env:
-          GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
-        run: |
-          if [ -n "$GH_TOKEN" ]; then
-            echo "🔐 Cleaning up R2 secrets from GitHub..."
-            gh secret delete R2_ACCESS_KEY_ID 2>/dev/null || true
-            gh secret delete R2_SECRET_ACCESS_KEY 2>/dev/null || true
-            echo "✅ R2 secrets deleted"
-          else
-            echo "⚠️  GH_SECRETS_TOKEN not configured - R2 secrets must be deleted manually"
-            echo "   Run: gh secret delete R2_ACCESS_KEY_ID && gh secret delete R2_SECRET_ACCESS_KEY"
-          fi
-
-      - name: Cleanup R2 API tokens from Cloudflare
-        run: |
-          echo "🔐 Cleaning up R2 API token for this deployment..."
-          # Only delete the token for THIS deployment (exact match on domain slug)
-          # Other deployments sharing the same Cloudflare account must not be affected
-          DOMAIN_SLUG=$(printf '%s' "${{ secrets.DOMAIN }}" | tr '.' '-')
-          TOKEN_NAME="nexus-r2-terraform-state-${DOMAIN_SLUG}"
-
-          TOKENS=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            | jq -r --arg name "$TOKEN_NAME" '.result[] | select(.name == $name) | .id')
-
-          if [ -n "$TOKENS" ]; then
-            for token_id in $TOKENS; do
-              echo "  Deleting token: $TOKEN_NAME ($token_id)"
-              if ! curl -sSf -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$token_id" \
-                -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" > /dev/null; then
-                echo "  ⚠️  Failed to delete token $token_id - check permissions"
-              fi
-            done
-            echo "✅ R2 API token deleted"
-          else
-            echo "  No R2 token found for ${TOKEN_NAME}"
-          fi
-
       - name: Delete R2 bucket and contents
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -338,6 +299,42 @@ jobs:
             echo "  ⚠️  Failed to delete bucket: ${ERROR_MSG}"
             echo "     Manual cleanup may be required: https://dash.cloudflare.com > R2 > ${BUCKET_NAME}"
             echo "     Note: Bucket not being deleted won't prevent redeployment"
+          fi
+
+      - name: Cleanup R2 API tokens from Cloudflare
+        run: |
+          echo "🔐 Cleaning up R2 API token for this deployment..."
+          DOMAIN_SLUG=$(printf '%s' "${{ secrets.DOMAIN }}" | tr '.' '-')
+          TOKEN_NAME="nexus-r2-terraform-state-${DOMAIN_SLUG}"
+
+          TOKENS=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            | jq -r --arg name "$TOKEN_NAME" '.result[] | select(.name == $name) | .id')
+
+          if [ -n "$TOKENS" ]; then
+            for token_id in $TOKENS; do
+              echo "  Deleting token: $TOKEN_NAME ($token_id)"
+              if ! curl -sSf -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$token_id" \
+                -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" > /dev/null; then
+                echo "  ⚠️  Failed to delete token $token_id - check permissions"
+              fi
+            done
+            echo "✅ R2 API token deleted"
+          else
+            echo "  No R2 token found for ${TOKEN_NAME}"
+          fi
+
+      - name: Delete R2 secrets from GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            echo "🔐 Cleaning up R2 secrets from GitHub..."
+            gh secret delete R2_ACCESS_KEY_ID 2>/dev/null || true
+            gh secret delete R2_SECRET_ACCESS_KEY 2>/dev/null || true
+            echo "✅ R2 secrets deleted"
+          else
+            echo "⚠️  GH_SECRETS_TOKEN not configured - R2 secrets must be deleted manually"
           fi
 
       - name: Confirm destruction

@@ -441,7 +441,7 @@ jobs:
               continue
             fi
 
-            # Resource not in state - check if bucket exists on Hetzner (orphaned)
+            # Resource not in state - check if bucket exists on Hetzner
             if ! AWS_ACCESS_KEY_ID="$HZ_ACCESS_KEY" \
                AWS_SECRET_ACCESS_KEY="$HZ_SECRET_KEY" \
                AWS_DEFAULT_REGION="eu-central-1" \
@@ -451,20 +451,12 @@ jobs:
               continue
             fi
 
-            echo "  $BUCKET: stale bucket found (not in state) - removing..."
-            AWS_ACCESS_KEY_ID="$HZ_ACCESS_KEY" \
-            AWS_SECRET_ACCESS_KEY="$HZ_SECRET_KEY" \
-            AWS_DEFAULT_REGION="eu-central-1" \
-            aws s3 rm "s3://${BUCKET}" --recursive \
-              --endpoint-url="$HZ_ENDPOINT" 2>/dev/null || true
-            if AWS_ACCESS_KEY_ID="$HZ_ACCESS_KEY" \
-               AWS_SECRET_ACCESS_KEY="$HZ_SECRET_KEY" \
-               AWS_DEFAULT_REGION="eu-central-1" \
-               aws s3api delete-bucket --bucket "$BUCKET" \
-               --endpoint-url="$HZ_ENDPOINT" 2>/dev/null; then
-              echo "  ✅ $BUCKET deleted - Terraform will recreate it"
+            # Bucket exists but not in state — import it (preserves data)
+            echo "  $BUCKET: found on Hetzner, importing into state..."
+            if tofu import -var-file=config.tfvars "$RESOURCE" "$BUCKET" 2>/dev/null; then
+              echo "  ✅ $BUCKET imported into state (data preserved)"
             else
-              echo "  ⚠️  Could not delete $BUCKET - apply may fail"
+              echo "  ⚠️  Import failed for $BUCKET - tofu apply will handle it"
             fi
           done
 
