@@ -12,6 +12,10 @@ services:
   cloudbeaver:
     image: ${CLOUDBEAVER_IMAGE:-dbeaver/cloudbeaver:24}
     container_name: cloudbeaver
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "8978:8978"
     environment:
@@ -19,11 +23,11 @@ services:
       - CB_SERVER_URL=${CB_SERVER_URL:-}
       - CB_ADMIN_NAME=${CB_ADMIN_NAME:-}
       - CB_ADMIN_PASSWORD=${CB_ADMIN_PASSWORD:-}
+      - CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED=true
     volumes:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
     networks:
       - app-network
-    restart: unless-stopped
 
 volumes:
   cloudbeaver-data:
