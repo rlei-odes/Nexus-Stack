@@ -188,8 +188,12 @@ jobs:
             # Debug: show secret count (not values)
             SECRET_COUNT=$(echo "$SECRETS" | jq '.secrets | length' 2>/dev/null || echo "parse-error")
             echo "    Infisical returned: $SECRET_COUNT secrets"
-            if [ "$SECRET_COUNT" = "parse-error" ] || [ "$SECRET_COUNT" = "0" ] || [ "$SECRET_COUNT" = "null" ]; then
-              echo "    Response preview: $(echo "$SECRETS" | head -c 200)"
+            if [ "$SECRET_COUNT" = "parse-error" ]; then
+              echo "    Failed to parse Infisical response as JSON."
+              echo "    Response size: $(echo -n "$SECRETS" | wc -c) bytes"
+            elif [ "$SECRET_COUNT" = "0" ] || [ "$SECRET_COUNT" = "null" ]; then
+              echo "    No secrets found. Top-level keys:"
+              echo "$SECRETS" | jq -c 'keys' 2>/dev/null || echo "    (non-JSON response)"
             fi
 
             # Push each secret to Databricks
