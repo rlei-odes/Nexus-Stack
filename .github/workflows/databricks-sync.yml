@@ -98,7 +98,7 @@ jobs:
           echo "DATABRICKS_TOKEN=$DATABRICKS_TOKEN" >> "$GITHUB_ENV"
           echo "Databricks credentials loaded from KV"
 
-      - name: Read secrets from OpenTofu state
+      - name: Read secrets and push to Databricks
         run: |
           cd tofu/stack
           source ../.r2-credentials
@@ -115,13 +115,6 @@ jobs:
             exit 1
           fi
 
-          # Save to file for next step (avoid env var size limits)
-          umask 077
-          echo "$SECRETS_JSON" > /tmp/nexus-secrets.json
-          trap 'rm -f /tmp/nexus-secrets.json' EXIT
-
-      - name: Push secrets to Databricks
-        run: |
           SCOPE="nexus"
 
           # Create single scope (ignore if exists)
@@ -130,7 +123,6 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"scope\": \"${SCOPE}\"}" >/dev/null 2>&1 || true
 
-          SECRETS_JSON=$(cat /tmp/nexus-secrets.json)
           SYNC_OK=0
           SYNC_FAIL=0
 
