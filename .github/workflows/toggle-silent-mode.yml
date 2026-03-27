@@ -27,7 +27,7 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
         run: |
           D1_DB_NAME="nexus-${DOMAIN//./-}-db"
-          npx wrangler@latest d1 execute "$D1_DB_NAME" --remote \
+          npx wrangler@4 d1 execute "$D1_DB_NAME" --remote \
             --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('silent_mode', '${{ inputs.enabled }}', datetime('now'))"
 
           if [ "${{ inputs.enabled }}" = "true" ]; then
