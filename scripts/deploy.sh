@@ -525,7 +525,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "cloudbeaver"; then
 # Auto-generated from OpenTofu secrets - DO NOT COMMIT
 CB_SERVER_NAME=Nexus CloudBeaver
 CB_SERVER_URL=https://cloudbeaver.${DOMAIN}
-CB_ADMIN_NAME=$ADMIN_USERNAME
+CB_ADMIN_NAME=nexus-cloudbeaver
 CB_ADMIN_PASSWORD=$CLOUDBEAVER_PASS
 EOF
     echo -e "${GREEN}  ✓ CloudBeaver .env generated${NC}"
@@ -1784,7 +1784,7 @@ EOF
             "METABASE_PASSWORD" "$METABASE_PASS"
 
         build_folder "cloudbeaver" \
-            "CLOUDBEAVER_USERNAME" "$ADMIN_USERNAME" \
+            "CLOUDBEAVER_USERNAME" "nexus-cloudbeaver" \
             "CLOUDBEAVER_PASSWORD" "$CLOUDBEAVER_PASS"
 
         build_folder "mage" \
