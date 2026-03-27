@@ -243,6 +243,32 @@ variable "external_s3_label" {
   default     = "External Storage"
 }
 
+# =============================================================================
+# Cloudflare R2 Datalake (auto-created during setup)
+# =============================================================================
+# R2 bucket for data storage, auto-configured as primary Filestash backend.
+# Created by setup-control-plane, credentials stored as GitHub Secrets.
+
+variable "r2_data_access_key" {
+  description = "R2 data bucket access key (auto-generated during setup)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "r2_data_secret_key" {
+  description = "R2 data bucket secret key (auto-generated during setup)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "r2_data_bucket" {
+  description = "R2 data bucket name (auto-generated during setup)"
+  type        = string
+  default     = ""
+}
+
 variable "persistent_volume_id" {
   description = "Hetzner Cloud Volume ID for persistent storage (from control-plane output, 0 = no volume)"
   type        = number
