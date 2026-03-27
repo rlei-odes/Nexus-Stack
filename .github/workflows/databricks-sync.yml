@@ -116,7 +116,9 @@ jobs:
           fi
 
           # Save to file for next step (avoid env var size limits)
+          umask 077
           echo "$SECRETS_JSON" > /tmp/nexus-secrets.json
+          trap 'rm -f /tmp/nexus-secrets.json' EXIT
 
       - name: Push secrets to Databricks
         run: |
@@ -142,7 +144,7 @@ jobs:
             RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DATABRICKS_HOST}/api/2.0/secrets/put" \
               -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "{\"scope\":\"${SCOPE}\",\"key\":\"${KEY}\",\"string_value\":$(echo "$VALUE" | jq -Rs '.')}" 2>/dev/null)
+              -d "{\"scope\":\"${SCOPE}\",\"key\":\"${KEY}\",\"string_value\":$(printf '%s' "$VALUE" | jq -Rs '.')}" 2>/dev/null)
 
             if [ "$RESULT" = "200" ]; then
               echo "  ${KEY} -> OK"
