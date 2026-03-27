@@ -836,19 +836,43 @@ jobs:
           echo "  Generated wrangler.toml with bindings"
           cat wrangler.toml
           
-          # Deploy to production with D1 binding
+          # Deploy to production with D1 + optional KV bindings (with retry for Cloudflare API timeouts)
           # --commit-dirty=true suppresses warning about uncommitted wrangler.toml
           # --commit-message prevents UTF-8 issues with git commit messages
-          npx wrangler@4 pages deploy . \
-            --project-name="$PROJECT_NAME" \
-            --branch=main \
-            --commit-dirty=true \
-            --commit-message="Deploy Control Plane"
-          
-          # Clean up generated wrangler.toml
+          DEPLOY_OK=false
+          for ATTEMPT in 1 2 3; do
+            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy . \
+              --project-name="$PROJECT_NAME" \
+              --branch=main \
+              --commit-dirty=true \
+              --commit-message="Deploy Control Plane" 2>&1) && {
+              DEPLOY_OK=true
+              break
+            }
+            echo "$DEPLOY_OUTPUT"
+            if echo "$DEPLOY_OUTPUT" | grep -q "504\|Gateway Timeout\|upstream request timeout"; then
+              if [ "$ATTEMPT" -lt 3 ]; then
+                echo "⚠️  Cloudflare timeout on attempt $ATTEMPT - retrying in 15s..."
+                sleep 15
+              fi
+            else
+              echo "❌ Deploy failed (non-timeout error) - not retrying"
+              break
+            fi
+          done
+
           rm wrangler.toml
-          
-          echo "✅ Control Plane deployed with D1 bindings!"
+
+          if [ "$DEPLOY_OK" = "true" ]; then
+            if [ -n "$KV_NAMESPACE_ID" ]; then
+              echo "✅ Control Plane deployed with D1 + KV bindings!"
+            else
+              echo "✅ Control Plane deployed with D1 bindings!"
+            fi
+          else
+            echo "❌ Control Plane deploy failed after 3 attempts"
+            exit 1
+          fi
 
       - name: Show setup info
         run: |

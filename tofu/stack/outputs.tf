@@ -231,7 +231,7 @@ output "secrets" {
     hetzner_s3_region         = var.hetzner_object_storage_region
     hetzner_s3_access_key     = var.hetzner_object_storage_access_key
     hetzner_s3_secret_key     = var.hetzner_object_storage_secret_key
-    hetzner_s3_bucket         = var.hetzner_s3_bucket
+    hetzner_s3_bucket_lakefs  = var.hetzner_s3_bucket
     hetzner_s3_bucket_general = var.hetzner_s3_bucket_general
 
     # External S3 (optional - for Filestash multi-backend)

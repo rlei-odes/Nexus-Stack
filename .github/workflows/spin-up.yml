@@ -629,16 +629,38 @@ jobs:
 
           sed -i 's/^          //' wrangler.toml
           
-          # Redeploy to production
+          # Redeploy to production (with retry for Cloudflare API timeouts)
           # --commit-message prevents UTF-8 issues with git commit messages
-          npx wrangler@4 pages deploy . \
-            --project-name="$PAGES_PROJECT" \
-            --branch=main \
-            --commit-dirty=true \
-            --commit-message="Redeploy with secrets"
-          
+          DEPLOY_OK=false
+          for ATTEMPT in 1 2 3; do
+            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy . \
+              --project-name="$PAGES_PROJECT" \
+              --branch=main \
+              --commit-dirty=true \
+              --commit-message="Redeploy with secrets" 2>&1) && {
+              DEPLOY_OK=true
+              break
+            }
+            echo "$DEPLOY_OUTPUT"
+            if echo "$DEPLOY_OUTPUT" | grep -q "504\|Gateway Timeout\|upstream request timeout"; then
+              if [ "$ATTEMPT" -lt 3 ]; then
+                echo "⚠️  Cloudflare timeout on attempt $ATTEMPT - retrying in 15s..."
+                sleep 15
+              fi
+            else
+              echo "❌ Deploy failed (non-timeout error) - not retrying"
+              break
+            fi
+          done
+
           rm wrangler.toml
-          echo "✅ Control Plane redeployed with new secrets!"
+
+          if [ "$DEPLOY_OK" = "true" ]; then
+            echo "✅ Control Plane redeployed with new secrets!"
+          else
+            echo "❌ Control Plane redeploy failed after 3 attempts"
+            exit 1
+          fi
 
       - name: Collect debug logs
         if: always()
