@@ -641,8 +641,10 @@ jobs:
               DEPLOY_OK=true
               break
             fi
-            echo "⚠️  Deploy attempt $ATTEMPT failed - retrying in 15s..."
-            sleep 15
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "⚠️  Deploy attempt $ATTEMPT failed - retrying in 15s..."
+              sleep 15
+            fi
           done
 
           rm wrangler.toml

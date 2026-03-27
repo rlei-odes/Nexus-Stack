@@ -836,7 +836,7 @@ jobs:
           echo "  Generated wrangler.toml with bindings"
           cat wrangler.toml
           
-          # Deploy to production with D1 binding (with retry for Cloudflare API timeouts)
+          # Deploy to production with D1 + optional KV bindings (with retry for Cloudflare API timeouts)
           # --commit-dirty=true suppresses warning about uncommitted wrangler.toml
           # --commit-message prevents UTF-8 issues with git commit messages
           DEPLOY_OK=false
@@ -849,14 +849,20 @@ jobs:
               DEPLOY_OK=true
               break
             fi
-            echo "⚠️  Deploy attempt $ATTEMPT failed - retrying in 15s..."
-            sleep 15
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "⚠️  Deploy attempt $ATTEMPT failed - retrying in 15s..."
+              sleep 15
+            fi
           done
 
           rm wrangler.toml
 
           if [ "$DEPLOY_OK" = "true" ]; then
-            echo "✅ Control Plane deployed with D1 + KV bindings!"
+            if [ -n "$KV_NAMESPACE_ID" ]; then
+              echo "✅ Control Plane deployed with D1 + KV bindings!"
+            else
+              echo "✅ Control Plane deployed with D1 bindings!"
+            fi
           else
             echo "❌ Control Plane deploy failed after 3 attempts"
             exit 1
