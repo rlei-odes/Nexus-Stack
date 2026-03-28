@@ -152,19 +152,33 @@ jobs:
 
           # Initialize Nexus Stack state
           cd tofu/stack
-          if ! tofu init -backend-config=../backend.hcl; then
-            echo "⚠️  Failed to initialize Nexus Stack backend — state may already be empty"
-            echo "SKIP_TOFU_DESTROY=true" >> "$GITHUB_ENV"
-            exit 0
+          INIT_OUTPUT=$(tofu init -backend-config=../backend.hcl 2>&1) && INIT_OK=true || INIT_OK=false
+          if [ "$INIT_OK" = "false" ]; then
+            if echo "$INIT_OUTPUT" | grep -qi "NoSuchBucket\|bucket does not exist"; then
+              echo "⚠️  R2 state bucket not found — state already empty, skipping destroy"
+              echo "SKIP_TOFU_DESTROY=true" >> "$GITHUB_ENV"
+              exit 0
+            else
+              echo "❌ Failed to initialize Nexus Stack backend:"
+              echo "$INIT_OUTPUT"
+              exit 1
+            fi
           fi
           echo "✅ Nexus Stack backend initialized"
 
           # Initialize Control Plane state
           cd ../control-plane
-          if ! tofu init -backend-config=../backend.hcl; then
-            echo "⚠️  Failed to initialize Control Plane backend — state may already be empty"
-            echo "SKIP_TOFU_DESTROY=true" >> "$GITHUB_ENV"
-            exit 0
+          INIT_OUTPUT=$(tofu init -backend-config=../backend.hcl 2>&1) && INIT_OK=true || INIT_OK=false
+          if [ "$INIT_OK" = "false" ]; then
+            if echo "$INIT_OUTPUT" | grep -qi "NoSuchBucket\|bucket does not exist"; then
+              echo "⚠️  R2 state bucket not found — state already empty, skipping destroy"
+              echo "SKIP_TOFU_DESTROY=true" >> "$GITHUB_ENV"
+              exit 0
+            else
+              echo "❌ Failed to initialize Control Plane backend:"
+              echo "$INIT_OUTPUT"
+              exit 1
+            fi
           fi
           echo "✅ Control Plane backend initialized"
 

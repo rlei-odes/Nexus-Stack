@@ -871,11 +871,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
 
         # R2 Datalake (primary if configured)
         if [ "$HAS_R2" = "true" ]; then
-            CONNECTIONS=$(echo "$CONNECTIONS" | jq '. + [{"type":"s3","label":"Cloudflare R2"}]')
+            CONNECTIONS=$(echo "$CONNECTIONS" | jq '. + [{"type":"s3","label":"R2 Datalake"}]')
             PARAMS=$(echo "$PARAMS" | jq --arg ak "$R2_DATA_ACCESS_KEY" --arg sk "$R2_DATA_SECRET_KEY" \
                 --arg ep "$R2_DATA_ENDPOINT" --arg bk "$R2_DATA_BUCKET" \
-                '. + {"Cloudflare R2":{"type":"s3","access_key_id":$ak,"secret_access_key":$sk,"endpoint":$ep,"region":"auto","path":("/"+$bk+"/")}}')
-            RELATED_BACKEND="Cloudflare R2"
+                '. + {"R2 Datalake":{"type":"s3","access_key_id":$ak,"secret_access_key":$sk,"endpoint":$ep,"region":"auto","path":("/"+$bk+"/")}}')
+            RELATED_BACKEND="R2 Datalake"
         fi
 
         # Hetzner Storage
