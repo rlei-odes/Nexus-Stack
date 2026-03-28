@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.29.0...v0.30.0) (2026-03-28)
+
+
+### 🚀 Features
+
+* Add R2 datalake bucket with auto-Filestash integration ([a74fd1f](https://github.com/stefanko-ch/Nexus-Stack/commit/a74fd1fb58e5a606b766ac863c087964bbf5c026))
+* Add R2 datalake bucket with auto-Filestash integration ([1e53fdf](https://github.com/stefanko-ch/Nexus-Stack/commit/1e53fdf8440bbcb4444adbdd839e00d43aa7d1ee))
+
+
+### 🐛 Bug Fixes
+
+* Address remaining PR review comments ([944d63c](https://github.com/stefanko-ch/Nexus-Stack/commit/944d63c058b2912e04b5c0fcbcb63e3d2ed9a686))
+* **ci:** Ensure R2 state bucket exists before tofu init and harden error handling ([1b0a3c7](https://github.com/stefanko-ch/Nexus-Stack/commit/1b0a3c7030d58fe2e9fd802608a6d8ade771fba8))
+* **ci:** Gracefully handle missing R2 credentials in destroy-all ([9503182](https://github.com/stefanko-ch/Nexus-Stack/commit/950318229a1821b0954154055d0217773f79af18))
+* **ci:** Keep R2 state credentials across destroy-all ([052fa46](https://github.com/stefanko-ch/Nexus-Stack/commit/052fa4644ab13ea0530b15f4a2268e7383210ce3))
+* **ci:** Preserve R2 state bucket across destroy-all ([09aceec](https://github.com/stefanko-ch/Nexus-Stack/commit/09aceeca8f78bc15e9314731a8b981f575acb7c5))
+* Pass R2 data credentials from setup to spin-up for first-run ([b21722e](https://github.com/stefanko-ch/Nexus-Stack/commit/b21722ea9424d7cb39a010fc8bb48ccce51d3fd0))
+* Update post-startup Filestash config to include R2 as primary ([6424675](https://github.com/stefanko-ch/Nexus-Stack/commit/64246750abace19566f1d28ceaf7ae1e4b9ed9e1))
+
 ## [0.29.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.28.1...v0.29.0) (2026-03-27)
 
 
