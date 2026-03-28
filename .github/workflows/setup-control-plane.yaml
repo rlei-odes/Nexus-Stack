@@ -10,6 +10,15 @@ on:
       r2_secret_access_key:
         description: 'R2 Secret Access Key (for spin-up workflow)'
         value: ${{ jobs.deploy.outputs.r2_secret_access_key }}
+      r2_data_access_key:
+        description: 'R2 Data Bucket Access Key (for spin-up workflow)'
+        value: ${{ jobs.deploy.outputs.r2_data_access_key }}
+      r2_data_secret_key:
+        description: 'R2 Data Bucket Secret Key (for spin-up workflow)'
+        value: ${{ jobs.deploy.outputs.r2_data_secret_key }}
+      r2_data_bucket:
+        description: 'R2 Data Bucket Name (for spin-up workflow)'
+        value: ${{ jobs.deploy.outputs.r2_data_bucket }}
       ssh_pubkey:
         description: 'SSH Public Key (for spin-up workflow)'
         value: ${{ jobs.deploy.outputs.ssh_pubkey }}
@@ -31,6 +40,9 @@ jobs:
     outputs:
       r2_access_key_id: ${{ steps.r2_credentials.outputs.r2_access_key_id }}
       r2_secret_access_key: ${{ steps.r2_credentials.outputs.r2_secret_access_key }}
+      r2_data_access_key: ${{ steps.r2_data.outputs.r2_data_access_key }}
+      r2_data_secret_key: ${{ steps.r2_data.outputs.r2_data_secret_key }}
+      r2_data_bucket: ${{ steps.r2_data.outputs.r2_data_bucket }}
       ssh_pubkey: ${{ steps.ssh_key.outputs.ssh_pubkey }}
       ssh_private_key: ${{ steps.ssh_key.outputs.ssh_private_key }}
     env:
@@ -362,13 +374,49 @@ jobs:
           echo "r2_secret_access_key=$R2_SECRET_ACCESS_KEY" >> $GITHUB_OUTPUT
           echo "✅ R2 credentials exported for spin-up workflow"
 
+      - name: Ensure R2 state bucket exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # After a destroy-all the R2 state bucket may have been deleted while
+          # credentials still exist in GitHub Secrets. Ensure the bucket is present
+          # before tofu init attempts to use it.
+          BUCKET_NAME=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')-terraform-state
+          R2_API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}"
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${R2_API}/r2/buckets/${BUCKET_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ R2 state bucket exists: $BUCKET_NAME"
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "  Bucket not found — creating $BUCKET_NAME..."
+            CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${R2_API}/r2/buckets" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${BUCKET_NAME}\"}")
+            CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -n1)
+            CREATE_BODY=$(echo "$CREATE_RESPONSE" | sed '$d')
+            if [ "$CREATE_HTTP" != "200" ] || ! echo "$CREATE_BODY" | jq -e '.success == true' >/dev/null 2>&1; then
+              echo "❌ Failed to create R2 state bucket (HTTP $CREATE_HTTP)"
+              echo "$CREATE_BODY" | jq -r '.errors[0].message // "unknown"' 2>/dev/null
+              exit 1
+            fi
+            echo "✅ R2 state bucket created: $BUCKET_NAME"
+          else
+            echo "❌ Unexpected HTTP $HTTP_CODE when checking R2 state bucket"
+            exit 1
+          fi
+
       - name: Initialize OpenTofu for Control Plane
         run: |
           cd tofu/control-plane
           source ../.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-          
+
           # Create backend config for control-plane with dynamic bucket name
           BUCKET_NAME=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')-terraform-state
           cat > backend.hcl << EOF
@@ -378,7 +426,7 @@ jobs:
           bucket = "${BUCKET_NAME}"
           EOF
           sed -i 's/^          //' backend.hcl
-          
+
           tofu init -backend-config=backend.hcl
 
       - name: Clean up orphaned Hetzner Object Storage buckets
@@ -594,6 +642,129 @@ jobs:
           tofu apply -var-file=config.tfvars -auto-approve
 
           echo "✅ Control Plane infrastructure deployed"
+
+      - name: Create R2 datalake bucket and credentials
+        id: r2_data
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+        run: |
+          DOMAIN_SLUG=$(echo "$DOMAIN" | tr '.' '-')
+          BUCKET_NAME="nexus-${DOMAIN_SLUG}-data"
+          R2_API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}"
+          TOKEN_NAME="nexus-r2-data-${DOMAIN_SLUG}"
+
+          echo "🪣 Setting up R2 datalake bucket: $BUCKET_NAME"
+
+          # Check if bucket already exists
+          BUCKET_CHECK=$(curl -s -w "\n%{http_code}" \
+            "${R2_API}/r2/buckets/${BUCKET_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+          HTTP_CODE=$(echo "$BUCKET_CHECK" | tail -n1)
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "  ✅ Bucket already exists"
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "  Creating bucket..."
+            CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${R2_API}/r2/buckets" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${BUCKET_NAME}\"}")
+            CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -n1)
+            CREATE_BODY=$(echo "$CREATE_RESPONSE" | sed '$d')
+            if [ "$CREATE_HTTP" != "200" ]; then
+              echo "  ❌ Bucket creation failed (HTTP $CREATE_HTTP): $(echo "$CREATE_BODY" | jq -r '.errors[0].message // "unknown"')"
+              exit 1
+            fi
+            if echo "$CREATE_BODY" | jq -e '.success == true' >/dev/null 2>&1; then
+              echo "  ✅ Bucket created"
+            else
+              echo "  ❌ Bucket creation failed: $(echo "$CREATE_BODY" | jq -r '.errors[0].message // "unknown"')"
+              exit 1
+            fi
+          else
+            echo "  ❌ Failed to check bucket existence (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          # Check if API token already exists (reuse if so)
+          EXISTING_TOKEN_ID=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            | jq -r --arg name "$TOKEN_NAME" '.result[] | select(.name == $name) | .id' | head -1)
+
+          if [ -n "$EXISTING_TOKEN_ID" ]; then
+            echo "  Deleting existing R2 data token to recreate..."
+            curl -sf -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$EXISTING_TOKEN_ID" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" >/dev/null 2>&1 || true
+          fi
+
+          # Create dedicated API token for data bucket
+          echo "  Creating R2 data API token..."
+          TOKEN_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/user/tokens" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"name\": \"${TOKEN_NAME}\",
+              \"policies\": [{
+                \"effect\": \"allow\",
+                \"resources\": {\"com.cloudflare.api.account.${CLOUDFLARE_ACCOUNT_ID}\": \"*\"},
+                \"permission_groups\": [{
+                  \"id\": \"bf7481a1826f439697cb59a20b22293e\",
+                  \"name\": \"Workers R2 Storage Write\"
+                }]
+              }]
+            }")
+
+          TOKEN_ID=$(echo "$TOKEN_RESULT" | jq -r '.result.id // empty')
+          TOKEN_VALUE=$(echo "$TOKEN_RESULT" | jq -r '.result.value // empty')
+
+          if [ -z "$TOKEN_ID" ] || [ -z "$TOKEN_VALUE" ]; then
+            echo "  ❌ Failed to create R2 data token"
+            echo "  Response from Cloudflare API:"
+            echo "$TOKEN_RESULT"
+            exit 1
+          fi
+
+          # Derive S3-compatible credentials
+          SECRET_KEY=$(echo -n "$TOKEN_VALUE" | openssl dgst -sha256 | awk '{print $2}')
+
+          echo "  ✅ R2 data token created"
+
+          # Store credentials as GitHub Secrets
+          if [ -n "$GH_TOKEN" ]; then
+            echo "  Saving R2 data credentials to GitHub Secrets..."
+            SAVE_FAILED=0
+
+            if ! gh secret set R2_DATA_ACCESS_KEY_ID -b "$TOKEN_ID"; then
+              echo "  ❌ Failed to save R2_DATA_ACCESS_KEY_ID to GitHub Secrets"
+              SAVE_FAILED=1
+            fi
+            if ! gh secret set R2_DATA_SECRET_ACCESS_KEY -b "$SECRET_KEY"; then
+              echo "  ❌ Failed to save R2_DATA_SECRET_ACCESS_KEY to GitHub Secrets"
+              SAVE_FAILED=1
+            fi
+            if ! gh secret set R2_DATA_BUCKET -b "$BUCKET_NAME"; then
+              echo "  ❌ Failed to save R2_DATA_BUCKET to GitHub Secrets"
+              SAVE_FAILED=1
+            fi
+
+            if [ "$SAVE_FAILED" -eq 0 ]; then
+              echo "  ✅ R2 data credentials saved to GitHub Secrets"
+            else
+              echo "  ❌ One or more R2 data credentials could not be saved to GitHub Secrets"
+              exit 1
+            fi
+          else
+            echo "  ⚠️  GH_SECRETS_TOKEN not set - R2 data credentials not saved to GitHub Secrets"
+            echo "     Credentials are still available for this run via workflow outputs."
+          fi
+
+          # Set outputs for downstream jobs (initial-setup passes these to spin-up)
+          echo "r2_data_access_key=$TOKEN_ID" >> "$GITHUB_OUTPUT"
+          echo "r2_data_secret_key=$SECRET_KEY" >> "$GITHUB_OUTPUT"
+          echo "r2_data_bucket=$BUCKET_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Set Scheduled Teardown Worker secrets
         env:

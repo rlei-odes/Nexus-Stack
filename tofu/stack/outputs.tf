@@ -242,6 +242,12 @@ output "secrets" {
     external_s3_bucket     = var.external_s3_bucket
     external_s3_label      = var.external_s3_label
 
+    # Cloudflare R2 Datalake
+    r2_data_endpoint   = "https://${var.cloudflare_account_id}.r2.cloudflarestorage.com"
+    r2_data_access_key = var.r2_data_access_key
+    r2_data_secret_key = var.r2_data_secret_key
+    r2_data_bucket     = var.r2_data_bucket
+
     # Docker Hub (optional)
     dockerhub_username = var.dockerhub_username
     dockerhub_token    = var.dockerhub_token

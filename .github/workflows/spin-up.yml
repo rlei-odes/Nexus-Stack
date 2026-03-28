@@ -33,6 +33,18 @@ on:
         description: 'R2 Secret Access Key (from setup-control-plane)'
         required: false
         type: string
+      r2_data_access_key:
+        description: 'R2 Data Bucket Access Key (from setup-control-plane)'
+        required: false
+        type: string
+      r2_data_secret_key:
+        description: 'R2 Data Bucket Secret Key (from setup-control-plane)'
+        required: false
+        type: string
+      r2_data_bucket:
+        description: 'R2 Data Bucket Name (from setup-control-plane)'
+        required: false
+        type: string
       ssh_pubkey:
         description: 'SSH Public Key (from setup-control-plane)'
         required: false
@@ -74,8 +86,19 @@ jobs:
       TF_VAR_external_s3_secret_key: ${{ secrets.EXTERNAL_S3_SECRET_KEY }}
       TF_VAR_external_s3_bucket: ${{ secrets.EXTERNAL_S3_BUCKET }}
       TF_VAR_external_s3_label: ${{ secrets.EXTERNAL_S3_LABEL }}
+      # R2 Datalake (auto-created during setup, inputs override secrets for first-run)
+      TF_VAR_r2_data_access_key: ${{ inputs.r2_data_access_key || secrets.R2_DATA_ACCESS_KEY_ID }}
+      TF_VAR_r2_data_secret_key: ${{ inputs.r2_data_secret_key || secrets.R2_DATA_SECRET_ACCESS_KEY }}
+      TF_VAR_r2_data_bucket: ${{ inputs.r2_data_bucket || secrets.R2_DATA_BUCKET }}
 
     steps:
+      - name: Mask R2 data credentials from inputs
+        if: inputs.r2_data_access_key != ''
+        run: |
+          echo "::add-mask::${{ inputs.r2_data_access_key }}"
+          echo "::add-mask::${{ inputs.r2_data_secret_key }}"
+          echo "::add-mask::${{ inputs.r2_data_bucket }}"
+
       - name: Checkout
         uses: actions/checkout@v5
 
