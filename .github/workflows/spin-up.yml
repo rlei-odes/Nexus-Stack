@@ -92,6 +92,13 @@ jobs:
       TF_VAR_r2_data_bucket: ${{ inputs.r2_data_bucket || secrets.R2_DATA_BUCKET }}
 
     steps:
+      - name: Mask R2 data credentials from inputs
+        if: inputs.r2_data_access_key != ''
+        run: |
+          echo "::add-mask::${{ inputs.r2_data_access_key }}"
+          echo "::add-mask::${{ inputs.r2_data_secret_key }}"
+          echo "::add-mask::${{ inputs.r2_data_bucket }}"
+
       - name: Checkout
         uses: actions/checkout@v5
 
