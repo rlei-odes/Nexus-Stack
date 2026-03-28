@@ -10,6 +10,15 @@ on:
       r2_secret_access_key:
         description: 'R2 Secret Access Key (for spin-up workflow)'
         value: ${{ jobs.deploy.outputs.r2_secret_access_key }}
+      r2_data_access_key:
+        description: 'R2 Data Bucket Access Key (for spin-up workflow)'
+        value: ${{ jobs.deploy.outputs.r2_data_access_key }}
+      r2_data_secret_key:
+        description: 'R2 Data Bucket Secret Key (for spin-up workflow)'
+        value: ${{ jobs.deploy.outputs.r2_data_secret_key }}
+      r2_data_bucket:
+        description: 'R2 Data Bucket Name (for spin-up workflow)'
+        value: ${{ jobs.deploy.outputs.r2_data_bucket }}
       ssh_pubkey:
         description: 'SSH Public Key (for spin-up workflow)'
         value: ${{ jobs.deploy.outputs.ssh_pubkey }}
@@ -31,6 +40,9 @@ jobs:
     outputs:
       r2_access_key_id: ${{ steps.r2_credentials.outputs.r2_access_key_id }}
       r2_secret_access_key: ${{ steps.r2_credentials.outputs.r2_secret_access_key }}
+      r2_data_access_key: ${{ steps.r2_data.outputs.r2_data_access_key }}
+      r2_data_secret_key: ${{ steps.r2_data.outputs.r2_data_secret_key }}
+      r2_data_bucket: ${{ steps.r2_data.outputs.r2_data_bucket }}
       ssh_pubkey: ${{ steps.ssh_key.outputs.ssh_pubkey }}
       ssh_private_key: ${{ steps.ssh_key.outputs.ssh_private_key }}
     env:
@@ -596,6 +608,7 @@ jobs:
           echo "✅ Control Plane infrastructure deployed"
 
       - name: Create R2 datalake bucket and credentials
+        id: r2_data
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -681,6 +694,11 @@ jobs:
           else
             echo "  ⚠️  GH_SECRETS_TOKEN not set - R2 data credentials not saved"
           fi
+
+          # Set outputs for downstream jobs (initial-setup passes these to spin-up)
+          echo "r2_data_access_key=$TOKEN_ID" >> "$GITHUB_OUTPUT"
+          echo "r2_data_secret_key=$SECRET_KEY" >> "$GITHUB_OUTPUT"
+          echo "r2_data_bucket=$BUCKET_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Set Scheduled Teardown Worker secrets
         env:
