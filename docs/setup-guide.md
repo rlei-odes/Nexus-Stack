@@ -51,6 +51,18 @@ This guide walks you through the complete setup of Nexus Stack.
    - **Zone ID** (right sidebar)
    - **Account ID** (right sidebar)
 
+### Enable Services R2, Workers and Zero Trust
+
+
+1. In the left sidebar, go to **Storage & Databases** → **R2 Object Storage**
+2. Click **"Enable R2"** and complete the checkout flow (free tier is sufficient)
+3. In the left sidebar, go to Workers & Pages
+4. If this is your first visit, you will be prompted to create a *.workers.dev subdomain
+5. Choose a subdomain name and click "Set up"
+6. In the left sidebar, go to Zero Trust
+7. Click "Get Started", enter a team name, purchase the free plan
+
+
 ### Create API Token
 
 1. Go to **My Profile** → **API Tokens**
@@ -66,19 +78,23 @@ This guide walks you through the complete setup of Nexus Stack.
    | Account | Access: Service Tokens | Edit |
    | Account | Access: Organizations, Identity Providers, and Groups | Edit |
    | Account | Workers R2 Storage | Edit |
+   | Account | Workers KV Storage | Edit |
    | Account | D1 | Edit |
    | Account | Workers Scripts | Edit |
    | Account | Cloudflare Pages | Edit |
+   | User | API Tokens | Edit |
    | Zone | DNS | Edit |
    | Zone | Zone | Read |
 
    > **Note:** 
    > - "Workers R2 Storage" is required for the remote state backend
+   > - "Workers KV Storage" is required for the Workers KV namespace
    > - "D1" is required for the database used by the Control Plane
    > - "Workers Scripts" is required for the scheduled teardown worker
    > - "Cloudflare Pages" is required for the Control Plane
    > - "Access: Organizations" is required for revoking Zero Trust sessions during teardown
    > - "Access: Service Tokens" enables headless SSH authentication for CI/CD
+   > - "User API Tokens" is required for the init script to create scoped R2 credentials
 
 6. **Account Resources:** Include → All accounts (or specific)
 7. **Zone Resources:** Include → Specific Zone → Your domain
