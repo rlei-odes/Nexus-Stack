@@ -245,7 +245,7 @@ jobs:
           # Stack config (emails from secrets)
           cat > tofu/stack/config.tfvars << EOF
           server_type     = "cax31"
-          server_location = "fsn1"
+          server_location = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
           server_image    = "ubuntu-24.04"
 
           ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
@@ -275,8 +275,8 @@ jobs:
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
           tofu init -backend-config=../backend.hcl >/dev/null 2>&1 || true
-          HETZNER_S3_SERVER=$(tofu output -raw hetzner_s3_server 2>/dev/null || echo "fsn1.your-objectstorage.com")
-          HETZNER_S3_REGION=$(tofu output -raw hetzner_s3_region 2>/dev/null || echo "fsn1")
+          HETZNER_S3_SERVER=$(tofu output -raw hetzner_s3_server 2>/dev/null || echo "${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.HETZNER_S3_LOCATION || 'fsn1') }}")
+          HETZNER_S3_REGION=$(tofu output -raw hetzner_s3_region 2>/dev/null || echo "${{ vars.HETZNER_S3_LOCATION || 'fsn1' }}")
           HETZNER_S3_BUCKET=$(tofu output -raw hetzner_s3_bucket 2>/dev/null || echo "")
           HETZNER_S3_BUCKET_GENERAL=$(tofu output -raw hetzner_s3_bucket_general 2>/dev/null || echo "")
           PERSISTENT_VOLUME_ID=$(tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
@@ -518,7 +518,7 @@ jobs:
           
           # Server config values
           SERVER_TYPE="cax31"
-          SERVER_LOCATION="fsn1"
+          SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'fsn1' }}"
           
           # Escape values for safe SQL insertion (single quotes doubled)
           ESCAPED_SERVER_TYPE=${SERVER_TYPE//\'/\'\'}
