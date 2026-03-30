@@ -67,6 +67,7 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     networks:
+      - app-network
       - grafana-internal
 
   # ---------------------------------------------------------------------------

@@ -71,6 +71,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | Redpanda Console | `redpandadata/console` | `v2.8` | Minor |
 | Redpanda Connect | `redpandadata/connect` | `latest` | Latest ² |
 | Redpanda Datagen | `redpandadata/connect` | `latest` | Latest ² |
+| RisingWave | `risingwavelabs/risingwave` | `v2.8.1` | Exact ¹ |
 | Soda Core | `soda-core-arm64` | `3.3.7` | Exact ³ |
 | Spark Master | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
@@ -142,6 +143,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **Redpanda Console** | Redpanda web UI | [redpanda-console.md](redpanda-console.md) |
 | **Redpanda Connect** | Stream processing framework | [redpanda-connect.md](redpanda-connect.md) |
 | **Redpanda Datagen** | Test data generator | [redpanda-datagen.md](redpanda-datagen.md) |
+| **RisingWave** | Streaming SQL database | [risingwave.md](risingwave.md) |
 | **RustFS** | Rust-based S3-compatible storage | [rustfs.md](rustfs.md) |
 | **S3 Manager** | S3 bucket browser | [s3manager.md](s3manager.md) |
 | **SeaweedFS** | Distributed object storage | [seaweedfs.md](seaweedfs.md) |
@@ -183,6 +185,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 | **RedPanda** (Kafka) | 9092 | `redpanda.<domain>` | Kafka |
 | **RedPanda** (Schema Registry) | 8081 | `redpanda-schema-registry.<domain>` | HTTP |
 | **RustFS** (S3 API) | 9003 | `rustfs-s3.<domain>` | S3/HTTP |
+| **RisingWave** (PostgreSQL) | 4566 | `risingwave.<domain>` | PostgreSQL |
 | **SeaweedFS** (S3 API) | 8333 | `seaweedfs-s3.<domain>` | S3/HTTP |
 
 ### Connection Examples
@@ -205,7 +208,7 @@ aws s3 ls --endpoint-url http://s3.yourdomain.com:9000
 
 - **Auto-Reset on Teardown:** All firewall rules are automatically reset (`enabled = 0`) when the infrastructure is torn down. Ports must be explicitly re-opened after each Spin Up.
 - **Source IP Restriction:** Each rule supports optional source IP/CIDR restriction. Open to all (`0.0.0.0/0`) if not specified.
-- **Service Authentication:** All exposed services have their own auth (PostgreSQL passwords, Kafka SASL, MinIO access keys).
+- **Service Authentication:** Most exposed services have their own auth (PostgreSQL passwords, Kafka SASL, MinIO access keys). **Exception:** RisingWave has no built-in authentication in single-node mode; restrict source IPs when opening port 4566.
 - **fail2ban:** Installed on the server, provides brute-force protection for opened ports.
 - **Pre-defined Ports Only:** Only ports defined in `services.yaml` under `tcp_ports` can be opened. No arbitrary port numbers.
 

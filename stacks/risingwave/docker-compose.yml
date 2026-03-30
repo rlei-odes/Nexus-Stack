@@ -1,0 +1,48 @@
+# =============================================================================
+# RisingWave - Streaming SQL Database
+# =============================================================================
+# PostgreSQL-compatible streaming database for real-time analytics.
+# Processes streaming data with materialized views using standard SQL.
+#
+# Access: https://risingwave.YOUR_DOMAIN (Dashboard UI)
+# PostgreSQL: Port 4566 (for psql, Adminer, JDBC clients)
+#
+# No authentication by default; HTTP dashboard is expected to be behind Cloudflare Access, while
+# PostgreSQL port 4566 is restricted via Hetzner firewall/IP allowlisting.
+#
+# Documentation: https://docs.risingwave.com
+# =============================================================================
+
+services:
+  risingwave:
+    image: ${IMAGE_RISINGWAVE:-risingwavelabs/risingwave:v2.8.1}
+    container_name: risingwave
+    restart: unless-stopped
+    command:
+      - "single_node"
+      - "--prometheus-listener-addr"
+      - "0.0.0.0:1250"
+      - "--prometheus-endpoint"
+      - "http://prometheus:9090"
+    ports:
+      - "4566:4566"
+      - "5691:5691"
+    expose:
+      - "1250"
+    volumes:
+      - risingwave-data:/risingwave
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h localhost -p 4566 -U root -d dev -c 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  risingwave-data:
+
+networks:
+  app-network:
+    external: true
