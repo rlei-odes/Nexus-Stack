@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.30.0...v0.31.0) (2026-03-30)
+
+
+### 🚀 Features
+
+* **stacks:** Add RisingWave streaming database ([cfe4862](https://github.com/stefanko-ch/Nexus-Stack/commit/cfe486238f9b6f0a7fd8da782da43f2b5f21023e))
+* **stacks:** Add RisingWave streaming database ([a9d3868](https://github.com/stefanko-ch/Nexus-Stack/commit/a9d386877a04c184f1b4b0a2d3c8aad30de22534)), closes [#284](https://github.com/stefanko-ch/Nexus-Stack/issues/284)
+
+
+### 🐛 Bug Fixes
+
+* Address PR review comments for RisingWave stack ([0889d1a](https://github.com/stefanko-ch/Nexus-Stack/commit/0889d1adeb0bae8aca713672933ae3480d86440c))
+* **stacks:** Connect RisingWave dashboard to Prometheus ([e3e4ca1](https://github.com/stefanko-ch/Nexus-Stack/commit/e3e4ca1b6fab1176772fd04e830e25abbb2e496a))
+
+
+### 📚 Documentation
+
+* Add missing Cloudflare setup steps to setup guide ([3e15af9](https://github.com/stefanko-ch/Nexus-Stack/commit/3e15af9f4b38a737547b21dd794a13464cc3da29))
+* Add missing Cloudflare setup steps to setup guide ([2832ba1](https://github.com/stefanko-ch/Nexus-Stack/commit/2832ba11fa4db77f9ca1e7c354f6a48a9be24150))
+* **stacks:** Add Prometheus monitoring info to RisingWave docs ([bde8337](https://github.com/stefanko-ch/Nexus-Stack/commit/bde833739cc14fba70c71c1654682fb62c29f27c))
+
 ## [0.30.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.29.0...v0.30.0) (2026-03-28)
 
 
