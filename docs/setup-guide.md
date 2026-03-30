@@ -135,7 +135,7 @@ Add these secrets to your GitHub repository:
 
 | Variable Name | Default | Description |
 |---------------|---------|-------------|
-| `SERVER_LOCATION` | `nbg1` | Hetzner datacenter region for the VM (`nbg1`, `fsn1`, `hel1`). Change if your preferred region has availability issues. |
+| `SERVER_LOCATION` | `fsn1` | Hetzner datacenter region for the VM (`fsn1`, `nbg1`, `hel1`). Change if your preferred region has availability issues. |
 | `HETZNER_S3_LOCATION` | `fsn1` | Hetzner Object Storage region (independent from server location). Propagated to OpenTofu and all S3 operations automatically. Only change if your buckets are in a different region. |
 
 > **Note:** Hetzner ARM servers (`cax*`) have limited availability and may not be available in all regions at all times. If deployment fails with `resource_unavailable`, try a different region by changing `SERVER_LOCATION`. Common availability: `fsn1` (Falkenstein) and `nbg1` (Nuremberg) usually have the best ARM stock, `hel1` (Helsinki) can be an alternative.

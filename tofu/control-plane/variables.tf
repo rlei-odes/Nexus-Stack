@@ -45,7 +45,7 @@ variable "server_type" {
 variable "server_location" {
   description = "Hetzner datacenter location (passed to Control Plane for display)"
   type        = string
-  default     = "nbg1"
+  default     = "fsn1"
 }
 
 variable "github_owner" {
