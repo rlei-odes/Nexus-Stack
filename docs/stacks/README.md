@@ -71,6 +71,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | Redpanda Console | `redpandadata/console` | `v2.8` | Minor |
 | Redpanda Connect | `redpandadata/connect` | `latest` | Latest ² |
 | Redpanda Datagen | `redpandadata/connect` | `latest` | Latest ² |
+| RisingWave | `risingwavelabs/risingwave` | `v2.8.1` | Exact ¹ |
 | Soda Core | `soda-core-arm64` | `3.3.7` | Exact ³ |
 | Spark Master | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
@@ -142,6 +143,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **Redpanda Console** | Redpanda web UI | [redpanda-console.md](redpanda-console.md) |
 | **Redpanda Connect** | Stream processing framework | [redpanda-connect.md](redpanda-connect.md) |
 | **Redpanda Datagen** | Test data generator | [redpanda-datagen.md](redpanda-datagen.md) |
+| **RisingWave** | Streaming SQL database | [risingwave.md](risingwave.md) |
 | **RustFS** | Rust-based S3-compatible storage | [rustfs.md](rustfs.md) |
 | **S3 Manager** | S3 bucket browser | [s3manager.md](s3manager.md) |
 | **SeaweedFS** | Distributed object storage | [seaweedfs.md](seaweedfs.md) |

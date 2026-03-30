@@ -397,6 +397,15 @@ services:
     description: "Test data generator for Redpanda topics."
     image: "redpandadata/connect:4.43.0"
 
+  risingwave:
+    subdomain: "risingwave"
+    port: 5691
+    public: false
+    description: "PostgreSQL-compatible streaming database for real-time materialized views and stream processing."
+    image: "risingwavelabs/risingwave:v2.8.1"
+    tcp_ports:
+      postgres: 4566
+
   soda:
     port: 5002
     public: false
