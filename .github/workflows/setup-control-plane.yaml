@@ -602,10 +602,12 @@ jobs:
           DOMAIN="${{ secrets.DOMAIN }}"
           RESOURCE_PREFIX="nexus-${DOMAIN//./-}"
           HZ_SERVER="${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.HETZNER_S3_LOCATION || 'fsn1') }}"
+          # Derive region from server hostname (prefix before first dot) so overrides stay in sync
+          HZ_REGION="${HZ_SERVER%%.*}"
           HZ_ENDPOINT="https://${HZ_SERVER}"
           # Ensure OpenTofu MinIO provider uses the same server/region as HZ_ENDPOINT
           export TF_VAR_hetzner_object_storage_server="${HZ_SERVER}"
-          export TF_VAR_hetzner_object_storage_region="${{ vars.HETZNER_S3_LOCATION || 'fsn1' }}"
+          export TF_VAR_hetzner_object_storage_region="${HZ_REGION}"
           HZ_AK="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SK="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
 
