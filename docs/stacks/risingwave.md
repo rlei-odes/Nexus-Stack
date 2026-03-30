@@ -22,6 +22,7 @@ RisingWave is a cloud-native streaming database that uses SQL to process streami
 - **Dashboard:** Web UI for monitoring streaming jobs at port 5691
 - **PostgreSQL port:** 4566 for external clients (psql, Adminer, CloudBeaver, DBeaver, JDBC)
 - **Metrics port:** 1250 (Prometheus, scraped by Grafana stack automatically)
+- **Security:** In single-node mode, the PostgreSQL endpoint on port 4566 has no authentication. Do not expose this port to the public Internet; if you open firewall access, strictly allowlist trusted source IPs and keep the port closed otherwise.
 
 ### Usage
 

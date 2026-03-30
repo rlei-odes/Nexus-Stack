@@ -185,6 +185,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 | **RedPanda** (Kafka) | 9092 | `redpanda.<domain>` | Kafka |
 | **RedPanda** (Schema Registry) | 8081 | `redpanda-schema-registry.<domain>` | HTTP |
 | **RustFS** (S3 API) | 9003 | `rustfs-s3.<domain>` | S3/HTTP |
+| **RisingWave** (PostgreSQL) | 4566 | `risingwave.<domain>` | PostgreSQL |
 | **SeaweedFS** (S3 API) | 8333 | `seaweedfs-s3.<domain>` | S3/HTTP |
 
 ### Connection Examples
@@ -207,7 +208,7 @@ aws s3 ls --endpoint-url http://s3.yourdomain.com:9000
 
 - **Auto-Reset on Teardown:** All firewall rules are automatically reset (`enabled = 0`) when the infrastructure is torn down. Ports must be explicitly re-opened after each Spin Up.
 - **Source IP Restriction:** Each rule supports optional source IP/CIDR restriction. Open to all (`0.0.0.0/0`) if not specified.
-- **Service Authentication:** All exposed services have their own auth (PostgreSQL passwords, Kafka SASL, MinIO access keys).
+- **Service Authentication:** Most exposed services have their own auth (PostgreSQL passwords, Kafka SASL, MinIO access keys). **Exception:** RisingWave has no built-in authentication in single-node mode; restrict source IPs when opening port 4566.
 - **fail2ban:** Installed on the server, provides brute-force protection for opened ports.
 - **Pre-defined Ports Only:** Only ports defined in `services.yaml` under `tcp_ports` can be opened. No arbitrary port numbers.
 

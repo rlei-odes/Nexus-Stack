@@ -7,7 +7,8 @@
 # Access: https://risingwave.YOUR_DOMAIN (Dashboard UI)
 # PostgreSQL: Port 4566 (for psql, Adminer, JDBC clients)
 #
-# No authentication by default (protected by Cloudflare Access + Hetzner Firewall)
+# No authentication by default; HTTP dashboard is expected to be behind Cloudflare Access, while
+# PostgreSQL port 4566 is restricted via Hetzner firewall/IP allowlisting.
 #
 # Documentation: https://docs.risingwave.com
 # =============================================================================
@@ -22,11 +23,12 @@ services:
       - "--prometheus-listener-addr"
       - "0.0.0.0:1250"
       - "--prometheus-endpoint"
-      - "http://grafana-prometheus:9090"
+      - "http://prometheus:9090"
     ports:
       - "4566:4566"
       - "5691:5691"
-      - "1250:1250"
+    expose:
+      - "1250"
     volumes:
       - risingwave-data:/risingwave
     networks:
