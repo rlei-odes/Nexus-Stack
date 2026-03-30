@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.31.1...v0.31.2) (2026-03-30)
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Address PR review comments ([39a2263](https://github.com/stefanko-ch/Nexus-Stack/commit/39a2263446f01d0eb4025ddcf695020da03ab720))
+* **ci:** Fix worker secret conflicts and R2 credential error handling ([788be31](https://github.com/stefanko-ch/Nexus-Stack/commit/788be3119541f4109dcb1d798f4ebafd7e20c159))
+* **ci:** Fix worker secret conflicts and R2 credential error handling ([f296e5c](https://github.com/stefanko-ch/Nexus-Stack/commit/f296e5c85eca56165da375dda2e4c146a2177b04)), closes [#279](https://github.com/stefanko-ch/Nexus-Stack/issues/279) [#280](https://github.com/stefanko-ch/Nexus-Stack/issues/280)
+
 ## [0.31.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.31.0...v0.31.1) (2026-03-30)
 
 
