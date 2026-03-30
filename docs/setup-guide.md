@@ -136,7 +136,7 @@ Add these secrets to your GitHub repository:
 | Variable Name | Default | Description |
 |---------------|---------|-------------|
 | `SERVER_LOCATION` | `nbg1` | Hetzner datacenter region for the VM (`nbg1`, `fsn1`, `hel1`). Change if your preferred region has availability issues. |
-| `HETZNER_S3_LOCATION` | `fsn1` | Hetzner Object Storage region. Independent from server location. Only change if your buckets are in a different region. |
+| `HETZNER_S3_LOCATION` | `fsn1` | Hetzner Object Storage region (independent from server location). Propagated to OpenTofu and all S3 operations automatically. Only change if your buckets are in a different region. |
 
 ---
 

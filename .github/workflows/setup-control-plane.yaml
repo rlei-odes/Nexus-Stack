@@ -444,7 +444,17 @@ jobs:
 
           DOMAIN="${{ secrets.DOMAIN }}"
           RESOURCE_PREFIX="nexus-${DOMAIN//./-}"
-          HZ_ENDPOINT="https://${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.HETZNER_S3_LOCATION || 'fsn1') }}"
+
+          # Derive a single Hetzner Object Storage server/region and reuse it
+          HZ_SERVER="${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.HETZNER_S3_LOCATION || 'fsn1') }}"
+          HZ_REGION="${{ vars.HETZNER_S3_LOCATION || 'fsn1' }}"
+          HZ_ENDPOINT="https://${HZ_SERVER}"
+
+          # Propagate to OpenTofu so MinIO provider uses the same endpoint
+          export TF_VAR_hetzner_object_storage_server="${HZ_SERVER}"
+          export TF_VAR_hetzner_object_storage_region="${HZ_REGION}"
+          echo "TF_VAR_hetzner_object_storage_server=${HZ_SERVER}" >> "$GITHUB_ENV"
+          echo "TF_VAR_hetzner_object_storage_region=${HZ_REGION}" >> "$GITHUB_ENV"
 
           HZ_ACCESS_KEY="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SECRET_KEY="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
@@ -591,7 +601,11 @@ jobs:
 
           DOMAIN="${{ secrets.DOMAIN }}"
           RESOURCE_PREFIX="nexus-${DOMAIN//./-}"
-          HZ_ENDPOINT="https://${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.HETZNER_S3_LOCATION || 'fsn1') }}"
+          HZ_SERVER="${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.HETZNER_S3_LOCATION || 'fsn1') }}"
+          HZ_ENDPOINT="https://${HZ_SERVER}"
+          # Ensure OpenTofu MinIO provider uses the same server/region as HZ_ENDPOINT
+          export TF_VAR_hetzner_object_storage_server="${HZ_SERVER}"
+          export TF_VAR_hetzner_object_storage_region="${{ vars.HETZNER_S3_LOCATION || 'fsn1' }}"
           HZ_AK="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SK="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
 
