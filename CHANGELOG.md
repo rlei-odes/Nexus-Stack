@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.31.0...v0.31.1) (2026-03-30)
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Change default server location back to fsn1 ([4c3406a](https://github.com/stefanko-ch/Nexus-Stack/commit/4c3406aacbcf7340c07eda34017a6198e8baca1f))
+* **ci:** Derive Object Storage region from server hostname ([74fd3ed](https://github.com/stefanko-ch/Nexus-Stack/commit/74fd3edc1f683a1f3ff954acfb2d5b41f5886fc7))
+* **ci:** Make Hetzner region configurable via SERVER_LOCATION variable ([91d88f9](https://github.com/stefanko-ch/Nexus-Stack/commit/91d88f9cbfa57601205b01b4d2574fd11bdda1cc)), closes [#278](https://github.com/stefanko-ch/Nexus-Stack/issues/278)
+* **ci:** Make Hetzner server region configurable via repository variable ([b57fdc4](https://github.com/stefanko-ch/Nexus-Stack/commit/b57fdc4134c1c9bdaba6bc344b65995705f8e095))
+* **ci:** Propagate HETZNER_S3_LOCATION to OpenTofu variables ([b0575dc](https://github.com/stefanko-ch/Nexus-Stack/commit/b0575dc98497cc33b5b718d133f9b22c9bc7f877))
+* **ci:** Separate Object Storage region from server location ([814f24c](https://github.com/stefanko-ch/Nexus-Stack/commit/814f24cbd7755b1cb3815ca84d60708e442cf039))
+
+
+### 📚 Documentation
+
+* Add note about ARM server availability per Hetzner region ([6cd40ef](https://github.com/stefanko-ch/Nexus-Stack/commit/6cd40ef0527c6522d2a8a5fad163ae7ddad1ff12))
+
 ## [0.31.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.30.0...v0.31.0) (2026-03-30)
 
 
