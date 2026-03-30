@@ -25,7 +25,7 @@ variable "server_type" {
 variable "server_location" {
   description = "Hetzner datacenter location"
   type        = string
-  default     = "fsn1"  # Falkenstein, Germany
+  default     = "nbg1"  # Nuremberg, Germany
 }
 
 variable "server_image" {
@@ -178,13 +178,13 @@ variable "hetzner_object_storage_secret_key" {
 variable "hetzner_object_storage_server" {
   description = "Hetzner Object Storage server (from control-plane output)"
   type        = string
-  default     = "fsn1.your-objectstorage.com"
+  default     = "nbg1.your-objectstorage.com"
 }
 
 variable "hetzner_object_storage_region" {
   description = "Hetzner Object Storage region (from control-plane output)"
   type        = string
-  default     = "fsn1"
+  default     = "nbg1"
 }
 
 variable "hetzner_s3_bucket" {

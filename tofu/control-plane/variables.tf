@@ -45,7 +45,7 @@ variable "server_type" {
 variable "server_location" {
   description = "Hetzner datacenter location (passed to Control Plane for display)"
   type        = string
-  default     = "fsn1"
+  default     = "nbg1"
 }
 
 variable "github_owner" {
@@ -95,13 +95,13 @@ variable "persistent_volume_size" {
 variable "hetzner_object_storage_server" {
   description = "Hetzner Object Storage S3 endpoint (e.g., fsn1.your-objectstorage.com)"
   type        = string
-  default     = "fsn1.your-objectstorage.com"
+  default     = "nbg1.your-objectstorage.com"
 }
 
 variable "hetzner_object_storage_region" {
-  description = "Hetzner Object Storage region (e.g., fsn1, nbg1, hel1)"
+  description = "Hetzner Object Storage region (e.g., nbg1, fsn1, hel1)"
   type        = string
-  default     = "fsn1"
+  default     = "nbg1"
 }
 
 variable "hetzner_object_storage_access_key" {

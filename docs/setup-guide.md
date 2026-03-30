@@ -129,6 +129,14 @@ Add these secrets to your GitHub repository:
 | `DOCKERHUB_USERNAME` | Docker Hub username (higher pull limits) |
 | `DOCKERHUB_TOKEN` | Docker Hub access token |
 
+### Optional Repository Variables
+
+**Settings → Secrets and variables → Actions → Variables tab**
+
+| Variable Name | Default | Description |
+|---------------|---------|-------------|
+| `SERVER_LOCATION` | `nbg1` | Hetzner datacenter region (`nbg1`, `fsn1`, `hel1`). Change if your preferred region has availability issues. |
+
 ---
 
 ## 4️⃣ Deploy via GitHub Actions

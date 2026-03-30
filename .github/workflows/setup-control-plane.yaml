@@ -158,7 +158,7 @@ jobs:
           # Control Plane config (emails from secrets)
           cat > tofu/control-plane/config.tfvars << EOF
           server_type     = "cax31"
-          server_location = "fsn1"
+          server_location = "${{ vars.SERVER_LOCATION || 'nbg1' }}"
           domain          = "${{ secrets.DOMAIN }}"
           admin_email     = "${{ secrets.TF_VAR_admin_email }}"
           user_email      = "${{ secrets.TF_VAR_user_email }}"
@@ -444,7 +444,7 @@ jobs:
 
           DOMAIN="${{ secrets.DOMAIN }}"
           RESOURCE_PREFIX="nexus-${DOMAIN//./-}"
-          HZ_ENDPOINT="https://fsn1.your-objectstorage.com"
+          HZ_ENDPOINT="https://${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.SERVER_LOCATION || 'nbg1') }}"
 
           HZ_ACCESS_KEY="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SECRET_KEY="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
@@ -591,7 +591,7 @@ jobs:
 
           DOMAIN="${{ secrets.DOMAIN }}"
           RESOURCE_PREFIX="nexus-${DOMAIN//./-}"
-          HZ_ENDPOINT="https://${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || 'fsn1.your-objectstorage.com' }}"
+          HZ_ENDPOINT="https://${{ secrets.HETZNER_OBJECT_STORAGE_SERVER || format('{0}.your-objectstorage.com', vars.SERVER_LOCATION || 'nbg1') }}"
           HZ_AK="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SK="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
 
@@ -890,7 +890,7 @@ jobs:
             --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set SERVER_TYPE"
           
           echo "  Setting SERVER_LOCATION secret..."
-          echo "fsn1" | npx wrangler@4 pages secret put SERVER_LOCATION \
+          echo "${{ vars.SERVER_LOCATION || 'nbg1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
             --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set SERVER_LOCATION"
           
           echo "✅ All secrets set (applies to both production and preview environments)"
