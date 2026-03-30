@@ -213,13 +213,13 @@ jobs:
               echo "🔐 Auto-saving R2 credentials as GitHub Secrets..."
               
               SECRET_ERROR=""
-              if ! gh secret set R2_ACCESS_KEY_ID -b "$R2_ACCESS_KEY_ID" 2>&1 | tee /tmp/gh-secret-access.log; then
-                SECRET_ERROR=$(cat /tmp/gh-secret-access.log 2>/dev/null || echo "Unknown error")
+              if ! OUTPUT=$(gh secret set R2_ACCESS_KEY_ID -b "$R2_ACCESS_KEY_ID" 2>&1); then
+                SECRET_ERROR="$OUTPUT"
               fi
               
               if [ -z "$SECRET_ERROR" ]; then
-                if ! gh secret set R2_SECRET_ACCESS_KEY -b "$R2_SECRET_ACCESS_KEY" 2>&1 | tee /tmp/gh-secret-secret.log; then
-                  SECRET_ERROR=$(cat /tmp/gh-secret-secret.log 2>/dev/null || echo "Unknown error")
+                if ! OUTPUT=$(gh secret set R2_SECRET_ACCESS_KEY -b "$R2_SECRET_ACCESS_KEY" 2>&1); then
+                  SECRET_ERROR="$OUTPUT"
                 fi
               fi
               
@@ -231,11 +231,14 @@ jobs:
               else
                 echo "⚠️  Failed to auto-save secrets: $SECRET_ERROR"
                 echo ""
-                echo "Please save these credentials manually in GitHub Secrets:"
-                echo "  R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID"
-                echo "  R2_SECRET_ACCESS_KEY=*** (check workflow logs or tofu/.r2-credentials file)"
+                echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+                echo "║  Save these credentials manually as GitHub Secrets:                        ║"
+                echo "╠══════════════════════════════════════════════════════════════════════════════╣"
+                echo "║  R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID"
+                echo "║  R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY"
+                echo "╚══════════════════════════════════════════════════════════════════════════════╝"
                 echo ""
-                echo "Or configure GH_SECRETS_TOKEN with 'repo' scope and 'write:secrets' permission"
+                echo "Or configure GH_SECRETS_TOKEN with 'repo' scope and 'Secrets: Read and Write' permission"
               fi
             else
               echo ""
@@ -788,135 +791,75 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
           DOMAIN: ${{ secrets.DOMAIN }}
         run: |
           echo "⚙️  Setting Scheduled Teardown Worker secrets..."
           # Derive worker name from domain (must match Terraform naming: ${local.resource_prefix}-worker)
           WORKER_NAME="nexus-${DOMAIN//./-}-worker"
-          GITHUB_OWNER="${{ github.repository_owner }}"
-          GITHUB_REPO="${{ github.event.repository.name }}"
           
-          # Set secrets for the Worker (different from Pages!)
+          # Only set true secrets here. Non-sensitive env vars (GITHUB_OWNER, GITHUB_REPO,
+          # DOMAIN, ADMIN_EMAIL, USER_EMAIL, NOTIFICATION_CRON, TEARDOWN_CRON) are managed
+          # by Terraform as plain_text_binding in tofu/control-plane/main.tf.
+          # Setting them as wrangler secrets would conflict (Cloudflare error 10053).
+          
           echo "  Setting GITHUB_TOKEN..."
-          echo "$GITHUB_TOKEN" | npx wrangler@4 secret put GITHUB_TOKEN --name="$WORKER_NAME" || echo "⚠️  Failed"
-          
-          echo "  Setting GITHUB_OWNER..."
-          echo "$GITHUB_OWNER" | npx wrangler@4 secret put GITHUB_OWNER --name="$WORKER_NAME" || echo "⚠️  Failed"
-          
-          echo "  Setting GITHUB_REPO..."
-          echo "$GITHUB_REPO" | npx wrangler@4 secret put GITHUB_REPO --name="$WORKER_NAME" || echo "⚠️  Failed"
-          
-          echo "  Setting DOMAIN..."
-          echo "$DOMAIN" | npx wrangler@4 secret put DOMAIN --name="$WORKER_NAME" || echo "⚠️  Failed"
+          if ! echo "$GITHUB_TOKEN" | npx wrangler@4 secret put GITHUB_TOKEN --name="$WORKER_NAME" 2>&1; then
+            echo "❌ Failed to set GITHUB_TOKEN - Worker will not be able to trigger workflows"
+            exit 1
+          fi
           
           if [ -n "$RESEND_API_KEY" ]; then
             echo "  Setting RESEND_API_KEY..."
-            echo "$RESEND_API_KEY" | npx wrangler@4 secret put RESEND_API_KEY --name="$WORKER_NAME" || echo "⚠️  Failed"
-          fi
-          
-          if [ -n "$ADMIN_EMAIL" ]; then
-            echo "  Setting ADMIN_EMAIL..."
-            echo "$ADMIN_EMAIL" | npx wrangler@4 secret put ADMIN_EMAIL --name="$WORKER_NAME" || echo "⚠️  Failed"
+            if ! echo "$RESEND_API_KEY" | npx wrangler@4 secret put RESEND_API_KEY --name="$WORKER_NAME" 2>&1; then
+              echo "⚠️  Failed to set RESEND_API_KEY - email notifications will not work"
+            fi
+          else
+            echo "  ⏭️  RESEND_API_KEY not provided - email notifications disabled"
           fi
           
           echo "✅ Worker secrets configured"
 
-      - name: Set Control Plane environment variables and secrets
+      - name: Set Control Plane secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
-          USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
-          DOMAIN: ${{ secrets.DOMAIN }}
         run: |
-          echo "⚙️  Setting Control Plane environment variables and secrets..."
+          echo "⚙️  Setting Control Plane secrets..."
           PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
-          GITHUB_OWNER="${{ github.repository_owner }}"
-          GITHUB_REPO="${{ github.event.repository.name }}"
           
-          echo "  GITHUB_OWNER: $GITHUB_OWNER"
-          echo "  GITHUB_REPO: $GITHUB_REPO"
-          echo "  DOMAIN: $DOMAIN"
-          
-          # Set all variables as Secrets via wrangler
-          # Note: Terraform sets environment_variables in Pages project config,
-          # but wrangler pages deploy doesn't use those - we need to set them as secrets
-          # Secrets work for both production and preview environments automatically
+          # Only set true secrets here. Non-sensitive env vars (GITHUB_OWNER, GITHUB_REPO,
+          # DOMAIN, ADMIN_EMAIL, USER_EMAIL, SERVER_TYPE, SERVER_LOCATION) are managed by
+          # Terraform as environment_variables in tofu/control-plane/main.tf.
+          # The re-deployment step below ensures Terraform values are propagated.
           
           if [ -n "$GITHUB_TOKEN" ]; then
             echo "  Setting GITHUB_TOKEN secret..."
             if ! echo "$GITHUB_TOKEN" | npx wrangler@4 pages secret put GITHUB_TOKEN \
               --project-name="$PROJECT_NAME" 2>&1; then
-              echo "⚠️  Failed to set GITHUB_TOKEN secret (check token validity and project name)"
+              echo "❌ Failed to set GITHUB_TOKEN - Control Plane will not work"
+              exit 1
             fi
           else
-            echo "⚠️  GITHUB_TOKEN not provided - Control Plane will not work!"
+            echo "❌ GITHUB_TOKEN not provided - Control Plane will not work!"
+            exit 1
           fi
           
-          echo "  Setting GITHUB_OWNER secret..."
-          echo "$GITHUB_OWNER" | npx wrangler@4 pages secret put GITHUB_OWNER \
-            --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set GITHUB_OWNER (may already be set)"
-          
-          echo "  Setting GITHUB_REPO secret..."
-          echo "$GITHUB_REPO" | npx wrangler@4 pages secret put GITHUB_REPO \
-            --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set GITHUB_REPO (may already be set)"
-          
-          # Set DOMAIN (required for service URLs and email sender)
-          if [ -n "$DOMAIN" ]; then
-            echo "  Setting DOMAIN secret..."
-            echo "$DOMAIN" | npx wrangler@4 pages secret put DOMAIN \
-              --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set DOMAIN"
-          else
-            echo "⚠️  DOMAIN not provided - Service URLs will show 'unknown'!"
-          fi
-          
-          # Set RESEND_API_KEY for email sending (optional)
           if [ -n "$RESEND_API_KEY" ]; then
             echo "  Setting RESEND_API_KEY secret..."
-            echo "$RESEND_API_KEY" | npx wrangler@4 pages secret put RESEND_API_KEY \
-              --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set RESEND_API_KEY"
+            if ! echo "$RESEND_API_KEY" | npx wrangler@4 pages secret put RESEND_API_KEY \
+              --project-name="$PROJECT_NAME" 2>&1; then
+              echo "⚠️  Failed to set RESEND_API_KEY - email sending will not work"
+            fi
           else
             echo "  ⏭️  RESEND_API_KEY not provided - email sending will be disabled"
           fi
           
-          # Set ADMIN_EMAIL for email sending (optional)
-          if [ -n "$ADMIN_EMAIL" ]; then
-            echo "  Setting ADMIN_EMAIL secret..."
-            echo "$ADMIN_EMAIL" | npx wrangler@4 pages secret put ADMIN_EMAIL \
-              --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set ADMIN_EMAIL"
-          else
-            echo "  ⏭️  ADMIN_EMAIL not provided - email sending will be disabled"
-          fi
-          
-          # Set USER_EMAIL for email sending (optional)
-          if [ -n "$USER_EMAIL" ]; then
-            echo "  Setting USER_EMAIL secret..."
-            echo "$USER_EMAIL" | npx wrangler@4 pages secret put USER_EMAIL \
-              --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set USER_EMAIL"
-          else
-            echo "  ⏭️  USER_EMAIL not provided - emails go to admin only"
-          fi
-          
-          # Set SERVER_TYPE and SERVER_LOCATION for info panel
-          echo "  Setting SERVER_TYPE secret..."
-          echo "cax31" | npx wrangler@4 pages secret put SERVER_TYPE \
-            --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set SERVER_TYPE"
-          
-          echo "  Setting SERVER_LOCATION secret..."
-          echo "${{ vars.SERVER_LOCATION || 'fsn1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
-            --project-name="$PROJECT_NAME" || echo "⚠️  Failed to set SERVER_LOCATION"
-          
-          echo "✅ All secrets set (applies to both production and preview environments)"
-          
+          echo "✅ Control Plane secrets configured"
           echo ""
-          echo "✅ Setup complete"
-          echo ""
-          echo "⚠️  IMPORTANT: Environment variables are now set."
-          echo "   If Control Plane still shows errors, the deployment may need to be recreated."
-          echo "   Triggering a new deployment to ensure variables are available..."
+          echo "   Non-sensitive environment variables are managed by Terraform."
+          echo "   Triggering a new deployment to ensure all variables are available..."
 
       - name: Initialize D1 Database Schema
         env:
