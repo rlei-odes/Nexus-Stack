@@ -21,6 +21,7 @@ RisingWave is a cloud-native streaming database that uses SQL to process streami
 - **Default database:** `dev`
 - **Dashboard:** Web UI for monitoring streaming jobs at port 5691
 - **PostgreSQL port:** 4566 for external clients (psql, Adminer, CloudBeaver, DBeaver, JDBC)
+- **Metrics port:** 1250 (Prometheus, scraped by Grafana stack automatically)
 
 ### Usage
 
@@ -28,6 +29,10 @@ RisingWave is a cloud-native streaming database that uses SQL to process streami
 2. Access `https://risingwave.YOUR_DOMAIN` for the Dashboard UI
 3. Connect via psql: `psql -h YOUR_SERVER -p 4566 -U root -d dev`
 4. Connect via Adminer: Select PostgreSQL, server `risingwave:4566`, user `root`, database `dev`
+
+### Monitoring
+
+RisingWave exports Prometheus metrics on port 1250, which are automatically scraped by the Grafana Prometheus instance. The Dashboard UI at port 5691 uses these metrics to display cluster health, throughput, and streaming job performance.
 
 ### Redpanda Integration
 
