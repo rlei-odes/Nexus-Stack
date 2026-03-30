@@ -17,10 +17,16 @@ services:
     image: ${IMAGE_RISINGWAVE:-risingwavelabs/risingwave:v2.8.1}
     container_name: risingwave
     restart: unless-stopped
-    command: ["single_node"]
+    command:
+      - "single_node"
+      - "--prometheus-listener-addr"
+      - "0.0.0.0:1250"
+      - "--prometheus-endpoint"
+      - "http://grafana-prometheus:9090"
     ports:
       - "4566:4566"
       - "5691:5691"
+      - "1250:1250"
     volumes:
       - risingwave-data:/risingwave
     networks:
