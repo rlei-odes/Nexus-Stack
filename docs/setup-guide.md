@@ -124,7 +124,7 @@ Add these secrets to your GitHub repository:
 
 | Secret Name | Description |
 |-------------|-------------|
-| `GH_SECRETS_TOKEN` | GitHub PAT for auto-saving R2 credentials (see below) |
+| `GH_SECRETS_TOKEN` | GitHub PAT for R2 auto-save and Cloudflare runtime (see below) |
 | `TF_VAR_user_email` | User - all services except SSH |
 | `RESEND_API_KEY` | Email notifications via Resend |
 | `DOCKERHUB_USERNAME` | Docker Hub username (higher pull limits) |
@@ -132,13 +132,15 @@ Add these secrets to your GitHub repository:
 
 #### GH_SECRETS_TOKEN
 
-This token allows the initial setup workflow to automatically save R2 credentials as GitHub Secrets. Without it, you must manually copy the credentials from the workflow logs after the first run.
+This token allows the initial setup workflow to automatically save R2 credentials as GitHub Secrets. It is also used as the runtime `GITHUB_TOKEN` in Cloudflare (for the scheduled teardown worker and Control Plane), so it must be able to dispatch workflows. Without it, you must manually copy the credentials from the workflow logs after the first run, and Cloudflare-based automation that triggers GitHub Actions will fail.
 
 **How to create:**
 1. Go to **GitHub** → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
 2. Click **"Generate new token"**
 3. **Repository access**: Select your Nexus-Stack repository
-4. **Permissions**: Repository permissions → **Secrets** → **Read and Write**
+4. **Permissions** (Repository permissions):
+   - **Secrets** → **Read and write**
+   - **Actions** → **Read and write** (required so Cloudflare workers can dispatch workflows)
 5. Copy the token and save it as `GH_SECRETS_TOKEN` in your repository secrets
 
 ### Optional Repository Variables

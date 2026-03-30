@@ -231,14 +231,13 @@ jobs:
               else
                 echo "⚠️  Failed to auto-save secrets: $SECRET_ERROR"
                 echo ""
-                echo "╔══════════════════════════════════════════════════════════════════════════════╗"
-                echo "║  Save these credentials manually as GitHub Secrets:                        ║"
-                echo "╠══════════════════════════════════════════════════════════════════════════════╣"
-                echo "║  R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID"
-                echo "║  R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY"
-                echo "╚══════════════════════════════════════════════════════════════════════════════╝"
+                echo "  Please save these credentials manually as GitHub Secrets:"
                 echo ""
-                echo "Or configure GH_SECRETS_TOKEN with 'repo' scope and 'Secrets: Read and Write' permission"
+                echo "  R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID"
+                echo "  R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY"
+                echo ""
+                echo "  To enable auto-saving, configure GH_SECRETS_TOKEN:"
+                echo "  Fine-grained PAT with Secrets (Read and Write) permission"
               fi
             else
               echo ""
