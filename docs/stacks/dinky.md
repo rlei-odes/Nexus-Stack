@@ -44,6 +44,12 @@ Dinky is a real-time data development platform based on Apache Flink. It provide
      └──────────────────────┘
 ```
 
+### Language
+
+Dinky is a Chinese open-source project and defaults to Chinese (`zh-CN`). There is no environment variable or configuration file to change the default language — it is hardcoded in the compiled frontend bundle (`dinky-web/config/config.ts` → `locale.default: 'zh-CN'` with `baseNavigator: false`).
+
+The Dinky container uses a custom entrypoint that patches `index.html` at startup to inject a script setting `umi_locale=en-US` in the browser's `localStorage`. The Umi framework (which powers Dinky's frontend) reads `localStorage` with the highest priority, so the UI loads in English on the first visit. If a user manually switches the language, their choice is preserved.
+
 ### Configuration
 
 After first login, connect Dinky to your Flink cluster:
