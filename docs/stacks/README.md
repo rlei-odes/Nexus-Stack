@@ -12,6 +12,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | CloudBeaver | `dbeaver/cloudbeaver` | `24` | Major |
 | ClickHouse | `clickhouse/clickhouse-server` | `25.8.16.34` | Exact ¹ |
 | code-server | `codercom/code-server` | `latest` | Latest ² |
+| Dinky | `dinkydocker/dinky-standalone-server` | `1.2.5-flink1.20` | Exact ¹ |
 | Draw.io | `jgraph/drawio` | `latest` | Latest ² |
 | Grafana | `grafana/grafana` | `12` | Major |
 | Hoppscotch | `hoppscotch/hoppscotch` | `latest` | Latest ² |
@@ -36,8 +37,8 @@ Images are pinned to **major versions** where supported for automatic security p
 | Jupyter PySpark | `quay.io/jupyter/pyspark-notebook` | `python-3.13` | Minor |
 | Excalidraw | `excalidraw/excalidraw` | `latest` | Latest ² |
 | Filestash | `machines/filestash` | `latest` | Latest ² |
-| Flink JobManager | `flink` | `1.20.1` | Exact ¹ |
-| Flink TaskManager | `flink` | `1.20.1` | Exact ¹ |
+| Flink JobManager | `flink` (custom build) | `1.20.1` | Exact ³ |
+| Flink TaskManager | `flink` (custom build) | `1.20.1` | Exact ³ |
 | Garage | `dxflrs/garage` | `v2.2.0` | Minor |
 | Garage WebUI | `khairul169/garage-webui` | `latest` | Latest ² |
 | Git Proxy | `nginx` | `alpine` | Latest ² |
@@ -89,7 +90,7 @@ Images are pinned to **major versions** where supported for automatic security p
 
 ¹ No major version tags available, requires manual updates.
 ² Only `latest` tags published, no semantic versions available.
-³ Custom build (official image doesn't support ARM64).
+³ Custom build (ARM64 support or additional connectors/dependencies).
 
 **Strategies:**
 - **Major** (e.g., `:12`) - Auto-patches, manual major upgrades only
@@ -111,6 +112,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **ClickHouse** | Columnar database for real-time analytics | [clickhouse.md](clickhouse.md) |
 | **code-server** | VS Code in the browser | [code-server.md](code-server.md) |
 | **Dify** | AI workflow builder for LLM applications | [dify.md](dify.md) |
+| **Dinky** | Flink SQL IDE with web editor | [dinky.md](dinky.md) |
 | **Draw.io** | Flowchart and diagramming tool | [drawio.md](drawio.md) |
 | **Excalidraw** | Virtual whiteboard for diagrams | [excalidraw.md](excalidraw.md) |
 | **Filestash** | Web-based file manager | [filestash.md](filestash.md) |

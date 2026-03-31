@@ -1,11 +1,21 @@
 # =============================================================================
-# Redpanda Connect - Data Streaming Framework
+# Redpanda Connect - Data Streaming Framework (Streams Mode)
 # =============================================================================
 # Declarative data streaming connector framework (formerly Benthos) for building
 # real-time data pipelines with hundreds of prebuilt connectors.
 #
-# Access: https://connect.<domain>
-# Docs: https://docs.redpanda.com/redpanda-connect/
+# Runs in STREAMS MODE: multiple pipelines can run in parallel, managed via
+# the REST API on port 4195. Students can create/delete/monitor pipelines
+# from code-server or Hoppscotch.
+#
+# API:
+#   POST   /streams/{id}        Create a new pipeline
+#   GET    /streams              List all pipelines
+#   GET    /streams/{id}         Get pipeline config and status
+#   DELETE /streams/{id}         Remove a pipeline
+#
+# Access: https://redpanda-connect.<domain>
+# Docs: https://docs.redpanda.com/redpanda-connect/guides/streams_mode/
 # =============================================================================
 
 services:
@@ -13,10 +23,9 @@ services:
     image: ${IMAGE_REDPANDA_CONNECT:-redpandadata/connect:4.43.0}
     container_name: redpanda-connect
     restart: unless-stopped
+    command: streams
     ports:
       - "4195:4195"
-    volumes:
-      - ./config.yaml:/connect.yaml:ro
     environment:
       - CONNECT_BROKERS=redpanda:9092
     networks:

@@ -6,8 +6,9 @@
 # and batch datasets. This stack runs a standalone cluster with one JobManager
 # and one TaskManager.
 #
-# IMAGE: Official Docker Library flink image (multi-arch: amd64 + arm64).
-# Note: apache/flink is amd64-only; the library image "flink" includes ARM64.
+# IMAGE: Custom image based on the official Docker Library flink image
+# (multi-arch: amd64 + arm64). Includes the Kafka SQL connector JAR so Flink
+# SQL can read from / write to Redpanda (Kafka) out of the box.
 # The FLINK_PROPERTIES env var configures the cluster.
 #
 # SECURITY:
@@ -17,7 +18,8 @@
 
 services:
   flink-jobmanager:
-    image: ${IMAGE_FLINK:-flink:1.20.1}
+    build: .
+    image: ${IMAGE_FLINK:-nexus-flink:1.20.1}
     container_name: flink
     hostname: flink-jobmanager
     restart: unless-stopped
@@ -52,7 +54,8 @@ services:
       start_period: 30s
 
   flink-taskmanager:
-    image: ${IMAGE_FLINK_TASKMANAGER:-flink:1.20.1}
+    build: .
+    image: ${IMAGE_FLINK:-nexus-flink:1.20.1}
     container_name: flink-taskmanager
     hostname: flink-taskmanager
     restart: unless-stopped

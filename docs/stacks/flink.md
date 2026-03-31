@@ -19,10 +19,10 @@ Apache Flink provides a framework for stateful computations over data streams an
 
 | Container | Image | Purpose |
 |-----------|-------|---------|
-| `flink-jobmanager` | `flink:1.20.1` | Cluster manager + Web UI (port 8081) |
-| `flink-taskmanager` | `flink:1.20.1` | Task executor (connects to JobManager on 6123) |
+| `flink-jobmanager` | `nexus-flink:1.20.1` | Cluster manager + Web UI (port 8081) |
+| `flink-taskmanager` | `nexus-flink:1.20.1` | Task executor (connects to JobManager on 6123) |
 
-> **Official image:** Uses the Docker Library `flink` image (multi-arch: amd64 + arm64). Note: `apache/flink` is amd64-only and does not work on ARM servers.
+> **Custom image:** Based on the Docker Library `flink` image (multi-arch: amd64 + arm64) with the Kafka SQL connector baked in. Note: `apache/flink` is amd64-only and does not work on ARM servers.
 
 ```
                     ┌─────────────────────┐
@@ -84,6 +84,33 @@ curl -X POST https://flink.YOUR_DOMAIN/jars/<jar-id>/run \
   -H "Content-Type: application/json" \
   -d '{"entryClass": "com.example.MyJob"}'
 ```
+
+### Kafka SQL Connector
+
+The custom Flink image includes the `flink-sql-connector-kafka` JAR (`3.4.0-1.20`) pre-installed in `/opt/flink/lib/`. This enables Flink SQL to read from and write to Redpanda (Kafka-compatible) without manual JAR management.
+
+**Example: Read from Redpanda via Flink SQL (Dinky)**
+
+```sql
+CREATE TABLE test_events (
+    id STRING,
+    `timestamp` STRING,
+    user_id INT,
+    event_type STRING,
+    amount INT
+) WITH (
+    'connector' = 'kafka',
+    'topic' = 'test-events',
+    'properties.bootstrap.servers' = 'redpanda:9092',
+    'properties.group.id' = 'flink-test',
+    'scan.startup.mode' = 'earliest-offset',
+    'format' = 'json'
+);
+
+SELECT * FROM test_events LIMIT 10;
+```
+
+> The `test-events` topic is automatically created by the Redpanda Datagen service with sample e-commerce events.
 
 ### Connecting from Other Services
 

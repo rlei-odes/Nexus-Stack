@@ -215,6 +215,9 @@ output "secrets" {
     nocodb_db_password    = random_password.nocodb_db.result
     nocodb_jwt_secret     = random_password.nocodb_jwt_secret.result
 
+    # Dinky
+    dinky_admin_password = random_password.dinky_admin.result
+
     # Dify
     dify_admin_password       = random_password.dify_admin.result
     dify_db_password          = random_password.dify_db.result
