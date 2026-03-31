@@ -99,9 +99,9 @@ services:
     port: 8081
     public: false
     description: "Distributed stream and batch processing engine with Web UI (JobManager + TaskManager cluster)."
-    image: "flink:1.20.1"
+    image: "flink:1.20.1 + Kafka SQL Connector"
     support_images:
-      flink-taskmanager: "flink:1.20.1"
+      flink-taskmanager: "flink:1.20.1 + Kafka SQL Connector"
 
   garage:
     subdomain: "garage"
