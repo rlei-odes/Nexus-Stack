@@ -1,0 +1,89 @@
+# =============================================================================
+# Apache Flink - Distributed Stream and Batch Processing Engine
+# =============================================================================
+# Access via: https://flink.${domain} (JobManager Web UI)
+# Apache Flink provides a framework for stateful computations over data streams
+# and batch datasets. This stack runs a standalone cluster with one JobManager
+# and one TaskManager.
+#
+# IMAGE: Official Docker Library flink image (multi-arch: amd64 + arm64).
+# Note: apache/flink is amd64-only; the library image "flink" includes ARM64.
+# The FLINK_PROPERTIES env var configures the cluster.
+#
+# SECURITY:
+# - Protected by Cloudflare Access (email OTP authentication)
+# - No authentication on Flink itself (relies on Cloudflare Access)
+# =============================================================================
+
+services:
+  flink-jobmanager:
+    image: ${IMAGE_FLINK:-flink:1.20.1}
+    container_name: flink
+    hostname: flink-jobmanager
+    restart: unless-stopped
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        jobmanager.bind-host: 0.0.0.0
+        jobmanager.memory.process.size: 1024m
+    env_file:
+      - path: .env
+        required: false
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    networks:
+      - app-network
+      - flink-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
+        reservations:
+          cpus: "0.25"
+          memory: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  flink-taskmanager:
+    image: ${IMAGE_FLINK_TASKMANAGER:-flink:1.20.1}
+    container_name: flink-taskmanager
+    hostname: flink-taskmanager
+    restart: unless-stopped
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        taskmanager.bind-host: 0.0.0.0
+        taskmanager.numberOfTaskSlots: ${FLINK_TASKMANAGER_SLOTS:-2}
+        taskmanager.memory.process.size: 3072m
+    env_file:
+      - path: .env
+        required: false
+    command: taskmanager
+    networks:
+      - app-network
+      - flink-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4g
+        reservations:
+          cpus: "0.5"
+          memory: 512m
+
+networks:
+  app-network:
+    external: true
+  flink-internal:
+    driver: bridge

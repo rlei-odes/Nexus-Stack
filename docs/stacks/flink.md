@@ -1,0 +1,94 @@
+## Apache Flink
+
+![Flink](https://img.shields.io/badge/Apache_Flink-E6526F?logo=apacheflink&logoColor=white)
+
+**Distributed stream and batch processing engine with standalone cluster (JobManager + TaskManager)**
+
+Apache Flink provides a framework for stateful computations over data streams and bounded datasets. This stack runs a standalone cluster with one JobManager and one TaskManager, accessible via the JobManager Web UI.
+
+| Setting | Value |
+|---------|-------|
+| Default Port | `8081` (JobManager Web UI + REST API) |
+| RPC Port | `6123` (internal only) |
+| Suggested Subdomain | `flink` |
+| Public Access | No (cluster management) |
+| Website | [flink.apache.org](https://flink.apache.org) |
+| Source | [GitHub](https://github.com/apache/flink) |
+
+### Architecture
+
+| Container | Image | Purpose |
+|-----------|-------|---------|
+| `flink-jobmanager` | `flink:1.20.1` | Cluster manager + Web UI (port 8081) |
+| `flink-taskmanager` | `flink:1.20.1` | Task executor (connects to JobManager on 6123) |
+
+> **Official image:** Uses the Docker Library `flink` image (multi-arch: amd64 + arm64). Note: `apache/flink` is amd64-only and does not work on ARM servers.
+
+```
+                    ┌─────────────────────┐
+                    │   Flink REST API     │
+                    │   / Web UI :8081     │
+                    └────────┬────────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+     ┌────────┴────────┐          ┌─────────┴────────┐
+     │  JobManager     │          │  TaskManager     │
+     │  UI: port 8081  │          │  (no external UI)│
+     │  RPC: 6123      │◄─────────│  slots: 2        │
+     └─────────────────┘          └──────────────────┘
+```
+
+### Configuration
+
+- **Task slots:** Configurable via `FLINK_TASKMANAGER_SLOTS` in `.env` (default: 2)
+- **Configuration:** Passed via `FLINK_PROPERTIES` environment variable as multi-line key-value pairs
+
+Key `FLINK_PROPERTIES` values:
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `taskmanager.numberOfTaskSlots` | `2` | Parallel task slots per TaskManager |
+| `taskmanager.memory.process.size` | `3072m` | Total TaskManager process memory |
+| `jobmanager.memory.process.size` | `1024m` | Total JobManager process memory |
+
+### Resource Limits
+
+Docker resource limits prevent Flink from consuming all server resources:
+
+| Container | CPU Limit | Memory Limit | CPU Reserved | Memory Reserved |
+|-----------|-----------|-------------|-------------|-----------------|
+| `flink-jobmanager` | 1 | 1 GB | 0.25 | 256 MB |
+| `flink-taskmanager` | 2 | 4 GB | 0.5 | 512 MB |
+| **Total** | **3** | **5 GB** | **0.75** | **768 MB** |
+
+On a cax31 (8 vCPU, 16 GB RAM) this leaves 5 CPU and 11 GB RAM for other services.
+
+### Usage
+
+1. Enable the Flink service in the Control Plane
+2. Access the JobManager Web UI at `https://flink.YOUR_DOMAIN` to monitor the cluster
+3. The Web UI shows registered TaskManagers, running jobs, and completed jobs
+4. Submit jobs via the REST API at `https://flink.YOUR_DOMAIN/jars/upload`
+
+### Submitting Jobs via REST API
+
+```bash
+# Upload a JAR
+curl -X POST https://flink.YOUR_DOMAIN/jars/upload \
+  -H "Content-Type: multipart/form-data" \
+  -F "jarfile=@my-job.jar"
+
+# Run the uploaded JAR (use jar ID from upload response)
+curl -X POST https://flink.YOUR_DOMAIN/jars/<jar-id>/run \
+  -H "Content-Type: application/json" \
+  -d '{"entryClass": "com.example.MyJob"}'
+```
+
+### Connecting from Other Services
+
+Other services on `app-network` can submit jobs to the JobManager REST API:
+
+```
+http://flink:8081
+```
