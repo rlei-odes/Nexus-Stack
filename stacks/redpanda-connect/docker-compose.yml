@@ -23,11 +23,9 @@ services:
     image: ${IMAGE_REDPANDA_CONNECT:-redpandadata/connect:4.43.0}
     container_name: redpanda-connect
     restart: unless-stopped
-    command: streams --http.address 0.0.0.0:4195 /connect/streams/*.yaml
+    command: streams
     ports:
       - "4195:4195"
-    volumes:
-      - redpanda-connect-streams:/connect/streams
     environment:
       - CONNECT_BROKERS=redpanda:9092
     networks:
@@ -37,9 +35,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-volumes:
-  redpanda-connect-streams:
 
 networks:
   app-network:
