@@ -87,6 +87,15 @@ services:
     image: "machines/filestash:latest"
     admin_path: "/admin"
 
+  flink:
+    subdomain: "flink"
+    port: 8081
+    public: false
+    description: "Distributed stream and batch processing engine with Web UI (JobManager + TaskManager cluster)."
+    image: "apache/flink:1.20.1"
+    support_images:
+      flink-taskmanager: "apache/flink:1.20.1"
+
   garage:
     subdomain: "garage"
     port: 3909

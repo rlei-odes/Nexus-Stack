@@ -92,7 +92,7 @@ flowchart LR
     end
 ```
 
-## Available Stacks (50)
+## Available Stacks (51)
 
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)
 ![CloudBeaver](https://img.shields.io/badge/CloudBeaver-3776AB?logo=dbeaver&logoColor=white)
@@ -102,6 +102,7 @@ flowchart LR
 ![Draw.io](https://img.shields.io/badge/Draw.io-F08705?logo=diagramsdotnet&logoColor=white)
 ![Excalidraw](https://img.shields.io/badge/Excalidraw-6965DB?logo=excalidraw&logoColor=white)
 ![Filestash](https://img.shields.io/badge/Filestash-2B3A67?logo=files&logoColor=white)
+![Flink](https://img.shields.io/badge/Apache_Flink-E6526F?logo=apacheflink&logoColor=white)
 ![Garage](https://img.shields.io/badge/Garage-59C6A6?logo=amazons3&logoColor=white)
 ![Git Proxy](https://img.shields.io/badge/Git_Proxy-009639?logo=nginx&logoColor=white)
 ![Gitea](https://img.shields.io/badge/Gitea-609926?logo=gitea&logoColor=white)
@@ -155,6 +156,7 @@ flowchart LR
 | **Draw.io** | Flowchart and diagramming tool for technical diagrams | [diagrams.net](https://www.diagrams.net) |
 | **Excalidraw** | Virtual whiteboard for sketching hand-drawn diagrams | [excalidraw.com](https://excalidraw.com) |
 | **Filestash** | Web-based file manager with S3/FTP/SFTP/WebDAV backend support | [filestash.app](https://www.filestash.app) |
+| **Flink** | Distributed stream and batch processing engine (JobManager + TaskManager cluster) | [flink.apache.org](https://flink.apache.org) |
 | **Garage** | Lightweight S3-compatible object storage for self-hosting | [garagehq.deuxfleurs.fr](https://garagehq.deuxfleurs.fr) |
 | **Git Proxy** | Public Git HTTPS proxy for external tools (Databricks, Git Desktop) | — |
 | **Gitea** | Self-hosted Git service with pull requests, code review, and CI/CD | [gitea.com](https://about.gitea.com) |

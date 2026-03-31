@@ -964,6 +964,19 @@ EOF
     echo -e "${GREEN}  ✓ Spark .env generated${NC}"
 fi
 
+# Apache Flink
+if echo "$ENABLED_SERVICES" | grep -qw "flink"; then
+    cat > "$STACKS_DIR/flink/.env" << EOF
+# Auto-generated - DO NOT COMMIT
+HETZNER_S3_ENDPOINT=${HETZNER_S3_SERVER:+https://${HETZNER_S3_SERVER}}
+HETZNER_S3_ACCESS_KEY=${HETZNER_S3_ACCESS_KEY:-}
+HETZNER_S3_SECRET_KEY=${HETZNER_S3_SECRET_KEY:-}
+HETZNER_S3_BUCKET=${HETZNER_S3_BUCKET_GENERAL:-}
+FLINK_TASKMANAGER_SLOTS=${FLINK_TASKMANAGER_SLOTS:-2}
+EOF
+    echo -e "${GREEN}  ✓ Flink .env generated${NC}"
+fi
+
 # Jupyter PySpark
 if echo "$ENABLED_SERVICES" | grep -qw "jupyter"; then
     # Set SPARK_MASTER based on whether Spark stack is enabled
