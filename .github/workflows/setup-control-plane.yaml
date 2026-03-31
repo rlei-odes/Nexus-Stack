@@ -1009,6 +1009,60 @@ jobs:
             exit 1
           fi
 
+      # wrangler pages deploy overwrites Terraform-managed environment_variables
+      # (Cloudflare treats wrangler.toml as source of truth, deleting vars not in it).
+      # While [vars] in wrangler.toml should restore them, this is unreliable
+      # (see https://github.com/cloudflare/workers-sdk/issues/7642).
+      # Restore them via the Cloudflare API as a guaranteed fallback.
+      - name: Restore Pages environment variables
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
+          echo "🔄 Restoring environment variables via Cloudflare API..."
+
+          PATCH_RESULT=$(curl -sf -X PATCH \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "deployment_configs": {
+                "production": {
+                  "environment_variables": {
+                    "GITHUB_OWNER": { "value": "${{ github.repository_owner }}" },
+                    "GITHUB_REPO": { "value": "${{ github.event.repository.name }}" },
+                    "DOMAIN": { "value": "${{ secrets.DOMAIN }}" },
+                    "ADMIN_EMAIL": { "value": "${{ secrets.TF_VAR_admin_email }}" },
+                    "USER_EMAIL": { "value": "${{ secrets.TF_VAR_user_email }}" },
+                    "SERVER_TYPE": { "value": "${{ vars.SERVER_TYPE || 'cax31' }}" },
+                    "SERVER_LOCATION": { "value": "${{ vars.SERVER_LOCATION || 'fsn1' }}" },
+                    "ALLOW_DISABLE_AUTO_SHUTDOWN": { "value": "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN || 'false' }}" }
+                  }
+                },
+                "preview": {
+                  "environment_variables": {
+                    "GITHUB_OWNER": { "value": "${{ github.repository_owner }}" },
+                    "GITHUB_REPO": { "value": "${{ github.event.repository.name }}" },
+                    "DOMAIN": { "value": "${{ secrets.DOMAIN }}" },
+                    "ADMIN_EMAIL": { "value": "${{ secrets.TF_VAR_admin_email }}" },
+                    "USER_EMAIL": { "value": "${{ secrets.TF_VAR_user_email }}" },
+                    "SERVER_TYPE": { "value": "${{ vars.SERVER_TYPE || 'cax31' }}" },
+                    "SERVER_LOCATION": { "value": "${{ vars.SERVER_LOCATION || 'fsn1' }}" },
+                    "ALLOW_DISABLE_AUTO_SHUTDOWN": { "value": "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN || 'false' }}" }
+                  }
+                }
+              }
+            }')
+
+          if echo "$PATCH_RESULT" | jq -e '.success == true' >/dev/null 2>&1; then
+            echo "✅ Environment variables restored"
+          else
+            echo "❌ Failed to restore environment variables:"
+            echo "$PATCH_RESULT" | jq '.errors' 2>/dev/null || echo "$PATCH_RESULT"
+            exit 1
+          fi
+
       - name: Show setup info
         run: |
           echo ""
