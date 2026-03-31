@@ -824,15 +824,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
+          USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
         run: |
           echo "⚙️  Setting Control Plane secrets..."
           PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
-          
-          # Only set true secrets here. Non-sensitive env vars (GITHUB_OWNER, GITHUB_REPO,
-          # DOMAIN, ADMIN_EMAIL, USER_EMAIL, SERVER_TYPE, SERVER_LOCATION) are managed by
-          # Terraform as environment_variables in tofu/control-plane/main.tf.
-          # The re-deployment step below ensures Terraform values are propagated.
-          
+
+          # Pages secrets survive wrangler pages deploy (unlike environment_variables
+          # which get wiped). Terraform sets environment_variables on the project, but
+          # wrangler pages deploy treats wrangler.toml as source of truth and deletes
+          # any env vars not in it. Secrets are NOT affected by this behavior.
+          # So we set all values the Functions need as secrets here.
+
           if [ -n "$GITHUB_TOKEN" ]; then
             echo "  Setting GITHUB_TOKEN secret..."
             if ! echo "$GITHUB_TOKEN" | npx wrangler@4 pages secret put GITHUB_TOKEN \
@@ -844,7 +848,53 @@ jobs:
             echo "❌ GITHUB_TOKEN not provided - Control Plane will not work!"
             exit 1
           fi
-          
+
+          echo "  Setting GITHUB_OWNER secret..."
+          if ! echo "${{ github.repository_owner }}" | npx wrangler@4 pages secret put GITHUB_OWNER \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "❌ Failed to set GITHUB_OWNER"
+            exit 1
+          fi
+
+          echo "  Setting GITHUB_REPO secret..."
+          if ! echo "${{ github.event.repository.name }}" | npx wrangler@4 pages secret put GITHUB_REPO \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "❌ Failed to set GITHUB_REPO"
+            exit 1
+          fi
+
+          if [ -n "$DOMAIN" ]; then
+            echo "  Setting DOMAIN secret..."
+            if ! echo "$DOMAIN" | npx wrangler@4 pages secret put DOMAIN \
+              --project-name="$PROJECT_NAME" 2>&1; then
+              echo "⚠️  Failed to set DOMAIN"
+            fi
+          fi
+
+          if [ -n "$ADMIN_EMAIL" ]; then
+            echo "  Setting ADMIN_EMAIL secret..."
+            if ! echo "$ADMIN_EMAIL" | npx wrangler@4 pages secret put ADMIN_EMAIL \
+              --project-name="$PROJECT_NAME" 2>&1; then
+              echo "⚠️  Failed to set ADMIN_EMAIL"
+            fi
+          fi
+
+          if [ -n "$USER_EMAIL" ]; then
+            echo "  Setting USER_EMAIL secret..."
+            if ! echo "$USER_EMAIL" | npx wrangler@4 pages secret put USER_EMAIL \
+              --project-name="$PROJECT_NAME" 2>&1; then
+              echo "⚠️  Failed to set USER_EMAIL"
+            fi
+          fi
+
+          echo "  Setting SERVER_TYPE secret..."
+          echo "${{ vars.SERVER_TYPE || 'cax31' }}" | npx wrangler@4 pages secret put SERVER_TYPE \
+            --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set SERVER_TYPE"
+
+          echo "  Setting SERVER_LOCATION secret..."
+          echo "${{ vars.SERVER_LOCATION || 'fsn1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
+            --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set SERVER_LOCATION"
+
           if [ -n "$RESEND_API_KEY" ]; then
             echo "  Setting RESEND_API_KEY secret..."
             if ! echo "$RESEND_API_KEY" | npx wrangler@4 pages secret put RESEND_API_KEY \
@@ -854,11 +904,8 @@ jobs:
           else
             echo "  ⏭️  RESEND_API_KEY not provided - email sending will be disabled"
           fi
-          
+
           echo "✅ Control Plane secrets configured"
-          echo ""
-          echo "   Non-sensitive environment variables are managed by Terraform."
-          echo "   Triggering a new deployment to ensure all variables are available..."
 
       - name: Initialize D1 Database Schema
         env:
@@ -929,27 +976,16 @@ jobs:
             exit 1
           fi
 
-          # Generate wrangler.toml with D1 + KV bindings and non-sensitive env vars
+          # Generate wrangler.toml with D1 + KV bindings
           # pages_build_output_dir is required for Pages to use the config
-          # [vars] makes non-sensitive values available to Pages Functions at runtime.
-          # These mirror the environment_variables set by Terraform (tofu/control-plane/main.tf)
-          # but are required here because wrangler pages deploy does not inherit project-level
-          # environment_variables — Functions only see vars from wrangler.toml [vars] and secrets.
+          # Note: Non-sensitive env vars are set as Pages secrets (not [vars]) because
+          # wrangler pages deploy wipes Terraform environment_variables and [vars] is
+          # unreliable (see https://github.com/cloudflare/workers-sdk/issues/7642).
           PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
           cat > wrangler.toml << EOF
           name = "$PROJECT_NAME"
           compatibility_date = "2024-01-01"
           pages_build_output_dir = "."
-
-          [vars]
-          GITHUB_OWNER = "${{ github.repository_owner }}"
-          GITHUB_REPO = "${{ github.event.repository.name }}"
-          DOMAIN = "${{ secrets.DOMAIN }}"
-          ADMIN_EMAIL = "${{ secrets.TF_VAR_admin_email }}"
-          USER_EMAIL = "${{ secrets.TF_VAR_user_email }}"
-          SERVER_TYPE = "${{ vars.SERVER_TYPE || 'cax31' }}"
-          SERVER_LOCATION = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
-          ALLOW_DISABLE_AUTO_SHUTDOWN = "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN || 'false' }}"
 
           [[d1_databases]]
           binding = "NEXUS_DB"
@@ -1006,60 +1042,6 @@ jobs:
             fi
           else
             echo "❌ Control Plane deploy failed after 3 attempts"
-            exit 1
-          fi
-
-      # wrangler pages deploy overwrites Terraform-managed environment_variables
-      # (Cloudflare treats wrangler.toml as source of truth, deleting vars not in it).
-      # While [vars] in wrangler.toml should restore them, this is unreliable
-      # (see https://github.com/cloudflare/workers-sdk/issues/7642).
-      # Restore them via the Cloudflare API as a guaranteed fallback.
-      - name: Restore Pages environment variables
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
-          echo "🔄 Restoring environment variables via Cloudflare API..."
-
-          PATCH_RESULT=$(curl -sf -X PATCH \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT_NAME}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "deployment_configs": {
-                "production": {
-                  "environment_variables": {
-                    "GITHUB_OWNER": { "value": "${{ github.repository_owner }}" },
-                    "GITHUB_REPO": { "value": "${{ github.event.repository.name }}" },
-                    "DOMAIN": { "value": "${{ secrets.DOMAIN }}" },
-                    "ADMIN_EMAIL": { "value": "${{ secrets.TF_VAR_admin_email }}" },
-                    "USER_EMAIL": { "value": "${{ secrets.TF_VAR_user_email }}" },
-                    "SERVER_TYPE": { "value": "${{ vars.SERVER_TYPE || 'cax31' }}" },
-                    "SERVER_LOCATION": { "value": "${{ vars.SERVER_LOCATION || 'fsn1' }}" },
-                    "ALLOW_DISABLE_AUTO_SHUTDOWN": { "value": "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN || 'false' }}" }
-                  }
-                },
-                "preview": {
-                  "environment_variables": {
-                    "GITHUB_OWNER": { "value": "${{ github.repository_owner }}" },
-                    "GITHUB_REPO": { "value": "${{ github.event.repository.name }}" },
-                    "DOMAIN": { "value": "${{ secrets.DOMAIN }}" },
-                    "ADMIN_EMAIL": { "value": "${{ secrets.TF_VAR_admin_email }}" },
-                    "USER_EMAIL": { "value": "${{ secrets.TF_VAR_user_email }}" },
-                    "SERVER_TYPE": { "value": "${{ vars.SERVER_TYPE || 'cax31' }}" },
-                    "SERVER_LOCATION": { "value": "${{ vars.SERVER_LOCATION || 'fsn1' }}" },
-                    "ALLOW_DISABLE_AUTO_SHUTDOWN": { "value": "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN || 'false' }}" }
-                  }
-                }
-              }
-            }')
-
-          if echo "$PATCH_RESULT" | jq -e '.success == true' >/dev/null 2>&1; then
-            echo "✅ Environment variables restored"
-          else
-            echo "❌ Failed to restore environment variables:"
-            echo "$PATCH_RESULT" | jq '.errors' 2>/dev/null || echo "$PATCH_RESULT"
             exit 1
           fi
 
