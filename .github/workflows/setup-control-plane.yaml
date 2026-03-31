@@ -929,13 +929,27 @@ jobs:
             exit 1
           fi
 
-          # Generate wrangler.toml with D1 + KV bindings
+          # Generate wrangler.toml with D1 + KV bindings and non-sensitive env vars
           # pages_build_output_dir is required for Pages to use the config
+          # [vars] makes non-sensitive values available to Pages Functions at runtime.
+          # These mirror the environment_variables set by Terraform (tofu/control-plane/main.tf)
+          # but are required here because wrangler pages deploy does not inherit project-level
+          # environment_variables — Functions only see vars from wrangler.toml [vars] and secrets.
           PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
           cat > wrangler.toml << EOF
           name = "$PROJECT_NAME"
           compatibility_date = "2024-01-01"
           pages_build_output_dir = "."
+
+          [vars]
+          GITHUB_OWNER = "${{ github.repository_owner }}"
+          GITHUB_REPO = "${{ github.event.repository.name }}"
+          DOMAIN = "${{ secrets.DOMAIN }}"
+          ADMIN_EMAIL = "${{ secrets.TF_VAR_admin_email }}"
+          USER_EMAIL = "${{ secrets.TF_VAR_user_email }}"
+          SERVER_TYPE = "${{ vars.SERVER_TYPE || 'cax31' }}"
+          SERVER_LOCATION = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          ALLOW_DISABLE_AUTO_SHUTDOWN = "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN || 'false' }}"
 
           [[d1_databases]]
           binding = "NEXUS_DB"
