@@ -92,9 +92,9 @@ services:
     port: 8081
     public: false
     description: "Distributed stream and batch processing engine with Web UI (JobManager + TaskManager cluster)."
-    image: "apache/flink:1.20.1"
+    image: "flink:1.20.1"
     support_images:
-      flink-taskmanager: "apache/flink:1.20.1"
+      flink-taskmanager: "flink:1.20.1"
 
   garage:
     subdomain: "garage"

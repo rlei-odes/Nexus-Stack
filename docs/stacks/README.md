@@ -36,8 +36,8 @@ Images are pinned to **major versions** where supported for automatic security p
 | Jupyter PySpark | `quay.io/jupyter/pyspark-notebook` | `python-3.13` | Minor |
 | Excalidraw | `excalidraw/excalidraw` | `latest` | Latest ² |
 | Filestash | `machines/filestash` | `latest` | Latest ² |
-| Flink JobManager | `apache/flink` | `1.20.1` | Exact ¹ |
-| Flink TaskManager | `apache/flink` | `1.20.1` | Exact ¹ |
+| Flink JobManager | `flink` | `1.20.1` | Exact ¹ |
+| Flink TaskManager | `flink` | `1.20.1` | Exact ¹ |
 | Garage | `dxflrs/garage` | `v2.2.0` | Minor |
 | Garage WebUI | `khairul169/garage-webui` | `latest` | Latest ² |
 | Git Proxy | `nginx` | `alpine` | Latest ² |

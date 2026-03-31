@@ -19,10 +19,10 @@ Apache Flink provides a framework for stateful computations over data streams an
 
 | Container | Image | Purpose |
 |-----------|-------|---------|
-| `flink-jobmanager` | `apache/flink:1.20.1` | Cluster manager + Web UI (port 8081) |
-| `flink-taskmanager` | `apache/flink:1.20.1` | Task executor (connects to JobManager on 6123) |
+| `flink-jobmanager` | `flink:1.20.1` | Cluster manager + Web UI (port 8081) |
+| `flink-taskmanager` | `flink:1.20.1` | Task executor (connects to JobManager on 6123) |
 
-> **Official image:** The `apache/flink` image supports ARM64 natively since Flink 1.14. No custom Dockerfile is needed.
+> **Official image:** Uses the Docker Library `flink` image (multi-arch: amd64 + arm64). Note: `apache/flink` is amd64-only and does not work on ARM servers.
 
 ```
                     ┌─────────────────────┐
