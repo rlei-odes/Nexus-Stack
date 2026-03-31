@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.31.2...v0.32.0) (2026-03-31)
+
+
+### 🚀 Features
+
+* **stacks:** Add Apache Flink stack + fix Control Plane env vars ([c28e1bc](https://github.com/stefanko-ch/Nexus-Stack/commit/c28e1bc3d671be740727674bb9f5e948671c800f))
+* **stacks:** Add Apache Flink stream processing stack ([b058b3b](https://github.com/stefanko-ch/Nexus-Stack/commit/b058b3b77166da40188fec15be374c3a8c219c83))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Add missing env vars to wrangler.toml for Pages Functions ([d8197d8](https://github.com/stefanko-ch/Nexus-Stack/commit/d8197d8b78a505f04afc43d3d100f20a1c943064))
+* **ci:** Restore Pages env vars via API after wrangler deploy ([b4ed393](https://github.com/stefanko-ch/Nexus-Stack/commit/b4ed3938a13618bec1d7f1be79cd671318cade9c))
+* **ci:** Restore Pages secrets for GITHUB_OWNER, GITHUB_REPO and other vars ([953fb35](https://github.com/stefanko-ch/Nexus-Stack/commit/953fb356799944e561bff6ad9a35736a22458828))
+* **stacks:** Use Docker Library flink image for ARM64 support ([1a3bd1d](https://github.com/stefanko-ch/Nexus-Stack/commit/1a3bd1ded74e1bec961ad75b7ebc614f2af792f4))
+
 ## [0.31.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.31.1...v0.31.2) (2026-03-30)
 
 
