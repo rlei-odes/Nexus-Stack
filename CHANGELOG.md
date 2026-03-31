@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.32.0...v0.33.0) (2026-03-31)
+
+
+### 🚀 Features
+
+* **stacks:** Add Dinky Flink SQL IDE ([3e1f213](https://github.com/stefanko-ch/Nexus-Stack/commit/3e1f213e6ce630ce79996a122b8d6c8ec76f6099))
+* **stacks:** Add Dinky Flink SQL IDE ([9e65bb1](https://github.com/stefanko-ch/Nexus-Stack/commit/9e65bb1e3ba200f5764bfa94edfab3fd29c4a24e)), closes [#294](https://github.com/stefanko-ch/Nexus-Stack/issues/294)
+* **stacks:** Bake Kafka SQL connector into Dinky image ([f945f8f](https://github.com/stefanko-ch/Nexus-Stack/commit/f945f8f529a92bde6b70c1502f72873a7120457f))
+* **stacks:** Bake Kafka SQL connector into Flink image ([e305ac3](https://github.com/stefanko-ch/Nexus-Stack/commit/e305ac38db4251ad7ecc587982792e4b9469e105))
+* **stacks:** Switch Redpanda Connect to streams mode ([47506fb](https://github.com/stefanko-ch/Nexus-Stack/commit/47506fbeff02fda465591901722e65610c69fa1c))
+
+
+### 🐛 Bug Fixes
+
+* **docs:** Correct footnote and Dinky resource limits ([e4cf353](https://github.com/stefanko-ch/Nexus-Stack/commit/e4cf35311e612cfadfea02833ece25a9f21ef587))
+* **stacks:** Add MySQL JDBC driver to Dinky for persistent catalog ([399b53c](https://github.com/stefanko-ch/Nexus-Stack/commit/399b53c81b96313d586a14c55a24dc768b3dd93a))
+* **stacks:** Address PR review comments for Dinky ([4664c66](https://github.com/stefanko-ch/Nexus-Stack/commit/4664c66e9107ee6743f72094e66edf1d1f16df3f))
+* **stacks:** Increase Dinky memory to 2.5GB ([baee1d1](https://github.com/stefanko-ch/Nexus-Stack/commit/baee1d12656af0c8de4dbad56fbdaa2bfa27cfbd))
+* **stacks:** Remove invalid characters from Flink image field ([e46b614](https://github.com/stefanko-ch/Nexus-Stack/commit/e46b6149b3c6b05ca6f1bbfdf774f5d41955b4eb))
+* **stacks:** Set Dinky default language to English ([2abe33c](https://github.com/stefanko-ch/Nexus-Stack/commit/2abe33cd3cf0c6a08f03dfe76c03abaa35d82bc7))
+* **stacks:** Simplify Redpanda Connect streams mode startup ([a196bac](https://github.com/stefanko-ch/Nexus-Stack/commit/a196bacca7bbe89ff2fd3079ef3e74e893b6ae69))
+* **stacks:** Use distinct image tag for custom Dinky build ([ad3d086](https://github.com/stefanko-ch/Nexus-Stack/commit/ad3d086eb052fc571c9de0dc4da48cfe1a521516))
+* **stacks:** Use distinct image tag for custom Flink build ([d300cbc](https://github.com/stefanko-ch/Nexus-Stack/commit/d300cbc1fc7346369431b32ddbf4aa7f22f6c195))
+
+
+### 📚 Documentation
+
+* **stacks:** Add BlueSky real-time streaming tutorial ([9b0ef2f](https://github.com/stefanko-ch/Nexus-Stack/commit/9b0ef2f50e2bc3f7d2d54d927ea48ee6003562c9))
+* **stacks:** Document Dinky locale workaround ([ee2df2f](https://github.com/stefanko-ch/Nexus-Stack/commit/ee2df2f1a320e97ac16258b9db06ea50abf9671e))
+
 ## [0.32.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.31.2...v0.32.0) (2026-03-31)
 
 
