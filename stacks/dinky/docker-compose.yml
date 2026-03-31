@@ -6,8 +6,8 @@
 # providing a web-based SQL editor with auto-completion, syntax verification,
 # job management, and real-time debugging.
 #
-# IMAGE: dinkydocker/dinky-standalone-server with built-in H2 database
-# (no external MySQL/PostgreSQL needed). ARM64 supported.
+# IMAGE: Custom build based on dinkydocker/dinky-standalone-server with
+# Kafka SQL connector pre-installed. ARM64 supported.
 #
 # LOCALE: Dinky defaults to Chinese (zh-CN). The entrypoint patches index.html
 # to set umi_locale=en-US in localStorage before the Umi framework loads.
@@ -25,6 +25,7 @@
 
 services:
   dinky:
+    build: .
     image: ${IMAGE_DINKY:-dinkydocker/dinky-standalone-server:1.2.5-flink1.20}
     container_name: dinky
     hostname: dinky
