@@ -65,6 +65,13 @@ services:
       dify-ssrf-proxy: "ubuntu/squid:latest"
       dify-plugin-daemon: "langgenius/dify-plugin-daemon:0.5.3-local"
 
+  dinky:
+    subdomain: "dinky"
+    port: 8889
+    public: false
+    description: "Web-based Flink SQL IDE with auto-completion, job management, and real-time debugging."
+    image: "dinkydocker/dinky-standalone-server:1.2.5-flink1.20"
+
   drawio:
     subdomain: "drawio"
     port: 8083

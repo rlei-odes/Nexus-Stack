@@ -148,6 +148,7 @@ WOODPECKER_AGENT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.woodpecker_agent_secret
 NOCODB_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_admin_password // empty')
 NOCODB_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_db_password // empty')
 NOCODB_JWT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.nocodb_jwt_secret // empty')
+DINKY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dinky_admin_password // empty')
 DIFY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_admin_password // empty')
 DIFY_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_db_password // empty')
 DIFY_REDIS_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_redis_password // empty')
@@ -977,6 +978,15 @@ EOF
     echo -e "${GREEN}  ✓ Flink .env generated${NC}"
 fi
 
+# Dinky (Flink SQL IDE)
+if echo "$ENABLED_SERVICES" | grep -qw "dinky"; then
+    cat > "$STACKS_DIR/dinky/.env" << EOF
+# Auto-generated - DO NOT COMMIT
+DINKY_ADMIN_PASSWORD=${DINKY_ADMIN_PASS:-}
+EOF
+    echo -e "${GREEN}  ✓ Dinky .env generated${NC}"
+fi
+
 # Jupyter PySpark
 if echo "$ENABLED_SERVICES" | grep -qw "jupyter"; then
     # Set SPARK_MASTER based on whether Spark stack is enabled
@@ -1804,6 +1814,10 @@ EOF
             "NOCODB_PASSWORD" "$NOCODB_ADMIN_PASS" \
             "NOCODB_DB_PASSWORD" "$NOCODB_DB_PASS" \
             "NOCODB_JWT_SECRET" "$NOCODB_JWT_SECRET"
+
+        build_folder "dinky" \
+            "DINKY_USERNAME" "admin" \
+            "DINKY_PASSWORD" "$DINKY_ADMIN_PASS"
 
         build_folder "dify" \
             "DIFY_USERNAME" "$ADMIN_EMAIL" \

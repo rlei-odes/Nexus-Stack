@@ -12,6 +12,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | CloudBeaver | `dbeaver/cloudbeaver` | `24` | Major |
 | ClickHouse | `clickhouse/clickhouse-server` | `25.8.16.34` | Exact ¹ |
 | code-server | `codercom/code-server` | `latest` | Latest ² |
+| Dinky | `dinkydocker/dinky-standalone-server` | `1.2.5-flink1.20` | Exact ¹ |
 | Draw.io | `jgraph/drawio` | `latest` | Latest ² |
 | Grafana | `grafana/grafana` | `12` | Major |
 | Hoppscotch | `hoppscotch/hoppscotch` | `latest` | Latest ² |
@@ -111,6 +112,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **ClickHouse** | Columnar database for real-time analytics | [clickhouse.md](clickhouse.md) |
 | **code-server** | VS Code in the browser | [code-server.md](code-server.md) |
 | **Dify** | AI workflow builder for LLM applications | [dify.md](dify.md) |
+| **Dinky** | Flink SQL IDE with web editor | [dinky.md](dinky.md) |
 | **Draw.io** | Flowchart and diagramming tool | [drawio.md](drawio.md) |
 | **Excalidraw** | Virtual whiteboard for diagrams | [excalidraw.md](excalidraw.md) |
 | **Filestash** | Web-based file manager | [filestash.md](filestash.md) |

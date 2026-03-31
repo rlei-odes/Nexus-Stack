@@ -370,6 +370,12 @@ resource "random_password" "dify_plugin_inner_api_key" {
   special = false
 }
 
+# Dinky admin password
+resource "random_password" "dinky_admin" {
+  length  = 24
+  special = false
+}
+
 # Note: Hetzner Object Storage bucket is created in control-plane/main.tf
 # to persist through teardown. The bucket name is passed via hetzner_s3_bucket variable.
 
