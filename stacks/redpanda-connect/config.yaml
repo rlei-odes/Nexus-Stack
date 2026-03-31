@@ -1,31 +1,26 @@
 # =============================================================================
-# Redpanda Connect - Default Pipeline Configuration
+# Redpanda Connect - Streams Mode
 # =============================================================================
-# This is a simple HTTP echo pipeline that demonstrates the framework.
-# Replace this with your own pipeline configuration.
+# This file is no longer mounted into the container. Redpanda Connect now
+# runs in streams mode where pipelines are managed via the REST API.
 #
-# Documentation: https://docs.redpanda.com/redpanda-connect/
+# Create a pipeline from code-server terminal:
+#
+#   curl -X POST http://redpanda-connect:4195/streams/my-pipeline \
+#     -H "Content-Type: application/yaml" \
+#     -d '
+#   input:
+#     generate:
+#       interval: "10s"
+#       mapping: root = "hello"
+#   output:
+#     kafka_franz:
+#       seed_brokers: ["redpanda:9092"]
+#       topic: my-topic
+#   '
+#
+# List pipelines:   curl http://redpanda-connect:4195/streams
+# Delete pipeline:  curl -X DELETE http://redpanda-connect:4195/streams/my-pipeline
+#
+# Documentation: https://docs.redpanda.com/redpanda-connect/guides/streams_mode/
 # =============================================================================
-
-http:
-  enabled: true
-  address: "0.0.0.0:4195"
-
-input:
-  http_server:
-    path: /post
-    timeout: 5s
-
-pipeline:
-  processors:
-    - mapping: |
-        root = this
-        root.processed_at = now()
-        root.processed_by = "redpanda-connect"
-
-output:
-  stdout: {}
-
-# Metrics endpoint: /metrics (Prometheus format)
-# Health endpoint: /ready
-# Version endpoint: /version
