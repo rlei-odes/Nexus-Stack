@@ -32,7 +32,9 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        sed -i 's|<head>|<head><script>if(!localStorage.getItem("umi_locale"))localStorage.setItem("umi_locale","en-US")</script>|' /opt/dinky/config/static/index.html
+        if ! grep -q 'DINKY_LOCALE_INIT' /opt/dinky/config/static/index.html; then
+          sed -i 's|<head>|<head><script>/*DINKY_LOCALE_INIT*/if(!localStorage.getItem("umi_locale")){localStorage.setItem("umi_locale","en-US");}</script>|' /opt/dinky/config/static/index.html
+        fi
         exec ./bin/auto.sh startOnPending
     environment:
       DB_ACTIVE: h2

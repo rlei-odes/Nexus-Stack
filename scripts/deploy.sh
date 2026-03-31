@@ -980,6 +980,9 @@ fi
 
 # Dinky (Flink SQL IDE)
 if echo "$ENABLED_SERVICES" | grep -qw "dinky"; then
+    if [ -z "${DINKY_ADMIN_PASS:-}" ]; then
+        echo -e "${YELLOW}  ⚠️  DINKY_ADMIN_PASS not set - Dinky will use default credentials${NC}"
+    fi
     cat > "$STACKS_DIR/dinky/.env" << EOF
 # Auto-generated - DO NOT COMMIT
 DINKY_ADMIN_PASSWORD=${DINKY_ADMIN_PASS:-}
