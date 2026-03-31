@@ -9,6 +9,10 @@
 # IMAGE: dinkydocker/dinky-standalone-server with built-in H2 database
 # (no external MySQL/PostgreSQL needed). ARM64 supported.
 #
+# LOCALE: Dinky defaults to Chinese (zh-CN). The entrypoint patches index.html
+# to set umi_locale=en-US in localStorage before the Umi framework loads.
+# This only applies on first visit; users can switch language manually.
+#
 # FLINK CONNECTION: Dinky connects to the Flink JobManager via app-network.
 # After first login, add the Flink cluster in: Settings → Cluster Management
 # → Add → REST address: http://flink-jobmanager:8081
@@ -25,6 +29,11 @@ services:
     container_name: dinky
     hostname: dinky
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sed -i 's|<head>|<head><script>if(!localStorage.getItem("umi_locale"))localStorage.setItem("umi_locale","en-US")</script>|' /opt/dinky/config/static/index.html
+        exec ./bin/auto.sh startOnPending
     environment:
       DB_ACTIVE: h2
     env_file:
