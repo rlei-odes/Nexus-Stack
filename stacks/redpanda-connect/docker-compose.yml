@@ -14,7 +14,7 @@
 #   GET    /streams/{id}         Get pipeline config and status
 #   DELETE /streams/{id}         Remove a pipeline
 #
-# Access: https://connect.<domain>
+# Access: https://redpanda-connect.<domain>
 # Docs: https://docs.redpanda.com/redpanda-connect/guides/streams_mode/
 # =============================================================================
 

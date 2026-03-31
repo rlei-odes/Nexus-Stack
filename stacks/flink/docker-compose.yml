@@ -19,7 +19,7 @@
 services:
   flink-jobmanager:
     build: .
-    image: ${IMAGE_FLINK:-flink:1.20.1}
+    image: ${IMAGE_FLINK:-nexus-flink:1.20.1}
     container_name: flink
     hostname: flink-jobmanager
     restart: unless-stopped
@@ -55,7 +55,7 @@ services:
 
   flink-taskmanager:
     build: .
-    image: ${IMAGE_FLINK_TASKMANAGER:-flink:1.20.1}
+    image: ${IMAGE_FLINK:-nexus-flink:1.20.1}
     container_name: flink-taskmanager
     hostname: flink-taskmanager
     restart: unless-stopped
