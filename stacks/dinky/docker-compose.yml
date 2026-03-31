@@ -26,7 +26,7 @@
 services:
   dinky:
     build: .
-    image: ${IMAGE_DINKY:-dinkydocker/dinky-standalone-server:1.2.5-flink1.20}
+    image: ${IMAGE_DINKY:-nexus-dinky:1.2.5-flink1.20}
     container_name: dinky
     hostname: dinky
     restart: unless-stopped

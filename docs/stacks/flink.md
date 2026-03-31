@@ -19,8 +19,8 @@ Apache Flink provides a framework for stateful computations over data streams an
 
 | Container | Image | Purpose |
 |-----------|-------|---------|
-| `flink-jobmanager` | `flink:1.20.1` (custom build) | Cluster manager + Web UI (port 8081) |
-| `flink-taskmanager` | `flink:1.20.1` (custom build) | Task executor (connects to JobManager on 6123) |
+| `flink-jobmanager` | `nexus-flink:1.20.1` | Cluster manager + Web UI (port 8081) |
+| `flink-taskmanager` | `nexus-flink:1.20.1` | Task executor (connects to JobManager on 6123) |
 
 > **Custom image:** Based on the Docker Library `flink` image (multi-arch: amd64 + arm64) with the Kafka SQL connector baked in. Note: `apache/flink` is amd64-only and does not work on ARM servers.
 

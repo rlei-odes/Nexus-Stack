@@ -18,9 +18,9 @@ Dinky is a real-time data development platform based on Apache Flink. It provide
 
 | Container | Image | Purpose |
 |-----------|-------|---------|
-| `dinky` | `dinkydocker/dinky-standalone-server:1.2.5-flink1.20` | SQL IDE + built-in H2 database |
+| `dinky` | `nexus-dinky:1.2.5-flink1.20` | SQL IDE + built-in H2 database |
 
-> **Standalone image:** Includes a built-in H2 database for metadata storage. No external MySQL or PostgreSQL required.
+> **Custom image:** Based on `dinkydocker/dinky-standalone-server:1.2.5-flink1.20` with the Kafka SQL connector and MySQL JDBC driver pre-installed. Includes a built-in H2 database for metadata storage — no external MySQL or PostgreSQL required.
 
 ```
      ┌──────────────────────┐
