@@ -67,7 +67,7 @@ After first login, connect Dinky to your Flink cluster:
 
 | Container | CPU Limit | Memory Limit | CPU Reserved | Memory Reserved |
 |-----------|-----------|-------------|-------------|-----------------|
-| `dinky` | 1 | 1.5 GB | 0.25 | 256 MB |
+| `dinky` | 2 | 2.5 GB | 0.25 | 512 MB |
 
 ### Usage
 

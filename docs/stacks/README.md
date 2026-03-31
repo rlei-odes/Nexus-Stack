@@ -90,7 +90,7 @@ Images are pinned to **major versions** where supported for automatic security p
 
 ¹ No major version tags available, requires manual updates.
 ² Only `latest` tags published, no semantic versions available.
-³ Custom build (official image doesn't support ARM64).
+³ Custom build (ARM64 support or additional connectors/dependencies).
 
 **Strategies:**
 - **Major** (e.g., `:12`) - Auto-patches, manual major upgrades only
