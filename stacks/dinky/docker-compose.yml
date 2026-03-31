@@ -48,11 +48,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 1536m
+          cpus: "2"
+          memory: 2560m
         reservations:
           cpus: "0.25"
-          memory: 256m
+          memory: 512m
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8888 || exit 1"]
       interval: 15s
