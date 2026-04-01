@@ -73,10 +73,10 @@ services:
       postgres: "postgres:16-alpine"
 
   debezium:
-    subdomain: "debezium"
     port: 8097
     public: false
-    description: "Change data capture platform that streams database changes to Redpanda/Kafka in real time."
+    internal_only: true
+    description: "Change data capture platform that streams database changes to Redpanda/Kafka in real time. Manage via Kafka-UI or AKHQ."
     image: "quay.io/debezium/connect:3.5.0"
 
   dify:
