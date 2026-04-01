@@ -8,7 +8,7 @@ Images are pinned to **major versions** where supported for automatic security p
 
 | Service | Image | Tag | Strategy |
 |---------|-------|-----|----------|
-| AKHQ | `tchiotludo/akhq` | `0.27.0` | Minor |
+| AKHQ | `tchiotludo/akhq` | `0.27.0` | Exact ¹ |
 | Adminer | `adminer` | `latest` | Latest ² |
 | CloudBeaver | `dbeaver/cloudbeaver` | `24` | Major |
 | ClickHouse | `clickhouse/clickhouse-server` | `25.8.16.34` | Exact ¹ |

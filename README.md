@@ -150,7 +150,7 @@ flowchart LR
 
 | Stack | Description | Website |
 |-------|-------------|--------|
-| **AKHQ** | Kafka/Redpanda management GUI for topics, consumer groups, and schema registry | [akhq.io](https://akhq.io) |
+| **AKHQ** | Kafka/Redpanda management GUI for topics, consumer groups, schema registry, and Kafka Connect | [akhq.io](https://akhq.io) |
 | **Adminer** | Lightweight database management tool (supports PostgreSQL, MySQL, SQLite, etc.) | [adminer.org](https://www.adminer.org) |
 | **CloudBeaver** | Web-based database management tool | [dbeaver.com/cloudbeaver](https://dbeaver.com/cloudbeaver/) |
 | **ClickHouse** | Fast columnar database for real-time analytics and OLAP queries | [clickhouse.com](https://clickhouse.com) |
