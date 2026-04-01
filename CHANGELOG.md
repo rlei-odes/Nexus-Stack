@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.33.0...v0.34.0) (2026-04-01)
+
+
+### 🚀 Features
+
+* **stacks:** Add AKHQ Kafka/Redpanda management GUI ([c4fad8b](https://github.com/stefanko-ch/Nexus-Stack/commit/c4fad8ba0712f7c4a7a1d874e4cafb394ef9c8c6))
+* **stacks:** Add AKHQ Kafka/Redpanda management GUI ([f28c9b7](https://github.com/stefanko-ch/Nexus-Stack/commit/f28c9b75520b731e81b811cbcd4ffdeaac6fdb2c)), closes [#41](https://github.com/stefanko-ch/Nexus-Stack/issues/41)
+
+
+### 🐛 Bug Fixes
+
+* **docs:** Align AKHQ version strategy and description ([f8d78dd](https://github.com/stefanko-ch/Nexus-Stack/commit/f8d78dd72510fa0441e5598fbc29ad0daae8f46d))
+
 ## [0.33.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.32.0...v0.33.0) (2026-03-31)
 
 
