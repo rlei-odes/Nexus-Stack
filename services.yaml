@@ -460,7 +460,7 @@ services:
       postgres: 4566
 
   sling:
-    port: 0
+    port: 5003
     public: false
     internal_only: true
     description: "Lightweight CLI tool for database-to-database and file-to-database transfers."

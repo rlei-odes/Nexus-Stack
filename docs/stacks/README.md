@@ -80,7 +80,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | Redpanda Connect | `redpandadata/connect` | `latest` | Latest ² |
 | Redpanda Datagen | `redpandadata/connect` | `latest` | Latest ² |
 | RisingWave | `risingwavelabs/risingwave` | `v2.8.1` | Exact ¹ |
-| Sling | nexus-sling (custom build) | `1.5.13` | Exact ³ |
+| Sling | `nexus-sling` (custom build) | `1.5.13` | Exact ³ |
 | Soda Core | `soda-core-arm64` | `3.3.7` | Exact ³ |
 | Spark Master | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |

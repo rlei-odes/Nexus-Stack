@@ -14,9 +14,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install Sling ARM64 binary
-RUN curl -L https://github.com/slingdata-io/sling-cli/releases/download/v1.5.13/sling_linux_arm64.tar.gz \
-    | tar xz -C /usr/local/bin \
-    && chmod +x /usr/local/bin/sling
+RUN set -eux; \
+    curl -L -o /tmp/sling_linux_arm64.tar.gz https://github.com/slingdata-io/sling-cli/releases/download/v1.5.13/sling_linux_arm64.tar.gz; \
+    curl -L -o /tmp/checksums.txt https://github.com/slingdata-io/sling-cli/releases/download/v1.5.13/linux.arm64.checksums.txt; \
+    cd /tmp && sha256sum -c checksums.txt; \
+    tar xzf /tmp/sling_linux_arm64.tar.gz -C /usr/local/bin; \
+    chmod +x /usr/local/bin/sling; \
+    rm /tmp/sling_linux_arm64.tar.gz /tmp/checksums.txt
 
 # Create workspace directory
 RUN mkdir -p /workspace
