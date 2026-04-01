@@ -68,7 +68,7 @@ services:
     port: 3004
     public: false
     description: "Python-native data orchestration platform for building, testing, and monitoring data pipelines."
-    image: "dagster:custom"
+    image: "nexus-dagster:1.12.21"
     support_images:
       postgres: "postgres:16-alpine"
 

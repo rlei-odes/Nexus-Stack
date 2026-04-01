@@ -19,6 +19,7 @@ services:
   # ---------------------------------------------------------------------------
   dagster-webserver:
     build: .
+    image: ${IMAGE_DAGSTER:-nexus-dagster:1.12.21}
     container_name: dagster
     restart: unless-stopped
     env_file:
@@ -51,6 +52,7 @@ services:
   # ---------------------------------------------------------------------------
   dagster-daemon:
     build: .
+    image: ${IMAGE_DAGSTER:-nexus-dagster:1.12.21}
     container_name: dagster-daemon
     restart: unless-stopped
     env_file:
