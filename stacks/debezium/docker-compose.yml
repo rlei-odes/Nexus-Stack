@@ -1,0 +1,43 @@
+# =============================================================================
+# Debezium - Change Data Capture (CDC) Platform
+# =============================================================================
+# Kafka Connect with Debezium CDC connectors. Streams database changes
+# (INSERT/UPDATE/DELETE) to Redpanda/Kafka topics in real time.
+#
+# Includes connectors for PostgreSQL, MySQL, MongoDB, SQL Server, and more.
+# Manage connectors via Kafka-UI, AKHQ, or the REST API.
+#
+# Access (internal): http://debezium:8083 (within Docker network)
+# Access (host):     http://localhost:8097 (REST API, mapped from 8083)
+# Docs: https://debezium.io/documentation/
+# =============================================================================
+
+services:
+  debezium:
+    image: ${IMAGE_DEBEZIUM:-quay.io/debezium/connect:3.5.0}
+    container_name: debezium
+    restart: unless-stopped
+    ports:
+      - "8097:8083"
+    environment:
+      - BOOTSTRAP_SERVERS=redpanda:9092
+      - GROUP_ID=debezium-connect
+      - CONFIG_STORAGE_TOPIC=_debezium-configs
+      - CONFIG_STORAGE_REPLICATION_FACTOR=1
+      - OFFSET_STORAGE_TOPIC=_debezium-offsets
+      - OFFSET_STORAGE_REPLICATION_FACTOR=1
+      - STATUS_STORAGE_TOPIC=_debezium-status
+      - STATUS_STORAGE_REPLICATION_FACTOR=1
+      - KEY_CONVERTER_SCHEMAS_ENABLE=false
+      - VALUE_CONVERTER_SCHEMAS_ENABLE=false
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/connectors || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-network:
+    external: true
