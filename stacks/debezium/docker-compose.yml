@@ -7,7 +7,8 @@
 # Includes connectors for PostgreSQL, MySQL, MongoDB, SQL Server, and more.
 # Manage connectors via Kafka-UI, AKHQ, or the REST API.
 #
-# Access: https://debezium.<domain> (REST API)
+# Access (internal): http://debezium:8083 (within Docker network)
+# Access (host):     http://localhost:8097 (REST API, mapped from 8083)
 # Docs: https://debezium.io/documentation/
 # =============================================================================
 

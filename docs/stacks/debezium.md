@@ -13,9 +13,9 @@ Debezium monitors database transaction logs and emits every INSERT, UPDATE, and 
 
 | Setting | Value |
 |---------|-------|
-| Default Port | `8097` (REST API) |
-| Suggested Subdomain | `debezium` |
-| Public Access | No |
+| Default Port | `8097` (REST API, host) / `8083` (internal) |
+| Access | Internal only (no web UI) |
+| Manage via | Kafka-UI or AKHQ |
 | Website | [debezium.io](https://debezium.io) |
 | Source | [GitHub](https://github.com/debezium/debezium) |
 
@@ -35,7 +35,7 @@ No separate UI needed - use the existing tools:
 ### Example: Create a PostgreSQL CDC Connector
 
 ```bash
-curl -X POST https://debezium.<domain>/connectors \
+curl -X POST http://localhost:8097/connectors \
   -H "Content-Type: application/json" \
   -d '{
     "name": "postgres-cdc",
