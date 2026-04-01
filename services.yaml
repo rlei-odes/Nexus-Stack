@@ -40,6 +40,13 @@ services:
     description: "Web-based database management tool supporting PostgreSQL, MySQL, SQL Server, and more."
     image: "dbeaver/cloudbeaver:24"
 
+  budibase:
+    subdomain: "budibase"
+    port: 8096
+    public: false
+    description: "Open-source low-code platform for building internal tools, CRUD apps, and dashboards."
+    image: "budibase/budibase:latest"
+
   clickhouse:
     subdomain: "clickhouse"
     port: 8123

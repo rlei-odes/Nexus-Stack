@@ -92,10 +92,11 @@ flowchart LR
     end
 ```
 
-## Available Stacks (54)
+## Available Stacks (55)
 
 ![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)
+![Budibase](https://img.shields.io/badge/Budibase-9981F5?logo=budibase&logoColor=white)
 ![CloudBeaver](https://img.shields.io/badge/CloudBeaver-3776AB?logo=dbeaver&logoColor=white)
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC00?logo=clickhouse&logoColor=black)
 ![code-server](https://img.shields.io/badge/code--server-007ACC?logo=visualstudiocode&logoColor=white)
@@ -153,6 +154,7 @@ flowchart LR
 |-------|-------------|--------|
 | **AKHQ** | Kafka/Redpanda management GUI for topics, consumer groups, schema registry, and Kafka Connect | [akhq.io](https://akhq.io) |
 | **Adminer** | Lightweight database management tool (supports PostgreSQL, MySQL, SQLite, etc.) | [adminer.org](https://www.adminer.org) |
+| **Budibase** | Open-source low-code platform for building internal tools and dashboards | [budibase.com](https://budibase.com) |
 | **CloudBeaver** | Web-based database management tool | [dbeaver.com/cloudbeaver](https://dbeaver.com/cloudbeaver/) |
 | **ClickHouse** | Fast columnar database for real-time analytics and OLAP queries | [clickhouse.com](https://clickhouse.com) |
 | **code-server** | VS Code in the browser for remote development | [coder.com](https://coder.com) |
