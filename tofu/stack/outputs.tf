@@ -122,6 +122,9 @@ output "secrets" {
     # Grafana
     grafana_admin_password = random_password.grafana_admin.result
 
+    # Dagster
+    dagster_db_password = random_password.dagster_db.result
+
     # Kestra
     kestra_admin_password = random_password.kestra_admin.result
     kestra_db_password    = random_password.kestra_db.result
