@@ -1,0 +1,32 @@
+# =============================================================================
+# Kafdrop - Lightweight Kafka/Redpanda Web UI
+# =============================================================================
+# Simple web UI for browsing Kafka/Redpanda topics, consumer groups, and
+# cluster health. Lightweight alternative to Kafka-UI and AKHQ.
+#
+# Access: https://kafdrop.<domain>
+# Docs: https://github.com/obsidiandynamics/kafdrop
+# =============================================================================
+
+services:
+  kafdrop:
+    image: ${IMAGE_KAFDROP:-obsidiandynamics/kafdrop:4.2.0}
+    container_name: kafdrop
+    restart: unless-stopped
+    ports:
+      - "8095:9000"
+    environment:
+      - KAFKA_BROKERCONNECT=redpanda:9092
+      - SCHEMAREGISTRY_CONNECT=http://redpanda:8081
+      - JVM_OPTS=-Xms32M -Xmx128M
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-network:
+    external: true
