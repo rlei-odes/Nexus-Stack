@@ -64,6 +64,12 @@ resource "random_password" "grafana_admin" {
   special = false
 }
 
+# Dagster database password
+resource "random_password" "dagster_db" {
+  length  = 24
+  special = false
+}
+
 # Kestra admin password
 resource "random_password" "kestra_admin" {
   length  = 24

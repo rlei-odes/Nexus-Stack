@@ -1,0 +1,9 @@
+# Dagster workspace configuration
+# Add code locations here to load your pipelines/assets
+# Example:
+#   load_from:
+#     - grpc_server:
+#         host: user-code
+#         port: 4000
+
+load_from: []

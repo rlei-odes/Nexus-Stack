@@ -87,6 +87,7 @@ INFISICAL_DB_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.infisical_db_password // 
 PORTAINER_PASS=$(echo "$SECRETS_JSON" | jq -r '.portainer_admin_password // empty')
 KUMA_PASS=$(echo "$SECRETS_JSON" | jq -r '.kuma_admin_password // empty')
 GRAFANA_PASS=$(echo "$SECRETS_JSON" | jq -r '.grafana_admin_password // empty')
+DAGSTER_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.dagster_db_password // empty')
 KESTRA_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_admin_password // empty')
 KESTRA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_db_password // empty')
 N8N_PASS=$(echo "$SECRETS_JSON" | jq -r '.n8n_admin_password // empty')
@@ -508,6 +509,16 @@ GRAFANA_ADMIN_USER=$ADMIN_USERNAME
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
 EOF
     echo -e "${GREEN}  ✓ Grafana .env generated${NC}"
+fi
+
+# Generate Dagster .env from OpenTofu secrets
+if echo "$ENABLED_SERVICES" | grep -qw "dagster"; then
+    echo "  Generating Dagster config from OpenTofu secrets..."
+    cat > "$STACKS_DIR/dagster/.env" << EOF
+# Auto-generated from OpenTofu secrets - DO NOT COMMIT
+DAGSTER_DB_PASSWORD=$DAGSTER_DB_PASS
+EOF
+    echo -e "${GREEN}  ✓ Dagster .env generated${NC}"
 fi
 
 # Generate Kestra .env from OpenTofu secrets
@@ -1791,6 +1802,9 @@ EOF
         build_folder "n8n" \
             "N8N_USERNAME" "$ADMIN_EMAIL" \
             "N8N_PASSWORD" "$N8N_PASS"
+
+        build_folder "dagster" \
+            "DAGSTER_DB_PASSWORD" "$DAGSTER_DB_PASS"
 
         build_folder "kestra" \
             "KESTRA_USERNAME" "$ADMIN_EMAIL" \

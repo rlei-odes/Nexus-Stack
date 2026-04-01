@@ -1,0 +1,113 @@
+# =============================================================================
+# Dagster - Data Orchestration Platform
+# =============================================================================
+# Python-native data orchestration for building, testing, and monitoring
+# data pipelines with Software-Defined Assets.
+#
+# Architecture:
+#   - Webserver: Web UI for monitoring runs, assets, and schedules
+#   - Daemon: Background process for schedules, sensors, and run queuing
+#   - PostgreSQL: Storage backend for run history and event logs
+#
+# Access: https://dagster.<domain>
+# Docs: https://docs.dagster.io/
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Dagster Webserver - Web UI
+  # ---------------------------------------------------------------------------
+  dagster-webserver:
+    build: .
+    image: ${IMAGE_DAGSTER:-nexus-dagster:1.12.21}
+    container_name: dagster
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3004:3000"
+    environment:
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_PG_USERNAME=nexus-dagster
+      - DAGSTER_PG_HOST=dagster-postgres
+      - DAGSTER_PG_DB=dagster
+    volumes:
+      - dagster-data:/opt/dagster/dagster_home
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    depends_on:
+      dagster-postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+      - dagster-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Dagster Daemon - Background Scheduler & Sensor Runner
+  # ---------------------------------------------------------------------------
+  dagster-daemon:
+    build: .
+    image: ${IMAGE_DAGSTER:-nexus-dagster:1.12.21}
+    container_name: dagster-daemon
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["dagster-daemon", "run"]
+    environment:
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_PG_USERNAME=nexus-dagster
+      - DAGSTER_PG_HOST=dagster-postgres
+      - DAGSTER_PG_DB=dagster
+    volumes:
+      - dagster-data:/opt/dagster/dagster_home
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    depends_on:
+      dagster-postgres:
+        condition: service_healthy
+    networks:
+      - dagster-internal
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - Dagster Database
+  # ---------------------------------------------------------------------------
+  dagster-postgres:
+    image: postgres:16-alpine
+    container_name: dagster-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: dagster
+      POSTGRES_USER: nexus-dagster
+      POSTGRES_PASSWORD: ${DAGSTER_DB_PASSWORD}
+    volumes:
+      - dagster-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus-dagster -d dagster"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dagster-internal
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  dagster-data:
+  dagster-postgres-data:
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  app-network:
+    external: true
+  dagster-internal:
+    driver: bridge

@@ -1,0 +1,15 @@
+# Dagster instance configuration
+# Mounted into DAGSTER_HOME for both webserver and daemon
+
+storage:
+  postgres:
+    postgres_db:
+      username:
+        env: DAGSTER_PG_USERNAME
+      password:
+        env: DAGSTER_DB_PASSWORD
+      hostname:
+        env: DAGSTER_PG_HOST
+      db_name:
+        env: DAGSTER_PG_DB
+      port: 5432

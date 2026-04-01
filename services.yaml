@@ -63,6 +63,15 @@ services:
     description: "VS Code in the browser for remote development."
     image: "codercom/code-server:latest"
 
+  dagster:
+    subdomain: "dagster"
+    port: 3004
+    public: false
+    description: "Python-native data orchestration platform for building, testing, and monitoring data pipelines."
+    image: "nexus-dagster:1.12.21"
+    support_images:
+      postgres: "postgres:16-alpine"
+
   dify:
     subdomain: "dify"
     port: 8501
