@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.34.0...v0.35.0) (2026-04-01)
+
+
+### 🚀 Features
+
+* **stacks:** Add Kafdrop Kafka/Redpanda web UI ([4ad8a00](https://github.com/stefanko-ch/Nexus-Stack/commit/4ad8a0001f04085e07cf6338a8691c1b790f18ad))
+* **stacks:** Add Kafdrop Kafka/Redpanda web UI ([951f8ae](https://github.com/stefanko-ch/Nexus-Stack/commit/951f8ae2ff255a6aad5a04501b0b2cd7c7b45544)), closes [#40](https://github.com/stefanko-ch/Nexus-Stack/issues/40)
+
 ## [0.34.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.33.0...v0.34.0) (2026-04-01)
 
 
