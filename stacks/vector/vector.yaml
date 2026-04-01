@@ -6,6 +6,8 @@
 sources:
   docker_logs:
     type: docker_logs
+    exclude_containers:
+      - vector
 
 transforms:
   parse_logs:
@@ -14,6 +16,11 @@ transforms:
       - docker_logs
     source: |
       .service = .container_name
+      if is_string(.service) {
+        if starts_with!(.service, "/") {
+          .service = slice!(.service, 1)
+        }
+      }
 
 sinks:
   loki:
@@ -26,10 +33,3 @@ sinks:
       source: vector
     encoding:
       codec: text
-
-  stdout:
-    type: console
-    inputs:
-      - parse_logs
-    encoding:
-      codec: json

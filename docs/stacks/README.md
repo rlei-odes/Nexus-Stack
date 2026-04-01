@@ -86,7 +86,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Telegraf | `telegraf` | `1.38.2` | Exact ¹ |
 | Trino | `trinodb/trino` | `479` | Exact ¹ |
-| Vector | `timberio/vector` | `0.54.0-alpine` | Minor |
+| Vector | `timberio/vector` | `0.54.0-alpine` | Exact ¹ |
 | Wiki.js | `requarks/wiki` | `2.5.306` | Exact ¹ |
 | PostgreSQL (Wiki.js DB) | `postgres` | `16-alpine` | Major |
 | Woodpecker Server | `woodpeckerci/woodpecker-server` | `v3.13.0` | Exact ¹ |
