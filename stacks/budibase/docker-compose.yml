@@ -1,0 +1,33 @@
+# =============================================================================
+# Budibase - Low-Code Platform for Internal Tools
+# =============================================================================
+# Open-source low-code platform for building internal tools, CRUD apps, and
+# dashboards. All-in-one container with built-in CouchDB, Redis, and MinIO.
+#
+# Access: https://budibase.<domain>
+# Docs: https://docs.budibase.com/
+# =============================================================================
+
+services:
+  budibase:
+    image: ${IMAGE_BUDIBASE:-budibase/budibase:latest}
+    container_name: budibase
+    restart: unless-stopped
+    ports:
+      - "8096:80"
+    volumes:
+      - budibase_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  budibase_data:
+
+networks:
+  app-network:
+    external: true
