@@ -194,6 +194,13 @@ services:
     description: "Interactive PySpark notebook platform with Spark SQL support and cluster connectivity."
     image: "quay.io/jupyter/pyspark-notebook:python-3.13"
 
+  kafdrop:
+    subdomain: "kafdrop"
+    port: 8095
+    public: false
+    description: "Lightweight Kafka/Redpanda web UI for browsing topics, consumer groups, and cluster health."
+    image: "obsidiandynamics/kafdrop:4.2.0"
+
   kafka-ui:
     subdomain: "kafka-ui"
     port: 8181

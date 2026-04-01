@@ -29,6 +29,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | OpenMetadata Ingestion | `docker.getcollate.io/openmetadata/ingestion` | `1.6.6` | Exact ¹ |
 | Elasticsearch (OpenMetadata) | `docker.elastic.co/elasticsearch/elasticsearch` | `8.11.4` | Exact ¹ |
 | PostgreSQL (OpenMetadata DB) | `postgres` | `16-alpine` | Major |
+| Kafdrop | `obsidiandynamics/kafdrop` | `4.2.0` | Exact ¹ |
 | Kafka-UI | `provectuslabs/kafka-ui` | `latest` | Latest ² |
 | Kestra | `kestra/kestra` | `v1` | Major |
 | Infisical | `infisical/infisical` | `v0.155.5` | Exact ¹ |
@@ -128,6 +129,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **Infisical** | Secret management platform | [infisical.md](infisical.md) |
 | **IT-Tools** | Developer tools collection | [it-tools.md](it-tools.md) |
 | **Jupyter PySpark** | Interactive PySpark notebook | [jupyter.md](jupyter.md) |
+| **Kafdrop** | Lightweight Kafka/Redpanda web UI | [kafdrop.md](kafdrop.md) |
 | **Kafka-UI** | Kafka/Redpanda management UI | [kafka-ui.md](kafka-ui.md) |
 | **Kestra** | Workflow orchestration | [kestra.md](kestra.md) |
 | **LakeFS** | Git-like version control for data lakes | [lakefs.md](lakefs.md) |
