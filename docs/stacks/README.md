@@ -15,7 +15,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | ClickHouse | `clickhouse/clickhouse-server` | `25.8.16.34` | Exact ¹ |
 | code-server | `codercom/code-server` | `latest` | Latest ² |
 | Dagster | dagster (custom build) | `1.12.21` | Exact ³ |
-| Debezium | `quay.io/debezium/connect` | `3.5.0` | Minor |
+| Debezium | `quay.io/debezium/connect` | `3.5.0` | Exact ¹ |
 | Dinky | `dinkydocker/dinky-standalone-server` | `1.2.5-flink1.20` | Exact ¹ |
 | Draw.io | `jgraph/drawio` | `latest` | Latest ² |
 | Grafana | `grafana/grafana` | `12` | Major |

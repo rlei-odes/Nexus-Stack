@@ -45,7 +45,7 @@ curl -X POST https://debezium.<domain>/connectors \
       "database.port": "5432",
       "database.user": "nexus-postgres",
       "database.password": "<from-infisical>",
-      "database.dbname": "nexus",
+      "database.dbname": "postgres",
       "topic.prefix": "cdc",
       "plugin.name": "pgoutput"
     }

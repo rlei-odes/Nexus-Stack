@@ -22,14 +22,17 @@ services:
       - BOOTSTRAP_SERVERS=redpanda:9092
       - GROUP_ID=debezium-connect
       - CONFIG_STORAGE_TOPIC=_debezium-configs
+      - CONFIG_STORAGE_REPLICATION_FACTOR=1
       - OFFSET_STORAGE_TOPIC=_debezium-offsets
+      - OFFSET_STORAGE_REPLICATION_FACTOR=1
       - STATUS_STORAGE_TOPIC=_debezium-status
+      - STATUS_STORAGE_REPLICATION_FACTOR=1
       - KEY_CONVERTER_SCHEMAS_ENABLE=false
       - VALUE_CONVERTER_SCHEMAS_ENABLE=false
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8083"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/connectors || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
