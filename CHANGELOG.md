@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.36.0...v0.37.0) (2026-04-01)
+
+
+### 🚀 Features
+
+* **stacks:** Add Dagster data orchestration platform ([85db108](https://github.com/stefanko-ch/Nexus-Stack/commit/85db108cd037dc380bccf3e20490a05690ef9512))
+* **stacks:** Add Dagster data orchestration platform ([8ae9a3c](https://github.com/stefanko-ch/Nexus-Stack/commit/8ae9a3c01976709c6c3d3dfb536ce4bf55248959)), closes [#161](https://github.com/stefanko-ch/Nexus-Stack/issues/161)
+
+
+### 🐛 Bug Fixes
+
+* **stacks:** Fix Dagster container naming and config ([5a98a0d](https://github.com/stefanko-ch/Nexus-Stack/commit/5a98a0df6268e27adb11d41112a4025649bb6295))
+* **stacks:** Use versioned nexus-dagster image tag ([8e4f470](https://github.com/stefanko-ch/Nexus-Stack/commit/8e4f470f216474ca931a83b6b947eccced4641f2))
+
 ## [0.36.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.35.0...v0.36.0) (2026-04-01)
 
 
