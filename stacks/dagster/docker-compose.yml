@@ -19,7 +19,7 @@ services:
   # ---------------------------------------------------------------------------
   dagster-webserver:
     build: .
-    container_name: dagster-webserver
+    container_name: dagster
     restart: unless-stopped
     env_file:
       - .env
@@ -27,6 +27,9 @@ services:
       - "3004:3000"
     environment:
       - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_PG_USERNAME=nexus-dagster
+      - DAGSTER_PG_HOST=dagster-postgres
+      - DAGSTER_PG_DB=dagster
     volumes:
       - dagster-data:/opt/dagster/dagster_home
       - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
@@ -55,6 +58,9 @@ services:
     command: ["dagster-daemon", "run"]
     environment:
       - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_PG_USERNAME=nexus-dagster
+      - DAGSTER_PG_HOST=dagster-postgres
+      - DAGSTER_PG_DB=dagster
     volumes:
       - dagster-data:/opt/dagster/dagster_home
       - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
