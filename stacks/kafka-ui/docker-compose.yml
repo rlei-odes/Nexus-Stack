@@ -22,6 +22,9 @@ services:
       - KAFKA_CLUSTERS_0_NAME=redpanda
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=redpanda:9092
       - KAFKA_CLUSTERS_0_SCHEMAREGISTRY=http://redpanda:8081
+      # Debezium Kafka Connect cluster
+      - KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME=debezium
+      - KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS=http://debezium:8083
     networks:
       - app-network
     healthcheck:

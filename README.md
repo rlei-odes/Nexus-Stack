@@ -92,7 +92,7 @@ flowchart LR
     end
 ```
 
-## Available Stacks (56)
+## Available Stacks (57)
 
 ![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)
@@ -101,6 +101,7 @@ flowchart LR
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC00?logo=clickhouse&logoColor=black)
 ![code-server](https://img.shields.io/badge/code--server-007ACC?logo=visualstudiocode&logoColor=white)
 ![Dagster](https://img.shields.io/badge/Dagster-4F43DD?logo=dagster&logoColor=white)
+![Debezium](https://img.shields.io/badge/Debezium-4E8CBF?logo=debezium&logoColor=white)
 ![Dify](https://img.shields.io/badge/Dify-1677FF?logoColor=white)
 ![Dinky](https://img.shields.io/badge/Dinky-1677FF?logo=apacheflink&logoColor=white)
 ![Draw.io](https://img.shields.io/badge/Draw.io-F08705?logo=diagramsdotnet&logoColor=white)
@@ -160,6 +161,7 @@ flowchart LR
 | **ClickHouse** | Fast columnar database for real-time analytics and OLAP queries | [clickhouse.com](https://clickhouse.com) |
 | **code-server** | VS Code in the browser for remote development | [coder.com](https://coder.com) |
 | **Dagster** | Python-native data orchestration for data pipelines and Software-Defined Assets | [dagster.io](https://dagster.io) |
+| **Debezium** | Change data capture - streams database changes to Redpanda/Kafka in real time | [debezium.io](https://debezium.io) |
 | **Dify** | AI workflow builder for LLM applications, RAG pipelines, and agents | [dify.ai](https://dify.ai) |
 | **Dinky** | Web-based Flink SQL IDE with auto-completion and job management | [dinky.org.cn](https://www.dinky.org.cn/) |
 | **Draw.io** | Flowchart and diagramming tool for technical diagrams | [diagrams.net](https://www.diagrams.net) |
