@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.38.0...v0.39.0) (2026-04-01)
+
+
+### 🚀 Features
+
+* **stacks:** Add Sling data integration CLI tool ([7e005ec](https://github.com/stefanko-ch/Nexus-Stack/commit/7e005ec7b3c44b5784fdd34ea60045600a55d960))
+* **stacks:** Add Sling data integration CLI tool ([29d10b0](https://github.com/stefanko-ch/Nexus-Stack/commit/29d10b0e46219ba7d4c03eb58be3b4e9ead0a833)), closes [#311](https://github.com/stefanko-ch/Nexus-Stack/issues/311)
+
+
+### 🐛 Bug Fixes
+
+* **stacks:** Address Sling PR review comments ([6c4df8c](https://github.com/stefanko-ch/Nexus-Stack/commit/6c4df8c83e9185e630968342506360b808c3573a))
+
 ## [0.38.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.37.0...v0.38.0) (2026-04-01)
 
 
