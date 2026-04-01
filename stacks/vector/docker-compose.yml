@@ -1,0 +1,26 @@
+# =============================================================================
+# Vector - High-Performance Observability Pipeline
+# =============================================================================
+# Collects, transforms, and routes logs, metrics, and traces.
+# Replaces Fluentd/Logstash with a single, high-performance Rust binary.
+#
+# Pre-configured to collect Docker container logs and forward to Loki.
+# Edit vector.yaml to customize sources, transforms, and sinks.
+#
+# Docs: https://vector.dev/docs/
+# =============================================================================
+
+services:
+  vector:
+    image: ${IMAGE_VECTOR:-timberio/vector:0.54.0-alpine}
+    container_name: vector
+    restart: unless-stopped
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true

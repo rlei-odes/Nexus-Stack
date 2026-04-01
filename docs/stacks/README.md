@@ -84,7 +84,9 @@ Images are pinned to **major versions** where supported for automatic security p
 | Soda Core | `soda-core-arm64` | `3.3.7` | Exact ³ |
 | Spark Master | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
+| Telegraf | `telegraf` | `1.38.2` | Exact ¹ |
 | Trino | `trinodb/trino` | `479` | Exact ¹ |
+| Vector | `timberio/vector` | `0.54.0-alpine` | Minor |
 | Wiki.js | `requarks/wiki` | `2.5.306` | Exact ¹ |
 | PostgreSQL (Wiki.js DB) | `postgres` | `16-alpine` | Major |
 | Woodpecker Server | `woodpeckerci/woodpecker-server` | `v3.13.0` | Exact ¹ |
@@ -165,8 +167,10 @@ Images are pinned to **major versions** where supported for automatic security p
 | **SeaweedFS** | Distributed object storage | [seaweedfs.md](seaweedfs.md) |
 | **Sling** | Database-to-database transfers | [sling.md](sling.md) |
 | **Soda Core** | Data quality testing | [soda.md](soda.md) |
+| **Telegraf** | Metrics collection agent | [telegraf.md](telegraf.md) |
 | **Trino** | Distributed SQL query engine | [trino.md](trino.md) |
 | **Uptime Kuma** | Self-hosted monitoring tool | [uptime-kuma.md](uptime-kuma.md) |
+| **Vector** | Observability data pipeline | [vector.md](vector.md) |
 | **Wetty** | Web-based SSH terminal | [wetty.md](wetty.md) |
 | **Wiki.js** | Wiki platform | [wikijs.md](wikijs.md) |
 | **Windmill** | Developer workflow engine | [windmill.md](windmill.md) |
