@@ -92,8 +92,9 @@ flowchart LR
     end
 ```
 
-## Available Stacks (52)
+## Available Stacks (53)
 
+![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)
 ![CloudBeaver](https://img.shields.io/badge/CloudBeaver-3776AB?logo=dbeaver&logoColor=white)
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC00?logo=clickhouse&logoColor=black)
@@ -149,6 +150,7 @@ flowchart LR
 
 | Stack | Description | Website |
 |-------|-------------|--------|
+| **AKHQ** | Kafka/Redpanda management GUI for topics, consumer groups, and schema registry | [akhq.io](https://akhq.io) |
 | **Adminer** | Lightweight database management tool (supports PostgreSQL, MySQL, SQLite, etc.) | [adminer.org](https://www.adminer.org) |
 | **CloudBeaver** | Web-based database management tool | [dbeaver.com/cloudbeaver](https://dbeaver.com/cloudbeaver/) |
 | **ClickHouse** | Fast columnar database for real-time analytics and OLAP queries | [clickhouse.com](https://clickhouse.com) |

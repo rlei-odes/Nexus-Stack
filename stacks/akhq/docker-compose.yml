@@ -1,0 +1,37 @@
+# =============================================================================
+# AKHQ - Kafka/Redpanda Management GUI
+# =============================================================================
+# Full-featured web UI for managing Apache Kafka and Redpanda clusters.
+# Features: topic management, consumer groups, schema registry, Kafka Connect.
+#
+# Access: https://akhq.<domain>
+# Docs: https://akhq.io/docs/
+# =============================================================================
+
+services:
+  akhq:
+    image: ${IMAGE_AKHQ:-tchiotludo/akhq:0.27.0}
+    container_name: akhq
+    restart: unless-stopped
+    ports:
+      - "8094:8080"
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            redpanda:
+              properties:
+                bootstrap.servers: "redpanda:9092"
+              schema-registry:
+                url: "http://redpanda:8081"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-network:
+    external: true
