@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.37.0...v0.38.0) (2026-04-01)
+
+
+### 🚀 Features
+
+* **stacks:** Add Debezium CDC platform ([b552997](https://github.com/stefanko-ch/Nexus-Stack/commit/b552997e3d6ed6547579be7c03112cbaf2bcaf9a))
+* **stacks:** Add Debezium CDC platform ([4aaf153](https://github.com/stefanko-ch/Nexus-Stack/commit/4aaf15383e462211b93523690dd5a28db4da428d)), closes [#235](https://github.com/stefanko-ch/Nexus-Stack/issues/235)
+
+
+### 🐛 Bug Fixes
+
+* **docs:** Align Debezium docs with internal_only access model ([54a928e](https://github.com/stefanko-ch/Nexus-Stack/commit/54a928e4b73e6484f60615600932e3d172b7d411))
+* **stacks:** Address Debezium PR review comments ([efdb14d](https://github.com/stefanko-ch/Nexus-Stack/commit/efdb14df13f49dc2a2f1db960e9d78a5a6071e09))
+* **stacks:** Make Debezium internal-only (no subdomain) ([e685831](https://github.com/stefanko-ch/Nexus-Stack/commit/e685831eea7641c5170a15b356ad25743afd9c89))
+
 ## [0.37.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.36.0...v0.37.0) (2026-04-01)
 
 
