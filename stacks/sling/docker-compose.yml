@@ -1,0 +1,28 @@
+# =============================================================================
+# Sling - Data Integration CLI Tool
+# =============================================================================
+# Lightweight CLI tool for database-to-database and file-to-database
+# transfers. Supports PostgreSQL, MySQL, SQL Server, Oracle, ClickHouse,
+# S3, and more.
+#
+# Usage: docker exec -it sling sling run --src-conn POSTGRES --tgt-conn CLICKHOUSE
+# Docs: https://docs.slingdata.io
+# =============================================================================
+
+services:
+  sling:
+    build: .
+    image: ${IMAGE_SLING:-nexus-sling:1.5.13}
+    container_name: sling
+    restart: unless-stopped
+    volumes:
+      - sling-data:/workspace
+    networks:
+      - app-network
+
+volumes:
+  sling-data:
+
+networks:
+  app-network:
+    external: true

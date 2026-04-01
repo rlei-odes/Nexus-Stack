@@ -459,6 +459,13 @@ services:
     tcp_ports:
       postgres: 4566
 
+  sling:
+    port: 0
+    public: false
+    internal_only: true
+    description: "Lightweight CLI tool for database-to-database and file-to-database transfers."
+    image: "nexus-sling:1.5.13"
+
   soda:
     port: 5002
     public: false
