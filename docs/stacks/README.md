@@ -8,6 +8,7 @@ Images are pinned to **major versions** where supported for automatic security p
 
 | Service | Image | Tag | Strategy |
 |---------|-------|-----|----------|
+| AKHQ | `tchiotludo/akhq` | `0.27.0` | Exact ¹ |
 | Adminer | `adminer` | `latest` | Latest ² |
 | CloudBeaver | `dbeaver/cloudbeaver` | `24` | Major |
 | ClickHouse | `clickhouse/clickhouse-server` | `25.8.16.34` | Exact ¹ |
@@ -106,6 +107,7 @@ Images are pinned to **major versions** where supported for automatic security p
 
 | Stack | Description | Docs |
 |-------|-------------|------|
+| **AKHQ** | Kafka/Redpanda management GUI | [akhq.md](akhq.md) |
 | **Adminer** | Lightweight database management tool | [adminer.md](adminer.md) |
 | **Apache Spark** | Distributed data processing engine | [spark.md](spark.md) |
 | **CloudBeaver** | Web-based database management tool | [cloudbeaver.md](cloudbeaver.md) |

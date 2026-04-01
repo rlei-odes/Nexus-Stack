@@ -19,6 +19,13 @@
 # =============================================================================
 
 services:
+  akhq:
+    subdomain: "akhq"
+    port: 8094
+    public: false
+    description: "Kafka/Redpanda management GUI for topics, consumer groups, schema registry, and Connect."
+    image: "tchiotludo/akhq:0.27.0"
+
   adminer:
     subdomain: "adminer"
     port: 8888
