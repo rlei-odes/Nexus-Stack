@@ -20,7 +20,8 @@
 #
 # CATEGORIES:
 # - core: Core Infrastructure
-# - databases: Databases & Storage
+# - databases: Databases
+# - storage: Object Storage
 # - db-management: Database Management
 # - orchestration: Data Orchestration
 # - streaming: Stream Processing
@@ -199,7 +200,7 @@ services:
     subdomain: "garage"
     port: 3909
     public: false
-    category: "databases"
+    category: "storage"
     website: "https://garagehq.deuxfleurs.fr"
     description: "Lightweight S3-compatible object storage designed for self-hosting."
     long_description: "Garage is a lightweight, self-hosted S3-compatible object storage system. Designed for simplicity and resilience, it features geo-distributed replication, multi-tenancy, and low resource usage. Ideal for personal clouds, backups, and static website hosting."
@@ -402,7 +403,7 @@ services:
     subdomain: "minio"
     port: 9001
     public: false
-    category: "databases"
+    category: "storage"
     website: "https://min.io"
     description: "High-performance S3-compatible object storage for data lakes, backups, and ML models."
     long_description: "MinIO is a high-performance, S3-compatible object storage system. Store and retrieve any amount of data with industry-standard S3 API compatibility. Features include bucket versioning, lifecycle policies, server-side encryption, and a built-in web console for management."
@@ -464,7 +465,7 @@ services:
     subdomain: "rustfs"
     port: 9002
     public: false
-    category: "databases"
+    category: "storage"
     website: "https://rustfs.com"
     description: "Rust-based S3-compatible object storage (MinIO alternative) with web console."
     long_description: "RustFS is a high-performance, Rust-based S3-compatible object storage system. Designed as a lightweight MinIO alternative with lower memory footprint and fast startup. Features include a built-in web console, bucket management, and full S3 API compatibility."
@@ -553,7 +554,7 @@ services:
     port: 8888
     public: false
     internal_only: true
-    category: "databases"
+    category: "storage"
     website: "https://github.com/seaweedfs/seaweedfs"
     description: "SeaweedFS distributed object storage (base service - access via filer or manager)"
     long_description: "SeaweedFS is a distributed storage system for blobs, objects, and files. This is the base volume server - use the SeaweedFS Filer for file management or SeaweedFS Manager for cluster monitoring. Optimized for fast reads and writes with automatic data replication."
@@ -564,7 +565,7 @@ services:
     port: 8888
     stack: "seaweedfs"
     public: false
-    category: "databases"
+    category: "storage"
     website: "https://github.com/seaweedfs/seaweedfs"
     description: "SeaweedFS file browser with upload capability - the main interface for managing files."
     long_description: "SeaweedFS Filer provides a file system interface on top of the SeaweedFS volume servers. Upload, download, and organize files through a web browser. Supports S3-compatible API, POSIX-like directory structure, and handles files of any size efficiently."
@@ -577,7 +578,7 @@ services:
     port: 9333
     stack: "seaweedfs"
     public: false
-    category: "databases"
+    category: "storage"
     website: "https://github.com/seaweedfs/seaweedfs"
     description: "SeaweedFS cluster statistics and health monitoring (read-only dashboard)."
     long_description: "SeaweedFS Manager (Master Server UI) provides cluster-level monitoring for your SeaweedFS deployment. View volume server status, disk usage, data center topology, and replication health. Read-only dashboard for operational oversight."
