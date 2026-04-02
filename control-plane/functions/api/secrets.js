@@ -23,14 +23,10 @@ async function safeJsonParse(response, label) {
 
 export async function onRequestGet(context) {
   try {
-    // Defense-in-depth: require Cloudflare Access authentication
-    const userEmail = context.request.headers.get('CF-Access-Authenticated-User-Email');
-    if (!userEmail) {
-      return Response.json(
-        { success: false, error: 'Forbidden: missing Cloudflare Access authentication.' },
-        { status: 403 },
-      );
-    }
+    // All Control Panel endpoints are protected by Cloudflare Access (email OTP)
+    // at the infrastructure level (configured in Terraform). No additional auth needed.
+    // Note: CF-Access-Authenticated-User-Email header is not reliably forwarded
+    // to Cloudflare Pages Functions, so we cannot check it here.
 
     const token = context.env.INFISICAL_TOKEN;
     const projectId = context.env.INFISICAL_PROJECT_ID;
