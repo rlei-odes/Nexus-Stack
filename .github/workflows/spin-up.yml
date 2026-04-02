@@ -581,16 +581,9 @@ jobs:
             exit 0
           fi
           
-          # Build credentials JSON with only essential fields
-          CREDENTIALS=$(echo "$SECRETS_JSON" | jq -c '{
-            admin_username: .admin_username,
-            infisical_admin_password: .infisical_admin_password,
-            portainer_admin_password: .portainer_admin_password,
-            grafana_admin_password: .grafana_admin_password,
-            kestra_admin_password: .kestra_admin_password,
-            n8n_admin_password: .n8n_admin_password,
-            kuma_admin_password: .kuma_admin_password
-          }')
+          # Build credentials JSON with all secrets (for Control Panel Secrets page)
+          # Filter out null/empty values to keep the payload clean
+          CREDENTIALS=$(echo "$SECRETS_JSON" | jq -c 'to_entries | map(select(.value != null and .value != "")) | from_entries')
           
           # Store as Pages secret using wrangler
           if echo "$CREDENTIALS" | npx wrangler pages secret put CREDENTIALS_JSON --project-name "$PAGES_PROJECT" 2>/dev/null; then
