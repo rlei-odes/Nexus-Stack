@@ -1,0 +1,737 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Nexus Stack" activeNav="dashboard">
+  <!-- Status Panel -->
+  <div class="status-panel">
+    <div class="status-indicator">
+      <span class="status-dot unknown" id="status-dot"></span>
+      <span class="status-text unknown" id="status-text">Checking...</span>
+    </div>
+    <p class="status-description" id="status-description">Fetching infrastructure status...</p>
+  </div>
+
+  <!-- Action Buttons -->
+  <div class="actions">
+    <button class="action-btn email-credentials" id="btn-email-credentials" disabled>
+      <span class="icon">&#x1F4E7;</span>
+      Email Credentials
+    </button>
+    <button class="action-btn spin-up" id="btn-spin-up" disabled>
+      <span class="icon">&#x26A1;</span>
+      Spin Up
+    </button>
+    <button class="action-btn teardown" id="btn-teardown" disabled>
+      <span class="icon">&#x1F4A4;</span>
+      Teardown
+    </button>
+  </div>
+
+  <!-- Pending Changes Banner -->
+  <div id="pending-changes-banner" style="display: none;" class="pending-banner">
+    <div class="pending-banner-content">
+      <span class="pending-banner-icon">&#9888;</span>
+      <div class="pending-banner-text">
+        <strong><span class="pending-count">0</span> service change<span class="pending-plural">s</span> staged</strong>
+        <span class="pending-hint">Click "Deploy Changes" to apply</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workflow Progress Banner -->
+  <div id="workflow-progress-banner" style="display: none;" class="progress-banner">
+    <div class="progress-banner-content">
+      <span class="spinner"></span>
+      <div class="progress-banner-text">
+        <strong><span id="progress-workflow-name">Workflow</span> is running...</strong>
+        <span class="progress-hint">This usually takes 5-10 minutes</span>
+      </div>
+      <a id="progress-workflow-link" href="#" target="_blank" rel="noopener noreferrer" class="progress-link">View in GitHub</a>
+    </div>
+  </div>
+
+  <!-- Active Stacks -->
+  <div class="active-stacks-panel">
+    <h2>Active Stacks</h2>
+    <div id="active-stacks-list" class="active-stacks-list">
+      <p class="loading-text">Loading active stacks...</p>
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <h3 id="modal-title">Confirm Action</h3>
+      <p id="modal-message">Are you sure?</p>
+      <div class="modal-actions">
+        <button class="modal-btn cancel" id="modal-cancel">Cancel</button>
+        <button class="modal-btn confirm" id="modal-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  /* Animated grid background (dashboard-specific) */
+  body::before {
+    animation: gridMove 20s linear infinite;
+  }
+
+  @keyframes gridMove {
+    0% { transform: translate(0, 0); }
+    100% { transform: translate(50px, 50px); }
+  }
+
+  /* Scanline effect */
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.1) 0px,
+      rgba(0, 0, 0, 0.1) 1px,
+      transparent 1px,
+      transparent 2px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* Status Panel */
+  .status-panel {
+    background: rgba(0, 20, 10, 0.8);
+    border: 1px solid rgba(0, 255, 136, 0.4);
+    padding: 2rem;
+    margin-bottom: 2rem;
+    text-align: center;
+  }
+
+  .status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.8rem;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.2rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    animation: statusPulse 2s infinite;
+  }
+
+  @keyframes statusPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+  .status-dot.deployed { background: #00ff88; }
+  .status-dot.torn-down { background: #ffaa00; }
+  .status-dot.destroyed { background: #ff4444; }
+  .status-dot.running { background: #00aaff; }
+  .status-dot.unknown { background: #666666; }
+
+  .status-text.deployed { color: #00ff88; }
+  .status-text.torn-down { color: #ffaa00; }
+  .status-text.destroyed { color: #ff4444; }
+  .status-text.running { color: #00aaff; }
+  .status-text.unknown { color: #666666; }
+
+  .status-description {
+    margin-top: 1rem;
+    font-size: 0.8rem;
+    color: #607080;
+  }
+
+  /* Action Buttons */
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  .action-btn {
+    background: rgba(0, 20, 10, 0.8);
+    border: 2px solid rgba(0, 255, 136, 0.4);
+    color: #00ff88;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 1.5rem 2rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .action-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(0, 255, 136, 0.2), transparent);
+    transition: left 0.5s ease;
+  }
+
+  .action-btn:hover::before { left: 100%; }
+
+  .action-btn:hover {
+    border-color: #00ff88;
+    box-shadow: 0 0 30px rgba(0, 255, 136, 0.3);
+    transform: translateY(-2px);
+  }
+
+  .action-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed !important;
+    transform: none;
+    pointer-events: none;
+    filter: grayscale(0.3);
+  }
+
+  .action-btn .icon {
+    display: block;
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .action-btn.email-credentials {
+    border-color: rgba(168, 85, 247, 0.6);
+    color: #a855f7;
+  }
+
+  .action-btn.spin-up {
+    border-color: rgba(0, 170, 255, 0.6);
+    color: #00aaff;
+  }
+
+  .action-btn.teardown {
+    border-color: rgba(255, 170, 0, 0.6);
+    color: #ffaa00;
+  }
+
+  .action-btn.teardown:hover {
+    border-color: #ffaa00;
+    box-shadow: 0 0 30px rgba(255, 170, 0, 0.3);
+  }
+
+  /* Pending Banner */
+  .pending-banner {
+    background: rgba(255, 170, 0, 0.08);
+    border: 1px solid rgba(255, 170, 0, 0.3);
+    padding: 0.8rem 1.2rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .pending-banner-content {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+  }
+
+  .pending-banner-icon { font-size: 1.2rem; }
+  .pending-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    display: block;
+  }
+
+  /* Progress Banner */
+  .progress-banner {
+    background: rgba(0, 170, 255, 0.08);
+    border: 1px solid rgba(0, 170, 255, 0.3);
+    padding: 0.8rem 1.2rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .progress-banner-content {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+  }
+
+  .progress-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    display: block;
+  }
+
+  .progress-link {
+    color: var(--info);
+    text-decoration: none;
+    font-size: 0.8rem;
+    margin-left: auto;
+  }
+
+  .progress-link:hover { text-decoration: underline; }
+
+  /* Active Stacks */
+  .active-stacks-panel {
+    margin-bottom: 2rem;
+  }
+
+  .active-stacks-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .loading-text {
+    color: #607080;
+    font-size: 0.8rem;
+  }
+
+  .stack-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.8rem;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(0, 255, 136, 0.1);
+    font-size: 0.85rem;
+    transition: border-color 0.2s;
+  }
+
+  .stack-item:hover {
+    border-color: rgba(0, 255, 136, 0.3);
+  }
+
+  .stack-item-name {
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .stack-item-desc {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    flex: 1;
+    margin-left: 1rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stack-item-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    border-radius: 3px;
+    transition: all 0.3s;
+    flex-shrink: 0;
+  }
+
+  .stack-item-link:hover {
+    background: rgba(0, 255, 136, 0.15);
+    border-color: var(--accent);
+  }
+
+  .stack-count {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-bottom: 0.8rem;
+  }
+
+  /* Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-overlay.active {
+    display: flex;
+  }
+
+  .modal {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 2rem;
+    max-width: 500px;
+    width: 90%;
+  }
+
+  .modal h3 {
+    color: var(--warning);
+    margin-bottom: 1rem;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1rem;
+  }
+
+  .modal p {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.6;
+    margin-bottom: 1.5rem;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+  }
+
+  .modal-btn {
+    padding: 0.6rem 1.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.3s;
+  }
+
+  .modal-btn.cancel {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+  }
+
+  .modal-btn.confirm {
+    background: rgba(255, 170, 0, 0.2);
+    border: 1px solid var(--warning);
+    color: var(--warning);
+  }
+
+  .modal-btn.confirm:hover {
+    background: rgba(255, 170, 0, 0.3);
+  }
+</style>
+
+<script is:inline>
+  const API_URL = '';
+  let currentAction = null;
+  let pendingChangesCount = 0;
+  let wasInProgress = false;
+  let stackDomain = window.location.hostname.replace('control.', '');
+
+  const statusDescriptions = {
+    'deployed': 'Infrastructure is running. All services are accessible.',
+    'torn-down': 'Infrastructure is stopped. Control panel remains active. Click Spin Up to restart.',
+    'destroyed': 'Everything is destroyed. Run Spin Up to start fresh.',
+    'running': 'A workflow is currently running. Please wait...',
+    'unknown': 'Unable to determine infrastructure state.'
+  };
+
+  function enableFallbackState() {
+    updateButtons({ infraState: 'unknown', inProgress: false, workflows: {} });
+  }
+
+  // Fetch domain for service links
+  async function fetchDomain() {
+    try {
+      const res = await fetch(`${API_URL}/api/info`, { credentials: 'same-origin' });
+      const ct = res.headers.get('content-type');
+      if (!ct || !ct.includes('application/json')) return;
+      const data = await res.json();
+      if (data.success && data.info?.server?.domain) {
+        stackDomain = data.info.server.domain;
+      }
+    } catch {}
+  }
+
+  // Fetch and display status
+  async function fetchStatus() {
+    try {
+      const response = await fetch(`${API_URL}/api/status`, { credentials: 'same-origin' });
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        showToast('Session expired - please refresh the page', 'error');
+        enableFallbackState();
+        return;
+      }
+      const data = await response.json();
+      if (data.success) {
+        updateStatusDisplay(data);
+        updateButtons(data);
+        updateWorkflowProgress(data);
+        if (wasInProgress && !data.inProgress) {
+          loadActiveStacks();
+        }
+        wasInProgress = data.inProgress;
+      } else {
+        enableFallbackState();
+      }
+    } catch (error) {
+      console.error('Failed to fetch status:', error);
+      enableFallbackState();
+    }
+  }
+
+  function updateWorkflowProgress(data) {
+    const banner = document.getElementById('workflow-progress-banner');
+    if (!banner) return;
+    if (data.inProgress) {
+      const workflowNames = {
+        initialSetup: 'Initial Setup', spinUp: 'Spin Up',
+        teardown: 'Teardown', destroy: 'Destroy', setup: 'Setup'
+      };
+      let runningName = 'Workflow';
+      let runningUrl = '#';
+      for (const [key, label] of Object.entries(workflowNames)) {
+        const wf = data.workflows[key];
+        if (wf && (wf.status === 'in_progress' || wf.status === 'queued')) {
+          runningName = label;
+          runningUrl = wf.url || '#';
+          break;
+        }
+      }
+      banner.querySelector('#progress-workflow-name').textContent = runningName;
+      const link = banner.querySelector('#progress-workflow-link');
+      link.href = runningUrl;
+      link.style.display = runningUrl !== '#' ? 'inline-block' : 'none';
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
+  function updateStatusDisplay(data) {
+    const dot = document.getElementById('status-dot');
+    const text = document.getElementById('status-text');
+    const desc = document.getElementById('status-description');
+    dot.className = 'status-dot ' + data.infraState;
+    text.className = 'status-text ' + data.infraState;
+    const stateLabels = {
+      'deployed': 'Deployed', 'torn-down': 'Torn Down',
+      'destroyed': 'Destroyed', 'running': 'In Progress', 'unknown': 'Unknown'
+    };
+    text.textContent = stateLabels[data.infraState] || 'Unknown';
+    desc.textContent = statusDescriptions[data.infraState] || '';
+  }
+
+  function updateButtons(data) {
+    const btnEmail = document.getElementById('btn-email-credentials');
+    const btnSpinUp = document.getElementById('btn-spin-up');
+    const btnTeardown = document.getElementById('btn-teardown');
+
+    if (data.inProgress) {
+      btnEmail.disabled = true;
+      btnSpinUp.disabled = true;
+      btnTeardown.disabled = true;
+      btnSpinUp.innerHTML = '<span class="spinner"></span>Working...';
+      btnTeardown.innerHTML = '<span class="spinner"></span>Working...';
+      return;
+    }
+
+    btnEmail.innerHTML = '<span class="icon">&#x1F4E7;</span>Email Credentials';
+    if (pendingChangesCount > 0) {
+      btnSpinUp.innerHTML = '<span class="icon">&#x26A1;</span>Deploy Changes (' + pendingChangesCount + ')';
+    } else {
+      btnSpinUp.innerHTML = '<span class="icon">&#x26A1;</span>Spin Up';
+    }
+    btnTeardown.innerHTML = '<span class="icon">&#x1F4A4;</span>Teardown';
+
+    switch (data.infraState) {
+      case 'deployed':
+        btnEmail.disabled = false;
+        btnSpinUp.disabled = pendingChangesCount === 0;
+        btnTeardown.disabled = false;
+        break;
+      case 'torn-down':
+        btnEmail.disabled = true;
+        btnSpinUp.disabled = false;
+        btnTeardown.disabled = true;
+        break;
+      case 'destroyed':
+        btnEmail.disabled = true;
+        btnSpinUp.disabled = false;
+        btnTeardown.disabled = true;
+        break;
+      default:
+        btnEmail.disabled = true;
+        btnSpinUp.disabled = false;
+        btnTeardown.disabled = false;
+    }
+  }
+
+  // Email Credentials
+  async function emailCredentials() {
+    const btn = document.getElementById('btn-email-credentials');
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Sending...';
+    try {
+      const response = await fetch(`${API_URL}/api/send-credentials`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await response.json();
+      showToast(data.success ? 'Credentials email sent!' : (data.error || 'Failed to send email'), data.success ? 'success' : 'error');
+    } catch {
+      showToast('Failed to send email', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+    }
+  }
+
+  // Active stacks list
+  async function loadActiveStacks() {
+    try {
+      await fetchDomain();
+      const response = await fetch(`${API_URL}/api/services`, { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.success) {
+        const services = data.services || [];
+        const active = services.filter(s => s.enabled);
+        updatePendingBadge(data.pendingChangesCount || 0);
+        renderActiveStacks(active);
+      }
+    } catch (error) {
+      console.error('Failed to load services:', error);
+    }
+  }
+
+  function updatePendingBadge(count) {
+    pendingChangesCount = count;
+    const banner = document.getElementById('pending-changes-banner');
+    const btnSpinUp = document.getElementById('btn-spin-up');
+    if (!banner || !btnSpinUp) return;
+
+    if (count > 0) {
+      banner.style.display = 'block';
+      banner.querySelector('.pending-count').textContent = count;
+      banner.querySelector('.pending-plural').textContent = count > 1 ? 's' : '';
+      if (!btnSpinUp.querySelector('.spinner')) {
+        btnSpinUp.innerHTML = '<span class="icon">&#x26A1;</span>Deploy Changes (' + count + ')';
+      }
+      if (!wasInProgress) btnSpinUp.disabled = false;
+    } else {
+      banner.style.display = 'none';
+      if (!btnSpinUp.querySelector('.spinner')) {
+        btnSpinUp.innerHTML = '<span class="icon">&#x26A1;</span>Spin Up';
+      }
+    }
+  }
+
+  function renderActiveStacks(services) {
+    const list = document.getElementById('active-stacks-list');
+    if (!services.length) {
+      list.innerHTML = '<p class="loading-text">No active stacks. Go to <a href="/stacks" style="color: var(--accent);">Stacks</a> to enable services.</p>';
+      return;
+    }
+
+    const countHtml = '<p class="stack-count">' + services.length + ' stack' + (services.length !== 1 ? 's' : '') + ' active</p>';
+    let html = countHtml;
+
+    services.forEach(s => {
+      let linkHtml = '';
+      if (s.subdomain && s.deployed) {
+        const url = 'https://' + s.subdomain + '.' + stackDomain;
+        linkHtml = '<a href="' + url + '" target="_blank" rel="noopener" class="stack-item-link">Open &#8599;</a>';
+      }
+      html += '<div class="stack-item">' +
+        '<span class="stack-item-name">' + escapeHtml(s.name) + '</span>' +
+        '<span class="stack-item-desc">' + escapeHtml(s.description) + '</span>' +
+        linkHtml +
+        '</div>';
+    });
+
+    list.innerHTML = html;
+  }
+
+  // Action handlers
+  async function triggerAction(action) {
+    const buttons = document.querySelectorAll('.action-btn');
+    buttons.forEach(btn => btn.disabled = true);
+    const btn = document.getElementById('btn-' + action);
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span>Processing...';
+
+    try {
+      const response = await fetch(API_URL + '/api/' + action, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        showToast('Session expired - please refresh the page', 'error');
+        buttons.forEach(btn => btn.disabled = false);
+        btn.innerHTML = originalHTML;
+        return;
+      }
+      const data = await response.json();
+      if (data.success) {
+        const labels = { 'spin-up': 'Spin Up', 'teardown': 'Teardown', 'email-credentials': 'Email Credentials' };
+        showToast((labels[action] || action) + ' triggered!');
+        setTimeout(fetchStatus, 2000);
+      } else {
+        showToast(data.error || 'Failed to trigger action', 'error');
+        buttons.forEach(btn => btn.disabled = false);
+        btn.innerHTML = originalHTML;
+      }
+    } catch {
+      showToast('Network error - please try again', 'error');
+      buttons.forEach(btn => btn.disabled = false);
+      btn.innerHTML = originalHTML;
+    }
+  }
+
+  function showConfirmModal(action) {
+    currentAction = action;
+    const modal = document.getElementById('modal-overlay');
+    document.getElementById('modal-title').textContent = 'Confirm Teardown';
+    document.getElementById('modal-message').textContent = 'This will stop all services and destroy the Hetzner infrastructure. The control panel will remain active, allowing you to spin up later.';
+    modal.classList.add('active');
+  }
+
+  function hideModal() {
+    document.getElementById('modal-overlay').classList.remove('active');
+    currentAction = null;
+  }
+
+  // Event listeners
+  document.getElementById('btn-email-credentials').addEventListener('click', () => emailCredentials());
+  document.getElementById('btn-spin-up').addEventListener('click', () => triggerAction('spin-up'));
+  document.getElementById('btn-teardown').addEventListener('click', () => showConfirmModal('teardown'));
+  document.getElementById('modal-cancel').addEventListener('click', hideModal);
+  document.getElementById('modal-confirm').addEventListener('click', () => {
+    if (currentAction) { triggerAction(currentAction); hideModal(); }
+  });
+
+  // Health check
+  async function checkHealth() {
+    try {
+      const r = await fetch(API_URL + '/api/health', { credentials: 'same-origin' });
+      if (r.ok) { const d = await r.json(); console.log('Control Panel API:', d.status); }
+    } catch {}
+  }
+
+  // Polling
+  let consecutiveErrors = 0;
+  let pollTimeout;
+  function scheduleNextPoll() {
+    if (pollTimeout) clearTimeout(pollTimeout);
+    const baseInterval = 10000;
+    const maxInterval = 60000;
+    const interval = Math.min(baseInterval * Math.pow(2, Math.min(consecutiveErrors, 6)), maxInterval);
+    pollTimeout = setTimeout(() => {
+      fetchStatus()
+        .then(() => { consecutiveErrors = 0; scheduleNextPoll(); })
+        .catch(() => { consecutiveErrors++; scheduleNextPoll(); });
+    }, interval);
+  }
+
+  // Init
+  checkHealth();
+  loadActiveStacks();
+  fetchStatus().then(() => scheduleNextPoll()).catch(() => scheduleNextPoll());
+</script>

@@ -1,0 +1,312 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories';
+---
+
+<Layout title="Stack Management" activeNav="stacks">
+  <div class="services-panel">
+    <h2>Stack Management</h2>
+    <div class="search-panel">
+      <input type="text" id="global-search" class="search-input" placeholder="Search stacks..." autocomplete="off">
+      <div id="search-results" class="search-dropdown"></div>
+    </div>
+    <div class="categories-grid" id="categories-grid">
+      <p class="loading-text">Loading categories...</p>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  .services-panel {
+    margin-bottom: 2rem;
+  }
+
+  .search-panel {
+    position: relative;
+    margin-bottom: 1.5rem;
+  }
+
+  .search-input {
+    width: 100%;
+    padding: 0.8rem 1rem;
+    background: rgba(0, 10, 5, 0.8);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    color: #c0d0c0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+    border-radius: 4px;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+
+  .search-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 15px rgba(0, 255, 136, 0.15);
+  }
+
+  .search-input::placeholder { color: #607080; }
+
+  .search-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: none;
+    z-index: 50;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .search-dropdown.visible { display: block; }
+
+  .search-result-item {
+    display: flex;
+    align-items: center;
+    padding: 0.8rem 1rem;
+    border-bottom: 1px solid var(--border);
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.2s;
+  }
+
+  .search-result-item:hover {
+    background: rgba(0, 255, 136, 0.05);
+  }
+
+  .search-result-name {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+
+  .search-result-desc {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 0.2rem;
+  }
+
+  .search-result-badge {
+    font-size: 0.65rem;
+    color: var(--info);
+    border: 1px solid rgba(0, 170, 255, 0.2);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .search-all-link {
+    display: block;
+    padding: 0.6rem 1rem;
+    color: var(--accent);
+    font-size: 0.8rem;
+    text-decoration: none;
+    text-align: center;
+    border-top: 1px solid var(--border);
+  }
+
+  .search-all-link:hover { text-decoration: underline; }
+
+  .categories-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 1rem;
+  }
+
+  .loading-text {
+    color: #607080;
+    font-size: 0.8rem;
+  }
+
+  :global(.category-card) {
+    display: block;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 1rem 1.2rem;
+    text-decoration: none;
+    transition: all 0.3s;
+  }
+
+  :global(.category-card:hover) {
+    border-color: rgba(0, 255, 136, 0.3);
+    box-shadow: 0 0 15px rgba(0, 255, 136, 0.1);
+  }
+
+  :global(.category-card-name) {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  :global(.category-card-count) {
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  :global(.category-card-stats) {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    display: flex;
+    gap: 1rem;
+  }
+
+  :global(.category-card-stats .enabled) { color: var(--accent); }
+  :global(.category-card-stats .pending) { color: var(--warning); }
+</style>
+
+<script is:inline>
+  const CATEGORIES = {
+    'core': { name: 'Core Infrastructure' },
+    'databases': { name: 'Databases' },
+    'storage': { name: 'Object Storage' },
+    'db-management': { name: 'Database Management' },
+    'orchestration': { name: 'Data Orchestration' },
+    'streaming': { name: 'Stream Processing' },
+    'messaging': { name: 'Message Brokers' },
+    'analytics': { name: 'Analytics & BI' },
+    'data-quality': { name: 'Data Quality' },
+    'ai-ml': { name: 'AI & Machine Learning' },
+    'dev-tools': { name: 'Development Tools' },
+    'ci-cd': { name: 'CI/CD & Automation' },
+    'low-code': { name: 'Low-Code Platforms' },
+    'observability': { name: 'Observability' },
+    'knowledge': { name: 'Knowledge & Docs' },
+    'visual-tools': { name: 'Visual Tools' },
+    'files': { name: 'File Management' },
+    'server-access': { name: 'Server Access' },
+  };
+
+  const CATEGORY_ORDER = [
+    'core', 'databases', 'storage', 'db-management', 'orchestration', 'streaming',
+    'messaging', 'analytics', 'data-quality', 'ai-ml', 'dev-tools',
+    'ci-cd', 'low-code', 'observability', 'knowledge', 'visual-tools',
+    'files', 'server-access'
+  ];
+
+  let allServices = [];
+
+  async function loadServices() {
+    try {
+      const response = await fetch('/api/services', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.success) {
+        allServices = data.services || [];
+        renderCategoryGrid(data.categoryCounts || {});
+      }
+    } catch (error) {
+      console.error('Failed to load services:', error);
+    }
+  }
+
+  function renderCategoryGrid(categoryCounts) {
+    const grid = document.getElementById('categories-grid');
+    grid.innerHTML = '';
+
+    if (Object.keys(categoryCounts).length === 0) {
+      grid.innerHTML = '<p class="loading-text">No services found. Run Spin Up to initialize.</p>';
+      return;
+    }
+
+    CATEGORY_ORDER.forEach(slug => {
+      const stats = categoryCounts[slug];
+      if (!stats) return;
+      const cat = CATEGORIES[slug];
+      if (!cat) return;
+
+      const card = document.createElement('a');
+      card.className = 'category-card';
+      card.href = '/category?cat=' + slug;
+
+      let statsHtml = '<span class="enabled">' + stats.enabled + ' / ' + stats.total + ' enabled</span>';
+      if (stats.pending > 0) {
+        statsHtml += '<span class="pending">' + stats.pending + ' pending</span>';
+      }
+
+      card.innerHTML =
+        '<div style="display: flex; justify-content: space-between; align-items: flex-start;">' +
+          '<div class="category-card-name">' + cat.name + '</div>' +
+          '<div class="category-card-count">' + stats.total + '</div>' +
+        '</div>' +
+        '<div class="category-card-stats">' + statsHtml + '</div>';
+
+      grid.appendChild(card);
+    });
+  }
+
+  // Search
+  let searchTimeout;
+  function handleSearch(query) {
+    clearTimeout(searchTimeout);
+    const dropdown = document.getElementById('search-results');
+
+    if (!query || query.length < 2) {
+      dropdown.classList.remove('visible');
+      dropdown.innerHTML = '';
+      return;
+    }
+
+    searchTimeout = setTimeout(() => {
+      const q = query.toLowerCase();
+      const matches = allServices.filter(s =>
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        (s.long_description && s.long_description.toLowerCase().includes(q)) ||
+        (s.category && CATEGORIES[s.category] && CATEGORIES[s.category].name.toLowerCase().includes(q))
+      ).slice(0, 8);
+
+      dropdown.innerHTML = '';
+
+      if (matches.length === 0) {
+        dropdown.innerHTML = '<div style="padding: 0.8rem 1rem; color: #607080; font-size: 0.8rem;">No stacks found</div>';
+        dropdown.classList.add('visible');
+        return;
+      }
+
+      matches.forEach(s => {
+        const item = document.createElement('a');
+        item.className = 'search-result-item';
+        item.href = '/category?cat=' + s.category + '#' + s.name;
+        item.style.textDecoration = 'none';
+        item.style.color = 'inherit';
+
+        const catName = CATEGORIES[s.category] ? CATEGORIES[s.category].name : s.category;
+        item.innerHTML =
+          '<div style="flex: 1; min-width: 0;">' +
+            '<div class="search-result-name">' + escapeHtml(s.name) + '</div>' +
+            '<div class="search-result-desc">' + escapeHtml(s.description) + '</div>' +
+          '</div>' +
+          '<span class="search-result-badge">' + escapeHtml(catName) + '</span>';
+        dropdown.appendChild(item);
+      });
+
+      const allLink = document.createElement('a');
+      allLink.className = 'search-all-link';
+      allLink.href = '/search?q=' + encodeURIComponent(query);
+      allLink.textContent = 'View all results for "' + query + '"';
+      dropdown.appendChild(allLink);
+
+      dropdown.classList.add('visible');
+    }, 150);
+  }
+
+  // Event listeners
+  document.getElementById('global-search').addEventListener('input', function() {
+    handleSearch(this.value);
+  });
+
+  document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('search-results');
+    const input = document.getElementById('global-search');
+    if (!dropdown.contains(e.target) && e.target !== input) {
+      dropdown.classList.remove('visible');
+    }
+  });
+
+  // Init
+  loadServices();
+</script>

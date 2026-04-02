@@ -58,3 +58,8 @@ stacks/*/.env
 
 # Generated firewall override files (created by deploy.sh)
 stacks/*/docker-compose.firewall.yml
+
+# Control Plane (Astro)
+control-plane/node_modules/
+control-plane/dist/
+control-plane/.astro/

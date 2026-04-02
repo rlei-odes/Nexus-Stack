@@ -969,12 +969,22 @@ jobs:
           [ -n "$KV_NAMESPACE_ID" ] && echo "  KV Namespace ID: $KV_NAMESPACE_ID"
           cd ../..
 
-          cd control-plane/pages
+          cd control-plane
+
           # Verify functions directory exists
           if [ ! -d "functions" ]; then
             echo "❌ Error: functions/ directory not found - API endpoints are required!"
             exit 1
           fi
+
+          # Build Astro frontend
+          echo "  Building Astro frontend..."
+          npm ci
+          npm run build
+          echo "  ✅ Astro build complete"
+
+          # Copy functions into dist/ for Cloudflare Pages deployment
+          cp -r functions dist/functions
 
           # Generate wrangler.toml with D1 + KV bindings
           # pages_build_output_dir is required for Pages to use the config
@@ -985,7 +995,7 @@ jobs:
           cat > wrangler.toml << EOF
           name = "$PROJECT_NAME"
           compatibility_date = "2024-01-01"
-          pages_build_output_dir = "."
+          pages_build_output_dir = "dist"
 
           [[d1_databases]]
           binding = "NEXUS_DB"
@@ -1006,13 +1016,13 @@ jobs:
 
           echo "  Generated wrangler.toml with bindings"
           cat wrangler.toml
-          
+
           # Deploy to production with D1 + optional KV bindings (with retry for Cloudflare API timeouts)
           # --commit-dirty=true suppresses warning about uncommitted wrangler.toml
           # --commit-message prevents UTF-8 issues with git commit messages
           DEPLOY_OK=false
           for ATTEMPT in 1 2 3; do
-            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy . \
+            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy dist \
               --project-name="$PROJECT_NAME" \
               --branch=main \
               --commit-dirty=true \

@@ -1,0 +1,235 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Category" activeNav="stacks">
+  <div class="category-header">
+    <h2 id="page-title">Loading...</h2>
+    <div id="category-description" class="category-description"></div>
+    <div id="category-stats" class="category-stats"></div>
+  </div>
+
+  <div id="pending-banner" class="pending-banner">
+    Pending changes in this category. <a href="/">Go to Dashboard</a> to deploy.
+  </div>
+
+  <div id="services-grid" class="services-grid">
+    <div class="loading">Loading services...</div>
+  </div>
+</Layout>
+
+<style>
+  .category-header {
+    margin-bottom: 2rem;
+  }
+
+  .category-description {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.5;
+  }
+
+  .category-stats {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+  }
+
+  .category-stats :global(span) { color: var(--text-muted); }
+  .category-stats :global(.count-enabled) { color: var(--accent); }
+  .category-stats :global(.count-pending) { color: var(--warning); }
+
+  .pending-banner {
+    background: rgba(255, 170, 0, 0.1);
+    border: 1px solid rgba(255, 170, 0, 0.3);
+    padding: 0.8rem 1.2rem;
+    margin-bottom: 1.5rem;
+    display: none;
+    align-items: center;
+    gap: 0.8rem;
+    font-size: 0.85rem;
+    color: var(--warning);
+  }
+
+  .pending-banner.visible { display: flex; }
+
+  .pending-banner a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .pending-banner a:hover { text-decoration: underline; }
+
+  .card-name-section { flex: 1; }
+
+  .card-meta :global(span) {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  @media (max-width: 768px) {
+    .category-header h2 { font-size: 1.3rem; }
+  }
+</style>
+
+<script is:inline>
+  const CATEGORIES = {
+    'core': { name: 'Core Infrastructure', description: 'Essential services that keep your Nexus Stack running. These cannot be disabled.' },
+    'databases': { name: 'Databases', description: 'Relational and analytical database engines for storing and querying structured data.' },
+    'storage': { name: 'Object Storage', description: 'S3-compatible object storage systems for data lakes, backups, and file management.' },
+    'db-management': { name: 'Database Management', description: 'Web-based tools for administering, browsing, and managing your databases and object storage.' },
+    'orchestration': { name: 'Data Orchestration', description: 'Platforms for building, scheduling, and monitoring data pipelines and ETL/ELT workflows.' },
+    'streaming': { name: 'Stream Processing', description: 'Engines and frameworks for real-time data processing, CDC, and streaming pipelines.' },
+    'messaging': { name: 'Message Brokers', description: 'Event streaming platforms and management UIs for Kafka/Redpanda message brokers.' },
+    'analytics': { name: 'Analytics & BI', description: 'Business intelligence, search engines, metadata management, and distributed query engines.' },
+    'data-quality': { name: 'Data Quality', description: 'Tools for testing, validating, and monitoring the quality of your data.' },
+    'ai-ml': { name: 'AI & Machine Learning', description: 'LLM inference, AI workflow builders, and machine learning platforms.' },
+    'dev-tools': { name: 'Development Tools', description: 'IDEs, notebooks, API testing platforms, and developer utilities.' },
+    'ci-cd': { name: 'CI/CD & Automation', description: 'Continuous integration, deployment pipelines, and workflow automation tools.' },
+    'low-code': { name: 'Low-Code Platforms', description: 'Build internal tools, CRUD apps, and spreadsheet interfaces without extensive coding.' },
+    'observability': { name: 'Observability', description: 'Monitoring agents, log pipelines, and uptime tracking for your infrastructure.' },
+    'knowledge': { name: 'Knowledge & Docs', description: 'Wiki platforms, knowledge bases, and email testing tools.' },
+    'visual-tools': { name: 'Visual Tools', description: 'Diagramming, whiteboard, and visual collaboration tools.' },
+    'files': { name: 'File Management', description: 'Web-based file managers for browsing and managing files across storage backends.' },
+    'server-access': { name: 'Server Access', description: 'Tools for accessing your server via browser-based terminals and Git proxies.' },
+  };
+
+  const API_URL = window.location.origin;
+  const params = new URLSearchParams(window.location.search);
+  const categorySlug = params.get('cat');
+  let stackDomain = window.location.hostname.replace('control.', '');
+
+  async function fetchDomain() {
+    try {
+      const res = await fetch(API_URL + '/api/info', { credentials: 'same-origin' });
+      const data = await res.json();
+      if (data.success && data.info?.server?.domain) stackDomain = data.info.server.domain;
+    } catch {}
+  }
+
+  function initPage() {
+    const cat = CATEGORIES[categorySlug];
+    if (!cat) {
+      document.getElementById('page-title').textContent = 'Unknown Category';
+      document.getElementById('services-grid').innerHTML = '<div class="empty-state">Category not found. <a href="/stacks" style="color: var(--accent);">Back to Stacks</a></div>';
+      return;
+    }
+    document.title = cat.name + ' - Nexus Control Plane';
+    document.getElementById('page-title').textContent = cat.name;
+    document.getElementById('category-description').textContent = cat.description;
+    fetchDomain().then(function() { loadServices(); });
+  }
+
+  async function loadServices() {
+    try {
+      const response = await fetch(API_URL + '/api/services?category=' + encodeURIComponent(categorySlug), { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.success) renderServices(data.services || []);
+    } catch (error) {
+      console.error('Failed to load services:', error);
+      document.getElementById('services-grid').innerHTML = '<div class="empty-state">Failed to load services.</div>';
+    }
+  }
+
+  function renderServices(services) {
+    const grid = document.getElementById('services-grid');
+    grid.innerHTML = '';
+
+    if (!services.length) {
+      grid.innerHTML = '<div class="empty-state">No services in this category.</div>';
+      return;
+    }
+
+    const total = services.length;
+    const enabled = services.filter(function(s) { return s.enabled; }).length;
+    const pending = services.filter(function(s) { return s.pending; }).length;
+
+    document.getElementById('category-stats').innerHTML =
+      '<span class="count-enabled">' + enabled + ' / ' + total + ' enabled</span>' +
+      (pending > 0 ? '<span class="count-pending">' + pending + ' pending</span>' : '');
+
+    if (pending > 0) document.getElementById('pending-banner').classList.add('visible');
+
+    services.forEach(function(service) {
+      const card = document.createElement('div');
+      card.className = 'service-card' + (service.pending ? ' pending' : '');
+      card.id = 'service-' + service.name;
+
+      let badges = '';
+      if (service.core) badges += '<span class="badge badge-core">core</span>';
+      if (service.admin_only) badges += '<span class="badge badge-admin">admin</span>';
+      if (service.public) badges += '<span class="badge badge-public">public</span>';
+      if (!service.subdomain) badges += '<span class="badge badge-internal">internal</span>';
+      if (service.pending) {
+        badges += '<span class="badge badge-pending">' + (service.enabled ? 'will enable' : 'will disable') + '</span>';
+      }
+
+      const isDisabled = service.core || service.admin_only;
+      const toggleClass = 'toggle-switch' + (service.enabled ? ' active' : '') + (isDisabled ? ' disabled' : '');
+      const toggleTitle = service.core ? 'Core service - cannot be disabled' :
+                         service.admin_only ? 'Admin-only - managed via GitHub Actions' : '';
+      const desc = service.long_description || service.description || '';
+
+      let openHtml = '';
+      if (service.subdomain && service.deployed) {
+        openHtml = '<a href="https://' + service.subdomain + '.' + stackDomain + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
+      }
+
+      let websiteHtml = '';
+      if (service.website) {
+        try {
+          const wDomain = new URL(service.website).hostname.replace('www.', '');
+          websiteHtml = '<a href="' + service.website + '" target="_blank" rel="noopener" class="card-project-link">' + wDomain + '</a>';
+        } catch {}
+      }
+
+      card.innerHTML =
+        '<div class="card-header">' +
+          '<div class="card-name-section"><div class="card-name">' + service.name + ' ' + badges + '</div></div>' +
+          '<div class="' + toggleClass + '" id="toggle-' + service.name + '" title="' + toggleTitle + '" onclick="handleToggle(\'' + service.name + '\', ' + !service.enabled + ', this)"></div>' +
+        '</div>' +
+        '<div class="card-description">' + desc + '</div>' +
+        '<div class="card-footer"><div class="card-meta">' + websiteHtml + '</div>' + openHtml + '</div>';
+
+      grid.appendChild(card);
+    });
+
+    if (window.location.hash) {
+      const el = document.getElementById('service-' + window.location.hash.slice(1));
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.style.boxShadow = '0 0 20px rgba(0, 255, 136, 0.4)';
+        setTimeout(function() { el.style.boxShadow = ''; }, 2000);
+      }
+    }
+  }
+
+  async function handleToggle(serviceName, enabled, toggleEl) {
+    if (toggleEl.classList.contains('disabled')) return;
+    toggleEl.classList.add('disabled');
+    try {
+      const response = await fetch(API_URL + '/api/services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ service: serviceName, enabled: enabled }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        showToast(serviceName + ' ' + (enabled ? 'enabled' : 'disabled') + '. Deploy from Dashboard.');
+        loadServices();
+      } else {
+        showToast(data.error || 'Failed to update service', 'error');
+        toggleEl.classList.remove('disabled');
+      }
+    } catch {
+      showToast('Failed to update service', 'error');
+      toggleEl.classList.remove('disabled');
+    }
+  }
+
+  initPage();
+</script>
