@@ -94,7 +94,6 @@ Images are pinned to **major versions** where supported for automatic security p
 | Windmill | `ghcr.io/windmill-labs/windmill` | `1.624.0` | Exact ¹ |
 | Windmill LSP | `ghcr.io/windmill-labs/windmill-lsp` | `latest` | Latest ² |
 | PostgreSQL (Windmill DB) | `postgres` | `16-alpine` | Major |
-| Nginx (Info) | `nginx` | `alpine` | Rolling |
 
 ¹ No major version tags available, requires manual updates.
 ² Only `latest` tags published, no semantic versions available.
@@ -134,7 +133,6 @@ Images are pinned to **major versions** where supported for automatic security p
 | **Gitea** | Self-hosted Git service | [gitea.md](gitea.md) |
 | **Grafana** | Observability stack with dashboards | [grafana.md](grafana.md) |
 | **Hoppscotch** | API testing platform | [hoppscotch.md](hoppscotch.md) |
-| **Info** | Landing page with service overview | [info.md](info.md) |
 | **Infisical** | Secret management platform | [infisical.md](infisical.md) |
 | **IT-Tools** | Developer tools collection | [it-tools.md](it-tools.md) |
 | **Jupyter PySpark** | Interactive PySpark notebook | [jupyter.md](jupyter.md) |

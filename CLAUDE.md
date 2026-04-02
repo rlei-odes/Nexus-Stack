@@ -86,7 +86,6 @@ Nexus-Stack/
 │   ├── deploy.sh               # Post-infrastructure deployment script
 │   ├── init-r2-state.sh        # R2 bucket + credentials setup
 │   ├── setup-control-panel-secrets.sh  # Control Panel secrets setup
-│   ├── generate-info-page.sh   # Info page generation
 │   └── check-control-panel-env.sh
 └── docs/                       # Documentation
     ├── CONTRIBUTING.md         # Contribution guidelines

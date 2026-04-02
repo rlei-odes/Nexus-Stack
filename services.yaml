@@ -15,7 +15,6 @@
 # - gitea: Self-hosted Git service
 # - grafana: Observability platform
 # - infisical: Required for secret management
-# - info: Dashboard showing all services
 # These services are automatically enabled during initial setup and cannot be
 # disabled from the Control Plane.
 #
@@ -262,16 +261,6 @@ services:
     support_images:
       postgres: "postgres:15-alpine"
 
-  info:
-    subdomain: "info"
-    port: 8090
-    public: false
-    core: true
-    category: "core"
-    website: ""
-    description: "Landing page showing all your Nexus Stack services and their status."
-    long_description: "The Nexus Stack info page is a custom landing page that displays all deployed services with their URLs, status, and quick-access links. It provides a central overview of your entire stack at a glance."
-    image: "nginx:alpine"
 
   infisical:
     subdomain: "infisical"

@@ -930,7 +930,6 @@
                 <a href="/logs.html" class="nav-link">📋 Logs</a>
                 <a href="/settings.html" class="nav-link">Settings</a>
                 <a href="/databricks.html" class="nav-link">Integrations</a>
-                <a href="#" id="info-link" class="nav-link" target="_blank">Info</a>
             </nav>
         </header>
 
@@ -1064,12 +1063,7 @@
                     if (elLoc) elLoc.textContent = info.server?.location || 'Unknown';
                     if (elDom) elDom.textContent = info.server?.domain || 'Unknown';
 
-                    // Update Info link
                     const domain = info.server?.domain || window.location.hostname.replace('control.', '');
-                    const infoLink = document.getElementById('info-link');
-                    if (infoLink && domain) {
-                        infoLink.href = `https://info.${domain}`;
-                    }
                     
                     // Update workflow timestamps (only if elements exist - may be on settings page)
                     const lastSpinUp = info.server?.lastSpinUp || info.time?.lastDeploy;
@@ -1848,28 +1842,6 @@
         }
         
         // Set Info link fallback (in case domain is not yet loaded)
-        const infoLink = document.getElementById('info-link');
-        if (infoLink && (!infoLink.href || infoLink.href === '#')) {
-            const hostname = window.location.hostname;
-            if (hostname.startsWith('control.')) {
-                infoLink.href = `https://info.${hostname.replace('control.', '')}`;
-            } else {
-                // Fallback: extract domain by removing leftmost subdomain label
-                // Handles multi-part TLDs (e.g., example.co.uk) correctly
-                const parts = hostname.split('.');
-                if (parts.length > 2) {
-                    // Remove leftmost label (subdomain) to get domain
-                    const domain = parts.slice(1).join('.');
-                    if (domain && domain !== hostname) {
-                        infoLink.href = `https://info.${domain}`;
-                    }
-                } else if (parts.length === 2) {
-                    // Already a domain (no subdomain)
-                    infoLink.href = `https://info.${hostname}`;
-                }
-            }
-        }
-
         // Fetch and display latest release version
         async function fetchVersion() {
             try {

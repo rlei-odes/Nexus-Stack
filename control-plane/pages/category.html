@@ -317,18 +317,34 @@
       gap: 0.3rem;
     }
 
-    .card-website a {
-      color: var(--info);
+    .card-open-link {
+      color: var(--accent);
       text-decoration: none;
       font-size: 0.75rem;
-      display: flex;
-      align-items: center;
-      gap: 0.3rem;
+      font-weight: 700;
+      padding: 0.2rem 0.6rem;
+      border: 1px solid rgba(0, 255, 136, 0.3);
+      border-radius: 3px;
+      transition: all 0.3s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .card-open-link:hover {
+      background: rgba(0, 255, 136, 0.15);
+      border-color: var(--accent);
+      box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+    }
+
+    .card-project-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.7rem;
       transition: color 0.3s;
     }
 
-    .card-website a:hover {
-      color: var(--accent);
+    .card-project-link:hover {
+      color: var(--info);
     }
 
     /* Loading & empty states */
@@ -439,6 +455,18 @@
     const API_URL = window.location.origin;
     const params = new URLSearchParams(window.location.search);
     const categorySlug = params.get('cat');
+    let stackDomain = window.location.hostname.replace('control.', '');
+
+    // Fetch actual domain from API
+    async function fetchDomain() {
+      try {
+        const res = await fetch(`${API_URL}/api/info`, { credentials: 'same-origin' });
+        const data = await res.json();
+        if (data.success && data.info?.server?.domain) {
+          stackDomain = data.info.server.domain;
+        }
+      } catch {}
+    }
 
     // Initialize page
     function initPage() {
@@ -453,7 +481,7 @@
       document.getElementById('page-title').textContent = cat.name;
       document.getElementById('category-description').textContent = cat.description;
 
-      loadServices();
+      fetchDomain().then(() => loadServices());
     }
 
     async function loadServices() {
@@ -524,17 +552,21 @@
         // Description (prefer long_description)
         const desc = service.long_description || service.description || '';
 
+        // Open service link (only for deployed services with a subdomain)
+        let openHtml = '';
+        if (service.subdomain && service.deployed) {
+          const serviceUrl = `https://${service.subdomain}.${stackDomain}`;
+          openHtml = `<a href="${serviceUrl}" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>`;
+        }
+
         // Website link
         let websiteHtml = '';
         if (service.website) {
-          const domain = new URL(service.website).hostname.replace('www.', '');
-          websiteHtml = `<div class="card-website"><a href="${service.website}" target="_blank" rel="noopener">${domain} &#8599;</a></div>`;
+          try {
+            const wDomain = new URL(service.website).hostname.replace('www.', '');
+            websiteHtml = `<a href="${service.website}" target="_blank" rel="noopener" class="card-project-link">${wDomain}</a>`;
+          } catch {}
         }
-
-        // Meta info
-        let metaItems = '';
-        if (service.subdomain) metaItems += `<span>:${service.port}</span>`;
-        if (service.subdomain) metaItems += `<span>${service.subdomain}.*</span>`;
 
         card.innerHTML = `
           <div class="card-header">
@@ -546,8 +578,8 @@
           </div>
           <div class="card-description">${desc}</div>
           <div class="card-footer">
-            <div class="card-meta">${metaItems}</div>
-            ${websiteHtml}
+            <div class="card-meta">${websiteHtml}</div>
+            ${openHtml}
           </div>
         `;
 
