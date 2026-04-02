@@ -2330,6 +2330,52 @@ if echo "$ENABLED_SERVICES" | grep -qw "uptime-kuma"; then
     echo -e "${YELLOW}    Credentials available in Infisical${NC}"
 fi
 
+# Configure Superset admin account via docker exec (idempotent)
+if echo "$ENABLED_SERVICES" | grep -qw "superset" && [ -n "$SUPERSET_PASS" ]; then
+    (
+        echo "  Configuring Superset admin..."
+        # Wait for Superset to finish db upgrade + init
+        SUPERSET_READY=false
+        for i in $(seq 1 60); do
+            if ssh nexus "curl -s --connect-timeout 2 'http://localhost:8089/health'" 2>/dev/null | grep -q 'OK'; then
+                SUPERSET_READY=true
+                break
+            fi
+            sleep 5
+        done
+
+        if [ "$SUPERSET_READY" = "false" ]; then
+            echo -e "${YELLOW}  ⚠ Superset not ready after 5 minutes - skipping admin setup${NC}"
+            echo -e "${YELLOW}    Credentials available in Infisical${NC}"
+            exit 0
+        fi
+
+        # Create admin (idempotent - fails silently if user exists)
+        CREATE_RESULT=$(ssh nexus "docker exec superset superset fab create-admin \
+            --username admin \
+            --email '$ADMIN_EMAIL' \
+            --password '$SUPERSET_PASS' \
+            --firstname Superset \
+            --lastname Admin" 2>&1 || echo "")
+
+        if echo "$CREATE_RESULT" | grep -qi "created\|added"; then
+            echo -e "${GREEN}  ✓ Superset admin created (user: admin)${NC}"
+        else
+            # User likely exists - reset password
+            RESET_RESULT=$(ssh nexus "docker exec superset superset fab reset-password \
+                --username admin \
+                --password '$SUPERSET_PASS'" 2>&1 || echo "")
+
+            if echo "$RESET_RESULT" | grep -qi "reset\|changed\|success"; then
+                echo -e "${GREEN}  ✓ Superset admin password updated (user: admin)${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ Superset admin may already exist - verify login with Infisical credentials${NC}"
+            fi
+        fi
+    ) &
+    CONFIG_JOBS+=($!)
+fi
+
 # Configure LakeFS admin user via API (one-time setup)
 # Note: LAKEFS_INSTALLATION_* env vars only work with database.type=local
 # Since we use PostgreSQL, we must configure via API
