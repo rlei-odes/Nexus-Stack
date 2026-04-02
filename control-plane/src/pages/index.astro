@@ -281,8 +281,8 @@ import Layout from '../layouts/Layout.astro';
 
   .active-stacks-list {
     display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
 
   .loading-text {
@@ -290,50 +290,49 @@ import Layout from '../layouts/Layout.astro';
     font-size: 0.8rem;
   }
 
-  .stack-item {
-    display: flex;
+  .stack-chip {
+    display: inline-flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0.6rem 0.8rem;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(0, 255, 136, 0.1);
-    font-size: 0.85rem;
-    transition: border-color 0.2s;
-  }
-
-  .stack-item:hover {
-    border-color: rgba(0, 255, 136, 0.3);
-  }
-
-  .stack-item-name {
+    gap: 0.4rem;
+    padding: 0.5rem 1rem;
+    background: rgba(0, 20, 10, 0.6);
+    border: 1px solid rgba(0, 255, 136, 0.25);
     color: var(--accent);
-    font-weight: 700;
-  }
-
-  .stack-item-desc {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    flex: 1;
-    margin-left: 1rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .stack-item-link {
-    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
     text-decoration: none;
-    font-size: 0.75rem;
-    padding: 0.15rem 0.5rem;
-    border: 1px solid rgba(0, 255, 136, 0.3);
-    border-radius: 3px;
     transition: all 0.3s;
-    flex-shrink: 0;
+    cursor: pointer;
   }
 
-  .stack-item-link:hover {
-    background: rgba(0, 255, 136, 0.15);
+  .stack-chip:hover {
     border-color: var(--accent);
+    background: rgba(0, 255, 136, 0.1);
+    box-shadow: 0 0 12px rgba(0, 255, 136, 0.15);
+    transform: translateY(-1px);
+  }
+
+  .stack-chip .arrow {
+    opacity: 0.4;
+    transition: opacity 0.3s;
+    font-size: 0.7rem;
+  }
+
+  .stack-chip:hover .arrow {
+    opacity: 1;
+  }
+
+  .stack-chip.no-link {
+    cursor: default;
+    color: var(--text-secondary);
+    border-color: var(--border);
+  }
+
+  .stack-chip.no-link:hover {
+    transform: none;
+    box-shadow: none;
+    background: rgba(0, 20, 10, 0.6);
   }
 
   .stack-count {
@@ -629,20 +628,16 @@ import Layout from '../layouts/Layout.astro';
       return;
     }
 
-    const countHtml = '<p class="stack-count">' + services.length + ' stack' + (services.length !== 1 ? 's' : '') + ' active</p>';
-    let html = countHtml;
+    let html = '<p class="stack-count">' + services.length + ' stack' + (services.length !== 1 ? 's' : '') + ' active</p>';
 
     services.forEach(s => {
-      let linkHtml = '';
       if (s.subdomain && s.deployed) {
         const url = 'https://' + s.subdomain + '.' + stackDomain;
-        linkHtml = '<a href="' + url + '" target="_blank" rel="noopener" class="stack-item-link">Open &#8599;</a>';
+        html += '<a href="' + url + '" target="_blank" rel="noopener" class="stack-chip">' +
+          escapeHtml(s.name) + '<span class="arrow">&#8599;</span></a>';
+      } else {
+        html += '<span class="stack-chip no-link">' + escapeHtml(s.name) + '</span>';
       }
-      html += '<div class="stack-item">' +
-        '<span class="stack-item-name">' + escapeHtml(s.name) + '</span>' +
-        '<span class="stack-item-desc">' + escapeHtml(s.description) + '</span>' +
-        linkHtml +
-        '</div>';
     });
 
     list.innerHTML = html;
