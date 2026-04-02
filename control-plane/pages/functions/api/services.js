@@ -35,7 +35,7 @@ function validateServiceName(name) {
  * Returns all services from D1
  */
 export async function onRequestGet(context) {
-  const { env } = context;
+  const { env, request } = context;
 
   if (!env.NEXUS_DB) {
     return new Response(JSON.stringify({
