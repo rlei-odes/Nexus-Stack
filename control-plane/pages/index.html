@@ -928,8 +928,9 @@
                 <a href="/database.html" class="nav-link">🗄️ Database</a>
                 <a href="/firewall.html" class="nav-link">🔥 Firewall</a>
                 <a href="/logs.html" class="nav-link">📋 Logs</a>
-                <a href="/databricks.html" class="nav-link">🔗 Integrations</a>
-                <a href="#" id="info-link" class="nav-link" target="_blank">ℹ️ Info</a>
+                <a href="/settings.html" class="nav-link">Settings</a>
+                <a href="/databricks.html" class="nav-link">Integrations</a>
+                <a href="#" id="info-link" class="nav-link" target="_blank">Info</a>
             </nav>
         </header>
 
@@ -981,79 +982,7 @@
             </div>
         </div>
 
-        <!-- Info Panel -->
-        <div class="info-panel">
-            <h2><span class="icon">ℹ️</span> Infrastructure Information</h2>
-            <div class="info-grid" id="info-grid">
-                <div class="info-item">
-                    <div class="info-item-label">Server Type</div>
-                    <div class="info-item-value" id="info-server-type">Loading...</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-item-label">Location</div>
-                    <div class="info-item-value" id="info-server-location">Loading...</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-item-label">Domain</div>
-                    <div class="info-item-value highlight" id="info-domain">Loading...</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-item-label">Last Spin Up</div>
-                    <div class="info-item-value" id="info-last-deploy">Loading...</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-item-label">Last Teardown</div>
-                    <div class="info-item-value" id="info-last-teardown">Loading...</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-item-label">Uptime</div>
-                    <div class="info-item-value highlight" id="info-uptime">Loading...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Scheduled Teardown Panel -->
-        <div class="scheduled-teardown-panel">
-            <h2><span class="icon">⏰</span> Scheduled Teardown</h2>
-            <div class="scheduled-teardown-controls">
-                <div class="scheduled-teardown-toggle">
-                    <div>
-                        <div style="font-weight: bold; margin-bottom: 0.3rem;">Automatic Daily Teardown</div>
-                        <div class="scheduled-info" id="scheduled-info">Loading...</div>
-                    </div>
-                    <div class="toggle-switch" id="toggle-scheduled-teardown"></div>
-                </div>
-                <button class="delay-btn" id="btn-delay-teardown" disabled>
-                    ⏱️ Delay Teardown by 2 Hours
-            </button>
-            </div>
-        </div>
-
-        <!-- Email Notifications Panel -->
-        <div class="scheduled-teardown-panel">
-            <h2><span class="icon">📧</span> Email Notifications</h2>
-            <div id="silent-mode-banner" style="display:none; background: rgba(255,180,0,0.08); border: 1px solid rgba(255,180,0,0.3); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.8rem; color: #ffb400;">
-                🔇 Silent mode active — no automated emails will be sent. Enable a toggle below to disable silent mode.
-            </div>
-            <div class="scheduled-teardown-controls" id="email-toggles-container">
-                <div class="scheduled-teardown-toggle">
-                    <div>
-                        <div style="font-weight: bold; margin-bottom: 0.3rem;">Shutdown Warning Email</div>
-                        <div class="scheduled-info">Sends an email before the scheduled daily teardown</div>
-                    </div>
-                    <div class="toggle-switch" id="toggle-notify-shutdown"></div>
-                </div>
-                <div class="scheduled-teardown-toggle" style="margin-top: 0.5rem;">
-                    <div>
-                        <div style="font-weight: bold; margin-bottom: 0.3rem;">Stack Online Email</div>
-                        <div class="scheduled-info">Sends an email when the stack is back online after spin-up</div>
-                    </div>
-                    <div class="toggle-switch" id="toggle-notify-spinup"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Search & Stacks Panel -->
+        <!-- Stacks -->
         <div class="services-panel">
             <h2><span class="icon">🧩</span> Stacks</h2>
             <div class="search-panel">
@@ -1062,14 +991,6 @@
             </div>
             <div class="categories-grid" id="categories-grid">
                 <p style="color: #607080; font-size: 0.8rem;">Loading categories...</p>
-            </div>
-        </div>
-
-        <!-- Workflow History -->
-        <div class="history-panel">
-            <h2><span class="icon">📜</span> Recent Workflows</h2>
-            <div id="history-list">
-                <p style="color: #607080; font-size: 0.8rem;">Loading...</p>
             </div>
         </div>
 
@@ -1134,12 +1055,15 @@
                 if (data.success) {
                     // API returns data in 'info' object
                     const info = data.info || {};
-                    
-                    // Update server info
-                    document.getElementById('info-server-type').textContent = info.server?.type || 'Unknown';
-                    document.getElementById('info-server-location').textContent = info.server?.location || 'Unknown';
-                    document.getElementById('info-domain').textContent = info.server?.domain || 'Unknown';
-                    
+
+                    // Update server info (only if elements exist - may be on settings page instead)
+                    const elType = document.getElementById('info-server-type');
+                    const elLoc = document.getElementById('info-server-location');
+                    const elDom = document.getElementById('info-domain');
+                    if (elType) elType.textContent = info.server?.type || 'Unknown';
+                    if (elLoc) elLoc.textContent = info.server?.location || 'Unknown';
+                    if (elDom) elDom.textContent = info.server?.domain || 'Unknown';
+
                     // Update Info link
                     const domain = info.server?.domain || window.location.hostname.replace('control.', '');
                     const infoLink = document.getElementById('info-link');
@@ -1147,41 +1071,31 @@
                         infoLink.href = `https://info.${domain}`;
                     }
                     
-                    // Update workflow timestamps (from D1 via server object)
+                    // Update workflow timestamps (only if elements exist - may be on settings page)
                     const lastSpinUp = info.server?.lastSpinUp || info.time?.lastDeploy;
                     const lastTeardown = info.server?.lastTeardown || info.time?.lastTeardown;
-                    
-                    if (lastSpinUp) {
-                        const date = new Date(lastSpinUp);
-                        document.getElementById('info-last-deploy').textContent = date.toLocaleString('de-CH');
-                    } else {
-                        document.getElementById('info-last-deploy').textContent = 'Never';
+                    const elDeploy = document.getElementById('info-last-deploy');
+                    const elTeardown = document.getElementById('info-last-teardown');
+                    const elUptime = document.getElementById('info-uptime');
+
+                    if (elDeploy) {
+                        elDeploy.textContent = lastSpinUp ? new Date(lastSpinUp).toLocaleString('de-CH') : 'Never';
                     }
-                    
-                    if (lastTeardown) {
-                        const date = new Date(lastTeardown);
-                        document.getElementById('info-last-teardown').textContent = date.toLocaleString('de-CH');
-                    } else {
-                        document.getElementById('info-last-teardown').textContent = 'Never';
+                    if (elTeardown) {
+                        elTeardown.textContent = lastTeardown ? new Date(lastTeardown).toLocaleString('de-CH') : 'Never';
                     }
-                    
-                    // Update uptime
-                    if (info.time?.uptime) {
-                        const uptime = info.time.uptime;
-                        if (uptime.days > 0) {
-                            document.getElementById('info-uptime').textContent = `${uptime.days}d ${uptime.hours}h ${uptime.minutes}m`;
+                    if (elUptime) {
+                        if (info.time?.uptime) {
+                            const uptime = info.time.uptime;
+                            elUptime.textContent = uptime.days > 0 ? `${uptime.days}d ${uptime.hours}h ${uptime.minutes}m` : `${uptime.hours}h ${uptime.minutes}m`;
+                        } else if (lastSpinUp) {
+                            const diffMs = new Date() - new Date(lastSpinUp);
+                            const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                            const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                            elUptime.textContent = `${hours}h ${minutes}m`;
                         } else {
-                            document.getElementById('info-uptime').textContent = `${uptime.hours}h ${uptime.minutes}m`;
+                            elUptime.textContent = 'N/A';
                         }
-                    } else if (lastSpinUp) {
-                        const spinUpDate = new Date(lastSpinUp);
-                        const now = new Date();
-                        const diffMs = now - spinUpDate;
-                        const hours = Math.floor(diffMs / (1000 * 60 * 60));
-                        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                        document.getElementById('info-uptime').textContent = `${hours}h ${minutes}m`;
-                    } else {
-                        document.getElementById('info-uptime').textContent = 'N/A';
                     }
                 }
             } catch (error) {
