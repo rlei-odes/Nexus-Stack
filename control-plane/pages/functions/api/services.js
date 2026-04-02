@@ -49,20 +49,48 @@ export async function onRequestGet(context) {
   }
 
   try {
-    const results = await env.NEXUS_DB.prepare(`
-      SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description
-      FROM services
-      ORDER BY name
-    `).all();
+    // Support optional category filter via query parameter
+    const url = new URL(request.url);
+    const categoryFilter = url.searchParams.get('category');
+
+    let stmt;
+    if (categoryFilter) {
+      stmt = env.NEXUS_DB.prepare(`
+        SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description
+        FROM services
+        WHERE category = ?
+        ORDER BY name
+      `).bind(categoryFilter);
+    } else {
+      stmt = env.NEXUS_DB.prepare(`
+        SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description
+        FROM services
+        ORDER BY name
+      `);
+    }
+
+    const results = await stmt.all();
 
     let pendingChangesCount = 0;
+    const categoryCounts = {};
     const services = (results.results || []).map(row => {
       const enabled = row.enabled === 1;
       const deployed = row.deployed === 1;
       const hasPendingChange = enabled !== deployed;
-      
+      const category = row.category || '';
+
       if (hasPendingChange) {
         pendingChangesCount++;
+      }
+
+      // Build category statistics
+      if (category) {
+        if (!categoryCounts[category]) {
+          categoryCounts[category] = { total: 0, enabled: 0, pending: 0 };
+        }
+        categoryCounts[category].total++;
+        if (enabled) categoryCounts[category].enabled++;
+        if (hasPendingChange) categoryCounts[category].pending++;
       }
 
       return {
@@ -73,6 +101,9 @@ export async function onRequestGet(context) {
         core: row.core === 1,
         admin_only: row.admin_only === 1,
         description: row.description || '',
+        category,
+        website: row.website || '',
+        long_description: row.long_description || '',
         enabled,
         deployed,
         pending: hasPendingChange,
@@ -83,6 +114,7 @@ export async function onRequestGet(context) {
       success: true,
       services,
       pendingChangesCount,
+      categoryCounts,
     }), {
       headers: { 'Content-Type': 'application/json' },
     });

@@ -1,7 +1,7 @@
 # =============================================================================
 # Nexus-Stack Services Configuration
 # =============================================================================
-# This file defines service metadata only. Runtime state (enabled/disabled) 
+# This file defines service metadata only. Runtime state (enabled/disabled)
 # is stored in Cloudflare D1 and managed via the Control Plane.
 #
 # Each service creates:
@@ -12,10 +12,31 @@
 # Note: You also need stacks/<service>/docker-compose.yml for the container!
 #
 # CORE SERVICES (core: true):
+# - gitea: Self-hosted Git service
+# - grafana: Observability platform
 # - infisical: Required for secret management
 # - info: Dashboard showing all services
 # These services are automatically enabled during initial setup and cannot be
 # disabled from the Control Plane.
+#
+# CATEGORIES:
+# - core: Core Infrastructure
+# - databases: Databases & Storage
+# - db-management: Database Management
+# - orchestration: Data Orchestration
+# - streaming: Stream Processing
+# - messaging: Message Brokers
+# - analytics: Analytics & BI
+# - data-quality: Data Quality
+# - ai-ml: AI & Machine Learning
+# - dev-tools: Development Tools
+# - ci-cd: CI/CD & Automation
+# - low-code: Low-Code Platforms
+# - observability: Observability
+# - knowledge: Knowledge & Docs
+# - visual-tools: Visual Tools
+# - files: File Management
+# - server-access: Server Access
 # =============================================================================
 
 services:
@@ -23,35 +44,50 @@ services:
     subdomain: "akhq"
     port: 8094
     public: false
+    category: "messaging"
+    website: "https://akhq.io"
     description: "Kafka/Redpanda management GUI for topics, consumer groups, schema registry, and Connect."
+    long_description: "AKHQ provides a comprehensive web UI for managing Apache Kafka and Redpanda clusters. Browse topics and their messages, manage consumer groups, configure schema registry entries, and monitor Kafka Connect connectors. Supports multiple clusters, RBAC, and live tail of topic messages."
     image: "tchiotludo/akhq:0.27.0"
 
   adminer:
     subdomain: "adminer"
     port: 8888
     public: false
+    category: "db-management"
+    website: "https://www.adminer.org"
     description: "Lightweight database management tool supporting PostgreSQL, MySQL, SQLite, and more."
+    long_description: "Adminer is a full-featured, single-file database management tool written in PHP. It supports PostgreSQL, MySQL, MariaDB, SQLite, MS SQL, Oracle, and MongoDB. Run SQL queries, browse tables, import/export data, and manage database structure - all in a lightweight web interface."
     image: "adminer:latest"
 
   cloudbeaver:
     subdomain: "cloudbeaver"
     port: 8978
     public: false
+    category: "db-management"
+    website: "https://cloudbeaver.io"
     description: "Web-based database management tool supporting PostgreSQL, MySQL, SQL Server, and more."
+    long_description: "CloudBeaver is a web-based database manager built on DBeaver. It provides a rich SQL editor, visual query builder, ER diagrams, data export, and administrative features. Supports 30+ database drivers including PostgreSQL, MySQL, ClickHouse, and cloud databases."
     image: "dbeaver/cloudbeaver:24"
 
   budibase:
     subdomain: "budibase"
     port: 8096
     public: false
+    category: "low-code"
+    website: "https://budibase.com"
     description: "Open-source low-code platform for building internal tools, CRUD apps, and dashboards."
+    long_description: "Budibase lets you build internal tools and business apps in minutes. Connect to databases (PostgreSQL, MySQL, MongoDB), REST APIs, or use built-in tables. Drag-and-drop UI builder, role-based access control, workflow automation, and self-hosted deployment."
     image: "budibase/budibase:latest"
 
   clickhouse:
     subdomain: "clickhouse"
     port: 8123
     public: false
+    category: "databases"
+    website: "https://clickhouse.com"
     description: "Fast, open-source columnar database for real-time analytics and OLAP queries."
+    long_description: "ClickHouse is a column-oriented database for online analytical processing (OLAP). It can process billions of rows per second with SQL queries. Ideal for log analytics, time-series data, and business intelligence workloads. Supports real-time data ingestion and materialized views."
     image: "clickhouse/clickhouse-server:25.8.16.34"
     tcp_ports:
       native: 9004
@@ -60,14 +96,20 @@ services:
     subdomain: "code"
     port: 8100
     public: false
+    category: "dev-tools"
+    website: "https://coder.com"
     description: "VS Code in the browser for remote development."
+    long_description: "Code Server runs VS Code on a remote server, accessible through your browser. Full VS Code experience including extensions, terminal, Git integration, and IntelliSense. Access your development environment from any device with a consistent setup."
     image: "codercom/code-server:latest"
 
   dagster:
     subdomain: "dagster"
     port: 3004
     public: false
+    category: "orchestration"
+    website: "https://dagster.io"
     description: "Python-native data orchestration platform for building, testing, and monitoring data pipelines."
+    long_description: "Dagster is a data orchestrator for the whole development lifecycle. Define data assets and pipelines in Python, test locally, and deploy with confidence. Features include asset-based scheduling, built-in data lineage, observability, and integration with dbt, Spark, and more."
     image: "nexus-dagster:1.12.21"
     support_images:
       postgres: "postgres:16-alpine"
@@ -76,14 +118,20 @@ services:
     port: 8097
     public: false
     internal_only: true
+    category: "streaming"
+    website: "https://debezium.io"
     description: "Change data capture platform that streams database changes to Redpanda/Kafka in real time. Manage via Kafka-UI or AKHQ."
+    long_description: "Debezium captures row-level changes in databases (PostgreSQL, MySQL, MongoDB) and streams them as events to Kafka/Redpanda topics. Enables real-time data integration, event-driven architectures, and keeping multiple systems in sync without polling."
     image: "quay.io/debezium/connect:3.5.0"
 
   dify:
     subdomain: "dify"
     port: 8501
     public: false
+    category: "ai-ml"
+    website: "https://dify.ai"
     description: "AI workflow builder for LLM applications, RAG pipelines, and agentic workflows."
+    long_description: "Dify is an open-source platform for building AI applications. Create RAG pipelines, AI chatbots, and agentic workflows with a visual builder. Supports multiple LLM providers (OpenAI, Anthropic, local models), vector databases, and tool integrations. Includes prompt engineering, dataset management, and API publishing."
     image: "langgenius/dify-api:1.13.0"
     support_images:
       dify-web: "langgenius/dify-web:1.13.0"
@@ -99,28 +147,40 @@ services:
     subdomain: "dinky"
     port: 8889
     public: false
+    category: "streaming"
+    website: "https://github.com/DataLinkDC/dinky"
     description: "Web-based Flink SQL IDE with auto-completion, job management, and real-time debugging."
+    long_description: "Dinky is a web-based IDE for Apache Flink SQL development. Write and execute Flink SQL with auto-completion, manage Flink jobs, debug SQL in real time, and monitor job execution. Supports both streaming and batch SQL with a visual data lineage graph."
     image: "nexus-dinky:1.2.5-flink1.20"
 
   drawio:
     subdomain: "drawio"
     port: 8083
     public: false
+    category: "visual-tools"
+    website: "https://www.drawio.com"
     description: "Flowchart and diagramming tool for creating technical diagrams, flowcharts, and UML diagrams."
+    long_description: "draw.io (diagrams.net) is a free diagramming application for creating flowcharts, UML diagrams, network diagrams, org charts, and more. Supports import/export in various formats, extensive shape libraries, and collaborative editing. Self-hosted for data privacy."
     image: "jgraph/drawio:latest"
 
   excalidraw:
     subdomain: "excalidraw"
     port: 8082
     public: false
+    category: "visual-tools"
+    website: "https://excalidraw.com"
     description: "Virtual whiteboard for sketching hand-drawn diagrams with collaboration support."
+    long_description: "Excalidraw is a virtual whiteboard that produces hand-drawn style diagrams. Perfect for architecture sketches, brainstorming, wireframes, and technical illustrations. Supports real-time collaboration, a library of reusable components, and export to PNG/SVG."
     image: "excalidraw/excalidraw:latest"
 
   filestash:
     subdomain: "filestash"
     port: 8334
     public: false
+    category: "files"
+    website: "https://www.filestash.app"
     description: "Web-based file manager with S3/FTP/SFTP/WebDAV backend support."
+    long_description: "Filestash is a modern web file manager that connects to various storage backends including S3, FTP, SFTP, WebDAV, Git, and Dropbox. Features include file preview, image thumbnails, video streaming, full-text search, and a built-in text editor. Manage all your storage from one interface."
     image: "machines/filestash:latest"
     admin_path: "/admin"
 
@@ -128,7 +188,10 @@ services:
     subdomain: "flink"
     port: 8081
     public: false
+    category: "streaming"
+    website: "https://flink.apache.org"
     description: "Distributed stream and batch processing engine with Web UI (JobManager + TaskManager cluster)."
+    long_description: "Apache Flink is a framework for stateful computations over data streams. It provides exactly-once processing guarantees, event-time processing, and flexible windowing. Use it for real-time analytics, ETL, event-driven applications, and complex event processing at scale."
     image: "nexus-flink:1.20.1"
     support_images:
       flink-taskmanager: "nexus-flink:1.20.1"
@@ -137,7 +200,10 @@ services:
     subdomain: "garage"
     port: 3909
     public: false
+    category: "databases"
+    website: "https://garagehq.deuxfleurs.fr"
     description: "Lightweight S3-compatible object storage designed for self-hosting."
+    long_description: "Garage is a lightweight, self-hosted S3-compatible object storage system. Designed for simplicity and resilience, it features geo-distributed replication, multi-tenancy, and low resource usage. Ideal for personal clouds, backups, and static website hosting."
     image: "dxflrs/garage:v2.2.0"
     support_images:
       webui: "khairul169/garage-webui:latest"
@@ -148,7 +214,10 @@ services:
     subdomain: "git"
     port: 3201
     public: true
+    category: "server-access"
+    website: ""
     description: "Public Git HTTPS proxy for external tools (Databricks, Git Desktop). Forwards to Gitea with built-in authentication."
+    long_description: "A lightweight Nginx-based reverse proxy that provides public HTTPS access to your Gitea repositories. Enables external tools like Databricks Repos, GitHub Desktop, and CI/CD systems to clone and push via standard Git HTTPS protocol with built-in authentication."
     image: "nginx:alpine"
 
   gitea:
@@ -156,7 +225,10 @@ services:
     port: 3200
     public: false
     core: true
+    category: "core"
+    website: "https://gitea.com"
     description: "Self-hosted Git service with pull requests, code review, and CI/CD."
+    long_description: "Gitea is a painless self-hosted Git service. It provides repository hosting, pull requests, code review, issue tracking, wikis, and CI/CD integration. Lightweight and fast, written in Go, with a familiar GitHub-like interface."
     image: "gitea/gitea:1.23"
     support_images:
       postgres: "postgres:16-alpine"
@@ -166,7 +238,10 @@ services:
     port: 3100
     public: false
     core: true
+    category: "core"
+    website: "https://grafana.com"
     description: "Observability platform for metrics, logs, and traces visualization."
+    long_description: "Grafana is the open-source observability platform. Visualize metrics from Prometheus, logs from Loki, and traces in customizable dashboards. Includes alerting, annotations, and a rich plugin ecosystem. Deployed with Prometheus, Loki, Promtail, cAdvisor, and Node Exporter."
     image: "grafana/grafana:11.6"
     support_images:
       prometheus: "prom/prometheus:v3.9.1"
@@ -179,7 +254,10 @@ services:
     subdomain: "hoppscotch"
     port: 3003
     public: false
+    category: "dev-tools"
+    website: "https://hoppscotch.io"
     description: "Open-source API testing platform (Postman alternative)."
+    long_description: "Hoppscotch is an open-source API development ecosystem. Test REST, GraphQL, WebSocket, SSE, and MQTT APIs with a fast, lightweight interface. Features include request collections, environments, pre-request scripts, team collaboration, and API documentation generation."
     image: "hoppscotch/hoppscotch:2025.12.1"
     support_images:
       postgres: "postgres:15-alpine"
@@ -189,7 +267,10 @@ services:
     port: 8090
     public: false
     core: true
+    category: "core"
+    website: ""
     description: "Landing page showing all your Nexus Stack services and their status."
+    long_description: "The Nexus Stack info page is a custom landing page that displays all deployed services with their URLs, status, and quick-access links. It provides a central overview of your entire stack at a glance."
     image: "nginx:alpine"
 
   infisical:
@@ -197,7 +278,10 @@ services:
     port: 8070
     public: false
     core: true
+    category: "core"
+    website: "https://infisical.com"
     description: "Open-source secret management platform for teams."
+    long_description: "Infisical is an open-source secret management platform. Centralize secrets, environment variables, and API keys across your entire infrastructure. Features include versioning, audit logs, access controls, secret rotation, and integrations with Docker, Kubernetes, and CI/CD systems."
     image: "infisical/infisical:v0.155.5"
     support_images:
       postgres: "postgres:14-alpine"
@@ -207,35 +291,50 @@ services:
     subdomain: "it-tools"
     port: 8080
     public: false
+    category: "dev-tools"
+    website: "https://it-tools.tech"
     description: "Collection of handy online tools for developers - encoders, converters, generators, and more."
+    long_description: "IT Tools is a collection of useful developer utilities in a single web interface. Includes Base64 encoder/decoder, hash generators, UUID generator, JWT decoder, cron expression parser, color converter, regex tester, and many more. All tools run locally in your browser."
     image: "corentinth/it-tools:latest"
 
   jupyter:
     subdomain: "jupyter"
     port: 8087
     public: false
+    category: "dev-tools"
+    website: "https://jupyter.org"
     description: "Interactive PySpark notebook platform with Spark SQL support and cluster connectivity."
+    long_description: "Jupyter Notebook provides an interactive computing environment for Python and PySpark. Write and execute code in cells, visualize data inline, and connect to your Spark cluster for distributed processing. Pre-configured with PySpark, pandas, and common data science libraries."
     image: "quay.io/jupyter/pyspark-notebook:python-3.13"
 
   kafdrop:
     subdomain: "kafdrop"
     port: 8095
     public: false
+    category: "messaging"
+    website: "https://github.com/obsidiandynamics/kafdrop"
     description: "Lightweight Kafka/Redpanda web UI for browsing topics, consumer groups, and cluster health."
+    long_description: "Kafdrop is a lightweight web UI for viewing Kafka and Redpanda topics, browsing consumer groups, and monitoring broker health. Features include message viewing with JSON/Avro/Protobuf deserialization, topic creation, and consumer group lag monitoring."
     image: "obsidiandynamics/kafdrop:4.2.0"
 
   kafka-ui:
     subdomain: "kafka-ui"
     port: 8181
     public: false
+    category: "messaging"
+    website: "https://github.com/provectus/kafka-ui"
     description: "Modern web UI for Apache Kafka / Redpanda management."
+    long_description: "Kafka UI is a feature-rich web interface for managing Apache Kafka and Redpanda clusters. Browse and search messages, manage topics and consumers, configure connectors, view schema registry, and monitor cluster performance with real-time metrics."
     image: "provectuslabs/kafka-ui:latest"
 
   lakefs:
     subdomain: "lakefs"
     port: 8000
     public: false
+    category: "db-management"
+    website: "https://lakefs.io"
     description: "Git-like version control for data lakes with S3-compatible gateway (Hetzner Object Storage backend)."
+    long_description: "lakeFS provides Git-like version control for data lakes. Branch, commit, merge, and revert your data like code. Creates an S3-compatible gateway in front of your object storage, enabling isolated dev/test environments, reproducible data pipelines, and atomic data operations."
     image: "treeverse/lakefs:1.73.0"
     support_images:
       postgres: "postgres:16-alpine"
@@ -246,7 +345,10 @@ services:
     subdomain: "kestra"
     port: 8085
     public: false
+    category: "orchestration"
+    website: "https://kestra.io"
     description: "Open-source orchestration and scheduling platform for data pipelines and workflows."
+    long_description: "Kestra is an orchestration platform for scheduling and managing complex workflows. Define pipelines in YAML, use 500+ plugins for integrations, and orchestrate data pipelines, microservices, and business processes. Features a visual flow editor, real-time monitoring, and built-in secret management."
     image: "kestra/kestra:v1.0"
     support_images:
       postgres: "postgres:16-alpine"
@@ -255,7 +357,10 @@ services:
     subdomain: "mage"
     port: 6789
     public: false
+    category: "orchestration"
+    website: "https://www.mage.ai"
     description: "Modern data pipeline tool - build, run, and manage pipelines for ETL/ELT workflows."
+    long_description: "Mage AI is a modern data pipeline tool for transforming and integrating data. Build ETL/ELT pipelines with a hybrid notebook-style interface, test with built-in unit tests, and deploy to production. Supports Python, SQL, and R with native integration for dbt, Spark, and major data warehouses."
     image: "mageai/mageai:latest"
     support_images:
       postgres: "postgres:14-alpine"
@@ -264,21 +369,30 @@ services:
     subdomain: "mailpit"
     port: 8025
     public: false
+    category: "knowledge"
+    website: "https://mailpit.axllent.org"
     description: "Email testing tool that catches all outgoing emails for inspection and testing."
+    long_description: "Mailpit is an email testing tool that acts as an SMTP server catching all outgoing emails. Inspect HTML and plain-text content, test email templates, verify attachments, and check spam scores. Perfect for development and staging environments where you need to test email sending without delivering to real recipients."
     image: "axllent/mailpit:v1.28"
 
   marimo:
     subdomain: "marimo"
     port: 2718
     public: false
+    category: "dev-tools"
+    website: "https://marimo.io"
     description: "Reactive Python notebook with SQL support, reproducible and git-friendly."
+    long_description: "Marimo is a reactive Python notebook that automatically re-executes dependent cells when you modify code. Notebooks are stored as pure Python files (git-friendly), support SQL natively, and can be deployed as interactive web apps. A modern alternative to Jupyter with built-in reproducibility."
     image: "ghcr.io/marimo-team/marimo:latest-sql"
 
   meltano:
     port: 5000
     public: false
     internal_only: true
+    category: "orchestration"
+    website: "https://meltano.com"
     description: "Open-source CLI data integration platform for building modular data pipelines."
+    long_description: "Meltano is a CLI-first platform for data integration (EL) and transformation (T). Use Singer taps and targets for 500+ data sources, dbt for transformations, and Airflow/Dagster for orchestration. Manage everything as code in version-controlled YAML configuration."
     image: "meltano/meltano:v4.0"
     support_images:
       postgres: "postgres:16-alpine"
@@ -287,7 +401,10 @@ services:
     subdomain: "metabase"
     port: 3000
     public: false
+    category: "analytics"
+    website: "https://www.metabase.com"
     description: "Open-source business intelligence and analytics tool for data visualization."
+    long_description: "Metabase is a business intelligence tool that lets anyone in your organization ask questions about data. Create dashboards with drag-and-drop, write SQL queries with an interactive editor, and share insights. Connects to PostgreSQL, ClickHouse, and 20+ databases with automatic schema discovery."
     image: "metabase/metabase:v0.58.x"
     support_images:
       postgres: "postgres:16-alpine"
@@ -296,7 +413,10 @@ services:
     subdomain: "minio"
     port: 9001
     public: false
+    category: "databases"
+    website: "https://min.io"
     description: "High-performance S3-compatible object storage for data lakes, backups, and ML models."
+    long_description: "MinIO is a high-performance, S3-compatible object storage system. Store and retrieve any amount of data with industry-standard S3 API compatibility. Features include bucket versioning, lifecycle policies, server-side encryption, and a built-in web console for management."
     image: "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
     tcp_ports:
       s3-api: 9000
@@ -305,7 +425,10 @@ services:
     subdomain: "n8n"
     port: 5678
     public: false
+    category: "ci-cd"
+    website: "https://n8n.io"
     description: "Workflow automation tool with 400+ integrations for connecting apps and services."
+    long_description: "n8n is a workflow automation platform with 400+ integrations. Connect apps, automate tasks, and build complex workflows with a visual editor. Supports webhooks, scheduled triggers, conditional logic, and custom JavaScript/Python code nodes. Self-hosted for full data control."
     image: "n8nio/n8n:1"
     support_images:
       postgres: "postgres:16-alpine"
@@ -314,7 +437,10 @@ services:
     subdomain: "nocodb"
     port: 8091
     public: false
+    category: "low-code"
+    website: "https://nocodb.com"
     description: "Open-source Airtable alternative that turns any database into a smart spreadsheet."
+    long_description: "NocoDB turns any database into a smart spreadsheet interface. Create forms, kanban boards, galleries, and grid views on top of PostgreSQL, MySQL, or SQLite. Features include REST API generation, role-based access control, webhooks, and audit trails. Collaborate on data without writing SQL."
     image: "nocodb/nocodb:0.301.2"
     support_images:
       postgres: "postgres:16-alpine"
@@ -323,7 +449,10 @@ services:
     subdomain: "ollama"
     port: 8093
     public: false
+    category: "ai-ml"
+    website: "https://ollama.com"
     description: "Local LLM inference with Open WebUI chat interface (Ollama backend)."
+    long_description: "Run large language models locally with Ollama and interact through Open WebUI's ChatGPT-like interface. Supports Llama, Mistral, Gemma, and many other models. Features include conversation history, model switching, RAG with document upload, and API compatibility with OpenAI format."
     image: "ghcr.io/open-webui/open-webui:v0.8.3"
     support_images:
       ollama: "ollama/ollama:0.15.1"
@@ -332,7 +461,10 @@ services:
     subdomain: "openmetadata"
     port: 8585
     public: false
+    category: "analytics"
+    website: "https://open-metadata.org"
     description: "Open-source metadata management platform for data discovery, governance, and quality."
+    long_description: "OpenMetadata is a unified metadata platform for data discovery, observability, and governance. Catalog all your data assets, track data lineage, define data quality tests, set up classification and tagging, and enable team collaboration around data. Connects to databases, dashboards, pipelines, and messaging systems."
     image: "docker.getcollate.io/openmetadata/server:1.6.6"
     support_images:
       ingestion: "docker.getcollate.io/openmetadata/ingestion:1.6.6"
@@ -343,7 +475,10 @@ services:
     subdomain: "rustfs"
     port: 9002
     public: false
+    category: "databases"
+    website: "https://rustfs.com"
     description: "Rust-based S3-compatible object storage (MinIO alternative) with web console."
+    long_description: "RustFS is a high-performance, Rust-based S3-compatible object storage system. Designed as a lightweight MinIO alternative with lower memory footprint and fast startup. Features include a built-in web console, bucket management, and full S3 API compatibility."
     image: "rustfs/rustfs:1.0.0-alpha.82"
     tcp_ports:
       s3-api: 9003
@@ -352,28 +487,40 @@ services:
     subdomain: "s3manager"
     port: 8086
     public: false
+    category: "db-management"
+    website: "https://github.com/cloudlena/s3manager"
     description: "Web-based S3 bucket browser and manager for Hetzner Object Storage."
+    long_description: "S3 Manager is a web-based interface for browsing and managing S3-compatible object storage. Upload, download, and delete objects, browse bucket contents, and manage bucket permissions. Pre-configured to connect to your Hetzner Object Storage."
     image: "cloudlena/s3manager:latest"
 
   portainer:
     subdomain: "portainer"
     port: 9090
     public: false
+    category: "core"
+    website: "https://www.portainer.io"
     description: "Docker container management UI for easy deployment and monitoring."
+    long_description: "Portainer is a container management platform that simplifies Docker operations. View running containers, inspect logs, manage images, networks, and volumes through an intuitive web UI. Monitor resource usage, restart services, and deploy new containers without CLI access."
     image: "portainer/portainer-ce:lts"
 
   pgadmin:
     subdomain: "pgadmin"
     port: 5050
     public: false
+    category: "db-management"
+    website: "https://www.pgadmin.org"
     description: "Web-based PostgreSQL administration tool for managing databases and running queries."
+    long_description: "pgAdmin is the most popular administration and development platform for PostgreSQL. Features include a powerful SQL editor with auto-complete, visual query builder, server monitoring dashboards, backup/restore tools, and user management. Supports multiple PostgreSQL server connections."
     image: "dpage/pgadmin4:9"
 
   postgres:
     port: 5432
     public: false
     internal_only: true
+    category: "databases"
+    website: "https://www.postgresql.org"
     description: "PostgreSQL database server - accessible only internally or via pgAdmin/Adminer."
+    long_description: "PostgreSQL is a powerful, open-source relational database system. Used as the shared database server for Nexus Stack services. Accessible internally by other containers or externally via pgAdmin, Adminer, or CloudBeaver. Supports JSON, full-text search, and advanced SQL features."
     image: "postgres:17-alpine"
     tcp_ports:
       postgres: 5432
@@ -382,7 +529,10 @@ services:
     subdomain: "prefect"
     port: 4200
     public: false
+    category: "orchestration"
+    website: "https://www.prefect.io"
     description: "Modern Python-native workflow orchestration for data pipelines and automation."
+    long_description: "Prefect is a workflow orchestration framework for Python. Build, schedule, and monitor data pipelines with pure Python code. Features include automatic retries, caching, concurrency control, real-time monitoring, and a modern dashboard. Integrates with dbt, Spark, and cloud services."
     image: "prefecthq/prefect:3-latest"
     support_images:
       postgres: "postgres:16-alpine"
@@ -391,14 +541,20 @@ services:
     subdomain: "quickwit"
     port: 8092
     public: false
+    category: "analytics"
+    website: "https://quickwit.io"
     description: "Cloud-native search engine for log management and analytics on object storage."
+    long_description: "Quickwit is a cloud-native search engine optimized for log management and analytics. Indexes data directly on object storage (S3) for cost-effective log retention. Supports full-text search, aggregations, and OpenTelemetry-native trace search. Sub-second query latency with schemaless ingestion."
     image: "quickwit/quickwit:0.8.1"
 
   redpanda:
     subdomain: "redpanda"
     port: 9644
     public: false
+    category: "messaging"
+    website: "https://redpanda.com"
     description: "Kafka-compatible streaming platform that is simpler, faster, and more cost-effective."
+    long_description: "Redpanda is a Kafka-compatible streaming data platform built for modern workloads. It is faster, simpler to operate (no ZooKeeper/KRaft), and uses less resources than Apache Kafka. Features include built-in schema registry, HTTP proxy, and a Kafka-compatible API for seamless migration."
     image: "redpandadata/redpanda:v24.3"
     tcp_ports:
       kafka: 9092
@@ -408,7 +564,10 @@ services:
     port: 8888
     public: false
     internal_only: true
+    category: "databases"
+    website: "https://github.com/seaweedfs/seaweedfs"
     description: "SeaweedFS distributed object storage (base service - access via filer or manager)"
+    long_description: "SeaweedFS is a distributed storage system for blobs, objects, and files. This is the base volume server - use the SeaweedFS Filer for file management or SeaweedFS Manager for cluster monitoring. Optimized for fast reads and writes with automatic data replication."
     image: "chrislusf/seaweedfs:3.82"
 
   seaweedfs-filer:
@@ -416,7 +575,10 @@ services:
     port: 8888
     stack: "seaweedfs"
     public: false
+    category: "databases"
+    website: "https://github.com/seaweedfs/seaweedfs"
     description: "SeaweedFS file browser with upload capability - the main interface for managing files."
+    long_description: "SeaweedFS Filer provides a file system interface on top of the SeaweedFS volume servers. Upload, download, and organize files through a web browser. Supports S3-compatible API, POSIX-like directory structure, and handles files of any size efficiently."
     image: "chrislusf/seaweedfs:3.82"
     tcp_ports:
       s3-api: 8333
@@ -426,35 +588,50 @@ services:
     port: 9333
     stack: "seaweedfs"
     public: false
+    category: "databases"
+    website: "https://github.com/seaweedfs/seaweedfs"
     description: "SeaweedFS cluster statistics and health monitoring (read-only dashboard)."
+    long_description: "SeaweedFS Manager (Master Server UI) provides cluster-level monitoring for your SeaweedFS deployment. View volume server status, disk usage, data center topology, and replication health. Read-only dashboard for operational oversight."
     image: "chrislusf/seaweedfs:3.82"
 
   redpanda-console:
     subdomain: "redpanda-console"
     port: 8180
     public: false
+    category: "messaging"
+    website: "https://redpanda.com"
     description: "Web UI for managing and debugging Redpanda/Kafka workloads."
+    long_description: "Redpanda Console is the official web UI for Redpanda and Kafka clusters. Browse topics, view and produce messages, manage consumer groups, inspect schemas, and configure ACLs. Includes a built-in Kafka Connect management interface and topic documentation features."
     image: "redpandadata/console:v2.8"
 
   redpanda-connect:
     subdomain: "redpanda-connect"
     port: 4195
     public: false
+    category: "streaming"
+    website: "https://docs.redpanda.com/redpanda-connect"
     description: "Declarative data streaming framework for real-time pipelines."
+    long_description: "Redpanda Connect (formerly Benthos) is a declarative stream processing framework. Define data pipelines in YAML to connect, transform, and route data between systems in real time. Supports 200+ connectors for databases, message brokers, cloud services, and more."
     image: "redpandadata/connect:4.43.0"
 
   redpanda-datagen:
     subdomain: "redpanda-datagen"
     port: 4196
     public: false
+    category: "streaming"
+    website: "https://docs.redpanda.com/redpanda-connect"
     description: "Test data generator for Redpanda topics."
+    long_description: "Redpanda Datagen generates synthetic test data and publishes it to Redpanda/Kafka topics. Useful for development, testing, and demo environments. Based on Redpanda Connect with pre-configured data generation pipelines for common data patterns."
     image: "redpandadata/connect:4.43.0"
 
   risingwave:
     subdomain: "risingwave"
     port: 5691
     public: false
+    category: "databases"
+    website: "https://risingwave.com"
     description: "PostgreSQL-compatible streaming database for real-time materialized views and stream processing."
+    long_description: "RisingWave is a PostgreSQL-compatible streaming database. Define materialized views in SQL that automatically update as new data arrives from Kafka, Redpanda, or database CDC streams. Query results with standard PostgreSQL clients. Ideal for real-time dashboards, monitoring, and event-driven applications."
     image: "risingwavelabs/risingwave:v2.8.1"
     tcp_ports:
       postgres: 4566
@@ -463,14 +640,20 @@ services:
     port: 5003
     public: false
     internal_only: true
+    category: "orchestration"
+    website: "https://slingdata.io"
     description: "Lightweight CLI tool for database-to-database and file-to-database transfers."
+    long_description: "Sling is a modern CLI data transfer tool. Move data between databases (PostgreSQL, ClickHouse, MySQL) and file systems (S3, local) with simple commands. Supports incremental replication, column type mapping, and stream-based transfers for efficient large dataset movement."
     image: "nexus-sling:1.5.13"
 
   soda:
     port: 5002
     public: false
     internal_only: true
+    category: "data-quality"
+    website: "https://www.soda.io"
     description: "CLI-based data quality testing tool using SodaCL checks for database validation."
+    long_description: "Soda Core is a data quality testing framework. Write checks in SodaCL (Soda Checks Language) to validate row counts, null percentages, uniqueness, referential integrity, and custom SQL conditions. Run checks against PostgreSQL, ClickHouse, and other databases to catch data issues early."
     image: "soda-core-arm64:3.3.7"
     support_images:
       postgres: "postgres:16-alpine"
@@ -479,7 +662,10 @@ services:
     subdomain: "spark"
     port: 8088
     public: false
+    category: "orchestration"
+    website: "https://spark.apache.org"
     description: "Distributed data processing engine with standalone cluster (Master + Worker)."
+    long_description: "Apache Spark is a multi-language engine for large-scale data processing. Run batch and streaming workloads with SQL, Python, Scala, or R. This deployment includes a standalone cluster with Master and Worker nodes, accessible via the Spark Web UI and connected to Jupyter notebooks."
     image: "nexus-spark:4.1.1-python3.13"
     support_images:
       spark-worker: "nexus-spark:4.1.1-python3.13"
@@ -488,28 +674,40 @@ services:
     port: 9273
     public: false
     internal_only: true
+    category: "observability"
+    website: "https://www.influxdata.com/time-series-platform/telegraf/"
     description: "Metrics collection agent with 300+ plugins for system, database, and application monitoring."
+    long_description: "Telegraf is a plugin-driven metrics collection agent. Collect system metrics (CPU, memory, disk), database statistics (PostgreSQL, ClickHouse), and application metrics from 300+ input plugins. Output to Prometheus, Grafana, InfluxDB, and other monitoring systems."
     image: "telegraf:1.38.2"
 
   trino:
     subdomain: "trino"
     port: 8060
     public: false
+    category: "analytics"
+    website: "https://trino.io"
     description: "Distributed SQL query engine for querying data across multiple sources (ClickHouse, PostgreSQL, and more)."
+    long_description: "Trino is a distributed SQL query engine designed for fast analytics on large datasets. Query data where it lives - federate queries across PostgreSQL, ClickHouse, S3, Kafka, and 40+ connectors without moving data. Ideal for ad-hoc analytics, data lake queries, and cross-database joins."
     image: "trinodb/trino:479"
 
   uptime-kuma:
     subdomain: "uptime-kuma"
     port: 3001
     public: false
+    category: "observability"
+    website: "https://uptime.kuma.pet"
     description: "A fancy self-hosted monitoring tool for tracking service uptime and status."
+    long_description: "Uptime Kuma is a self-hosted monitoring tool. Monitor HTTP(s), TCP, DNS, Docker containers, and more. Features include a beautiful status page, multi-language notifications (Slack, Telegram, Email, Discord), certificate expiry monitoring, and response time tracking with graphs."
     image: "louislam/uptime-kuma:2"
 
   vector:
     port: 8686
     public: false
     internal_only: true
+    category: "observability"
+    website: "https://vector.dev"
     description: "High-performance observability pipeline for logs, metrics, and traces collection."
+    long_description: "Vector is a high-performance observability data pipeline. Collect, transform, and route logs, metrics, and traces from any source to any destination. Written in Rust for reliability and efficiency. Supports 100+ integrations with built-in filtering, sampling, and enrichment transforms."
     image: "timberio/vector:0.54.0-alpine"
 
   wetty:
@@ -517,14 +715,20 @@ services:
     port: 3002
     public: false
     admin_only: true
+    category: "server-access"
+    website: "https://github.com/butlerx/wetty"
     description: "Web-based SSH terminal for browser access to your server."
+    long_description: "WeTTY (Web + TTY) is a terminal emulator that runs in your browser over HTTP/HTTPS. Access your server's shell directly from the browser without installing an SSH client. Supports full terminal emulation, copy/paste, and custom themes."
     image: "wettyoss/wetty:latest"
 
   wikijs:
     subdomain: "wiki"
     port: 3005
     public: false
+    category: "knowledge"
+    website: "https://js.wiki"
     description: "Open-source wiki and knowledge base platform with Markdown, visual editor, and multi-language support."
+    long_description: "Wiki.js is a powerful wiki platform built on Node.js. Write documentation in Markdown or use the visual WYSIWYG editor. Features include full-text search, page versioning, access control, Git sync, diagram embedding, and support for 40+ languages. Perfect for team knowledge bases."
     image: "requarks/wiki:2.5.306"
     support_images:
       wikijs-postgres: "postgres:16-alpine"
@@ -533,7 +737,10 @@ services:
     subdomain: "woodpecker"
     port: 8084
     public: false
+    category: "ci-cd"
+    website: "https://woodpecker-ci.org"
     description: "Lightweight Docker-native CI/CD engine with pipeline-as-code."
+    long_description: "Woodpecker CI is a community fork of Drone CI. Define pipelines in YAML, run builds in isolated Docker containers, and integrate with Gitea, GitHub, and GitLab. Lightweight, fast, and designed for self-hosted environments with multi-pipeline and matrix build support."
     image: "woodpeckerci/woodpecker-server:v3.13.0"
     support_images:
       woodpecker-agent: "woodpeckerci/woodpecker-agent:v3.13.0"
@@ -542,7 +749,10 @@ services:
     subdomain: "windmill"
     port: 8200
     public: false
+    category: "ci-cd"
+    website: "https://www.windmill.dev"
     description: "Open-source workflow engine for scripts, workflows, and UIs with built-in code editor."
+    long_description: "Windmill is an open-source workflow engine and developer platform. Build scripts in Python, TypeScript, Go, or SQL, chain them into workflows, and create UIs - all from a web-based IDE. Features include scheduling, webhooks, approval flows, and a marketplace of community scripts."
     image: "ghcr.io/windmill-labs/windmill:1.624.0"
     support_images:
       lsp: "ghcr.io/windmill-labs/windmill-lsp:latest"
