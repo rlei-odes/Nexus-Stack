@@ -290,14 +290,15 @@ import Layout from '../layouts/Layout.astro';
     font-size: 0.8rem;
   }
 
-  .stack-chip {
+  /* :global needed because these elements are created dynamically via JS */
+  :global(.stack-chip) {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.6rem 1rem;
-    background: rgba(0, 20, 10, 0.6);
-    border: 1px solid rgba(0, 255, 136, 0.15);
-    color: var(--accent);
+    padding: 0.7rem 1.2rem;
+    background: rgba(0, 20, 10, 0.8);
+    border: 1px solid rgba(0, 255, 136, 0.2);
+    color: #00ff88;
     font-size: 0.85rem;
     font-weight: 600;
     font-family: 'JetBrains Mono', monospace;
@@ -305,35 +306,36 @@ import Layout from '../layouts/Layout.astro';
     transition: all 0.3s;
   }
 
-  .stack-chip:hover {
-    border-color: var(--accent);
-    background: rgba(0, 255, 136, 0.08);
-    box-shadow: 0 0 15px rgba(0, 255, 136, 0.15);
+  :global(.stack-chip:hover) {
+    border-color: #00ff88;
+    background: rgba(0, 255, 136, 0.1);
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.2);
   }
 
-  .stack-chip .arrow {
+  :global(.stack-chip .arrow) {
     opacity: 0.3;
     transition: opacity 0.3s;
     font-size: 0.75rem;
   }
 
-  .stack-chip:hover .arrow {
+  :global(.stack-chip:hover .arrow) {
     opacity: 1;
   }
 
-  .stack-chip.no-link {
-    color: var(--text-secondary);
-    border-color: var(--border);
+  :global(.stack-chip.no-link) {
+    color: #a0a0a0;
+    border-color: #2a2a3e;
     cursor: default;
   }
 
-  .stack-chip.no-link:hover {
+  :global(.stack-chip.no-link:hover) {
     box-shadow: none;
-    background: rgba(0, 20, 10, 0.6);
+    background: rgba(0, 20, 10, 0.8);
+    border-color: #2a2a3e;
   }
 
-  .stack-count {
-    color: var(--text-muted);
+  :global(.stack-count) {
+    color: #666;
     font-size: 0.8rem;
     margin-bottom: 0.8rem;
   }
