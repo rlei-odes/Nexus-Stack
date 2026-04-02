@@ -492,9 +492,12 @@ jobs:
           chmod +x scripts/deploy.sh
           ./scripts/deploy.sh
 
-          # Read Infisical project ID while SSH is still open (port gets closed next)
-          INFISICAL_PROJECT_ID=$(ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" || echo "")
-          echo "$INFISICAL_PROJECT_ID" > /tmp/infisical-project-id
+          # Read Infisical credentials while SSH is still open (port gets closed next)
+          echo "  Reading Infisical credentials from server..."
+          ssh nexus "cat /opt/docker-server/.infisical-token 2>/dev/null" > /tmp/infisical-token || true
+          ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" > /tmp/infisical-project-id || true
+          echo "  Infisical token: $([ -s /tmp/infisical-token ] && echo 'found' || echo 'not found')"
+          echo "  Infisical project ID: $([ -s /tmp/infisical-project-id ] && echo 'found' || echo 'not found')"
 
       - name: Write infrastructure config to D1
         env:
@@ -592,11 +595,12 @@ jobs:
           fi
 
           # Store Infisical token + project ID for live Secrets page
-          # Project ID was read from server before SSH port was closed (see Deploy stacks step)
+          # Both were read from server before SSH port was closed (see Deploy stacks step)
+          INFISICAL_TOKEN_VALUE=$(cat /tmp/infisical-token 2>/dev/null || echo "")
           INFISICAL_PROJECT_ID=$(cat /tmp/infisical-project-id 2>/dev/null || echo "")
 
-          if [ -n "$TF_VAR_infisical_token" ] && [ -n "$INFISICAL_PROJECT_ID" ]; then
-            echo "$TF_VAR_infisical_token" | npx wrangler pages secret put INFISICAL_TOKEN --project-name "$PAGES_PROJECT" 2>/dev/null && \
+          if [ -n "$INFISICAL_TOKEN_VALUE" ] && [ -n "$INFISICAL_PROJECT_ID" ]; then
+            echo "$INFISICAL_TOKEN_VALUE" | npx wrangler pages secret put INFISICAL_TOKEN --project-name "$PAGES_PROJECT" 2>/dev/null && \
               echo "  ✅ INFISICAL_TOKEN stored" || echo "  ⚠️  Failed to store INFISICAL_TOKEN"
 
             echo "$INFISICAL_PROJECT_ID" | npx wrangler pages secret put INFISICAL_PROJECT_ID --project-name "$PAGES_PROJECT" 2>/dev/null && \
