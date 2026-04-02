@@ -92,6 +92,9 @@ KESTRA_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_admin_password // empty')
 KESTRA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_db_password // empty')
 N8N_PASS=$(echo "$SECRETS_JSON" | jq -r '.n8n_admin_password // empty')
 METABASE_PASS=$(echo "$SECRETS_JSON" | jq -r '.metabase_admin_password // empty')
+SUPERSET_PASS=$(echo "$SECRETS_JSON" | jq -r '.superset_admin_password // empty')
+SUPERSET_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.superset_db_password // empty')
+SUPERSET_SECRET=$(echo "$SECRETS_JSON" | jq -r '.superset_secret_key // empty')
 CLOUDBEAVER_PASS=$(echo "$SECRETS_JSON" | jq -r '.cloudbeaver_admin_password // empty')
 MAGE_PASS=$(echo "$SECRETS_JSON" | jq -r '.mage_admin_password // empty')
 MINIO_ROOT_PASS=$(echo "$SECRETS_JSON" | jq -r '.minio_root_password // empty')
@@ -659,6 +662,20 @@ WINDMILL_SUPERADMIN_SECRET=${WINDMILL_SUPERADMIN_SECRET}
 DOMAIN=${DOMAIN}
 EOF
     echo -e "${GREEN}  ✓ Windmill .env generated${NC}"
+fi
+
+# Generate Superset .env from OpenTofu secrets
+if echo "$ENABLED_SERVICES" | grep -qw "superset"; then
+    echo "  Generating Superset config from OpenTofu secrets..."
+    cat > "$STACKS_DIR/superset/.env" << EOF
+# Auto-generated from OpenTofu secrets - DO NOT COMMIT
+SUPERSET_ADMIN_PASSWORD=${SUPERSET_PASS}
+SUPERSET_DB_PASSWORD=${SUPERSET_DB_PASS}
+SUPERSET_SECRET_KEY=${SUPERSET_SECRET}
+ADMIN_EMAIL=${ADMIN_EMAIL}
+DOMAIN=${DOMAIN}
+EOF
+    echo -e "${GREEN}  ✓ Superset .env generated${NC}"
 fi
 
 # Generate OpenMetadata .env from OpenTofu secrets
@@ -1802,6 +1819,10 @@ EOF
         build_folder "metabase" \
             "METABASE_USERNAME" "$ADMIN_EMAIL" \
             "METABASE_PASSWORD" "$METABASE_PASS"
+
+        build_folder "superset" \
+            "SUPERSET_USERNAME" "admin" \
+            "SUPERSET_PASSWORD" "$SUPERSET_PASS"
 
         build_folder "cloudbeaver" \
             "CLOUDBEAVER_USERNAME" "nexus-cloudbeaver" \

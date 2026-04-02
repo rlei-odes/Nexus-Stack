@@ -84,6 +84,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | Soda Core | `soda-core-arm64` | `3.3.7` | Exact ³ |
 | Spark Master | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
+| Superset | `apache/superset` | `6.0.0` | Exact ¹ |
 | Telegraf | `telegraf` | `1.38.2` | Exact ¹ |
 | Trino | `trinodb/trino` | `479` | Exact ¹ |
 | Vector | `timberio/vector` | `0.54.0-alpine` | Exact ¹ |
@@ -165,6 +166,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **SeaweedFS** | Distributed object storage | [seaweedfs.md](seaweedfs.md) |
 | **Sling** | Database-to-database transfers | [sling.md](sling.md) |
 | **Soda Core** | Data quality testing | [soda.md](soda.md) |
+| **Superset** | Data exploration & visualization | [superset.md](superset.md) |
 | **Telegraf** | Metrics collection agent | [telegraf.md](telegraf.md) |
 | **Trino** | Distributed SQL query engine | [trino.md](trino.md) |
 | **Uptime Kuma** | Self-hosted monitoring tool | [uptime-kuma.md](uptime-kuma.md) |

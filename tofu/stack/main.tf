@@ -94,6 +94,24 @@ resource "random_password" "metabase_admin" {
   special = false
 }
 
+# Superset admin password
+resource "random_password" "superset_admin" {
+  length  = 24
+  special = false
+}
+
+# Superset database password
+resource "random_password" "superset_db" {
+  length  = 24
+  special = false
+}
+
+# Superset secret key (Flask SECRET_KEY for session signing)
+resource "random_password" "superset_secret_key" {
+  length  = 42
+  special = false
+}
+
 # CloudBeaver admin password
 resource "random_password" "cloudbeaver_admin" {
   length  = 24
