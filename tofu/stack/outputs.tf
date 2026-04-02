@@ -236,6 +236,10 @@ output "secrets" {
     nocodb_db_password    = random_password.nocodb_db.result
     nocodb_jwt_secret     = random_password.nocodb_jwt_secret.result
 
+    # Appsmith
+    appsmith_encryption_password = random_password.appsmith_encryption_password.result
+    appsmith_encryption_salt     = random_password.appsmith_encryption_salt.result
+
     # Dinky
     dinky_admin_password = random_password.dinky_admin.result
 

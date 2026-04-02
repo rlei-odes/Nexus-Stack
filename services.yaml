@@ -70,6 +70,16 @@ services:
     long_description: "CloudBeaver is a web-based database manager built on DBeaver. It provides a rich SQL editor, visual query builder, ER diagrams, data export, and administrative features. Supports 30+ database drivers including PostgreSQL, MySQL, ClickHouse, and cloud databases."
     image: "dbeaver/cloudbeaver:24"
 
+  appsmith:
+    subdomain: "appsmith"
+    port: 8098
+    public: false
+    category: "low-code"
+    website: "https://appsmith.com"
+    description: "Open-source low-code platform for building admin panels, dashboards, and internal tools."
+    long_description: "Appsmith is an open-source framework for building internal tools and custom UIs. Connect to 18+ data sources including PostgreSQL, MySQL, MongoDB, REST APIs, and GraphQL. Features drag-and-drop widgets, JavaScript business logic, Git-based version control, and granular access controls. All-in-one container with bundled MongoDB, PostgreSQL, and Redis."
+    image: "appsmith/appsmith-ce:v1.98"
+
   budibase:
     subdomain: "budibase"
     port: 8096
