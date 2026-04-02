@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.41.0...v0.42.0) (2026-04-02)
+
+
+### 🚀 Features
+
+* **control-plane:** Fetch secrets live from Infisical API instead of static JSON ([d8d81c4](https://github.com/stefanko-ch/Nexus-Stack/commit/d8d81c443a96e39d95a8c0c599615af096b0d9d7))
+* **stacks:** Add Apache Superset data exploration platform ([7f38ed2](https://github.com/stefanko-ch/Nexus-Stack/commit/7f38ed242d53a2c6f432c3c65558bf192d485fbf))
+* **stacks:** Add Apache Superset stack, fetch Control Plane secrets from Infisical ([7dd6c45](https://github.com/stefanko-ch/Nexus-Stack/commit/7dd6c45836dd617bc296fc988b1830665aca41b1))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Read both Infisical token and project ID from server via SSH before port closes ([9c98665](https://github.com/stefanko-ch/Nexus-Stack/commit/9c986656d4d3e284bea2e49be465cec7d7f9516c))
+* **ci:** Read Infisical project ID before SSH port closes, use job-level token var ([1edd07c](https://github.com/stefanko-ch/Nexus-Stack/commit/1edd07c6d59b0bc465f9699bcdfdb3633399e40a))
+* **control-plane:** Address PR review - restore CF-Access auth check, use env for Infisical env, surface warnings ([513954b](https://github.com/stefanko-ch/Nexus-Stack/commit/513954bd697213ad845cb42d989100dea6729924))
+* **control-plane:** Fix Secrets page by adding CF Access Service Token for Infisical API ([3318059](https://github.com/stefanko-ch/Nexus-Stack/commit/331805984c774b36618807e73504dcdc327912b2))
+* **control-plane:** Pin wrangler@4 for pages secret put, rename root secrets group to avoid collision ([4b40565](https://github.com/stefanko-ch/Nexus-Stack/commit/4b40565ecfb3cc85cfbc431099d47a3be80bbc49))
+* **control-plane:** Remove CF-Access header check that breaks Pages Functions ([af94a06](https://github.com/stefanko-ch/Nexus-Stack/commit/af94a064790aecf2d6a4c232a6ebf46ec8cf98f3))
+* **control-plane:** Remove strict CF-Access header check on secrets API, fix search dropdown styles ([c52ba61](https://github.com/stefanko-ch/Nexus-Stack/commit/c52ba610e9046ecc74fb99116a446a910c572129))
+* **stacks:** Add password reset on Superset startup to fix Invalid login ([33f1713](https://github.com/stefanko-ch/Nexus-Stack/commit/33f1713931e786575b73d60a28b0e6c76026b105))
+* **stacks:** Address Superset PR review - isolate create-admin failure, push all secrets to Infisical ([82b8ff0](https://github.com/stefanko-ch/Nexus-Stack/commit/82b8ff0531a1e18b9ae18ab65cd001888f398efc))
+* **stacks:** Move Superset admin setup from docker-compose command to deploy.sh ([7f7c045](https://github.com/stefanko-ch/Nexus-Stack/commit/7f7c04580fc70e879c99253f4dc047c186c280ef))
+* **stacks:** Wrap Superset reset-password in || true to prevent startup failure ([022c708](https://github.com/stefanko-ch/Nexus-Stack/commit/022c708e5030879ffc0f837c94f0f22c5438d48a))
+
+
+### 📚 Documentation
+
+* Add git log -S check rule for Copilot review comments ([0f63013](https://github.com/stefanko-ch/Nexus-Stack/commit/0f6301380499b56aecb1bdfd79d2ba7bc22ab329))
+
 ## [0.41.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.40.0...v0.41.0) (2026-04-02)
 
 
