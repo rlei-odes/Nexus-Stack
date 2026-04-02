@@ -129,7 +129,7 @@ export async function onRequestGet(context) {
             .map(s => ({ key: s.secretKey, value: s.secretValue }))
             .sort((a, b) => a.key.localeCompare(b.key));
           if (secrets.length === 0) return null;
-          return { name: 'config', secrets };
+          return { name: 'root', secrets };
         } catch (err) {
           warnings.push(`root: ${err.message}`);
           return null;

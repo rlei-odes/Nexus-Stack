@@ -587,7 +587,7 @@ jobs:
           # Store CREDENTIALS_JSON for email credentials feature (send-credentials.js)
           if [ "$SECRETS_JSON" != "{}" ]; then
             CREDENTIALS=$(echo "$SECRETS_JSON" | jq -c 'to_entries | map(select(.value != null and .value != "")) | from_entries')
-            if echo "$CREDENTIALS" | npx wrangler pages secret put CREDENTIALS_JSON --project-name "$PAGES_PROJECT" 2>/dev/null; then
+            if echo "$CREDENTIALS" | npx wrangler@4 pages secret put CREDENTIALS_JSON --project-name "$PAGES_PROJECT" 2>/dev/null; then
               echo "  ✅ CREDENTIALS_JSON stored"
             else
               echo "  ⚠️  Failed to store CREDENTIALS_JSON"
@@ -600,10 +600,10 @@ jobs:
           INFISICAL_PROJECT_ID=$(cat /tmp/infisical-project-id 2>/dev/null || echo "")
 
           if [ -n "$INFISICAL_TOKEN_VALUE" ] && [ -n "$INFISICAL_PROJECT_ID" ]; then
-            echo "$INFISICAL_TOKEN_VALUE" | npx wrangler pages secret put INFISICAL_TOKEN --project-name "$PAGES_PROJECT" 2>/dev/null && \
+            echo "$INFISICAL_TOKEN_VALUE" | npx wrangler@4 pages secret put INFISICAL_TOKEN --project-name "$PAGES_PROJECT" 2>/dev/null && \
               echo "  ✅ INFISICAL_TOKEN stored" || echo "  ⚠️  Failed to store INFISICAL_TOKEN"
 
-            echo "$INFISICAL_PROJECT_ID" | npx wrangler pages secret put INFISICAL_PROJECT_ID --project-name "$PAGES_PROJECT" 2>/dev/null && \
+            echo "$INFISICAL_PROJECT_ID" | npx wrangler@4 pages secret put INFISICAL_PROJECT_ID --project-name "$PAGES_PROJECT" 2>/dev/null && \
               echo "  ✅ INFISICAL_PROJECT_ID stored" || echo "  ⚠️  Failed to store INFISICAL_PROJECT_ID"
           else
             echo "  ⚠️  Infisical token or project ID not available - Secrets page will not work"
@@ -617,10 +617,10 @@ jobs:
           cd ../..
 
           if [ -n "$INFISICAL_CF_CLIENT_ID" ] && [ -n "$INFISICAL_CF_CLIENT_SECRET" ]; then
-            echo "$INFISICAL_CF_CLIENT_ID" | npx wrangler pages secret put CF_ACCESS_CLIENT_ID --project-name "$PAGES_PROJECT" 2>/dev/null && \
+            echo "$INFISICAL_CF_CLIENT_ID" | npx wrangler@4 pages secret put CF_ACCESS_CLIENT_ID --project-name "$PAGES_PROJECT" 2>/dev/null && \
               echo "  ✅ CF_ACCESS_CLIENT_ID stored" || echo "  ⚠️  Failed to store CF_ACCESS_CLIENT_ID"
 
-            echo "$INFISICAL_CF_CLIENT_SECRET" | npx wrangler pages secret put CF_ACCESS_CLIENT_SECRET --project-name "$PAGES_PROJECT" 2>/dev/null && \
+            echo "$INFISICAL_CF_CLIENT_SECRET" | npx wrangler@4 pages secret put CF_ACCESS_CLIENT_SECRET --project-name "$PAGES_PROJECT" 2>/dev/null && \
               echo "  ✅ CF_ACCESS_CLIENT_SECRET stored" || echo "  ⚠️  Failed to store CF_ACCESS_CLIENT_SECRET"
           else
             echo "  ⚠️  Infisical service token not available - Secrets page may not work if Cloudflare Access blocks API calls"
