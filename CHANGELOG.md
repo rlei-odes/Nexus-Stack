@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.39.0...v0.40.0) (2026-04-02)
+
+
+### 🚀 Features
+
+* **stacks:** Add Vector and Telegraf observability agents ([3dd73b1](https://github.com/stefanko-ch/Nexus-Stack/commit/3dd73b117471bde64361c8be48ac8f353674e7c7))
+* **stacks:** Add Vector and Telegraf observability agents ([d09f92e](https://github.com/stefanko-ch/Nexus-Stack/commit/d09f92ece9a8d9e01824e434a086b437a29add26)), closes [#316](https://github.com/stefanko-ch/Nexus-Stack/issues/316) [#317](https://github.com/stefanko-ch/Nexus-Stack/issues/317)
+
+
+### 🐛 Bug Fixes
+
+* **stacks:** Address Vector/Telegraf PR review comments ([7e217e1](https://github.com/stefanko-ch/Nexus-Stack/commit/7e217e139670570dc1e642dfd8a74065b6ee1f96))
+
 ## [0.39.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.38.0...v0.39.0) (2026-04-01)
 
 
