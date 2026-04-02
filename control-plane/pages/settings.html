@@ -414,28 +414,53 @@
       try {
         const response = await fetch(`${API_URL}/api/scheduled-teardown`, { credentials: 'same-origin' });
         const data = await response.json();
-        if (!data.success) return;
+        if (!data.success || !data.config) return;
 
+        const config = data.config;
         const toggle = document.getElementById('toggle-scheduled-teardown');
         const info = document.getElementById('scheduled-info');
         const delayBtn = document.getElementById('btn-delay-teardown');
 
-        if (data.enabled) {
+        // Lock toggle if policy disallows disabling
+        if (config.allowDisable === false) {
+          toggle.classList.add('disabled');
+          toggle.title = 'Auto-shutdown cannot be disabled (infrastructure policy)';
+        } else {
+          toggle.classList.remove('disabled');
+          toggle.title = '';
+        }
+
+        if (config.enabled) {
           toggle.classList.add('active');
-          let infoText = `Daily at ${data.time || '22:00'} ${data.timezone || 'UTC'}`;
-          if (data.delayedUntil) {
-            const delayDate = new Date(data.delayedUntil);
-            infoText += ` (delayed until ${delayDate.toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })})`;
+          const now = new Date();
+          const delayUntil = config.delayUntil ? new Date(config.delayUntil) : null;
+
+          if (delayUntil && delayUntil > now) {
+            const diffMs = delayUntil - now;
+            const hours = Math.ceil(diffMs / 3600000);
+            const minutes = Math.ceil((diffMs % 3600000) / 60000);
+            info.innerHTML = `Enabled - Teardown delayed until ${delayUntil.toLocaleString('de-CH')}<br><span style="color: var(--warning);">(${hours}h ${minutes}m remaining)</span>`;
+            delayBtn.disabled = true;
+          } else if (config.timeRemaining) {
+            const tr = config.timeRemaining;
+            let timeText = tr.hours > 0 ? `${tr.hours}h ${tr.minutes}m` : `${tr.minutes}m`;
+            const next = config.nextTeardown ? new Date(config.nextTeardown).toLocaleString('de-CH') : '';
+            info.innerHTML = `Enabled - Next: ${next}<br><span style="color: var(--warning);">(${timeText} remaining)</span>`;
+            delayBtn.disabled = false;
+          } else {
+            info.textContent = `Enabled - Daily at ${config.teardownTime || '22:00'} ${config.timezone || 'UTC'}`;
+            delayBtn.disabled = false;
           }
-          info.textContent = infoText;
-          delayBtn.disabled = false;
         } else {
           toggle.classList.remove('active');
-          info.textContent = 'Disabled';
+          info.textContent = 'Disabled - No automatic teardown';
           delayBtn.disabled = true;
         }
 
-        toggle.onclick = () => saveScheduledTeardown(!toggle.classList.contains('active'));
+        toggle.onclick = () => {
+          if (toggle.classList.contains('disabled')) return;
+          saveScheduledTeardown(!toggle.classList.contains('active'));
+        };
         delayBtn.onclick = () => delayTeardown();
       } catch (error) {
         console.error('Failed to load scheduled teardown config:', error);
@@ -454,6 +479,8 @@
         if (data.success) {
           showToast(`Scheduled teardown ${enabled ? 'enabled' : 'disabled'}`);
           loadScheduledTeardownConfig();
+        } else {
+          showToast(data.error || 'Failed to update', true);
         }
       } catch (error) {
         showToast('Failed to update scheduled teardown', true);
@@ -461,20 +488,29 @@
     }
 
     async function delayTeardown() {
+      const btn = document.getElementById('btn-delay-teardown');
+      btn.disabled = true;
+      btn.textContent = 'Processing...';
       try {
         const response = await fetch(`${API_URL}/api/scheduled-teardown`, {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ delay: true }),
+          body: JSON.stringify({ delayHours: 2 }),
         });
         const data = await response.json();
         if (data.success) {
           showToast('Teardown delayed by 2 hours');
           loadScheduledTeardownConfig();
+        } else {
+          showToast(data.error || 'Failed to delay', true);
+          btn.disabled = false;
+          btn.textContent = 'Delay Teardown by 2 Hours';
         }
       } catch (error) {
         showToast('Failed to delay teardown', true);
+        btn.disabled = false;
+        btn.textContent = 'Delay Teardown by 2 Hours';
       }
     }
 
@@ -485,23 +521,24 @@
       try {
         const response = await fetch(`${API_URL}/api/email-settings`, { credentials: 'same-origin' });
         const data = await response.json();
-        if (!data.success) return;
+        if (!data.success || !data.settings) return;
 
+        const s = data.settings;
         const shutdownToggle = document.getElementById('toggle-notify-shutdown');
         const spinupToggle = document.getElementById('toggle-notify-spinup');
         const silentBanner = document.getElementById('silent-mode-banner');
 
-        if (data.notify_on_shutdown) shutdownToggle.classList.add('active');
+        if (s.notifyOnShutdown) shutdownToggle.classList.add('active');
         else shutdownToggle.classList.remove('active');
 
-        if (data.notify_on_spinup) spinupToggle.classList.add('active');
+        if (s.notifyOnSpinup) spinupToggle.classList.add('active');
         else spinupToggle.classList.remove('active');
 
-        if (data.silent_mode) silentBanner.classList.add('visible');
+        if (s.silentMode) silentBanner.classList.add('visible');
         else silentBanner.classList.remove('visible');
 
-        shutdownToggle.onclick = () => saveEmailSetting('notify_on_shutdown', !shutdownToggle.classList.contains('active'));
-        spinupToggle.onclick = () => saveEmailSetting('notify_on_spinup', !spinupToggle.classList.contains('active'));
+        shutdownToggle.onclick = () => saveEmailSetting('notifyOnShutdown', !shutdownToggle.classList.contains('active'));
+        spinupToggle.onclick = () => saveEmailSetting('notifyOnSpinup', !spinupToggle.classList.contains('active'));
       } catch (error) {
         console.error('Failed to load email settings:', error);
       }
@@ -517,8 +554,10 @@
         });
         const data = await response.json();
         if (data.success) {
-          showToast(`Email setting updated`);
+          showToast('Email setting updated');
           loadEmailSettings();
+        } else {
+          showToast(data.error || 'Failed to update', true);
         }
       } catch (error) {
         showToast('Failed to update email setting', true);
@@ -554,8 +593,8 @@
 
           const status = item.data.conclusion || item.data.status;
           const statusClass = status === 'success' ? 'success' : status === 'failure' ? 'failure' : status === 'in_progress' ? 'in_progress' : '';
-          const time = item.data.updated_at ? new Date(item.data.updated_at).toLocaleString('de-CH') : '';
-          const link = item.data.html_url ? `<a href="${item.data.html_url}" target="_blank" rel="noopener">View</a>` : '';
+          const time = item.data.updatedAt ? new Date(item.data.updatedAt).toLocaleString('de-CH') : '';
+          const link = item.data.url ? `<a href="${item.data.url}" target="_blank" rel="noopener">View</a>` : '';
 
           div.innerHTML = `
             <span class="name">${item.name}</span>
