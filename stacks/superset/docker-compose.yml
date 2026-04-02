@@ -33,9 +33,9 @@ services:
           --password ${SUPERSET_ADMIN_PASSWORD}
           --firstname Superset
           --lastname Admin || true ) &&
-        superset fab reset-password
+        ( superset fab reset-password
           --username admin
-          --password ${SUPERSET_ADMIN_PASSWORD} &&
+          --password ${SUPERSET_ADMIN_PASSWORD} || true ) &&
         superset init &&
         superset run -h 0.0.0.0 -p 8088 --with-threads
       "
