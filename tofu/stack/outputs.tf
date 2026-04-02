@@ -57,6 +57,19 @@ output "ssh_service_token" {
 }
 
 # =============================================================================
+# Infisical Service Token (for Control Plane API access)
+# =============================================================================
+
+output "infisical_service_token" {
+  description = "Service Token for Infisical API access from Control Plane (no browser login required)"
+  sensitive   = true
+  value = {
+    client_id     = cloudflare_zero_trust_access_service_token.infisical.client_id
+    client_secret = cloudflare_zero_trust_access_service_token.infisical.client_secret
+  }
+}
+
+# =============================================================================
 # Cloudflare Outputs
 # =============================================================================
 
@@ -134,6 +147,11 @@ output "secrets" {
 
     # Metabase
     metabase_admin_password = random_password.metabase_admin.result
+
+    # Superset
+    superset_admin_password = random_password.superset_admin.result
+    superset_db_password    = random_password.superset_db.result
+    superset_secret_key     = random_password.superset_secret_key.result
 
     # CloudBeaver
     cloudbeaver_admin_password = random_password.cloudbeaver_admin.result

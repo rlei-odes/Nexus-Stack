@@ -702,6 +702,8 @@ The `release-please--branches--main` branch is automatically managed by the Rele
 - Does it conflict with the project's patterns or architecture?
 - Is the concern valid in this specific context, or is it generic advice?
 
+Before applying any suggestion that re-adds previously removed code, check `git log -S "<removed code>"` to understand why it was removed. If it was intentionally removed, reject the suggestion and explain why.
+
 Only fix comments that identify genuine issues. Dismiss or explain comments that are incorrect or not applicable.
 
 **When addressing PR review comments, respond directly to each individual comment, not with a summary comment.**

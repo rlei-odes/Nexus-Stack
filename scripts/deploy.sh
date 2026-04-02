@@ -92,6 +92,9 @@ KESTRA_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_admin_password // empty')
 KESTRA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_db_password // empty')
 N8N_PASS=$(echo "$SECRETS_JSON" | jq -r '.n8n_admin_password // empty')
 METABASE_PASS=$(echo "$SECRETS_JSON" | jq -r '.metabase_admin_password // empty')
+SUPERSET_PASS=$(echo "$SECRETS_JSON" | jq -r '.superset_admin_password // empty')
+SUPERSET_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.superset_db_password // empty')
+SUPERSET_SECRET=$(echo "$SECRETS_JSON" | jq -r '.superset_secret_key // empty')
 CLOUDBEAVER_PASS=$(echo "$SECRETS_JSON" | jq -r '.cloudbeaver_admin_password // empty')
 MAGE_PASS=$(echo "$SECRETS_JSON" | jq -r '.mage_admin_password // empty')
 MINIO_ROOT_PASS=$(echo "$SECRETS_JSON" | jq -r '.minio_root_password // empty')
@@ -659,6 +662,20 @@ WINDMILL_SUPERADMIN_SECRET=${WINDMILL_SUPERADMIN_SECRET}
 DOMAIN=${DOMAIN}
 EOF
     echo -e "${GREEN}  ✓ Windmill .env generated${NC}"
+fi
+
+# Generate Superset .env from OpenTofu secrets
+if echo "$ENABLED_SERVICES" | grep -qw "superset"; then
+    echo "  Generating Superset config from OpenTofu secrets..."
+    cat > "$STACKS_DIR/superset/.env" << EOF
+# Auto-generated from OpenTofu secrets - DO NOT COMMIT
+SUPERSET_ADMIN_PASSWORD=${SUPERSET_PASS}
+SUPERSET_DB_PASSWORD=${SUPERSET_DB_PASS}
+SUPERSET_SECRET_KEY=${SUPERSET_SECRET}
+ADMIN_EMAIL=${ADMIN_EMAIL}
+DOMAIN=${DOMAIN}
+EOF
+    echo -e "${GREEN}  ✓ Superset .env generated${NC}"
 fi
 
 # Generate OpenMetadata .env from OpenTofu secrets
@@ -1803,6 +1820,12 @@ EOF
             "METABASE_USERNAME" "$ADMIN_EMAIL" \
             "METABASE_PASSWORD" "$METABASE_PASS"
 
+        build_folder "superset" \
+            "SUPERSET_USERNAME" "admin" \
+            "SUPERSET_PASSWORD" "$SUPERSET_PASS" \
+            "SUPERSET_DB_PASSWORD" "$SUPERSET_DB_PASS" \
+            "SUPERSET_SECRET_KEY" "$SUPERSET_SECRET"
+
         build_folder "cloudbeaver" \
             "CLOUDBEAVER_USERNAME" "nexus-cloudbeaver" \
             "CLOUDBEAVER_PASSWORD" "$CLOUDBEAVER_PASS"
@@ -2305,6 +2328,52 @@ fi
 if echo "$ENABLED_SERVICES" | grep -qw "uptime-kuma"; then
     echo -e "${YELLOW}  ⚠ Uptime Kuma requires manual setup on first login${NC}"
     echo -e "${YELLOW}    Credentials available in Infisical${NC}"
+fi
+
+# Configure Superset admin account via docker exec (idempotent)
+if echo "$ENABLED_SERVICES" | grep -qw "superset" && [ -n "$SUPERSET_PASS" ]; then
+    (
+        echo "  Configuring Superset admin..."
+        # Wait for Superset to finish db upgrade + init
+        SUPERSET_READY=false
+        for i in $(seq 1 60); do
+            if ssh nexus "curl -s --connect-timeout 2 'http://localhost:8089/health'" 2>/dev/null | grep -q 'OK'; then
+                SUPERSET_READY=true
+                break
+            fi
+            sleep 5
+        done
+
+        if [ "$SUPERSET_READY" = "false" ]; then
+            echo -e "${YELLOW}  ⚠ Superset not ready after 5 minutes - skipping admin setup${NC}"
+            echo -e "${YELLOW}    Credentials available in Infisical${NC}"
+            exit 0
+        fi
+
+        # Create admin (idempotent - fails silently if user exists)
+        CREATE_RESULT=$(ssh nexus "docker exec superset superset fab create-admin \
+            --username admin \
+            --email '$ADMIN_EMAIL' \
+            --password '$SUPERSET_PASS' \
+            --firstname Superset \
+            --lastname Admin" 2>&1 || echo "")
+
+        if echo "$CREATE_RESULT" | grep -qi "created\|added"; then
+            echo -e "${GREEN}  ✓ Superset admin created (user: admin)${NC}"
+        else
+            # User likely exists - reset password
+            RESET_RESULT=$(ssh nexus "docker exec superset superset fab reset-password \
+                --username admin \
+                --password '$SUPERSET_PASS'" 2>&1 || echo "")
+
+            if echo "$RESET_RESULT" | grep -qi "reset\|changed\|success"; then
+                echo -e "${GREEN}  ✓ Superset admin password updated (user: admin)${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ Superset admin may already exist - verify login with Infisical credentials${NC}"
+            fi
+        fi
+    ) &
+    CONFIG_JOBS+=($!)
 fi
 
 # Configure LakeFS admin user via API (one-time setup)

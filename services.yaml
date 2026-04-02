@@ -399,6 +399,19 @@ services:
     support_images:
       postgres: "postgres:16-alpine"
 
+  superset:
+    subdomain: "superset"
+    port: 8089
+    public: false
+    category: "analytics"
+    website: "https://superset.apache.org"
+    description: "Modern data exploration and visualization platform with SQL Lab and interactive dashboards."
+    long_description: "Apache Superset is a modern data exploration and visualization platform. Create interactive dashboards, explore datasets with SQL Lab, build rich visualizations with 40+ chart types, and share insights. Supports PostgreSQL, ClickHouse, Trino, and 30+ database engines with a no-code chart builder and role-based access control."
+    image: "apache/superset:6.0.0"
+    support_images:
+      postgres: "postgres:16-alpine"
+      redis: "redis:7-alpine"
+
   minio:
     subdomain: "minio"
     port: 9001

@@ -91,7 +91,7 @@ flowchart LR
     end
 ```
 
-## Available Stacks (59)
+## Available Stacks (60)
 
 ![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)
@@ -144,6 +144,7 @@ flowchart LR
 ![Sling](https://img.shields.io/badge/Sling-FF6B35?logo=data&logoColor=white)
 ![Soda](https://img.shields.io/badge/Soda-6C47FF?logo=database&logoColor=white)
 ![Spark](https://img.shields.io/badge/Apache_Spark-E25A1C?logo=apachespark&logoColor=white)
+![Superset](https://img.shields.io/badge/Apache_Superset-20A6A4?logo=apachesuperset&logoColor=white)
 ![Telegraf](https://img.shields.io/badge/Telegraf-22ADF6?logo=influxdb&logoColor=white)
 ![Trino](https://img.shields.io/badge/Trino-DD00A1?logo=trino&logoColor=white)
 ![Uptime Kuma](https://img.shields.io/badge/Uptime%20Kuma-5CDD8B?logo=uptimekuma&logoColor=white)
@@ -206,6 +207,7 @@ flowchart LR
 | **Sling** | Lightweight CLI for database-to-database and file-to-database transfers | [slingdata.io](https://slingdata.io) |
 | **Soda** | Data quality testing with SodaCL checks (CLI-only, no web UI) | [soda.io](https://www.soda.io) |
 | **Spark** | Distributed data processing engine (Master + Worker cluster) | [spark.apache.org](https://spark.apache.org) |
+| **Superset** | Modern data exploration and visualization platform with SQL Lab | [superset.apache.org](https://superset.apache.org) |
 | **Telegraf** | Metrics collection agent with 300+ plugins (CLI-only, no web UI) | [influxdata.com](https://www.influxdata.com/time-series-platform/telegraf/) |
 | **Trino** | Distributed SQL query engine for querying data across multiple sources | [trino.io](https://trino.io) |
 | **Uptime Kuma** | A fancy self-hosted monitoring tool | [uptime.kuma.pet](https://uptime.kuma.pet) |

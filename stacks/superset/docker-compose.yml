@@ -1,0 +1,81 @@
+# =============================================================================
+# Apache Superset - Data Exploration & Visualization Platform
+# https://superset.${DOMAIN}
+# =============================================================================
+# Superset is a modern data exploration and visualization platform.
+# Create interactive dashboards, explore data with SQL Lab, and share insights.
+# Default login: admin / (generated password in Infisical)
+# =============================================================================
+
+services:
+  superset:
+    image: ${IMAGE_SUPERSET:-apache/superset:6.0.0}
+    container_name: superset
+    restart: unless-stopped
+    ports:
+      - "8089:8088"
+    env_file:
+      - .env
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY}
+      - SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://nexus-superset:${SUPERSET_DB_PASSWORD}@superset-db:5432/superset
+      - REDIS_URL=redis://superset-redis:6379/0
+      - SUPERSET_LOAD_EXAMPLES=no
+      - SUPERSET_ENV=production
+      - FLASK_DEBUG=false
+      - SUPERSET_LOG_LEVEL=info
+    command: >
+      bash -c "
+        superset db upgrade &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088 --with-threads
+      "
+    volumes:
+      - superset_home:/app/superset_home
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    networks:
+      - app-network
+      - superset-internal
+
+  superset-db:
+    image: postgres:16-alpine
+    container_name: superset-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=superset
+      - POSTGRES_USER=nexus-superset
+      - POSTGRES_PASSWORD=${SUPERSET_DB_PASSWORD}
+    volumes:
+      - superset_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus-superset -d superset"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - superset-internal
+
+  superset-redis:
+    image: redis:7-alpine
+    container_name: superset-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - superset-internal
+
+volumes:
+  superset_home:
+  superset_db_data:
+
+networks:
+  app-network:
+    external: true
+  superset-internal:
