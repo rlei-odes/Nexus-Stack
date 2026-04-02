@@ -5,213 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Settings - Nexus Control Plane</title>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
   <style>
-    :root {
-      --bg-primary: #0a0a0f;
-      --bg-secondary: #12121a;
-      --bg-card: #1a1a2e;
-      --accent: #00ff88;
-      --accent-dim: #00cc6a;
-      --text-primary: #ffffff;
-      --text-secondary: #a0a0a0;
-      --text-muted: #666666;
-      --border: #2a2a3e;
-      --error: #ff4444;
-      --warning: #ffaa00;
-      --info: #00aaff;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      min-height: 100vh;
-      padding: 2rem;
-    }
-
-    body::before {
-      content: '';
-      position: fixed;
-      top: 0; left: 0; width: 100%; height: 100%;
-      background-image:
-        linear-gradient(rgba(0, 255, 136, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 255, 136, 0.03) 1px, transparent 1px);
-      background-size: 50px 50px;
-      z-index: -2;
-    }
-
-    .container { max-width: 900px; margin: 0 auto; }
-
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-
-    h1 {
-      color: var(--accent);
-      font-family: 'Orbitron', sans-serif;
-      font-size: 1.5rem;
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 0.8rem;
-      flex-wrap: wrap;
-    }
-
-    .nav-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-      font-size: 0.85rem;
-      padding: 0.4rem 0.8rem;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      transition: all 0.3s;
-    }
-
-    .nav-links a:hover {
-      color: var(--accent);
-      border-color: var(--accent);
-    }
-
-    /* Panels */
-    .panel {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      padding: 1.2rem 1.5rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .panel h2 {
-      font-size: 1rem;
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 0.15em;
-      margin-bottom: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    /* Info grid */
-    .info-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 1rem;
-    }
-
-    .info-item {
-      padding: 0.6rem;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(0, 255, 136, 0.1);
-    }
-
-    .info-item-label {
-      font-size: 0.7rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      margin-bottom: 0.3rem;
-    }
-
-    .info-item-value {
-      font-size: 0.9rem;
-      color: var(--text-secondary);
-    }
-
-    .info-item-value.highlight {
-      color: var(--accent);
-      font-weight: 700;
-    }
-
-    /* Toggle */
-    .setting-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0.8rem;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(255, 170, 0, 0.2);
-      margin-bottom: 0.8rem;
-    }
-
-    .setting-row:last-child {
-      margin-bottom: 0;
-    }
-
-    .setting-label {
-      font-weight: bold;
-      margin-bottom: 0.3rem;
-    }
-
-    .setting-info {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-
-    .toggle-switch {
-      position: relative;
-      width: 50px;
-      height: 26px;
-      background: rgba(255, 170, 0, 0.2);
-      border-radius: 13px;
-      cursor: pointer;
-      transition: background 0.3s;
-      flex-shrink: 0;
-    }
-
-    .toggle-switch.active { background: var(--warning); }
-
-    .toggle-switch::after {
-      content: '';
-      position: absolute;
-      width: 20px; height: 20px;
-      background: #fff;
-      border-radius: 50%;
-      top: 3px; left: 3px;
-      transition: left 0.3s;
-    }
-
-    .toggle-switch.active::after { left: 27px; }
-
-    .toggle-switch.disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-
-    .delay-btn {
-      background: rgba(255, 170, 0, 0.1);
-      border: 1px solid rgba(255, 170, 0, 0.4);
-      color: var(--warning);
-      padding: 0.6rem 1.2rem;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem;
-      cursor: pointer;
-      transition: all 0.3s;
-      border-radius: 4px;
-      margin-top: 0.8rem;
-    }
-
-    .delay-btn:hover:not(:disabled) {
-      background: rgba(255, 170, 0, 0.2);
-      border-color: var(--warning);
-      box-shadow: 0 0 15px rgba(255, 170, 0, 0.3);
-    }
-
-    .delay-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
+    /* Page-specific: silent banner */
     .silent-banner {
       background: rgba(255, 180, 0, 0.08);
       border: 1px solid rgba(255, 180, 0, 0.3);
@@ -222,10 +18,9 @@
       color: #ffb400;
       display: none;
     }
-
     .silent-banner.visible { display: block; }
 
-    /* History */
+    /* Page-specific: workflow history items */
     .history-item {
       display: flex;
       justify-content: space-between;
@@ -236,7 +31,6 @@
       margin-bottom: 0.5rem;
       font-size: 0.8rem;
     }
-
     .history-item .name { color: var(--text-secondary); }
     .history-item .status { font-weight: 700; }
     .history-item .status.success { color: var(--accent); }
@@ -244,39 +38,10 @@
     .history-item .status.in_progress { color: var(--warning); }
     .history-item a { color: var(--info); text-decoration: none; font-size: 0.75rem; }
     .history-item a:hover { text-decoration: underline; }
-
-    /* Toast */
-    .toast-container {
-      position: fixed;
-      top: 1rem; right: 1rem;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .toast {
-      background: var(--bg-card);
-      border: 1px solid var(--accent);
-      color: var(--text-primary);
-      padding: 0.8rem 1.2rem;
-      font-size: 0.8rem;
-      font-family: 'JetBrains Mono', monospace;
-      max-width: 350px;
-      animation: slideIn 0.3s ease-out;
-    }
-    .toast.error { border-color: var(--error); }
-    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-
-    @media (max-width: 768px) {
-      body { padding: 1rem; }
-      .info-grid { grid-template-columns: 1fr; }
-      header { flex-direction: column; align-items: flex-start; }
-    }
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="container-narrow">
     <header>
       <h1>Settings</h1>
       <nav class="nav-links">
@@ -284,6 +49,7 @@
         <a href="/database.html">Database</a>
         <a href="/firewall.html">Firewall</a>
         <a href="/logs.html">Logs</a>
+        <a href="/settings.html" class="active">Settings</a>
         <a href="/databricks.html">Integrations</a>
       </nav>
     </header>
@@ -329,7 +95,7 @@
         </div>
         <div class="toggle-switch" id="toggle-scheduled-teardown"></div>
       </div>
-      <button class="delay-btn" id="btn-delay-teardown" disabled>Delay Teardown by 2 Hours</button>
+      <button class="btn-warning" id="btn-delay-teardown" disabled style="margin-top: 0.8rem;">Delay Teardown by 2 Hours</button>
     </div>
 
     <!-- Email Notifications -->

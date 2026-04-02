@@ -5,90 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Integrations - Nexus Control Plane</title>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
   <style>
-    :root {
-      --bg-primary: #0a0a0f;
-      --bg-secondary: #12121a;
-      --bg-card: #1a1a2e;
-      --accent: #00ff88;
-      --accent-dim: #00cc6a;
-      --text-primary: #ffffff;
-      --text-secondary: #a0a0a0;
-      --text-muted: #666666;
-      --border: #2a2a3e;
-      --error: #ff4444;
-      --warning: #ffaa00;
-      --info: #00aaff;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      min-height: 100vh;
-      padding: 2rem;
-    }
-
-    body::before {
-      content: '';
-      position: fixed;
-      top: 0; left: 0; width: 100%; height: 100%;
-      background-image:
-        linear-gradient(rgba(0, 255, 136, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 255, 136, 0.03) 1px, transparent 1px);
-      background-size: 50px 50px;
-      z-index: -2;
-    }
-
-    .container { max-width: 800px; margin: 0 auto; }
-
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-
-    h1 {
-      color: var(--accent);
-      font-family: 'Orbitron', sans-serif;
-      font-size: 1.5rem;
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-
-    .nav-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-      font-size: 0.85rem;
-      padding: 0.4rem 0.8rem;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      transition: all 0.3s;
-    }
-
-    .nav-links a:hover {
-      color: var(--accent);
-      border-color: var(--accent);
-    }
-
+    /* Page-specific: integration panel */
     .integration-panel {
       background: var(--bg-card);
       border: 1px solid var(--border);
       padding: 1.5rem;
       margin-bottom: 1.5rem;
     }
-
     .integration-panel h2 {
       color: var(--accent);
       font-size: 1.1rem;
@@ -97,7 +22,6 @@
       align-items: center;
       gap: 0.5rem;
     }
-
     .integration-panel p {
       color: var(--text-secondary);
       font-size: 0.85rem;
@@ -105,70 +29,19 @@
       margin-bottom: 1.2rem;
     }
 
-    .form-group {
-      margin-bottom: 1rem;
-    }
-
-    .form-group label {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      display: block;
-      margin-bottom: 0.3rem;
-    }
-
-    .form-group input {
-      width: 100%;
-      padding: 0.6rem;
-      background: rgba(0, 10, 5, 0.8);
-      border: 1px solid rgba(0, 255, 136, 0.2);
-      color: #c0d0c0;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-      border-radius: 3px;
-      transition: border-color 0.3s;
-    }
-
-    .form-group input:focus {
-      outline: none;
-      border-color: var(--accent);
-    }
-
+    /* Page-specific: form layout and status */
+    .form-group { margin-bottom: 1rem; }
     .btn-row {
       display: flex;
       gap: 0.5rem;
       margin-top: 1rem;
     }
-
-    .action-btn {
-      flex: 1;
-      padding: 0.6rem 1rem;
-      background: rgba(0, 255, 136, 0.1);
-      border: 1px solid rgba(0, 255, 136, 0.3);
-      color: var(--accent);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-      cursor: pointer;
-      transition: all 0.3s;
-      border-radius: 4px;
-    }
-
-    .action-btn:hover:not(:disabled) {
-      background: rgba(0, 255, 136, 0.2);
-      border-color: var(--accent);
-      box-shadow: 0 0 15px rgba(0, 255, 136, 0.2);
-    }
-
-    .action-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
+    .btn-row .btn-primary { flex: 1; }
     .status-text {
       font-size: 0.75rem;
       color: var(--text-muted);
       margin-top: 0.8rem;
     }
-
     .coming-soon {
       color: var(--text-muted);
       font-size: 0.85rem;
@@ -177,15 +50,10 @@
       border: 1px dashed var(--border);
       margin-top: 1.5rem;
     }
-
-    @media (max-width: 768px) {
-      body { padding: 1rem; }
-      header { flex-direction: column; align-items: flex-start; }
-    }
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="container-narrow">
     <header>
       <h1>Integrations</h1>
       <nav class="nav-links">
@@ -194,6 +62,7 @@
         <a href="/firewall.html">Firewall</a>
         <a href="/logs.html">Logs</a>
         <a href="/settings.html">Settings</a>
+        <a href="/databricks.html" class="active">Integrations</a>
       </nav>
     </header>
 
@@ -210,8 +79,8 @@
         <input type="password" id="databricks-token" placeholder="dapi...">
       </div>
       <div class="btn-row">
-        <button class="action-btn" id="btn-save-databricks" onclick="saveDatabricksConfig()">Save Configuration</button>
-        <button class="action-btn" id="btn-sync-databricks" onclick="syncDatabricks()" disabled>Sync Secrets to Databricks</button>
+        <button class="btn-primary" id="btn-save-databricks" onclick="saveDatabricksConfig()">Save Configuration</button>
+        <button class="btn-primary" id="btn-sync-databricks" onclick="syncDatabricks()" disabled>Sync Secrets to Databricks</button>
       </div>
       <div id="databricks-status" class="status-text"></div>
     </div>

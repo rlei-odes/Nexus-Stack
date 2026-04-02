@@ -5,36 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexus Stack — Control Panel</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            min-height: 100vh;
-            background: #0a0a0f;
-            color: #ffffff;
-            font-family: 'JetBrains Mono', monospace;
-            padding: 2rem;
-            overflow-x: hidden;
-        }
-
-        /* Animated grid background */
+        /* Animated grid background (override shared static grid) */
         body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-image: 
-                linear-gradient(rgba(0, 255, 136, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0, 255, 136, 0.03) 1px, transparent 1px);
-            background-size: 50px 50px;
             animation: gridMove 20s linear infinite;
-            z-index: -2;
         }
 
         @keyframes gridMove {
@@ -61,15 +36,10 @@
             z-index: 100;
         }
 
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            position: relative;
-            z-index: 1;
-        }
-
+        /* Dashboard-specific header (centered, no border) */
         header {
             text-align: center;
+            border-bottom: none;
             margin-bottom: 3rem;
         }
 
@@ -82,14 +52,10 @@
             filter: drop-shadow(0 0 20px rgba(0, 255, 136, 0.5));
         }
 
+        /* Dashboard h1 glow effect */
         h1 {
-            font-family: 'Orbitron', sans-serif;
             font-size: 2.5rem;
-            font-weight: 700;
-            color: #00ff88;
-            text-shadow: 
-                0 0 10px rgba(0, 255, 136, 0.8),
-                0 0 40px rgba(0, 255, 136, 0.4);
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.8), 0 0 40px rgba(0, 255, 136, 0.4);
             letter-spacing: 0.2em;
             margin-bottom: 0.5rem;
         }
@@ -107,32 +73,6 @@
             color: #00ff88;
             opacity: 0.5;
             letter-spacing: 0.1em;
-        }
-
-        .header-nav {
-            margin-top: 1.5rem;
-            display: flex;
-            gap: 1rem;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .nav-link {
-            display: inline-block;
-            background: rgba(0, 255, 136, 0.1);
-            border: 1px solid rgba(0, 255, 136, 0.3);
-            color: #00ff88;
-            padding: 0.5rem 1rem;
-            font-size: 0.85rem;
-            text-decoration: none;
-            border-radius: 4px;
-            transition: all 0.3s;
-        }
-
-        .nav-link:hover {
-            background: rgba(0, 255, 136, 0.2);
-            border-color: #00ff88;
-            box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
         }
 
         /* Status Panel */
@@ -166,11 +106,6 @@
         .status-dot.destroyed { background: #ff4444; }
         .status-dot.running { background: #00aaff; }
         .status-dot.unknown { background: #666666; }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
-            50% { opacity: 0.7; box-shadow: 0 0 10px 5px currentColor; }
-        }
 
         .status-text.deployed { color: #00ff88; }
         .status-text.torn-down { color: #ffaa00; }
@@ -262,6 +197,12 @@
             box-shadow: 0 0 30px rgba(255, 170, 0, 0.3);
         }
 
+        .action-btn .icon {
+            display: block;
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
         /* Scheduled Teardown Panel */
         .scheduled-teardown-panel {
             background: rgba(0, 20, 10, 0.6);
@@ -295,46 +236,6 @@
             padding: 0.8rem;
             background: rgba(0, 0, 0, 0.3);
             border: 1px solid rgba(255, 170, 0, 0.2);
-        }
-
-        .toggle-switch {
-            position: relative;
-            width: 50px;
-            height: 26px;
-            background: rgba(255, 170, 0, 0.2);
-            border-radius: 13px;
-            cursor: pointer;
-            transition: background 0.3s;
-        }
-
-        .toggle-switch.active {
-            background: #ffaa00;
-        }
-
-        .toggle-switch::after {
-            content: '';
-            position: absolute;
-            width: 20px;
-            height: 20px;
-            background: #fff;
-            border-radius: 50%;
-            top: 3px;
-            left: 3px;
-            transition: left 0.3s;
-        }
-
-        .toggle-switch.active::after {
-            left: 27px;
-        }
-
-        .toggle-switch.disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            pointer-events: none;
-        }
-
-        .toggle-switch.disabled::after {
-            background: #888;
         }
 
         .delay-btn {
@@ -547,7 +448,7 @@
             font-family: 'Orbitron', sans-serif;
             line-height: 1;
         }
-        
+
         /* Pending Changes Banner */
         .pending-banner {
             background: rgba(255, 215, 0, 0.08);
@@ -677,12 +578,6 @@
 
         .info-item-value.warning {
             color: #ffaa00;
-        }
-
-        .action-btn .icon {
-            display: block;
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
         }
 
         /* Workflow History */
@@ -839,77 +734,15 @@
             background: rgba(255, 68, 68, 0.2);
         }
 
-        /* Toast Notifications */
-        .toast {
-            position: fixed;
-            bottom: 2rem;
-            right: 2rem;
-            background: rgba(0, 20, 10, 0.95);
-            border: 1px solid #00ff88;
-            padding: 1rem 1.5rem;
-            font-size: 0.85rem;
-            z-index: 1001;
-            animation: slideIn 0.3s ease;
-        }
-
-        .toast.error {
-            border-color: #ff4444;
-            color: #ff4444;
-        }
-
-        .toast.success {
-            border-color: #00ff88;
-            color: #00ff88;
-        }
-
-        @keyframes slideIn {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-
-        footer {
-            text-align: center;
-            padding: 2rem;
-            font-size: 0.75rem;
-            color: #303540;
-            border-top: 1px solid rgba(0, 255, 136, 0.1);
-            margin-top: 2rem;
-        }
-
-        footer a {
-            color: #00ff88;
-            text-decoration: none;
-        }
-
-        footer a:hover {
-            text-decoration: underline;
-        }
-
-        /* Loading spinner */
-        .spinner {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            border: 2px solid currentColor;
-            border-top-color: transparent;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 0.5rem;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
         @media (max-width: 600px) {
             h1 {
                 font-size: 1.8rem;
             }
-            
+
             .actions {
                 grid-template-columns: 1fr;
             }
-            
+
             .logo {
                 width: 80px;
                 height: 80px;
@@ -918,18 +751,19 @@
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="container-narrow">
         <header>
             <!-- Nexus Stack Logo -->
             <img src="nexus-logo-green.png" alt="Nexus Stack" class="logo">
             <h1>NEXUS STACK</h1>
             <p class="tagline">Control Panel &nbsp;·&nbsp; <span id="version-tag" class="version-tag"></span></p>
-            <nav class="header-nav">
-                <a href="/database.html" class="nav-link">🗄️ Database</a>
-                <a href="/firewall.html" class="nav-link">🔥 Firewall</a>
-                <a href="/logs.html" class="nav-link">📋 Logs</a>
-                <a href="/settings.html" class="nav-link">Settings</a>
-                <a href="/databricks.html" class="nav-link">Integrations</a>
+            <nav class="nav-links" style="justify-content: center; margin-top: 1rem;">
+                <a href="/" class="active">Dashboard</a>
+                <a href="/database.html">Database</a>
+                <a href="/firewall.html">Firewall</a>
+                <a href="/logs.html">Logs</a>
+                <a href="/settings.html">Settings</a>
+                <a href="/databricks.html">Integrations</a>
             </nav>
         </header>
 
@@ -1014,7 +848,7 @@
     <script>
         // API calls are relative - Pages Functions handle them
         const API_URL = '';
-        
+
         let currentAction = null;
         let pendingChangesCount = 0;
         let wasInProgress = false;
@@ -1039,18 +873,18 @@
             try {
                 const response = await fetch(`${API_URL}/api/info`, { credentials: 'same-origin' });
                 console.log('[fetchInfo] Response status:', response.status);
-                
+
                 const contentType = response.headers.get('content-type');
                 console.log('[fetchInfo] Content-Type:', contentType);
-                
+
                 if (!contentType || !contentType.includes('application/json')) {
                     console.error('[fetchInfo] API returned non-JSON response');
                     return;
                 }
-                
+
                 const data = await response.json();
                 console.log('[fetchInfo] Data received:', JSON.stringify(data, null, 2));
-                
+
                 if (data.success) {
                     // API returns data in 'info' object
                     const info = data.info || {};
@@ -1064,7 +898,7 @@
                     if (elDom) elDom.textContent = info.server?.domain || 'Unknown';
 
                     const domain = info.server?.domain || window.location.hostname.replace('control.', '');
-                    
+
                     // Update workflow timestamps (only if elements exist - may be on settings page)
                     const lastSpinUp = info.server?.lastSpinUp || info.time?.lastDeploy;
                     const lastTeardown = info.server?.lastTeardown || info.time?.lastTeardown;
@@ -1101,7 +935,7 @@
         async function fetchStatus() {
             try {
                 const response = await fetch(`${API_URL}/api/status`, { credentials: 'same-origin' });
-                
+
                 // Check if we got HTML instead of JSON (Access login page)
                 const contentType = response.headers.get('content-type');
                 if (!contentType || !contentType.includes('application/json')) {
@@ -1110,9 +944,9 @@
                     enableFallbackState();
                     return;
                 }
-                
+
                 const data = await response.json();
-                
+
                 if (data.success) {
                     updateStatusDisplay(data);
                     updateButtons(data);
@@ -1173,11 +1007,11 @@
             const dot = document.getElementById('status-dot');
             const text = document.getElementById('status-text');
             const desc = document.getElementById('status-description');
-            
+
             // Remove all classes
             dot.className = 'status-dot ' + data.infraState;
             text.className = 'status-text ' + data.infraState;
-            
+
             const stateLabels = {
                 'deployed': 'Deployed',
                 'torn-down': 'Torn Down',
@@ -1185,7 +1019,7 @@
                 'running': 'In Progress',
                 'unknown': 'Unknown'
             };
-            
+
             text.textContent = stateLabels[data.infraState] || 'Unknown';
             desc.textContent = statusDescriptions[data.infraState] || '';
         }
@@ -1194,7 +1028,7 @@
             const btnEmailCredentials = document.getElementById('btn-email-credentials');
             const btnSpinUp = document.getElementById('btn-spin-up');
             const btnTeardown = document.getElementById('btn-teardown');
-            
+
             // Disable all if workflow is running
             if (data.inProgress) {
                 btnEmailCredentials.disabled = true;
@@ -1204,7 +1038,7 @@
                 btnTeardown.innerHTML = '<span class="spinner"></span>Working...';
                 return;
             }
-            
+
             // Reset buttons - respect pending changes for Spin Up text
             btnEmailCredentials.innerHTML = '<span class="icon">📧</span>Email Credentials';
             if (pendingChangesCount > 0) {
@@ -1247,16 +1081,16 @@
             const originalHTML = btn.innerHTML;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner"></span>Sending...';
-            
+
             try {
                 const response = await fetch(`${API_URL}/api/send-credentials`, {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' }
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (data.success) {
                     showToast('Credentials email sent!', 'success');
                 } else {
@@ -1289,7 +1123,7 @@
                 console.error('Failed to load services:', error);
             }
         }
-        
+
         function updatePendingBadge(count) {
             pendingChangesCount = count;
             const banner = document.getElementById('pending-changes-banner');
@@ -1320,7 +1154,8 @@
         // Category registry (must match services.yaml categories)
         const CATEGORIES = {
             'core': { name: 'Core Infrastructure' },
-            'databases': { name: 'Databases & Storage' },
+            'databases': { name: 'Databases' },
+            'storage': { name: 'Object Storage' },
             'db-management': { name: 'Database Management' },
             'orchestration': { name: 'Data Orchestration' },
             'streaming': { name: 'Stream Processing' },
@@ -1340,7 +1175,7 @@
 
         // Category display order
         const CATEGORY_ORDER = [
-            'core', 'databases', 'db-management', 'orchestration', 'streaming',
+            'core', 'databases', 'storage', 'db-management', 'orchestration', 'streaming',
             'messaging', 'analytics', 'data-quality', 'ai-ml', 'dev-tools',
             'ci-cd', 'low-code', 'observability', 'knowledge', 'visual-tools',
             'files', 'server-access'
@@ -1456,25 +1291,25 @@
                 'teardown': 'Teardown Infrastructure',
                 'email-credentials': 'Email Credentials',
             };
-            
+
             // Disable buttons during action
             const buttons = document.querySelectorAll('.action-btn');
             buttons.forEach(btn => btn.disabled = true);
-            
+
             // Show loading state
             const btn = document.getElementById(`btn-${action}`);
             const originalHTML = btn.innerHTML;
             btn.innerHTML = '<span class="spinner"></span>Processing...';
-            
+
             try {
-                const response = await fetch(`${API_URL}/api/${action}`, { 
-                    method: 'POST', 
+                const response = await fetch(`${API_URL}/api/${action}`, {
+                    method: 'POST',
                     credentials: 'same-origin',
                     headers: {
                         'Content-Type': 'application/json'
                     }
                 });
-                
+
                 // Check if we got HTML instead of JSON (Access login page)
                 const contentType = response.headers.get('content-type');
                 if (!contentType || !contentType.includes('application/json')) {
@@ -1483,9 +1318,9 @@
                     btn.innerHTML = originalHTML;
                     return;
                 }
-                
+
                 const data = await response.json();
-                
+
                 if (data.success) {
                     showToast(`${actionLabels[action]} triggered!`, 'success');
                     // Refresh status after short delay
@@ -1508,14 +1343,14 @@
             const modal = document.getElementById('modal-overlay');
             const title = document.getElementById('modal-title');
             const message = document.getElementById('modal-message');
-            
+
             const configs = {
                 'teardown': {
                     title: '⚠️ Confirm Teardown',
                     message: 'This will stop all services and destroy the Hetzner infrastructure. The control panel will remain active, allowing you to spin up later.'
                 },
             };
-            
+
             const config = configs[action];
             title.textContent = config.title;
             message.textContent = config.message;
@@ -1532,7 +1367,7 @@
             toast.className = `toast ${type}`;
             toast.textContent = message;
             document.body.appendChild(toast);
-            
+
             setTimeout(() => toast.remove(), 3000);
         }
 
@@ -1540,7 +1375,7 @@
         document.getElementById('btn-email-credentials').addEventListener('click', () => emailCredentials());
         document.getElementById('btn-spin-up').addEventListener('click', () => triggerAction('spin-up'));
         document.getElementById('btn-teardown').addEventListener('click', () => showConfirmModal('teardown'));
-        
+
         document.getElementById('modal-cancel').addEventListener('click', hideModal);
         document.getElementById('modal-confirm').addEventListener('click', () => {
             if (currentAction) {
@@ -1568,17 +1403,17 @@
         // Polling with exponential backoff on errors
         let consecutiveErrors = 0;
         let pollTimeout;
-        
+
         function scheduleNextPoll() {
             // Clear existing timeout
             if (pollTimeout) clearTimeout(pollTimeout);
-            
+
             // Calculate interval with exponential backoff
             const baseInterval = 10000; // 10 seconds
             const maxInterval = 60000; // Max 60 seconds
             const cappedErrors = Math.min(consecutiveErrors, 6); // Cap at 6 to avoid large numbers
             const interval = Math.min(baseInterval * Math.pow(2, cappedErrors), maxInterval);
-            
+
             pollTimeout = setTimeout(() => {
                 fetchStatus()
                     .then(() => {
@@ -1591,7 +1426,7 @@
                     });
             }, interval);
         }
-        
+
         // Set Info link fallback (in case domain is not yet loaded)
         // Fetch and display latest release version
         async function fetchVersion() {

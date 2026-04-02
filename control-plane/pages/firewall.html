@@ -4,71 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Firewall - Nexus Control Plane</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
   <style>
-    :root {
-      --bg-primary: #0a0a0f;
-      --bg-secondary: #12121a;
-      --bg-card: #1a1a2e;
-      --accent: #00ff88;
-      --accent-dim: #00cc6a;
-      --text-primary: #ffffff;
-      --text-secondary: #a0a0a0;
-      --text-muted: #666666;
-      --border: #2a2a3e;
-      --error: #ff4444;
-      --warning: #ffaa00;
-      --info: #00aaff;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      min-height: 100vh;
-      padding: 2rem;
-    }
-
-    .container { max-width: 900px; margin: 0 auto; }
-
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-    }
-
-    h1 {
-      color: var(--accent);
-      font-size: 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    h2 {
-      color: var(--accent);
-      font-size: 1.1rem;
-      margin-bottom: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .back-link {
-      color: var(--accent);
-      text-decoration: none;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.9rem;
-    }
-
-    .back-link:hover { text-decoration: underline; }
-
     /* Warning Banner */
     .warning-banner {
       background: rgba(255, 170, 0, 0.1);
@@ -153,39 +91,6 @@
       padding: 0.1rem 0.4rem;
       border-radius: 3px;
       font-weight: bold;
-    }
-
-    /* Toggle Switch */
-    .toggle-switch {
-      position: relative;
-      width: 50px;
-      height: 26px;
-      background: rgba(255, 68, 68, 0.2);
-      border-radius: 13px;
-      cursor: pointer;
-      transition: background 0.3s;
-      flex-shrink: 0;
-      margin-left: 1rem;
-    }
-
-    .toggle-switch.active {
-      background: var(--error);
-    }
-
-    .toggle-switch::after {
-      content: '';
-      position: absolute;
-      width: 20px;
-      height: 20px;
-      background: #fff;
-      border-radius: 50%;
-      top: 3px;
-      left: 3px;
-      transition: left 0.3s;
-    }
-
-    .toggle-switch.active::after {
-      left: 27px;
     }
 
     /* Source IP Input */
@@ -297,87 +202,12 @@
       color: var(--text-secondary);
     }
 
-    .loading {
-      text-align: center;
-      padding: 2rem;
-      color: var(--accent);
-    }
-
-    .spinner {
-      display: inline-block;
-      width: 16px;
-      height: 16px;
-      border: 2px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-right: 0.5rem;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    /* Toast */
-    .toast {
-      position: fixed;
-      bottom: 2rem;
-      right: 2rem;
-      padding: 1rem 1.5rem;
-      font-size: 0.85rem;
-      z-index: 1001;
-      border-radius: 4px;
-      animation: slideIn 0.3s ease;
-    }
-
-    .toast.error {
-      background: rgba(255, 68, 68, 0.15);
-      border: 1px solid var(--error);
-      color: var(--error);
-    }
-
-    .toast.success {
-      background: rgba(0, 255, 136, 0.15);
-      border: 1px solid var(--accent);
-      color: var(--accent);
-    }
-
-    @keyframes slideIn {
-      from { transform: translateX(100%); opacity: 0; }
-      to { transform: translateX(0); opacity: 1; }
-    }
-
     .notice {
       font-size: 0.8rem;
       color: var(--text-muted);
       margin-top: 1rem;
       line-height: 1.5;
     }
-
-    .btn {
-      background: var(--accent);
-      color: var(--bg-primary);
-      border: none;
-      padding: 0.5rem 1rem;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: inherit;
-      font-weight: 600;
-      font-size: 0.85rem;
-      transition: background 0.2s;
-      text-decoration: none;
-      display: inline-block;
-    }
-
-    .btn:hover { background: var(--accent-dim); }
-
-    .btn-secondary {
-      background: var(--bg-card);
-      color: var(--text-primary);
-      border: 1px solid var(--border);
-    }
-
-    .btn-secondary:hover { border-color: var(--accent); }
 
     .actions {
       display: flex;
@@ -387,16 +217,17 @@
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="container-narrow">
     <header>
-      <h1>Firewall Management</h1>
-      <div style="display: flex; gap: 0.8rem; flex-wrap: wrap;">
-        <a href="/" class="back-link">Dashboard</a>
-        <a href="/database.html" class="back-link">Database</a>
-        <a href="/logs.html" class="back-link">Logs</a>
-        <a href="/settings.html" class="back-link">Settings</a>
-        <a href="/databricks.html" class="back-link">Integrations</a>
-      </div>
+      <h1>Firewall</h1>
+      <nav class="nav-links">
+        <a href="/">Dashboard</a>
+        <a href="/database.html">Database</a>
+        <a href="/firewall.html" class="active">Firewall</a>
+        <a href="/logs.html">Logs</a>
+        <a href="/settings.html">Settings</a>
+        <a href="/databricks.html">Integrations</a>
+      </nav>
     </header>
 
     <div class="warning-banner">
@@ -409,7 +240,7 @@
     <div class="section">
       <h2>Firewall Rules</h2>
       <div class="actions">
-        <button class="btn btn-secondary" onclick="loadRules()">Refresh</button>
+        <button class="btn-primary" onclick="loadRules()">Refresh</button>
       </div>
       <div id="rulesContainer">
         <div class="loading"><span class="spinner"></span> Loading firewall rules...</div>
