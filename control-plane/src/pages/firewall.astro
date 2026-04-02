@@ -177,6 +177,10 @@ import Layout from '../layouts/Layout.astro';
 </style>
 
 <script is:inline>
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   let currentRules = [];
   let currentDomain = '';
 
@@ -214,7 +218,7 @@ import Layout from '../layouts/Layout.astro';
             '<span class="rule-port">Port ' + rule.port + (rule.dnsRecord ? ' &mdash; ' + escapeHtml(rule.dnsRecord) + '.' + escapeHtml(domainDisplay) : '') + '</span>' +
             '<div class="source-ip-row">' +
               '<span class="source-ip-label">Source IPs:</span>' +
-              '<input type="text" class="source-ip-input" id="ip-' + rule.serviceName + '-' + rule.port + '" value="' + rule.sourceIps + '" placeholder="0.0.0.0/0 (open to all)">' +
+              '<input type="text" class="source-ip-input" id="ip-' + rule.serviceName + '-' + rule.port + '" value="' + escapeAttr(rule.sourceIps) + '" placeholder="0.0.0.0/0 (open to all)">' +
               '<button class="btn-save-ip" onclick="saveSourceIps(\'' + rule.serviceName + '\', ' + rule.port + ', ' + rule.enabled + ')">Save</button>' +
             '</div>' +
           '</div>' +

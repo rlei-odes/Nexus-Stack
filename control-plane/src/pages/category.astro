@@ -182,16 +182,16 @@ import Layout from '../layouts/Layout.astro';
       if (service.website) {
         try {
           const wDomain = new URL(service.website).hostname.replace('www.', '');
-          websiteHtml = '<a href="' + service.website + '" target="_blank" rel="noopener" class="card-project-link">' + wDomain + '</a>';
+          websiteHtml = '<a href="' + escapeHtml(service.website) + '" target="_blank" rel="noopener" class="card-project-link">' + escapeHtml(wDomain) + '</a>';
         } catch {}
       }
 
       card.innerHTML =
         '<div class="card-header">' +
-          '<div class="card-name-section"><div class="card-name">' + service.name + ' ' + badges + '</div></div>' +
-          '<div class="' + toggleClass + '" id="toggle-' + service.name + '" title="' + toggleTitle + '" onclick="handleToggle(\'' + service.name + '\', ' + !service.enabled + ', this)"></div>' +
+          '<div class="card-name-section"><div class="card-name">' + escapeHtml(service.name) + ' ' + badges + '</div></div>' +
+          '<div class="' + toggleClass + '" id="toggle-' + service.name + '" title="' + escapeHtml(toggleTitle) + '" onclick="handleToggle(\'' + service.name + '\', ' + !service.enabled + ', this)"></div>' +
         '</div>' +
-        '<div class="card-description">' + desc + '</div>' +
+        '<div class="card-description">' + escapeHtml(desc) + '</div>' +
         '<div class="card-footer"><div class="card-meta">' + websiteHtml + '</div>' + openHtml + '</div>';
 
       grid.appendChild(card);

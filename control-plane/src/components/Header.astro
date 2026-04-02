@@ -32,11 +32,11 @@ const navItems = [
 <script>
   async function fetchVersion() {
     try {
-      const r = await fetch('https://api.github.com/repos/stefanko-ch/Nexus-Stack/releases/latest');
+      const r = await fetch('/api/version', { credentials: 'same-origin' });
       if (r.ok) {
         const d = await r.json();
         const t = document.getElementById('version-tag');
-        if (t && d.tag_name) t.textContent = d.tag_name;
+        if (t && d.version) t.textContent = d.version;
       }
     } catch {}
   }

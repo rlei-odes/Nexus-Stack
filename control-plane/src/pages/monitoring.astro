@@ -303,7 +303,7 @@ import Layout from '../layouts/Layout.astro';
       const logs = data.logs || [];
 
       // Update log count card
-      document.getElementById('logsCount').textContent = data.total || logs.length;
+      document.getElementById('logsCount').textContent = data.count || logs.length;
 
       const statsHtml = ['Showing <span>' + logs.length + '</span> logs'];
       if (source) statsHtml.push(' from <span>' + escapeHtml(source) + '</span>');

@@ -143,7 +143,7 @@ import Layout from '../layouts/Layout.astro';
       }
 
       const catName = CATEGORIES[service.category] ? CATEGORIES[service.category].name : service.category;
-      badges += '<span class="badge badge-category">' + catName + '</span>';
+      badges += '<span class="badge badge-category">' + escapeHtml(catName) + '</span>';
 
       const isDisabled = service.core || service.admin_only;
       const toggleClass = 'toggle-switch' + (service.enabled ? ' active' : '') + (isDisabled ? ' disabled' : '');
@@ -160,16 +160,16 @@ import Layout from '../layouts/Layout.astro';
       if (service.website) {
         try {
           const wDomain = new URL(service.website).hostname.replace('www.', '');
-          websiteHtml = '<a href="' + service.website + '" target="_blank" rel="noopener" class="card-project-link">' + wDomain + '</a>';
+          websiteHtml = '<a href="' + escapeHtml(service.website) + '" target="_blank" rel="noopener" class="card-project-link">' + escapeHtml(wDomain) + '</a>';
         } catch {}
       }
 
       card.innerHTML =
         '<div class="card-header">' +
-          '<div><div class="card-name">' + service.name + ' ' + badges + '</div></div>' +
-          '<div class="' + toggleClass + '" title="' + toggleTitle + '" onclick="handleToggle(\'' + service.name + '\', ' + !service.enabled + ', this)"></div>' +
+          '<div><div class="card-name">' + escapeHtml(service.name) + ' ' + badges + '</div></div>' +
+          '<div class="' + toggleClass + '" title="' + escapeHtml(toggleTitle) + '" onclick="handleToggle(\'' + service.name + '\', ' + !service.enabled + ', this)"></div>' +
         '</div>' +
-        '<div class="card-description">' + desc + '</div>' +
+        '<div class="card-description">' + escapeHtml(desc) + '</div>' +
         '<div class="card-footer"><div class="card-meta">' + websiteHtml + '</div>' + openHtml + '</div>';
 
       grid.appendChild(card);
