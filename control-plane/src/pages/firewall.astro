@@ -1,0 +1,300 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Firewall" activeNav="firewall" narrow={true}>
+  <div class="warning-banner">
+    <strong>Opening ports exposes services directly to the internet.</strong>
+    Opening firewall ports bypasses the Cloudflare Tunnel security model. Services will be accessible
+    via their TCP port on the server's public IP. Use source IP restrictions where possible.
+    All firewall rules are automatically reset on every Teardown.
+  </div>
+
+  <div class="section">
+    <h2>Firewall Rules</h2>
+    <div class="actions">
+      <button class="btn-primary" onclick="loadRules()">Refresh</button>
+    </div>
+    <div id="rulesContainer">
+      <div class="loading"><span class="spinner"></span> Loading firewall rules...</div>
+    </div>
+    <p class="notice">
+      Changes are staged and applied on the next Spin Up.
+      Firewall rules are reset on every Teardown &mdash; ports must be explicitly re-opened after each deployment.
+    </p>
+  </div>
+
+  <div class="connection-info" id="connectionSection" style="display: none;">
+    <h2>Connection Info</h2>
+    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">
+      Use these hostnames to connect from external clients (e.g., Databricks).
+      DNS records are created after Spin Up.
+    </p>
+    <div id="connectionList"></div>
+  </div>
+</Layout>
+
+<style>
+  .warning-banner {
+    background: rgba(255, 170, 0, 0.1);
+    border: 1px solid var(--warning);
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--warning);
+    line-height: 1.5;
+  }
+
+  .warning-banner strong {
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+
+  .section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .rule-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+    transition: border-color 0.2s;
+  }
+
+  .rule-item:last-child { margin-bottom: 0; }
+  .rule-item.pending { border-left: 3px solid var(--warning); }
+
+  .rule-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    flex: 1;
+  }
+
+  .rule-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .rule-service { font-weight: bold; color: var(--accent); font-size: 0.9rem; }
+  .rule-label { font-size: 0.75rem; color: var(--text-secondary); background: var(--bg-card); padding: 0.1rem 0.5rem; border-radius: 3px; }
+  .rule-port { font-size: 0.8rem; color: var(--text-muted); }
+  .pending-label { font-size: 0.65rem; background: var(--warning); color: #000; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold; }
+
+  .source-ip-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .source-ip-input {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 0.4rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    flex: 1;
+    max-width: 300px;
+  }
+
+  .source-ip-input:focus { outline: none; border-color: var(--accent); }
+  .source-ip-input::placeholder { color: var(--text-muted); }
+  .source-ip-label { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+
+  .btn-save-ip {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    padding: 0.4rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+
+  .btn-save-ip:hover { border-color: var(--accent); }
+
+  .connection-info {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .connection-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .connection-item:last-child { border-bottom: none; }
+
+  .connection-host {
+    font-family: inherit;
+    font-size: 0.85rem;
+    color: var(--accent);
+    background: var(--bg-card);
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    user-select: all;
+  }
+
+  .connection-label { font-size: 0.8rem; color: var(--text-secondary); }
+
+  .service-group { margin-bottom: 1.5rem; }
+  .service-group:last-child { margin-bottom: 0; }
+  .service-group-title {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .empty { text-align: center; padding: 2rem; color: var(--text-secondary); }
+  .notice { font-size: 0.8rem; color: var(--text-muted); margin-top: 1rem; line-height: 1.5; }
+  .actions { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+</style>
+
+<script is:inline>
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  let currentRules = [];
+  let currentDomain = '';
+
+  function groupRules(rules) {
+    const groups = {};
+    for (const rule of rules) {
+      if (!groups[rule.serviceName]) groups[rule.serviceName] = [];
+      groups[rule.serviceName].push(rule);
+    }
+    return groups;
+  }
+
+  function renderRules(rules) {
+    const container = document.getElementById('rulesContainer');
+    if (!rules || rules.length === 0) {
+      container.innerHTML = '<div class="empty">No firewall rules configured. Run Spin Up to initialize rules from services.yaml.</div>';
+      return;
+    }
+    const groups = groupRules(rules);
+    const domainDisplay = currentDomain || '<domain>';
+    let html = '';
+    for (const [service, serviceRules] of Object.entries(groups)) {
+      html += '<div class="service-group"><div class="service-group-title">' + service + '</div>';
+      for (const rule of serviceRules) {
+        const pendingClass = rule.pending ? ' pending' : '';
+        const pendingBadge = rule.pending ? '<span class="pending-label">PENDING</span>' : '';
+        const toggleClass = rule.enabled ? ' active' : '';
+        html += '<div class="rule-item' + pendingClass + '">' +
+          '<div class="rule-details">' +
+            '<div class="rule-header">' +
+              '<span class="rule-service">' + escapeHtml(rule.label || rule.serviceName) + '</span>' +
+              '<span class="rule-label">' + escapeHtml(rule.protocol.toUpperCase()) + '</span>' +
+              pendingBadge +
+            '</div>' +
+            '<span class="rule-port">Port ' + rule.port + (rule.dnsRecord ? ' &mdash; ' + escapeHtml(rule.dnsRecord) + '.' + escapeHtml(domainDisplay) : '') + '</span>' +
+            '<div class="source-ip-row">' +
+              '<span class="source-ip-label">Source IPs:</span>' +
+              '<input type="text" class="source-ip-input" id="ip-' + rule.serviceName + '-' + rule.port + '" value="' + escapeAttr(rule.sourceIps) + '" placeholder="0.0.0.0/0 (open to all)">' +
+              '<button class="btn-save-ip" onclick="saveSourceIps(\'' + rule.serviceName + '\', ' + rule.port + ', ' + rule.enabled + ')">Save</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="toggle-switch' + toggleClass + '" onclick="toggleRule(\'' + rule.serviceName + '\', ' + rule.port + ', ' + !rule.enabled + ')"></div>' +
+        '</div>';
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html;
+  }
+
+  function renderConnectionInfo(rules) {
+    const enabled = rules.filter(r => r.enabled && r.dnsRecord);
+    const section = document.getElementById('connectionSection');
+    const list = document.getElementById('connectionList');
+    if (enabled.length === 0) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    const domainDisplay = currentDomain || '<domain>';
+    list.innerHTML = enabled.map(r =>
+      '<div class="connection-item">' +
+        '<span class="connection-label">' + escapeHtml(r.label || r.serviceName) + ':</span>' +
+        '<span class="connection-host">' + escapeHtml(r.dnsRecord) + '.' + escapeHtml(domainDisplay) + ':' + r.port + '</span>' +
+      '</div>'
+    ).join('');
+  }
+
+  async function loadRules() {
+    try {
+      const res = await fetch('/api/firewall');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      currentRules = data.rules || [];
+      currentDomain = data.domain || '';
+      renderRules(currentRules);
+      renderConnectionInfo(currentRules);
+    } catch (err) {
+      document.getElementById('rulesContainer').innerHTML =
+        '<div class="empty" style="color: var(--error);">Error: ' + err.message + '</div>';
+    }
+  }
+
+  async function toggleRule(service, port, enabled) {
+    try {
+      const ipInput = document.getElementById('ip-' + service + '-' + port);
+      const sourceIps = ipInput ? ipInput.value.trim() : '';
+      const res = await fetch('/api/firewall', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service, port, enabled, sourceIps }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      showToast(data.message);
+      await loadRules();
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  async function saveSourceIps(service, port, enabled) {
+    try {
+      const ipInput = document.getElementById('ip-' + service + '-' + port);
+      const sourceIps = ipInput ? ipInput.value.trim() : '';
+      const res = await fetch('/api/firewall', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service, port, enabled, sourceIps }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      showToast('Source IPs saved');
+      await loadRules();
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  loadRules();
+</script>

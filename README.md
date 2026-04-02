@@ -60,8 +60,7 @@
 → See the **[Setup Guide](docs/setup-guide.md)** for complete installation instructions.
 
 After deployment you'll have:
-- `https://control.yourdomain.com` - Control Plane to manage infrastructure
-- `https://info.yourdomain.com` - Service dashboard with credentials
+- `https://control.yourdomain.com` - Control Panel to manage services and view URLs
 
 ### Quick Start Flow
 
@@ -92,7 +91,7 @@ flowchart LR
     end
 ```
 
-## Available Stacks (60)
+## Available Stacks (59)
 
 ![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)
@@ -113,7 +112,6 @@ flowchart LR
 ![Gitea](https://img.shields.io/badge/Gitea-609926?logo=gitea&logoColor=white)
 ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white)
 ![Hoppscotch](https://img.shields.io/badge/Hoppscotch-201718?logo=hoppscotch&logoColor=white)
-![Info](https://img.shields.io/badge/Info-00D4AA?logo=nginx&logoColor=white)
 ![Infisical](https://img.shields.io/badge/Infisical-000000?logo=infisical&logoColor=white)
 ![IT-Tools](https://img.shields.io/badge/IT--Tools-5D5D5D?logo=homeassistant&logoColor=white)
 ![Jupyter](https://img.shields.io/badge/Jupyter-F37726?logo=jupyter&logoColor=white)
@@ -176,7 +174,6 @@ flowchart LR
 | **Gitea** | Self-hosted Git service with pull requests, code review, and CI/CD | [gitea.com](https://about.gitea.com) |
 | **Grafana** | Full observability stack with Prometheus, Loki & dashboards | [grafana.com](https://grafana.com) |
 | **Hoppscotch** | Open-source API testing platform (Postman alternative) | [hoppscotch.io](https://hoppscotch.io) |
-| **Info** | Landing page with service overview dashboard | — |
 | **Infisical** | Open-source secret management platform | [infisical.com](https://infisical.com) |
 | **IT-Tools** | Collection of handy online tools for developers | [it-tools.tech](https://it-tools.tech) |
 | **Jupyter** | Interactive PySpark notebook platform with Spark SQL support and cluster connectivity | [jupyter.org](https://jupyter.org) |

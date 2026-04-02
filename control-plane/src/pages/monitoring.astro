@@ -1,0 +1,433 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Monitoring" activeNav="monitoring">
+  <!-- Quick Stats -->
+  <div class="card-grid">
+    <div class="card">
+      <h3>Logs</h3>
+      <div class="count" id="logsCount">-</div>
+      <p>Workflow and system logs</p>
+    </div>
+    <div class="card">
+      <h3>Config</h3>
+      <div class="count" id="configCount">-</div>
+      <p>Configuration entries</p>
+    </div>
+    <div class="card">
+      <h3>Services</h3>
+      <div class="count" id="servicesCount">-</div>
+      <p>Registered services</p>
+    </div>
+  </div>
+
+  <!-- Logs Section -->
+  <div class="section">
+    <h2>Logs</h2>
+    <div class="filters">
+      <div class="filter-group">
+        <label>Source:</label>
+        <select id="sourceFilter">
+          <option value="">All</option>
+          <option value="github-action">GitHub Action</option>
+          <option value="worker">Worker</option>
+          <option value="api">API</option>
+          <option value="health-check">Health Check</option>
+          <option value="deploy">Deploy</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Level:</label>
+        <select id="levelFilter">
+          <option value="">All</option>
+          <option value="debug">Debug</option>
+          <option value="info">Info</option>
+          <option value="warn">Warning</option>
+          <option value="error">Error</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Limit:</label>
+        <select id="limitFilter">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="500">500</option>
+        </select>
+      </div>
+      <button class="btn-primary" onclick="loadLogs()">Refresh</button>
+      <button class="btn-danger" onclick="clearOldLogs()">Clear Old (30d)</button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Source</th>
+            <th>Level</th>
+            <th>Message</th>
+            <th>Run ID</th>
+            <th>Metadata</th>
+          </tr>
+        </thead>
+        <tbody id="logsTable">
+          <tr><td colspan="6" class="loading"><span class="spinner"></span> Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination"></div>
+  </div>
+
+  <!-- Config Table -->
+  <div class="section collapsible">
+    <h2 class="section-toggle" onclick="toggleSection(this)">
+      Config Table <span class="toggle-icon">&#9660;</span>
+    </h2>
+    <div class="section-content collapsed">
+      <table>
+        <thead>
+          <tr><th>Key</th><th>Value</th><th>Updated</th></tr>
+        </thead>
+        <tbody id="configTable">
+          <tr><td colspan="3" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Services Table -->
+  <div class="section collapsible">
+    <h2 class="section-toggle" onclick="toggleSection(this)">
+      Services Table <span class="toggle-icon">&#9660;</span>
+    </h2>
+    <div class="section-content collapsed">
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Subdomain</th><th>Port</th><th>Enabled</th><th>Deployed</th><th>Category</th></tr>
+        </thead>
+        <tbody id="servicesTable">
+          <tr><td colspan="6" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    transition: border-color 0.2s;
+  }
+
+  .card:hover { border-color: var(--accent); }
+
+  .card h3 {
+    color: var(--accent);
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .card p {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 0;
+  }
+
+  .card .count {
+    font-size: 2rem;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+  }
+
+  .section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  /* Collapsible sections */
+  .section-toggle {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .section-toggle:hover {
+    color: var(--text-primary);
+  }
+
+  .toggle-icon {
+    font-size: 0.7rem;
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+
+  .section-content.collapsed {
+    display: none;
+  }
+
+  .section-content.collapsed + .toggle-icon,
+  .collapsed ~ .toggle-icon {
+    transform: rotate(-90deg);
+  }
+
+  /* Filters */
+  .filters {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .filter-group label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+  }
+
+  .filter-group select { width: auto; }
+
+  .btn-danger {
+    background: var(--error);
+    color: white;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.3s;
+  }
+
+  .btn-danger:hover { opacity: 0.8; }
+
+  .stats {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+  }
+
+  .stats :global(span) { color: var(--accent); }
+
+  .table-wrapper {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .level {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .level-debug { background: var(--text-muted); color: white; }
+  .level-info { background: var(--info); color: white; }
+  .level-warn { background: var(--warning); color: black; }
+  .level-error { background: var(--error); color: white; }
+
+  .source { color: var(--accent); font-weight: 500; }
+  .message { max-width: 400px; word-break: break-word; }
+  .metadata { max-width: 200px; font-size: 0.75rem; color: var(--text-secondary); word-break: break-all; }
+  .metadata pre { margin: 0; white-space: pre-wrap; }
+  .timestamp { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
+  .empty { text-align: center; padding: 2rem; color: var(--text-secondary); }
+  .pagination { display: flex; justify-content: center; gap: 0.5rem; margin-top: 1.5rem; }
+
+  .key { color: var(--accent); font-weight: 500; }
+  .value { color: var(--text-primary); }
+  .enabled { color: var(--accent); }
+  .disabled { color: var(--error); }
+</style>
+
+<script is:inline>
+  // =====================================================================
+  // Collapsible Sections
+  // =====================================================================
+  function toggleSection(header) {
+    const content = header.nextElementSibling;
+    const icon = header.querySelector('.toggle-icon');
+    content.classList.toggle('collapsed');
+    icon.style.transform = content.classList.contains('collapsed') ? 'rotate(-90deg)' : 'rotate(0)';
+  }
+
+  // =====================================================================
+  // Logs
+  // =====================================================================
+  let currentOffset = 0;
+
+  async function loadLogs() {
+    const source = document.getElementById('sourceFilter').value;
+    const level = document.getElementById('levelFilter').value;
+    const limit = document.getElementById('limitFilter').value;
+    const params = new URLSearchParams();
+    if (source) params.set('source', source);
+    if (level) params.set('level', level);
+    params.set('limit', limit);
+    params.set('offset', currentOffset);
+
+    document.getElementById('logsTable').innerHTML =
+      '<tr><td colspan="6" class="loading"><span class="spinner"></span> Loading...</td></tr>';
+
+    try {
+      const res = await fetch('/api/logs?' + params);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+
+      const logs = data.logs || [];
+
+      // Update log count card
+      document.getElementById('logsCount').textContent = data.count || logs.length;
+
+      const statsHtml = ['Showing <span>' + logs.length + '</span> logs'];
+      if (source) statsHtml.push(' from <span>' + escapeHtml(source) + '</span>');
+      if (level) statsHtml.push(' with level <span>' + escapeHtml(level) + '</span>');
+      document.getElementById('stats').innerHTML = statsHtml.join('');
+
+      if (logs.length === 0) {
+        document.getElementById('logsTable').innerHTML =
+          '<tr><td colspan="6" class="empty">No logs found</td></tr>';
+        return;
+      }
+
+      document.getElementById('logsTable').innerHTML = logs.map(function(log) {
+        return '<tr>' +
+          '<td class="timestamp">' + formatTime(log.created_at) + '</td>' +
+          '<td class="source">' + escapeHtml(log.source || '-') + '</td>' +
+          '<td><span class="level level-' + escapeHtml(log.level) + '">' + escapeHtml(log.level) + '</span></td>' +
+          '<td class="message">' + escapeHtml(log.message) + '</td>' +
+          '<td class="timestamp">' + escapeHtml(log.run_id || '-') + '</td>' +
+          '<td class="metadata">' + (log.metadata ? '<pre>' + escapeHtml(JSON.stringify(log.metadata, null, 2)) + '</pre>' : '-') + '</td>' +
+          '</tr>';
+      }).join('');
+
+      var limitNum = parseInt(limit);
+      document.getElementById('pagination').innerHTML =
+        (currentOffset > 0 ? '<button class="btn-primary" onclick="prevPage()">Previous</button>' : '') +
+        (logs.length >= limitNum ? '<button class="btn-primary" onclick="nextPage()">Next</button>' : '');
+    } catch (err) {
+      document.getElementById('logsTable').innerHTML =
+        '<tr><td colspan="6" class="empty" style="color: var(--error)">Error: ' + err.message + '</td></tr>';
+    }
+  }
+
+  function prevPage() {
+    var limit = parseInt(document.getElementById('limitFilter').value);
+    currentOffset = Math.max(0, currentOffset - limit);
+    loadLogs();
+  }
+
+  function nextPage() {
+    var limit = parseInt(document.getElementById('limitFilter').value);
+    currentOffset += limit;
+    loadLogs();
+  }
+
+  async function clearOldLogs() {
+    if (!confirm('Delete logs older than 30 days?')) return;
+    try {
+      var res = await fetch('/api/logs?days=30', { method: 'DELETE' });
+      var data = await res.json();
+      if (data.success) {
+        showToast('Deleted ' + data.deleted + ' old log(s)');
+        loadLogs();
+      } else {
+        showToast('Error: ' + data.error, 'error');
+      }
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  function formatTime(isoString) {
+    if (!isoString) return '-';
+    var d = new Date(isoString + 'Z');
+    return d.toLocaleString('de-CH');
+  }
+
+  document.getElementById('sourceFilter').onchange = function() { currentOffset = 0; loadLogs(); };
+  document.getElementById('levelFilter').onchange = function() { currentOffset = 0; loadLogs(); };
+  document.getElementById('limitFilter').onchange = function() { currentOffset = 0; loadLogs(); };
+
+  // =====================================================================
+  // Database Tables
+  // =====================================================================
+  async function loadDatabase() {
+    try {
+      // Load services
+      var svcRes = await fetch('/api/services');
+      var svcData = await svcRes.json();
+
+      if (svcData.success) {
+        var services = svcData.services || [];
+        document.getElementById('servicesCount').textContent = services.length;
+
+        var tbody = document.getElementById('servicesTable');
+        if (services.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No services</td></tr>';
+        } else {
+          tbody.innerHTML = services.map(function(s) {
+            return '<tr>' +
+              '<td class="key">' + escapeHtml(s.name) + '</td>' +
+              '<td>' + escapeHtml(s.subdomain || '-') + '</td>' +
+              '<td>' + (s.port || '-') + '</td>' +
+              '<td class="' + (s.enabled ? 'enabled' : 'disabled') + '">' + (s.enabled ? 'Yes' : 'No') + '</td>' +
+              '<td class="' + (s.deployed ? 'enabled' : 'disabled') + '">' + (s.deployed ? 'Yes' : 'No') + '</td>' +
+              '<td>' + escapeHtml(s.category || '-') + '</td>' +
+              '</tr>';
+          }).join('');
+        }
+      }
+
+      // Load config table via info API
+      var infoRes = await fetch('/api/info');
+      var infoData = await infoRes.json();
+      if (infoData.success) {
+        var configTable = document.getElementById('configTable');
+        var info = infoData.info || {};
+        var rows = [];
+
+        if (info.server) {
+          Object.entries(info.server).forEach(function(entry) {
+            rows.push('<tr><td class="key">' + escapeHtml(entry[0]) + '</td><td class="value">' + escapeHtml(String(entry[1] || '')) + '</td><td class="timestamp">-</td></tr>');
+          });
+        }
+
+        document.getElementById('configCount').textContent = rows.length;
+        configTable.innerHTML = rows.length > 0 ? rows.join('') : '<tr><td colspan="3" class="empty">No config entries</td></tr>';
+      }
+    } catch (error) {
+      console.error('Failed to load database:', error);
+    }
+  }
+
+  // Init
+  loadLogs();
+  loadDatabase();
+</script>

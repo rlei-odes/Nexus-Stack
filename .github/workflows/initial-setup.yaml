@@ -47,7 +47,7 @@ jobs:
         id: build-list
         run: |
           # Start with core services (always enabled)
-          CORE_SERVICES="infisical,mailpit,info"
+          CORE_SERVICES="infisical,mailpit"
           USER_SERVICES="${{ inputs.enabled_services }}"
 
           # Combine core + user-selected services

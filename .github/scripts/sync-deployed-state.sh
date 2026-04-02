@@ -53,6 +53,23 @@ echo "  Domain: $DOMAIN"
 echo "  Working directory: $(pwd)"
 echo "  services.yaml exists: $([ -f services.yaml ] && echo 'yes' || echo 'no')"
 
+# Step 0: Migrate D1 schema - add new columns if they don't exist
+echo "🔄 Running D1 schema migrations..."
+MIGRATION_SQL="ALTER TABLE services ADD COLUMN category TEXT DEFAULT '';
+ALTER TABLE services ADD COLUMN website TEXT DEFAULT '';
+ALTER TABLE services ADD COLUMN long_description TEXT DEFAULT '';"
+
+# Execute each ALTER TABLE separately (SQLite doesn't support IF NOT EXISTS for columns)
+for COL_SQL in \
+  "ALTER TABLE services ADD COLUMN category TEXT DEFAULT ''" \
+  "ALTER TABLE services ADD COLUMN website TEXT DEFAULT ''" \
+  "ALTER TABLE services ADD COLUMN long_description TEXT DEFAULT ''"; do
+  set +e
+  npx wrangler@latest d1 execute "$D1_DATABASE_NAME" --remote --command "$COL_SQL" 2>/dev/null
+  set -e
+done
+echo "  ✅ Schema migrations complete (new columns added or already exist)"
+
 # Step 1: Initialize/Update services from services.yaml
 if [ -f "services.yaml" ]; then
   echo "  Syncing services from services.yaml..."
@@ -169,27 +186,33 @@ for name, config in services.items():
     core = 1 if config.get('core', False) else 0
     admin_only = 1 if config.get('admin_only', False) else 0
     description = config.get('description', '')
-    
-    # Escape single quotes in description for SQL
+    category = config.get('category', '')
+    website = config.get('website', '')
+    long_description = config.get('long_description', '')
+
+    # Escape single quotes in text fields for SQL
     description = description.replace("'", "''")
-    
+    category = category.replace("'", "''")
+    website = website.replace("'", "''")
+    long_description = long_description.replace("'", "''")
+
     # Validate and escape subdomain (same rules as service name)
     if subdomain and not re.match(r'^[a-z0-9_-]+$', subdomain):
         print(f"  ⚠️ Invalid subdomain '{subdomain}' for service '{name}' - using service name as fallback", file=sys.stderr)
         subdomain = name
-    
+
     # For new services: only core services are enabled by default
     # This is the key change: enabled = core (not from config file)
     enabled = core
-    
+
     # INSERT OR IGNORE - only creates if not exists (preserves enabled state if already exists)
     # New services: core services enabled, others disabled
-    insert_sql = f"INSERT OR IGNORE INTO services (name, enabled, deployed, subdomain, port, public, core, admin_only, description, updated_at) VALUES ('{name}', {enabled}, {enabled}, '{subdomain}', {port}, {public}, {core}, {admin_only}, '{description}', datetime('now'));"
+    insert_sql = f"INSERT OR IGNORE INTO services (name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description, updated_at) VALUES ('{name}', {enabled}, {enabled}, '{subdomain}', {port}, {public}, {core}, {admin_only}, '{description}', '{category}', '{website}', '{long_description}', datetime('now'));"
     insert_statements.append(insert_sql)
-    
+
     # UPDATE - sync metadata for existing services (preserve enabled state from D1)
-    # This ensures subdomain, port, description, core, public are always in sync with yaml
-    update_sql = f"UPDATE services SET subdomain = '{subdomain}', port = {port}, public = {public}, core = {core}, admin_only = {admin_only}, description = '{description}', updated_at = datetime('now') WHERE name = '{name}';"
+    # This ensures subdomain, port, description, core, public, category, website, long_description are always in sync with yaml
+    update_sql = f"UPDATE services SET subdomain = '{subdomain}', port = {port}, public = {public}, core = {core}, admin_only = {admin_only}, description = '{description}', category = '{category}', website = '{website}', long_description = '{long_description}', updated_at = datetime('now') WHERE name = '{name}';"
     update_statements.append(update_sql)
 
 # Write to temp files

@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS services (
     core INTEGER DEFAULT 0,
     admin_only INTEGER DEFAULT 0,
     description TEXT DEFAULT '',
+    category TEXT DEFAULT '',
+    website TEXT DEFAULT '',
+    long_description TEXT DEFAULT '',
     updated_at TEXT DEFAULT (datetime('now'))
 );
 

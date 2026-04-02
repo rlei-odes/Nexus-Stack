@@ -3,7 +3,7 @@
 # This file is regenerated during deployment with the correct project name.
 name = "nexus-control-plane"
 compatibility_date = "2024-01-01"
-pages_build_output_dir = "pages"
+pages_build_output_dir = "dist"
 
 # Environment variables set via Cloudflare Dashboard or wrangler secret
 # Required: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO

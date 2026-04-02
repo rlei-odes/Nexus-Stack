@@ -75,18 +75,24 @@ Nexus-Stack/
 │       └── providers.tf        # Provider configuration
 ├── stacks/                     # Docker Compose stacks (one folder per service)
 │   └── <service>/docker-compose.yml
-├── control-panel/              # Control Plane (Cloudflare Pages)
-│   ├── pages/                  # Pages frontend + Functions
-│   │   ├── index.html          # Frontend UI
-│   │   ├── functions/api/      # API endpoints (deploy, teardown, status, etc.)
-│   │   └── nexus-logo-green.png
-│   └── worker/                 # Scheduled teardown Worker
-│       └── src/index.js        # Worker logic (deployed via Terraform)
+├── control-plane/              # Control Plane (Astro + Cloudflare Pages)
+│   ├── src/                    # Astro source files
+│   │   ├── layouts/Layout.astro  # Shared layout (header, footer, nav)
+│   │   ├── components/         # Reusable Astro components (Header, Toast)
+│   │   ├── pages/              # Page routes (index, stacks, database, etc.)
+│   │   ├── lib/categories.ts   # Shared category constants
+│   │   └── styles/global.css   # Global styles
+│   ├── public/                 # Static assets (logo)
+│   ├── functions/api/          # Cloudflare Pages Functions (API endpoints)
+│   ├── worker/                 # Scheduled teardown Worker
+│   │   └── src/index.js        # Worker logic (deployed via Terraform)
+│   ├── astro.config.mjs        # Astro configuration
+│   ├── package.json            # Dependencies (astro)
+│   └── schema.sql              # D1 database schema
 ├── scripts/
 │   ├── deploy.sh               # Post-infrastructure deployment script
 │   ├── init-r2-state.sh        # R2 bucket + credentials setup
 │   ├── setup-control-panel-secrets.sh  # Control Panel secrets setup
-│   ├── generate-info-page.sh   # Info page generation
 │   └── check-control-panel-env.sh
 └── docs/                       # Documentation
     ├── CONTRIBUTING.md         # Contribution guidelines

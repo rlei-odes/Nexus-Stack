@@ -476,17 +476,6 @@ fi
 echo "$ENV_CONTENT" | ssh nexus "cat > $REMOTE_STACKS_DIR/.env"
 echo -e "${GREEN}  ✓ Global .env config created (DOMAIN + image versions)${NC}"
 
-# Generate info page if info stack is enabled
-echo "{\"location\":\"deploy.sh:303\",\"message\":\"Checking if info should be generated\",\"data\":{\"enabled_services\":\"$ENABLED_SERVICES\",\"info_in_list\":$(echo "$ENABLED_SERVICES" | grep -qw "info" && echo "true" || echo "false")},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-
-if echo "$ENABLED_SERVICES" | grep -qw "info"; then
-    echo "  Generating info page..."
-    echo "{\"location\":\"deploy.sh:305\",\"message\":\"Generating info page\",\"data\":{},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-    "$SCRIPT_DIR/generate-info-page.sh"
-    echo "{\"location\":\"deploy.sh:306\",\"message\":\"Info page generation completed\",\"data\":{\"exit_code\":$?},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-else
-    echo "{\"location\":\"deploy.sh:303\",\"message\":\"Info page NOT generated - not in enabled services\",\"data\":{},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-fi
 
 # Generate Infisical .env from OpenTofu secrets
 if echo "$ENABLED_SERVICES" | grep -qw "infisical"; then
