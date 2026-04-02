@@ -1663,6 +1663,7 @@
 
         function updateHistory(workflows) {
             const historyList = document.getElementById('history-list');
+            if (!historyList) return;
             historyList.innerHTML = '';
             
             const items = [
@@ -1811,8 +1812,6 @@
 
         // Load config on page load
         loadServices();
-        loadScheduledTeardownConfig();
-        loadEmailSettings();
 
         // Polling with exponential backoff on errors
         let consecutiveErrors = 0;
