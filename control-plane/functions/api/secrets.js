@@ -55,17 +55,8 @@ function getGroup(key) {
 }
 
 export async function onRequestGet(context) {
-  // All Control Panel endpoints are protected by Cloudflare Access (email OTP).
-  // This header check is a defense-in-depth measure to ensure the request
-  // passed through Cloudflare Access before reaching this function.
-  const authedUser = context.request.headers.get('CF-Access-Authenticated-User-Email');
-  if (!authedUser) {
-    return Response.json(
-      { success: false, error: 'Unauthorized: Cloudflare Access authentication required' },
-      { status: 403 }
-    );
-  }
-
+  // All Control Panel endpoints are protected by Cloudflare Access (email OTP)
+  // at the infrastructure level (configured in Terraform). No additional auth needed.
   try {
     const credentialsJson = context.env.CREDENTIALS_JSON;
     if (!credentialsJson) {
