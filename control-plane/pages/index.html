@@ -1117,7 +1117,6 @@
                     updateStatusDisplay(data);
                     updateButtons(data);
                     updateWorkflowProgress(data);
-                    updateHistory(data.workflows);
                     // Refresh services when a workflow just completed
                     if (wasInProgress && !data.inProgress) {
                         loadServices();
@@ -1239,217 +1238,6 @@
                     btnSpinUp.disabled = false;
                     btnTeardown.disabled = false;
                     break;
-            }
-        }
-
-        // Scheduled Teardown Functions
-        async function loadScheduledTeardownConfig() {
-            try {
-                const response = await fetch(`${API_URL}/api/scheduled-teardown`, { credentials: 'same-origin' });
-                if (!response.ok) return;
-                
-                const data = await response.json();
-                if (data.success) {
-                    updateScheduledTeardownUI(data.config);
-                }
-            } catch (error) {
-                console.error('Failed to load scheduled teardown config:', error);
-            }
-        }
-
-        function updateScheduledTeardownUI(config) {
-            const toggle = document.getElementById('toggle-scheduled-teardown');
-            const info = document.getElementById('scheduled-info');
-            const delayBtn = document.getElementById('btn-delay-teardown');
-
-            // Handle toggle disable policy
-            if (config.allowDisable === false) {
-                toggle.classList.add('disabled');
-                toggle.title = 'Auto-shutdown cannot be disabled (infrastructure policy)';
-            } else {
-                toggle.classList.remove('disabled');
-                toggle.title = '';
-            }
-
-            if (config.enabled) {
-                toggle.classList.add('active');
-                const now = new Date();
-                const delayUntil = config.delayUntil ? new Date(config.delayUntil) : null;
-                if (delayUntil && delayUntil > now) {
-                    const diffMs = delayUntil - now;
-                    const hours = Math.ceil(diffMs / (1000 * 60 * 60));
-                    const minutes = Math.ceil((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                    info.innerHTML = `Enabled - Teardown delayed until ${delayUntil.toLocaleString('de-CH')}<br><span style="color: #ffaa00;">(${hours}h ${minutes}m remaining)</span>`;
-                    delayBtn.disabled = true;
-                } else if (config.nextTeardown) {
-                    const nextTeardown = new Date(config.nextTeardown);
-                    const timeRemaining = config.timeRemaining;
-                    if (timeRemaining) {
-                        let timeText = '';
-                        if (timeRemaining.hours > 0) {
-                            timeText += `${timeRemaining.hours}h `;
-                        }
-                        timeText += `${timeRemaining.minutes}m`;
-                        info.innerHTML = `Enabled - Next teardown: ${nextTeardown.toLocaleString('de-CH')}<br><span style="color: #ffaa00;">(${timeText} remaining)</span>`;
-                    } else {
-                        info.textContent = `Enabled - Daily teardown at ${config.teardownTime} ${config.timezone}`;
-                    }
-                    delayBtn.disabled = false;
-                } else {
-                    info.textContent = `Enabled - Daily teardown at ${config.teardownTime} ${config.timezone}`;
-                    delayBtn.disabled = false;
-                }
-            } else {
-                toggle.classList.remove('active');
-                info.textContent = 'Disabled - No automatic teardown';
-                delayBtn.disabled = true;
-            }
-        }
-
-        async function toggleScheduledTeardown() {
-            const toggle = document.getElementById('toggle-scheduled-teardown');
-
-            // Prevent action if toggle is disabled
-            if (toggle.classList.contains('disabled')) {
-                return;
-            }
-
-            const isEnabled = toggle.classList.contains('active');
-            const newState = !isEnabled;
-
-            try {
-                const response = await fetch(`${API_URL}/api/scheduled-teardown`, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled: newState })
-                });
-
-                // Handle policy violation
-                if (response.status === 403) {
-                    const data = await response.json();
-                    showToast(data.error || 'Action not permitted', 'error');
-                    return;
-                }
-
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
-                        updateScheduledTeardownUI(data.config);
-                        showToast(newState ? 'Scheduled teardown enabled' : 'Scheduled teardown disabled', 'success');
-                    }
-                }
-            } catch (error) {
-                console.error('Failed to toggle scheduled teardown:', error);
-                showToast('Failed to update scheduled teardown', 'error');
-            }
-        }
-
-        // Email Notification Settings
-        async function loadEmailSettings() {
-            try {
-                const response = await fetch(`${API_URL}/api/email-settings`, { credentials: 'same-origin' });
-                if (!response.ok) return;
-
-                const data = await response.json();
-                if (data.success) {
-                    const shutdownToggle = document.getElementById('toggle-notify-shutdown');
-                    const spinupToggle = document.getElementById('toggle-notify-spinup');
-                    if (data.settings.notifyOnShutdown) shutdownToggle.classList.add('active');
-                    else shutdownToggle.classList.remove('active');
-                    if (data.settings.notifyOnSpinup) spinupToggle.classList.add('active');
-                    else spinupToggle.classList.remove('active');
-
-                    // Show/hide silent mode banner and dim toggles
-                    const banner = document.getElementById('silent-mode-banner');
-                    const container = document.getElementById('email-toggles-container');
-                    if (data.settings.silentMode) {
-                        banner.style.display = 'block';
-                        container.style.opacity = '0.45';
-                    } else {
-                        banner.style.display = 'none';
-                        container.style.opacity = '';
-                    }
-                }
-            } catch (error) {
-                console.error('Failed to load email settings:', error);
-            }
-        }
-
-        async function toggleEmailSetting(key) {
-            const toggleId = key === 'notifyOnShutdown' ? 'toggle-notify-shutdown' : 'toggle-notify-spinup';
-            const toggle = document.getElementById(toggleId);
-            const isEnabled = toggle.classList.contains('active');
-            const newState = !isEnabled;
-            // Capture banner state before the POST so the toast reflects what was true at click time
-            const wasSilentModeActive = document.getElementById('silent-mode-banner').style.display !== 'none';
-
-            try {
-                const response = await fetch(`${API_URL}/api/email-settings`, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ [key]: newState })
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
-                        if (data.settings.notifyOnShutdown) document.getElementById('toggle-notify-shutdown').classList.add('active');
-                        else document.getElementById('toggle-notify-shutdown').classList.remove('active');
-                        if (data.settings.notifyOnSpinup) document.getElementById('toggle-notify-spinup').classList.add('active');
-                        else document.getElementById('toggle-notify-spinup').classList.remove('active');
-
-                        // Update silent mode banner
-                        const banner = document.getElementById('silent-mode-banner');
-                        const container = document.getElementById('email-toggles-container');
-                        if (data.settings.silentMode) {
-                            banner.style.display = 'block';
-                            container.style.opacity = '0.45';
-                        } else {
-                            banner.style.display = 'none';
-                            container.style.opacity = '';
-                        }
-
-                        const label = key === 'notifyOnShutdown' ? 'Shutdown warning email' : 'Stack online email';
-                        const silentModeDeactivated = wasSilentModeActive && newState && !data.settings.silentMode;
-                        showToast(silentModeDeactivated
-                            ? `${label} enabled — silent mode deactivated`
-                            : `${label} ${newState ? 'enabled' : 'disabled'}`, 'success');
-                    }
-                }
-            } catch (error) {
-                console.error('Failed to update email setting:', error);
-                showToast('Failed to update email setting', 'error');
-            }
-        }
-
-        async function delayTeardown() {
-            const delayBtn = document.getElementById('btn-delay-teardown');
-            delayBtn.disabled = true;
-            delayBtn.textContent = 'Processing...';
-            
-            try {
-                const response = await fetch(`${API_URL}/api/scheduled-teardown`, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ delayHours: 2 })
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
-                        updateScheduledTeardownUI(data.config);
-                        showToast('Teardown delayed by 2 hours', 'success');
-                    }
-                }
-            } catch (error) {
-                console.error('Failed to delay teardown:', error);
-                showToast('Failed to delay teardown', 'error');
-            } finally {
-                delayBtn.disabled = false;
-                delayBtn.textContent = '⏱️ Delay Teardown by 2 Hours';
             }
         }
 
@@ -1661,38 +1449,6 @@
             }
         });
 
-        function updateHistory(workflows) {
-            const historyList = document.getElementById('history-list');
-            if (!historyList) return;
-            historyList.innerHTML = '';
-            
-            const items = [
-                { name: 'Spin Up', data: workflows.spinUp },
-                { name: 'Teardown', data: workflows.teardown },
-            ].filter(item => item.data);
-            
-            if (items.length === 0) {
-                historyList.innerHTML = '<p style="color: #607080; font-size: 0.8rem;">No recent workflows</p>';
-                return;
-            }
-            
-            items.forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'history-item';
-                
-                const status = item.data.conclusion || item.data.status;
-                const time = new Date(item.data.updatedAt).toLocaleString('de-CH');
-                
-                div.innerHTML = `
-                    <span class="history-name">${item.name}</span>
-                    <span class="history-status ${status}">${status}</span>
-                    <span class="history-time">${time}</span>
-                    <a href="${item.data.url}" target="_blank" class="history-link">View →</a>
-                `;
-                historyList.appendChild(div);
-            });
-        }
-
         // Action handlers
         async function triggerAction(action) {
             const actionLabels = {
@@ -1784,10 +1540,6 @@
         document.getElementById('btn-email-credentials').addEventListener('click', () => emailCredentials());
         document.getElementById('btn-spin-up').addEventListener('click', () => triggerAction('spin-up'));
         document.getElementById('btn-teardown').addEventListener('click', () => showConfirmModal('teardown'));
-        document.getElementById('toggle-scheduled-teardown').addEventListener('click', toggleScheduledTeardown);
-        document.getElementById('btn-delay-teardown').addEventListener('click', delayTeardown);
-        document.getElementById('toggle-notify-shutdown').addEventListener('click', () => toggleEmailSetting('notifyOnShutdown'));
-        document.getElementById('toggle-notify-spinup').addEventListener('click', () => toggleEmailSetting('notifyOnSpinup'));
         
         document.getElementById('modal-cancel').addEventListener('click', hideModal);
         document.getElementById('modal-confirm').addEventListener('click', () => {
