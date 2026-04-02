@@ -281,8 +281,8 @@ import Layout from '../layouts/Layout.astro';
 
   .active-stacks-list {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    flex-direction: column;
+    gap: 0.4rem;
   }
 
   .loading-text {
@@ -291,32 +291,30 @@ import Layout from '../layouts/Layout.astro';
   }
 
   .stack-chip {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem 1rem;
+    justify-content: space-between;
+    padding: 0.6rem 1rem;
     background: rgba(0, 20, 10, 0.6);
-    border: 1px solid rgba(0, 255, 136, 0.25);
+    border: 1px solid rgba(0, 255, 136, 0.15);
     color: var(--accent);
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     font-weight: 600;
     font-family: 'JetBrains Mono', monospace;
     text-decoration: none;
     transition: all 0.3s;
-    cursor: pointer;
   }
 
   .stack-chip:hover {
     border-color: var(--accent);
-    background: rgba(0, 255, 136, 0.1);
-    box-shadow: 0 0 12px rgba(0, 255, 136, 0.15);
-    transform: translateY(-1px);
+    background: rgba(0, 255, 136, 0.08);
+    box-shadow: 0 0 15px rgba(0, 255, 136, 0.15);
   }
 
   .stack-chip .arrow {
-    opacity: 0.4;
+    opacity: 0.3;
     transition: opacity 0.3s;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
   }
 
   .stack-chip:hover .arrow {
@@ -324,13 +322,12 @@ import Layout from '../layouts/Layout.astro';
   }
 
   .stack-chip.no-link {
-    cursor: default;
     color: var(--text-secondary);
     border-color: var(--border);
+    cursor: default;
   }
 
   .stack-chip.no-link:hover {
-    transform: none;
     box-shadow: none;
     background: rgba(0, 20, 10, 0.6);
   }
