@@ -484,6 +484,13 @@ services:
     support_images:
       spark-worker: "nexus-spark:4.1.1-python3.13"
 
+  telegraf:
+    port: 9273
+    public: false
+    internal_only: true
+    description: "Metrics collection agent with 300+ plugins for system, database, and application monitoring."
+    image: "telegraf:1.38.2"
+
   trino:
     subdomain: "trino"
     port: 8060
@@ -497,6 +504,13 @@ services:
     public: false
     description: "A fancy self-hosted monitoring tool for tracking service uptime and status."
     image: "louislam/uptime-kuma:2"
+
+  vector:
+    port: 8686
+    public: false
+    internal_only: true
+    description: "High-performance observability pipeline for logs, metrics, and traces collection."
+    image: "timberio/vector:0.54.0-alpine"
 
   wetty:
     subdomain: "wetty"

@@ -1,0 +1,35 @@
+# Vector configuration
+# Collects Docker container logs and forwards to Loki
+# Edit this file to add more sources, transforms, and sinks
+# Docs: https://vector.dev/docs/reference/configuration/
+
+sources:
+  docker_logs:
+    type: docker_logs
+    exclude_containers:
+      - vector
+
+transforms:
+  parse_logs:
+    type: remap
+    inputs:
+      - docker_logs
+    source: |
+      .service = .container_name
+      if is_string(.service) {
+        if starts_with!(.service, "/") {
+          .service = slice!(.service, 1)
+        }
+      }
+
+sinks:
+  loki:
+    type: loki
+    inputs:
+      - parse_logs
+    endpoint: http://loki:3100
+    labels:
+      service: "{{ service }}"
+      source: vector
+    encoding:
+      codec: text

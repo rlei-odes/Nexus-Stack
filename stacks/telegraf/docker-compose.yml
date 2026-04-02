@@ -1,0 +1,31 @@
+# =============================================================================
+# Telegraf - Metrics Collection Agent
+# =============================================================================
+# Server agent for collecting, processing, and writing metrics.
+# 300+ input plugins for system stats, databases, APIs, Docker, and more.
+#
+# Pre-configured to collect system and Docker metrics, output to Prometheus.
+# Edit telegraf.conf to customize inputs, processors, and outputs.
+#
+# Docs: https://docs.influxdata.com/telegraf/
+# =============================================================================
+
+services:
+  telegraf:
+    image: ${IMAGE_TELEGRAF:-telegraf:1.38.2}
+    container_name: telegraf
+    restart: unless-stopped
+    volumes:
+      - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    environment:
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true
