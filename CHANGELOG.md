@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.40.0...v0.41.0) (2026-04-02)
+
+
+### 🚀 Features
+
+* **control-plane:** Add Secrets page with grouped, masked credentials ([43a6013](https://github.com/stefanko-ch/Nexus-Stack/commit/43a6013b433b52d0c815bd046d53c353f3a1d298))
+* **control-plane:** Redesign Control Panel with category-based navigation ([89998c5](https://github.com/stefanko-ch/Nexus-Stack/commit/89998c5c7be9483c4b722903dd0b080d99454157))
+* **control-plane:** Remove info page, add Open links to service cards ([9ced111](https://github.com/stefanko-ch/Nexus-Stack/commit/9ced111ed080aa0140755a04a2c1f01f9ea98805))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Update spin-up workflow for Astro build (control-plane/pages removed) ([b088ec0](https://github.com/stefanko-ch/Nexus-Stack/commit/b088ec0656462657c7e99150d89ab86ff23f8f5d))
+* **control-plane:** Address PR review comments for XSS, auth, and cleanup ([efb3457](https://github.com/stefanko-ch/Nexus-Stack/commit/efb34574b873936152ac1624bfe68f16e046d901))
+* **control-plane:** Destructure request from context in services API ([81dc49e](https://github.com/stefanko-ch/Nexus-Stack/commit/81dc49eb79cde53661723232021417d80cf4e23e))
+* **control-plane:** Fix settings.html API response parsing ([92e75d1](https://github.com/stefanko-ch/Nexus-Stack/commit/92e75d1bddd5321d0ee1b9e48472a23f54574d09))
+* **control-plane:** Fix stack chips styling with :global for dynamic elements ([77d6065](https://github.com/stefanko-ch/Nexus-Stack/commit/77d6065ad2d194e768e330f2d0c130ce0df67b24))
+* **control-plane:** Guard removed DOM elements and remove stale init calls ([a1edd09](https://github.com/stefanko-ch/Nexus-Stack/commit/a1edd09f4ceda02df5f4098af06b59ae32125adc))
+* **control-plane:** Redesign active stacks as clickable chip buttons ([780e5ae](https://github.com/stefanko-ch/Nexus-Stack/commit/780e5aeac4a8f9a3f2d29428ff1dca9ad0a7bcd1))
+* **control-plane:** Remove all dead JS functions and event listeners ([6eef679](https://github.com/stefanko-ch/Nexus-Stack/commit/6eef679a1039ad554d6f06b0ae13e126378229ac))
+* **control-plane:** Stack chips as vertical list in boxes ([2d09783](https://github.com/stefanko-ch/Nexus-Stack/commit/2d0978397c6a144f914f3e15c1501799dbf1ab84))
+
+
+### ♻️ Refactoring
+
+* **control-plane:** Merge Database and Logs into Monitoring page ([dbbba17](https://github.com/stefanko-ch/Nexus-Stack/commit/dbbba177dc3c1e26f8744ca9b24b4f587e75e632))
+* **control-plane:** Migrate from static HTML to Astro framework ([ca08738](https://github.com/stefanko-ch/Nexus-Stack/commit/ca0873867296fb95210147eb7aa3ea1b443997bf))
+* **control-plane:** Migrate to Astro, add Secrets page and Stack Management ([f7bd8ac](https://github.com/stefanko-ch/Nexus-Stack/commit/f7bd8ac76733a6428c88031f9d7b6aa5fab309d5))
+* **control-plane:** Move settings and info to dedicated settings page ([d656f16](https://github.com/stefanko-ch/Nexus-Stack/commit/d656f16ed0cac4a6f94195154be9acf0b576d441))
+* **control-plane:** Unify design with shared styles.css ([ea0d78a](https://github.com/stefanko-ch/Nexus-Stack/commit/ea0d78ae913d02b89c48df5697a9ada486c5e237))
+* **stacks:** Split 'Databases & Storage' into 'Databases' and 'Storage' ([3d35f9d](https://github.com/stefanko-ch/Nexus-Stack/commit/3d35f9d9ed81e6029707826b63005f17b1d3ab36))
+
 ## [0.40.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.39.0...v0.40.0) (2026-04-02)
 
 
