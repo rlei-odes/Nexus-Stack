@@ -621,13 +621,20 @@ jobs:
             exit 0
           fi
 
-          cd control-plane/pages
+          cd control-plane
+
+          # Build Astro frontend
+          npm ci
+          npm run build
+
+          # Copy functions into dist/ for Cloudflare Pages deployment
+          cp -r functions dist/functions
 
           # Generate wrangler.toml with D1 + KV bindings
           cat > wrangler.toml << EOF
           name = "$PAGES_PROJECT"
           compatibility_date = "2024-01-01"
-          pages_build_output_dir = "."
+          pages_build_output_dir = "dist"
 
           [[d1_databases]]
           binding = "NEXUS_DB"
@@ -644,12 +651,12 @@ jobs:
           fi
 
           sed -i 's/^          //' wrangler.toml
-          
+
           # Redeploy to production (with retry for Cloudflare API timeouts)
           # --commit-message prevents UTF-8 issues with git commit messages
           DEPLOY_OK=false
           for ATTEMPT in 1 2 3; do
-            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy . \
+            DEPLOY_OUTPUT=$(npx wrangler@4 pages deploy dist \
               --project-name="$PAGES_PROJECT" \
               --branch=main \
               --commit-dirty=true \
