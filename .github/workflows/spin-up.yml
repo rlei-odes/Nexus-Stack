@@ -609,6 +609,23 @@ jobs:
             echo "  ⚠️  Infisical token or project ID not available - Secrets page will not work"
           fi
 
+          # Store Infisical CF Access Service Token for server-to-server API calls
+          cd tofu/stack
+          INFISICAL_ST_JSON=$(tofu output -json infisical_service_token 2>/dev/null || echo "{}")
+          INFISICAL_CF_CLIENT_ID=$(echo "$INFISICAL_ST_JSON" | jq -r '.client_id // empty')
+          INFISICAL_CF_CLIENT_SECRET=$(echo "$INFISICAL_ST_JSON" | jq -r '.client_secret // empty')
+          cd ../..
+
+          if [ -n "$INFISICAL_CF_CLIENT_ID" ] && [ -n "$INFISICAL_CF_CLIENT_SECRET" ]; then
+            echo "$INFISICAL_CF_CLIENT_ID" | npx wrangler pages secret put CF_ACCESS_CLIENT_ID --project-name "$PAGES_PROJECT" 2>/dev/null && \
+              echo "  ✅ CF_ACCESS_CLIENT_ID stored" || echo "  ⚠️  Failed to store CF_ACCESS_CLIENT_ID"
+
+            echo "$INFISICAL_CF_CLIENT_SECRET" | npx wrangler pages secret put CF_ACCESS_CLIENT_SECRET --project-name "$PAGES_PROJECT" 2>/dev/null && \
+              echo "  ✅ CF_ACCESS_CLIENT_SECRET stored" || echo "  ⚠️  Failed to store CF_ACCESS_CLIENT_SECRET"
+          else
+            echo "  ⚠️  Infisical service token not available - Secrets page may not work if Cloudflare Access blocks API calls"
+          fi
+
           echo "✅ Credentials stored"
           if [ -f .github/scripts/log-to-d1.sh ]; then
             .github/scripts/log-to-d1.sh info "Credentials stored in Cloudflare Secrets"

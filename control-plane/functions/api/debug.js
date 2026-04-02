@@ -16,6 +16,10 @@ export async function onRequestGet(context) {
     DOMAIN: env.DOMAIN || 'MISSING',
     ADMIN_EMAIL: env.ADMIN_EMAIL || 'MISSING',
     RESEND_API_KEY: env.RESEND_API_KEY ? '***SET***' : 'MISSING',
+    INFISICAL_TOKEN: env.INFISICAL_TOKEN ? '***SET***' : 'MISSING (optional)',
+    INFISICAL_PROJECT_ID: env.INFISICAL_PROJECT_ID ? '***SET***' : 'MISSING (optional)',
+    CF_ACCESS_CLIENT_ID: env.CF_ACCESS_CLIENT_ID ? '***SET***' : 'MISSING (optional)',
+    CF_ACCESS_CLIENT_SECRET: env.CF_ACCESS_CLIENT_SECRET ? '***SET***' : 'MISSING (optional)',
     SERVER_TYPE: env.SERVER_TYPE || 'MISSING',
     SERVER_LOCATION: env.SERVER_LOCATION || 'MISSING',
   };

@@ -4,7 +4,22 @@
  * Reads INFISICAL_TOKEN, INFISICAL_PROJECT_ID, and DOMAIN from environment
  * to connect to the Infisical instance running on the Nexus Stack server.
  * Secrets are organized by Infisical folders (one per service).
+ *
+ * Uses CF-Access-Client-Id/Secret headers to bypass Cloudflare Access
+ * for server-to-server authentication (no browser login required).
  */
+
+async function safeJsonParse(response, label) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const bodyPreview = (await response.text()).substring(0, 200);
+    throw new Error(
+      `${label} returned non-JSON response (${response.status}, content-type: ${contentType}). ` +
+      `This usually means Cloudflare Access is blocking the request. Preview: ${bodyPreview}`
+    );
+  }
+  return response.json();
+}
 
 export async function onRequestGet(context) {
   try {
@@ -27,6 +42,14 @@ export async function onRequestGet(context) {
       'Content-Type': 'application/json',
     };
 
+    // Add Cloudflare Access Service Token headers for machine-to-machine auth
+    const cfAccessClientId = context.env.CF_ACCESS_CLIENT_ID;
+    const cfAccessClientSecret = context.env.CF_ACCESS_CLIENT_SECRET;
+    if (cfAccessClientId && cfAccessClientSecret) {
+      headers['CF-Access-Client-Id'] = cfAccessClientId;
+      headers['CF-Access-Client-Secret'] = cfAccessClientSecret;
+    }
+
     // Step 1: List all folders
     const foldersRes = await fetch(
       `${baseUrl}/api/v1/folders?workspaceId=${projectId}&environment=${environment}&path=/`,
@@ -37,11 +60,11 @@ export async function onRequestGet(context) {
       const errText = await foldersRes.text();
       return Response.json({
         success: false,
-        error: `Failed to fetch folders from Infisical (${foldersRes.status}): ${errText}`,
+        error: `Failed to fetch folders from Infisical (${foldersRes.status}): ${errText.substring(0, 200)}`,
       }, { status: 502 });
     }
 
-    const foldersData = await foldersRes.json();
+    const foldersData = await safeJsonParse(foldersRes, 'Folders API');
     const folders = foldersData.folders || [];
 
     // Step 2: Fetch secrets from each folder in parallel
@@ -54,7 +77,7 @@ export async function onRequestGet(context) {
 
         if (!secretsRes.ok) return null;
 
-        const secretsData = await secretsRes.json();
+        const secretsData = await safeJsonParse(secretsRes, `Secrets API (${folder.name})`);
         const secrets = (secretsData.secrets || [])
           .filter(s => s.secretValue !== undefined && s.secretValue !== '')
           .map(s => ({
@@ -83,7 +106,7 @@ export async function onRequestGet(context) {
             { headers }
           );
           if (!rootRes.ok) return null;
-          const rootData = await rootRes.json();
+          const rootData = await safeJsonParse(rootRes, 'Root secrets API');
           const secrets = (rootData.secrets || [])
             .filter(s => s.secretValue !== undefined && s.secretValue !== '')
             .map(s => ({ key: s.secretKey, value: s.secretValue }))

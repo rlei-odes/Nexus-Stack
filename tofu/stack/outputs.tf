@@ -57,6 +57,19 @@ output "ssh_service_token" {
 }
 
 # =============================================================================
+# Infisical Service Token (for Control Plane API access)
+# =============================================================================
+
+output "infisical_service_token" {
+  description = "Service Token for Infisical API access from Control Plane (no browser login required)"
+  sensitive   = true
+  value = {
+    client_id     = cloudflare_zero_trust_access_service_token.infisical.client_id
+    client_secret = cloudflare_zero_trust_access_service_token.infisical.client_secret
+  }
+}
+
+# =============================================================================
 # Cloudflare Outputs
 # =============================================================================
 

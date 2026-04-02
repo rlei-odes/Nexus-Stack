@@ -684,6 +684,26 @@ resource "cloudflare_zero_trust_access_policy" "ssh_service_token" {
   }
 }
 
+# Infisical Service Token for Control Plane API (server-to-server, no browser required)
+resource "cloudflare_zero_trust_access_service_token" "infisical" {
+  account_id = var.cloudflare_account_id
+  name       = "${local.resource_prefix}-infisical-token"
+  duration   = "forever"
+}
+
+# Allow Service Token to access Infisical
+resource "cloudflare_zero_trust_access_policy" "infisical_service_token" {
+  zone_id        = var.cloudflare_zone_id
+  application_id = cloudflare_zero_trust_access_application.services["infisical"].id
+  name           = "Service Token Infisical Access"
+  precedence     = 2
+  decision       = "non_identity"
+
+  include {
+    service_token = [cloudflare_zero_trust_access_service_token.infisical.id]
+  }
+}
+
 # Dynamic Access Applications for private services only
 # Public services (e.g., git-proxy) are excluded - they handle auth at the application level
 resource "cloudflare_zero_trust_access_application" "services" {
