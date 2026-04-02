@@ -1822,7 +1822,9 @@ EOF
 
         build_folder "superset" \
             "SUPERSET_USERNAME" "admin" \
-            "SUPERSET_PASSWORD" "$SUPERSET_PASS"
+            "SUPERSET_PASSWORD" "$SUPERSET_PASS" \
+            "SUPERSET_DB_PASSWORD" "$SUPERSET_DB_PASS" \
+            "SUPERSET_SECRET_KEY" "$SUPERSET_SECRET"
 
         build_folder "cloudbeaver" \
             "CLOUDBEAVER_USERNAME" "nexus-cloudbeaver" \
