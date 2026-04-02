@@ -23,6 +23,15 @@ async function safeJsonParse(response, label) {
 
 export async function onRequestGet(context) {
   try {
+    // Defense-in-depth: require Cloudflare Access authentication
+    const userEmail = context.request.headers.get('CF-Access-Authenticated-User-Email');
+    if (!userEmail) {
+      return Response.json(
+        { success: false, error: 'Forbidden: missing Cloudflare Access authentication.' },
+        { status: 403 },
+      );
+    }
+
     const token = context.env.INFISICAL_TOKEN;
     const projectId = context.env.INFISICAL_PROJECT_ID;
     const domain = context.env.DOMAIN;
@@ -36,7 +45,7 @@ export async function onRequestGet(context) {
     }
 
     const baseUrl = `https://infisical.${domain}`;
-    const environment = 'dev';
+    const environment = context.env.INFISICAL_ENV || 'dev';
     const headers = {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -68,6 +77,7 @@ export async function onRequestGet(context) {
     const folders = foldersData.folders || [];
 
     // Step 2: Fetch secrets from each folder in parallel
+    const warnings = [];
     const folderPromises = folders.map(async (folder) => {
       try {
         const secretsRes = await fetch(
@@ -75,7 +85,10 @@ export async function onRequestGet(context) {
           { headers }
         );
 
-        if (!secretsRes.ok) return null;
+        if (!secretsRes.ok) {
+          warnings.push(`${folder.name}: HTTP ${secretsRes.status}`);
+          return null;
+        }
 
         const secretsData = await safeJsonParse(secretsRes, `Secrets API (${folder.name})`);
         const secrets = (secretsData.secrets || [])
@@ -92,7 +105,8 @@ export async function onRequestGet(context) {
           name: folder.name,
           secrets,
         };
-      } catch {
+      } catch (err) {
+        warnings.push(`${folder.name}: ${err.message}`);
         return null;
       }
     });
@@ -105,7 +119,10 @@ export async function onRequestGet(context) {
             `${baseUrl}/api/v3/secrets/raw?workspaceId=${projectId}&environment=${environment}&secretPath=/`,
             { headers }
           );
-          if (!rootRes.ok) return null;
+          if (!rootRes.ok) {
+            warnings.push(`root: HTTP ${rootRes.status}`);
+            return null;
+          }
           const rootData = await safeJsonParse(rootRes, 'Root secrets API');
           const secrets = (rootData.secrets || [])
             .filter(s => s.secretValue !== undefined && s.secretValue !== '')
@@ -113,7 +130,8 @@ export async function onRequestGet(context) {
             .sort((a, b) => a.key.localeCompare(b.key));
           if (secrets.length === 0) return null;
           return { name: 'config', secrets };
-        } catch {
+        } catch (err) {
+          warnings.push(`root: ${err.message}`);
           return null;
         }
       })()
@@ -124,7 +142,11 @@ export async function onRequestGet(context) {
       .filter(Boolean)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    return Response.json({ success: true, groups });
+    const response = { success: true, groups };
+    if (warnings.length > 0) {
+      response.warnings = warnings;
+    }
+    return Response.json(response);
   } catch (error) {
     return Response.json({ success: false, error: error.message }, { status: 500 });
   }

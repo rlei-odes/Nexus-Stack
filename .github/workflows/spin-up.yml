@@ -492,7 +492,7 @@ jobs:
           chmod +x scripts/deploy.sh
           ./scripts/deploy.sh
 
-          # Read Infisical credentials while SSH is still open (port gets closed next)
+          # Read Infisical credentials from server for use in later steps
           echo "  Reading Infisical credentials from server..."
           ssh nexus "cat /opt/docker-server/.infisical-token 2>/dev/null" > /tmp/infisical-token || true
           ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" > /tmp/infisical-project-id || true
