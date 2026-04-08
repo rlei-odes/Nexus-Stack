@@ -1,0 +1,47 @@
+# =============================================================================
+# pg_ducklake - PostgreSQL with DuckLake Extension
+# =============================================================================
+# PostgreSQL 18 with the DuckLake extension preinstalled, providing a
+# SQL-native lakehouse. Catalog/metadata is stored in PostgreSQL while
+# table data is stored as Parquet files in S3-compatible object storage
+# (Hetzner Object Storage when configured, local volume otherwise).
+#
+# Internal Access: pg-ducklake:5432 (from other containers)
+# Default User: nexus-pgducklake
+# Default Database: ducklake
+# Docs: https://pgducklake.select
+# =============================================================================
+
+services:
+  pg-ducklake:
+    image: ${IMAGE_PG_DUCKLAKE:-pgducklake/pgducklake:18-main}
+    container_name: pg-ducklake
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=nexus-pgducklake
+      - POSTGRES_PASSWORD=${PG_DUCKLAKE_PASSWORD}
+      - POSTGRES_DB=ducklake
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - pgducklake-data:/var/lib/postgresql/data
+      - pgducklake-lake:/var/lib/ducklake
+      - ./init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus-pgducklake -d ducklake"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Note: No ports exposed externally - only accessible via app-network
+    # For external access, use SSH tunnel: ssh nexus -L 5433:pg-ducklake:5432
+
+volumes:
+  pgducklake-data:
+  pgducklake-lake:
+
+networks:
+  app-network:
+    external: true

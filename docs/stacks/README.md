@@ -62,6 +62,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | Meltano | `meltano/meltano` | `v4.0` | Minor |
 | PostgreSQL (Meltano DB) | `postgres` | `16-alpine` | Major |
 | PostgreSQL (Standalone) | `postgres` | `17-alpine` | Major |
+| pg_ducklake | `pgducklake/pgducklake` | `18-main` | Rolling ⚠️ |
 | pgAdmin | `dpage/pgadmin4` | `9` | Major |
 | Prefect | `prefecthq/prefect` | `3-latest` | Major |
 | PostgreSQL (Prefect DB) | `postgres` | `16-alpine` | Major |
@@ -151,6 +152,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **NocoDB** | Airtable alternative (smart spreadsheet) | [nocodb.md](nocodb.md) |
 | **Ollama + Open WebUI** | Local LLM inference with chat interface | [ollama.md](ollama.md) |
 | **OpenMetadata** | Metadata management platform | [openmetadata.md](openmetadata.md) |
+| **pg_ducklake** | PostgreSQL with DuckLake SQL-native lakehouse extension | [pg-ducklake.md](pg-ducklake.md) |
 | **pgAdmin** | PostgreSQL administration tool | [pgadmin.md](pgadmin.md) |
 | **Portainer** | Docker container management UI | [portainer.md](portainer.md) |
 | **PostgreSQL** | Relational database | [postgres.md](postgres.md) |

@@ -43,6 +43,12 @@ output "hetzner_s3_bucket_general" {
   sensitive   = true
 }
 
+output "hetzner_s3_bucket_pgducklake" {
+  description = "Hetzner Object Storage bucket name for pg_ducklake (empty if not configured)"
+  value       = var.hetzner_object_storage_access_key != "" ? minio_s3_bucket.pgducklake[0].bucket : ""
+  sensitive   = true
+}
+
 output "hetzner_s3_server" {
   description = "Hetzner Object Storage server endpoint"
   value       = var.hetzner_object_storage_server

@@ -516,6 +516,18 @@ services:
     long_description: "pgAdmin is the most popular administration and development platform for PostgreSQL. Features include a powerful SQL editor with auto-complete, visual query builder, server monitoring dashboards, backup/restore tools, and user management. Supports multiple PostgreSQL server connections."
     image: "dpage/pgadmin4:9"
 
+  pg-ducklake:
+    port: 5432
+    public: false
+    internal_only: true
+    category: "databases"
+    website: "https://pgducklake.select"
+    description: "PostgreSQL with DuckLake extension - SQL-native lakehouse with S3 storage."
+    long_description: "pg_ducklake is PostgreSQL 18 with the DuckLake extension preinstalled, providing a SQL-native lakehouse format. The catalog/metadata lives in PostgreSQL while table data is stored as Parquet files in S3-compatible object storage (Hetzner Object Storage when configured, local volume otherwise). Compatible with all standard PostgreSQL tools (pgAdmin, CloudBeaver, Superset, Marimo, Adminer). Note: upstream marks this as not yet production-ready."
+    image: "pgducklake/pgducklake:18-main"
+    tcp_ports:
+      pgducklake: 5432
+
   postgres:
     port: 5432
     public: false
