@@ -47,9 +47,66 @@ export default {
   },
 
   async fetch(request, env) {
-    // Health check endpoint
+    // Basic health check endpoint - just confirms the worker is reachable
     if (request.url.endsWith('/health')) {
       return new Response(JSON.stringify({ status: 'ok', service: 'scheduled-teardown' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Diagnostic health check - verifies all bindings and secrets are configured.
+    // Used by the setup workflow to fail loudly if anything is missing after deploy.
+    // Does NOT expose secret values - only reports presence (true/false).
+    if (request.url.endsWith('/health/diagnostic')) {
+      const checks = {
+        bindings: {
+          NEXUS_DB: !!env.NEXUS_DB,
+        },
+        env_vars: {
+          DOMAIN: !!env.DOMAIN,
+          ADMIN_EMAIL: !!env.ADMIN_EMAIL,
+          GITHUB_OWNER: !!env.GITHUB_OWNER,
+          GITHUB_REPO: !!env.GITHUB_REPO,
+          NOTIFICATION_CRON: !!env.NOTIFICATION_CRON,
+          TEARDOWN_CRON: !!env.TEARDOWN_CRON,
+        },
+        secrets: {
+          GITHUB_TOKEN: !!env.GITHUB_TOKEN,
+          RESEND_API_KEY: !!env.RESEND_API_KEY,
+        },
+        d1_query: false,
+      };
+
+      // Verify the D1 binding actually works by running a trivial query
+      if (env.NEXUS_DB) {
+        try {
+          await env.NEXUS_DB.prepare('SELECT 1 AS ok').first();
+          checks.d1_query = true;
+        } catch (error) {
+          checks.d1_query = false;
+          checks.d1_error = error.message;
+        }
+      }
+
+      // Determine overall status: required = bindings + required env vars + GITHUB_TOKEN + d1_query
+      const required = [
+        checks.bindings.NEXUS_DB,
+        checks.env_vars.DOMAIN,
+        checks.env_vars.GITHUB_OWNER,
+        checks.env_vars.GITHUB_REPO,
+        checks.secrets.GITHUB_TOKEN,
+        checks.d1_query,
+      ];
+      const allRequiredOk = required.every(Boolean);
+      const status = allRequiredOk ? 'ok' : 'error';
+      const httpStatus = allRequiredOk ? 200 : 503;
+
+      return new Response(JSON.stringify({
+        status,
+        service: 'scheduled-teardown',
+        checks,
+      }, null, 2), {
+        status: httpStatus,
         headers: { 'Content-Type': 'application/json' },
       });
     }

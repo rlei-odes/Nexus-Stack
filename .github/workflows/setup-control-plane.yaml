@@ -818,6 +818,67 @@ jobs:
           
           echo "✅ Worker secrets configured"
 
+      - name: Verify Worker health (post-deploy diagnostic)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+        run: |
+          echo "🩺 Running Worker diagnostic health check..."
+          WORKER_NAME="nexus-${DOMAIN//./-}-worker"
+
+          # Fetch the account's workers.dev subdomain (e.g. "stefanko-ch")
+          SUBDOMAIN_RESPONSE=$(curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")
+          SUBDOMAIN=$(echo "$SUBDOMAIN_RESPONSE" | jq -r '.result.subdomain // empty')
+
+          if [ -z "$SUBDOMAIN" ]; then
+            echo "❌ Could not determine workers.dev subdomain for this account"
+            echo "   Cloudflare API response: $SUBDOMAIN_RESPONSE"
+            echo "   Skipping health check - the worker may still be functional"
+            exit 0
+          fi
+
+          WORKER_URL="https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev/health/diagnostic"
+          echo "  Worker URL: $WORKER_URL"
+
+          # Workers.dev subdomain propagation can take a few seconds after enable - retry briefly
+          DIAG_HTTP_CODE=""
+          DIAG_BODY=""
+          for i in $(seq 1 10); do
+            DIAG_RESPONSE=$(curl -sS -w "\n%{http_code}" "$WORKER_URL" 2>&1 || true)
+            DIAG_HTTP_CODE=$(echo "$DIAG_RESPONSE" | tail -n1)
+            DIAG_BODY=$(echo "$DIAG_RESPONSE" | sed '$d')
+            if [ "$DIAG_HTTP_CODE" = "200" ] || [ "$DIAG_HTTP_CODE" = "503" ]; then
+              break
+            fi
+            echo "  Attempt $i: HTTP $DIAG_HTTP_CODE - retrying in 3s..."
+            sleep 3
+          done
+
+          echo ""
+          echo "  HTTP $DIAG_HTTP_CODE"
+          echo "$DIAG_BODY" | jq . 2>/dev/null || echo "$DIAG_BODY"
+          echo ""
+
+          if [ "$DIAG_HTTP_CODE" = "200" ]; then
+            echo "✅ Worker diagnostic check passed - all required bindings, env vars, secrets configured"
+          elif [ "$DIAG_HTTP_CODE" = "503" ]; then
+            echo "❌ Worker diagnostic check FAILED - missing required configuration:"
+            echo "$DIAG_BODY" | jq '.checks // empty' 2>/dev/null || true
+            echo ""
+            echo "   Common causes:"
+            echo "   - GITHUB_TOKEN secret not set (workflow trigger will fail)"
+            echo "   - D1 binding broken (set in tofu/control-plane/main.tf)"
+            echo "   - Missing plain_text_binding for DOMAIN/GITHUB_OWNER/GITHUB_REPO"
+            exit 1
+          else
+            echo "⚠️  Could not reach worker after retries (HTTP $DIAG_HTTP_CODE)"
+            echo "   This may be a workers.dev propagation delay - check manually:"
+            echo "   curl $WORKER_URL"
+          fi
+
       - name: Set Control Plane secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

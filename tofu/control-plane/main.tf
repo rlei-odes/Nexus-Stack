@@ -94,6 +94,17 @@ resource "cloudflare_workers_cron_trigger" "scheduled_teardown" {
   ]
 }
 
+# Enable workers.dev subdomain so the post-deploy health check can hit
+# https://<worker-name>.<account-subdomain>.workers.dev/health/diagnostic
+# from the GitHub Actions runner. The diagnostic endpoint reports binding,
+# env var, secret, and D1 query status without exposing any secret values.
+resource "cloudflare_workers_script_subdomain" "scheduled_teardown" {
+  account_id       = var.cloudflare_account_id
+  script_name      = cloudflare_workers_script.scheduled_teardown.name
+  enabled          = true
+  previews_enabled = false
+}
+
 # -----------------------------------------------------------------------------
 # Cloudflare KV Namespace (persistent config)
 # -----------------------------------------------------------------------------
