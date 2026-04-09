@@ -279,7 +279,7 @@ allow_disable_auto_shutdown = true
 **Default behavior** (`false`):
 - Toggle switch is visible but grayed out
 - Users can see if auto-shutdown is enabled
-- Users can delay teardown by 2 hours
+- Users can delay teardown (within the daily limit, see below)
 - Users cannot disable auto-shutdown entirely
 
 **Permissive behavior** (`true`):
@@ -289,6 +289,23 @@ allow_disable_auto_shutdown = true
 After changing this setting, re-deploy the Control Plane:
 ```bash
 gh workflow run setup-control-plane.yaml
+```
+
+#### Teardown Delay Limits
+
+By default, users can delay each scheduled teardown by **4 hours** at a time, with a maximum of **3 extensions per UTC day**. Each extension is recorded in the Control Plane's audit log with the requesting user's email.
+
+To customize, edit `tofu/control-plane/variables.tf`:
+
+```hcl
+max_delay_hours        = 4   # Maximum hours per single delay request
+max_extensions_per_day = 3   # Maximum delay requests per UTC day per user
+```
+
+Or set via environment variable:
+
+```bash
+TF_VAR_max_delay_hours=2 TF_VAR_max_extensions_per_day=5 gh workflow run setup-control-plane.yaml
 ```
 
 See [Control Plane User Guide](control-plane.md#administrator-policy-infrastructure-level) for details.
