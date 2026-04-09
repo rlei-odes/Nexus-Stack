@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.43.0...v0.44.0) (2026-04-09)
+
+
+### 🚀 Features
+
+* **control-plane:** Add limits and audit logging to teardown extensions ([84173f8](https://github.com/stefanko-ch/Nexus-Stack/commit/84173f83d739e222c4ac9c0a32ae8b3ca7e78bd5))
+* **control-plane:** Add limits and audit logging to teardown extensions ([fa72e91](https://github.com/stefanko-ch/Nexus-Stack/commit/fa72e916a5ca9945acd51856e574c9581128dd82)), closes [#340](https://github.com/stefanko-ch/Nexus-Stack/issues/340)
+* **control-plane:** Add post-deploy diagnostic health check for worker ([61c5254](https://github.com/stefanko-ch/Nexus-Stack/commit/61c52546f7faaa47acb9f867bf6821bc91a13d6b))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Pin Node.js 22 in setup-control-plane and spin-up workflows ([438d71a](https://github.com/stefanko-ch/Nexus-Stack/commit/438d71a1f050beca05c034119e8c2bbcaf555bd1))
+* **control-plane:** Address PR [#341](https://github.com/stefanko-ch/Nexus-Stack/issues/341) review feedback ([8459409](https://github.com/stefanko-ch/Nexus-Stack/commit/84594099101c733bff9b16601fd0b1a7cdd7894c))
+* **control-plane:** Enable workers.dev subdomain via API instead of TF resource ([4122176](https://github.com/stefanko-ch/Nexus-Stack/commit/4122176ba3c8b5773b8cb73a3033c8e506f24b6b))
+
+
+### 📚 Documentation
+
+* **control-plane:** Document teardown extension limits and worker health check ([0f16a97](https://github.com/stefanko-ch/Nexus-Stack/commit/0f16a97e7c898e1310f96927d99169288bb540e1))
+
+
+### 🔧 Maintenance
+
+* **control-plane:** Declare Node &gt;=22.12.0 in package.json engines ([31e0dd8](https://github.com/stefanko-ch/Nexus-Stack/commit/31e0dd87b32350bb90bed619086f76b4f99f6a2a))
+* **control-plane:** Upgrade Astro 5 to 6 to fix vite CVEs ([aa76d96](https://github.com/stefanko-ch/Nexus-Stack/commit/aa76d9698604133738c829bb522aad5dfd0c4535))
+* **control-plane:** Upgrade Astro 5 to 6 to fix vite CVEs ([d208276](https://github.com/stefanko-ch/Nexus-Stack/commit/d2082762cae39345721ffae3e6ad8fc416a036a4))
+
 ## [0.43.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.42.0...v0.43.0) (2026-04-09)
 
 
