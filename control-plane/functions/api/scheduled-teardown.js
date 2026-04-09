@@ -24,6 +24,74 @@ async function deleteConfig(db, key) {
   await db.prepare('DELETE FROM config WHERE key = ?').bind(key).run();
 }
 
+// Returns YYYY-MM-DD in UTC for use as a daily counter key
+function utcDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Parse an env var as a positive integer with a fallback default.
+// Guards against missing/empty/non-numeric values that would otherwise
+// produce NaN and silently disable the limit checks.
+function parsePositiveInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// Returns the number of extensions used today (UTC) for the given user
+async function getExtensionsUsedToday(db, userEmail) {
+  const key = `extensions_${utcDateKey()}_${userEmail || 'unknown'}`;
+  const value = await getConfig(db, key, '0');
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+// Atomically increment the daily extension counter for the given user.
+// Uses a single SQL statement with ON CONFLICT + RETURNING so two
+// concurrent requests cannot both pass the limit check and increment.
+async function incrementExtensionsUsedToday(db, userEmail) {
+  const key = `extensions_${utcDateKey()}_${userEmail || 'unknown'}`;
+  const result = await db.prepare(`
+    INSERT INTO config (key, value, updated_at)
+    VALUES (?, '1', datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET
+      value = CAST(config.value AS INTEGER) + 1,
+      updated_at = datetime('now')
+    RETURNING CAST(value AS INTEGER) AS value
+  `).bind(key).first();
+  return result ? result.value : 1;
+}
+
+// Delete extension counter rows older than the given number of days (UTC).
+// Best-effort: failures are swallowed so cleanup never breaks the request flow.
+async function cleanupOldExtensionCounters(db, retainDays = 30) {
+  try {
+    const cutoff = new Date();
+    cutoff.setUTCDate(cutoff.getUTCDate() - retainDays);
+    const cutoffKey = `extensions_${cutoff.toISOString().slice(0, 10)}_`;
+    await db.prepare(
+      "DELETE FROM config WHERE key LIKE 'extensions_%' AND key < ?"
+    ).bind(cutoffKey).run();
+  } catch {
+    // Cleanup is best-effort
+  }
+}
+
+// Append a teardown extension audit log entry
+async function logExtension(db, userEmail, delayHours, delayUntil) {
+  try {
+    const metadata = JSON.stringify({
+      user: userEmail || 'unknown',
+      delay_hours: delayHours,
+      delay_until: delayUntil,
+    });
+    await db.prepare(
+      "INSERT INTO logs (source, level, message, metadata) VALUES ('api', 'info', ?, ?)"
+    ).bind(`Teardown extended by ${delayHours}h by ${userEmail || 'unknown'}`, metadata).run();
+  } catch {
+    // Audit logging is best-effort - don't fail the request if it errors
+  }
+}
+
 /**
  * Convert a time in a specific timezone to UTC Date
  * @param {string} timeStr - Time in HH:MM format
@@ -63,7 +131,10 @@ function timeInTimezoneToUTC(timeStr, timezone, baseDate = new Date()) {
 }
 
 export async function onRequestGet(context) {
-  const { env } = context;
+  const { env, request } = context;
+  const userEmail = request.headers.get('CF-Access-Authenticated-User-Email') || '';
+  const maxExtensionsPerDay = parsePositiveInt(env.MAX_EXTENSIONS_PER_DAY, 3);
+  const maxDelayHours = parsePositiveInt(env.MAX_DELAY_HOURS, 4);
   
   if (!env.NEXUS_DB) {
     return new Response(JSON.stringify({
@@ -127,6 +198,8 @@ export async function onRequestGet(context) {
       };
     }
     
+    const extensionsUsed = await getExtensionsUsedToday(env.NEXUS_DB, userEmail);
+
     return new Response(JSON.stringify({
       success: true,
       config: {
@@ -138,6 +211,10 @@ export async function onRequestGet(context) {
         nextTeardown,
         timeRemaining,
         allowDisable: env.ALLOW_DISABLE_AUTO_SHUTDOWN === 'true',
+        extensionsUsed,
+        extensionsRemaining: Math.max(0, maxExtensionsPerDay - extensionsUsed),
+        maxExtensionsPerDay,
+        maxDelayHours,
       },
     }), {
       status: 200,
@@ -156,7 +233,10 @@ export async function onRequestGet(context) {
 
 export async function onRequestPost(context) {
   const { env, request } = context;
-  
+  const userEmail = request.headers.get('CF-Access-Authenticated-User-Email') || '';
+  const maxExtensionsPerDay = parsePositiveInt(env.MAX_EXTENSIONS_PER_DAY, 3);
+  const maxDelayHours = parsePositiveInt(env.MAX_DELAY_HOURS, 4);
+
   if (!env.NEXUS_DB) {
     return new Response(JSON.stringify({
       success: false,
@@ -216,9 +296,51 @@ export async function onRequestPost(context) {
 
     // Handle delay request
     if (delayHours !== undefined) {
+      // Validate delayHours is a positive number within the configured max
+      if (typeof delayHours !== 'number' || delayHours <= 0 || !Number.isFinite(delayHours)) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'delayHours must be a positive number',
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (delayHours > maxDelayHours) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `delayHours must not exceed ${maxDelayHours} hours per request`,
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Atomically increment the counter first, then check the returned value.
+      // This avoids a TOCTOU race where two concurrent requests both pass a
+      // pre-increment check and then both increment, exceeding the daily limit.
+      const newCount = await incrementExtensionsUsedToday(env.NEXUS_DB, userEmail);
+      if (newCount > maxExtensionsPerDay) {
+        // Roll back the over-limit increment so the counter stays at the cap
+        const counterKey = `extensions_${utcDateKey()}_${userEmail || 'unknown'}`;
+        await setConfig(env.NEXUS_DB, counterKey, String(maxExtensionsPerDay));
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Daily extension limit reached (${maxExtensionsPerDay} per day). Try again tomorrow.`,
+          extensionsUsed: maxExtensionsPerDay,
+          maxExtensionsPerDay,
+        }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
       const delayMs = delayHours * 60 * 60 * 1000;
       const delayUntil = new Date(Date.now() + delayMs).toISOString();
       await setConfig(env.NEXUS_DB, 'delay_until', delayUntil);
+      await logExtension(env.NEXUS_DB, userEmail, delayHours, delayUntil);
+      // Best-effort cleanup of old extension counters (>30 days)
+      await cleanupOldExtensionCounters(env.NEXUS_DB);
     }
 
     // Update D1 database
@@ -246,6 +368,8 @@ export async function onRequestPost(context) {
     const updatedNotificationTime = await getConfig(env.NEXUS_DB, 'notification_time', '21:45');
     const updatedDelayUntil = await getConfig(env.NEXUS_DB, 'delay_until', null);
 
+    const updatedExtensionsUsed = await getExtensionsUsedToday(env.NEXUS_DB, userEmail);
+
     return new Response(JSON.stringify({
       success: true,
       config: {
@@ -255,6 +379,10 @@ export async function onRequestPost(context) {
         notificationTime: updatedNotificationTime,
         delayUntil: updatedDelayUntil,
         allowDisable: env.ALLOW_DISABLE_AUTO_SHUTDOWN === 'true',
+        extensionsUsed: updatedExtensionsUsed,
+        extensionsRemaining: Math.max(0, maxExtensionsPerDay - updatedExtensionsUsed),
+        maxExtensionsPerDay,
+        maxDelayHours,
       },
       message: 'Configuration updated successfully',
     }), {

@@ -65,6 +65,18 @@ variable "allow_disable_auto_shutdown" {
   default     = false
 }
 
+variable "max_extensions_per_day" {
+  description = "Maximum number of teardown delay extensions a user can request per UTC day"
+  type        = number
+  default     = 3
+}
+
+variable "max_delay_hours" {
+  description = "Maximum hours per teardown delay extension request"
+  type        = number
+  default     = 4
+}
+
 # =============================================================================
 # Hetzner Cloud (for persistent volumes)
 # =============================================================================

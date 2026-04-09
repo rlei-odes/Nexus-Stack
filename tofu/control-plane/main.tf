@@ -94,6 +94,14 @@ resource "cloudflare_workers_cron_trigger" "scheduled_teardown" {
   ]
 }
 
+# Note: the workers.dev subdomain for the worker stays disabled by default.
+# The post-deploy health check in setup-control-plane.yaml temporarily enables
+# it via the Cloudflare API just for the duration of the diagnostic call,
+# then disables it again. The diagnostic endpoint also requires a Bearer
+# token (GITHUB_TOKEN) to prevent reconnaissance during the open window.
+# The cloudflare_workers_script_subdomain Terraform resource only exists
+# in provider v5+ and we are pinned to v4 here - see issue #342.
+
 # -----------------------------------------------------------------------------
 # Cloudflare KV Namespace (persistent config)
 # -----------------------------------------------------------------------------
@@ -131,6 +139,8 @@ resource "cloudflare_pages_project" "control_plane" {
         SERVER_TYPE                  = var.server_type
         SERVER_LOCATION              = var.server_location
         ALLOW_DISABLE_AUTO_SHUTDOWN  = tostring(var.allow_disable_auto_shutdown)
+        MAX_EXTENSIONS_PER_DAY       = tostring(var.max_extensions_per_day)
+        MAX_DELAY_HOURS              = tostring(var.max_delay_hours)
       }
       
       d1_databases = {
@@ -155,6 +165,8 @@ resource "cloudflare_pages_project" "control_plane" {
         SERVER_TYPE                  = var.server_type
         SERVER_LOCATION              = var.server_location
         ALLOW_DISABLE_AUTO_SHUTDOWN  = tostring(var.allow_disable_auto_shutdown)
+        MAX_EXTENSIONS_PER_DAY       = tostring(var.max_extensions_per_day)
+        MAX_DELAY_HOURS              = tostring(var.max_delay_hours)
       }
       
       d1_databases = {

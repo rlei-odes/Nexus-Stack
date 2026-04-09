@@ -94,9 +94,20 @@ Times are configurable. Notification is always 15 minutes before teardown.
 
 ### Delay Teardown
 
-Use the **Delay Teardown by 2 Hours** button to postpone the next scheduled teardown. This is useful when you need more time to complete work.
+Use the **Delay Teardown** button to postpone the next scheduled teardown when you need more time to complete work. The default delay is **4 hours** per request, capped at **3 extensions per UTC day** per user. The Settings page shows how many extensions are remaining today.
 
-The delay can be used multiple times and works regardless of other settings.
+When the daily limit is reached, the button is disabled until UTC midnight.
+
+Each extension is recorded in the Control Plane's D1 log table with the requesting user's email and the new teardown time, so administrators can audit usage.
+
+**Configurable limits (Terraform):**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `max_delay_hours` | `4` | Maximum hours per single delay request |
+| `max_extensions_per_day` | `3` | Maximum delay requests per UTC day per user |
+
+Tune these in `tofu/control-plane/variables.tf` or via `TF_VAR_*` env vars, then re-run `gh workflow run setup-control-plane.yaml`.
 
 ### Administrator Policy (Infrastructure-Level)
 
@@ -105,7 +116,7 @@ The delay can be used multiple times and works regardless of other settings.
 When `allow_disable_auto_shutdown = false` is set in the Terraform configuration (default):
 - The toggle switch is **visible but disabled** (grayed out)
 - Users can see if auto-shutdown is enabled but cannot turn it off
-- The **Delay by 2 Hours** button remains functional
+- The **Delay Teardown** button remains functional (within the daily limit)
 - API rejects any attempts to disable auto-shutdown (403 Forbidden)
 
 This setting provides cost control for shared environments (e.g., student labs) while maintaining operational flexibility through delays.
@@ -116,6 +127,12 @@ allow_disable_auto_shutdown = true
 ```
 
 Then re-deploy the Control Plane via `gh workflow run setup-control-plane.yaml`.
+
+### Worker Health Check
+
+After every Control Plane setup run, the workflow automatically calls the scheduled-teardown worker's `/health/diagnostic` endpoint to verify that all bindings, environment variables, secrets, and the D1 connection are functional. The workflow fails loudly if anything is misconfigured, instead of letting the misconfiguration surface hours later when the next cron trigger fires.
+
+The diagnostic endpoint reports presence (`true`/`false`) of each required binding/secret without ever exposing actual values.
 
 ## Credentials Email
 
