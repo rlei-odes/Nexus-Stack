@@ -94,10 +94,13 @@ resource "cloudflare_workers_cron_trigger" "scheduled_teardown" {
   ]
 }
 
-# Note: workers.dev subdomain for the diagnostic health check is enabled
-# via the Cloudflare API directly in setup-control-plane.yaml. The
-# cloudflare_workers_script_subdomain resource only exists in provider v5+
-# and we are pinned to v4 here.
+# Note: the workers.dev subdomain for the worker stays disabled by default.
+# The post-deploy health check in setup-control-plane.yaml temporarily enables
+# it via the Cloudflare API just for the duration of the diagnostic call,
+# then disables it again. The diagnostic endpoint also requires a Bearer
+# token (GITHUB_TOKEN) to prevent reconnaissance during the open window.
+# The cloudflare_workers_script_subdomain Terraform resource only exists
+# in provider v5+ and we are pinned to v4 here - see issue #342.
 
 # -----------------------------------------------------------------------------
 # Cloudflare KV Namespace (persistent config)

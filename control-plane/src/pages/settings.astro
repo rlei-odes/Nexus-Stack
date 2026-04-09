@@ -175,7 +175,10 @@ import Layout from '../layouts/Layout.astro';
       // Update button label to reflect the configured max delay
       delayBtn.textContent = 'Delay Teardown by ' + maxDelayHours + ' Hours';
 
-      // Append remaining-extensions counter when available
+      // Escape values that originate from API/config before injecting into innerHTML
+      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+      // Append remaining-extensions counter when available (numbers, no escaping needed)
       const counterText = extensionsRemaining !== null
         ? '<br><span style="color: var(--text-muted); font-size: 0.85em;">' + extensionsRemaining + ' of ' + maxExtensions + ' daily extensions remaining</span>'
         : '';
@@ -189,16 +192,16 @@ import Layout from '../layouts/Layout.astro';
           const diffMs = delayUntil - now;
           const hours = Math.ceil(diffMs / 3600000);
           const minutes = Math.ceil((diffMs % 3600000) / 60000);
-          info.innerHTML = 'Enabled - Teardown delayed until ' + delayUntil.toLocaleString('de-CH') + '<br><span style="color: var(--warning);">(' + hours + 'h ' + minutes + 'm remaining)</span>' + counterText;
+          info.innerHTML = 'Enabled - Teardown delayed until ' + esc(delayUntil.toLocaleString('de-CH')) + '<br><span style="color: var(--warning);">(' + hours + 'h ' + minutes + 'm remaining)</span>' + counterText;
           delayBtn.disabled = true;
         } else if (config.timeRemaining) {
           const tr = config.timeRemaining;
           let timeText = tr.hours > 0 ? tr.hours + 'h ' + tr.minutes + 'm' : tr.minutes + 'm';
-          const next = config.nextTeardown ? new Date(config.nextTeardown).toLocaleString('de-CH') : '';
+          const next = config.nextTeardown ? esc(new Date(config.nextTeardown).toLocaleString('de-CH')) : '';
           info.innerHTML = 'Enabled - Next: ' + next + '<br><span style="color: var(--warning);">(' + timeText + ' remaining)</span>' + counterText;
           delayBtn.disabled = limitReached;
         } else {
-          info.innerHTML = 'Enabled - Daily at ' + (config.teardownTime || '22:00') + ' ' + (config.timezone || 'UTC') + counterText;
+          info.innerHTML = 'Enabled - Daily at ' + esc(config.teardownTime || '22:00') + ' ' + esc(config.timezone || 'UTC') + counterText;
           delayBtn.disabled = limitReached;
         }
       } else {
@@ -258,13 +261,16 @@ import Layout from '../layouts/Layout.astro';
         loadScheduledTeardownConfig();
       } else {
         showToast(data.error || 'Failed to delay', 'error');
-        btn.disabled = false;
+        // Reload config so the counter, button label, and disabled state reflect
+        // the current backend state (e.g. HTTP 429 means the daily limit was reached
+        // and the button should remain disabled until UTC midnight).
         btn.textContent = originalLabel;
+        loadScheduledTeardownConfig();
       }
     } catch {
       showToast('Failed to delay teardown', 'error');
-      btn.disabled = false;
       btn.textContent = originalLabel;
+      loadScheduledTeardownConfig();
     }
   }
 
