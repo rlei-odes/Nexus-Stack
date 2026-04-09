@@ -250,6 +250,19 @@ resource "minio_s3_bucket" "general" {
 }
 
 # -----------------------------------------------------------------------------
+# Hetzner Object Storage Bucket (for pg_ducklake)
+# -----------------------------------------------------------------------------
+# This bucket persists through teardown - only destroyed on destroy-all.
+# Created conditionally when Hetzner Object Storage credentials are provided.
+# Stores Parquet data files for DuckLake tables (catalog/metadata is in Postgres).
+
+resource "minio_s3_bucket" "pgducklake" {
+  count         = var.hetzner_object_storage_access_key != "" ? 1 : 0
+  bucket        = "${local.resource_prefix}-pgducklake"
+  force_destroy = true
+}
+
+# -----------------------------------------------------------------------------
 # Hetzner Cloud Persistent Volume
 # -----------------------------------------------------------------------------
 # This volume persists through teardown - only destroyed on destroy-all.

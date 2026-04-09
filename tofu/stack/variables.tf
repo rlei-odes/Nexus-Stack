@@ -199,6 +199,12 @@ variable "hetzner_s3_bucket_general" {
   default     = ""
 }
 
+variable "hetzner_s3_bucket_pgducklake" {
+  description = "Hetzner Object Storage bucket for pg_ducklake Parquet data files (from control-plane output)"
+  type        = string
+  default     = ""
+}
+
 # =============================================================================
 # External S3 Storage (optional - for Filestash multi-backend)
 # =============================================================================

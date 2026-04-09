@@ -183,6 +183,10 @@ output "secrets" {
     # PostgreSQL
     postgres_password = random_password.postgres.result
 
+    # pg_ducklake
+    pgducklake_password          = random_password.pgducklake.result
+    hetzner_s3_bucket_pgducklake = var.hetzner_s3_bucket_pgducklake
+
     # pgAdmin
     pgadmin_password = random_password.pgadmin.result
 
