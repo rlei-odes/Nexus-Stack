@@ -44,7 +44,7 @@ import Layout from '../layouts/Layout.astro';
       </div>
       <div class="toggle-switch" id="toggle-scheduled-teardown"></div>
     </div>
-    <button class="btn-warning" id="btn-delay-teardown" disabled style="margin-top: 0.8rem;">Delay Teardown by 2 Hours</button>
+    <button class="btn-warning" id="btn-delay-teardown" disabled style="margin-top: 0.8rem;">Delay Teardown</button>
   </div>
 
   <!-- Email Notifications -->
@@ -167,6 +167,19 @@ import Layout from '../layouts/Layout.astro';
         toggle.title = '';
       }
 
+      const maxDelayHours = config.maxDelayHours || 4;
+      const extensionsRemaining = config.extensionsRemaining !== undefined ? config.extensionsRemaining : null;
+      const maxExtensions = config.maxExtensionsPerDay || 3;
+      const limitReached = extensionsRemaining !== null && extensionsRemaining <= 0;
+
+      // Update button label to reflect the configured max delay
+      delayBtn.textContent = 'Delay Teardown by ' + maxDelayHours + ' Hours';
+
+      // Append remaining-extensions counter when available
+      const counterText = extensionsRemaining !== null
+        ? '<br><span style="color: var(--text-muted); font-size: 0.85em;">' + extensionsRemaining + ' of ' + maxExtensions + ' daily extensions remaining</span>'
+        : '';
+
       if (config.enabled) {
         toggle.classList.add('active');
         const now = new Date();
@@ -176,17 +189,17 @@ import Layout from '../layouts/Layout.astro';
           const diffMs = delayUntil - now;
           const hours = Math.ceil(diffMs / 3600000);
           const minutes = Math.ceil((diffMs % 3600000) / 60000);
-          info.innerHTML = 'Enabled - Teardown delayed until ' + delayUntil.toLocaleString('de-CH') + '<br><span style="color: var(--warning);">(' + hours + 'h ' + minutes + 'm remaining)</span>';
+          info.innerHTML = 'Enabled - Teardown delayed until ' + delayUntil.toLocaleString('de-CH') + '<br><span style="color: var(--warning);">(' + hours + 'h ' + minutes + 'm remaining)</span>' + counterText;
           delayBtn.disabled = true;
         } else if (config.timeRemaining) {
           const tr = config.timeRemaining;
           let timeText = tr.hours > 0 ? tr.hours + 'h ' + tr.minutes + 'm' : tr.minutes + 'm';
           const next = config.nextTeardown ? new Date(config.nextTeardown).toLocaleString('de-CH') : '';
-          info.innerHTML = 'Enabled - Next: ' + next + '<br><span style="color: var(--warning);">(' + timeText + ' remaining)</span>';
-          delayBtn.disabled = false;
+          info.innerHTML = 'Enabled - Next: ' + next + '<br><span style="color: var(--warning);">(' + timeText + ' remaining)</span>' + counterText;
+          delayBtn.disabled = limitReached;
         } else {
-          info.textContent = 'Enabled - Daily at ' + (config.teardownTime || '22:00') + ' ' + (config.timezone || 'UTC');
-          delayBtn.disabled = false;
+          info.innerHTML = 'Enabled - Daily at ' + (config.teardownTime || '22:00') + ' ' + (config.timezone || 'UTC') + counterText;
+          delayBtn.disabled = limitReached;
         }
       } else {
         toggle.classList.remove('active');
@@ -225,27 +238,33 @@ import Layout from '../layouts/Layout.astro';
 
   async function delayTeardown() {
     const btn = document.getElementById('btn-delay-teardown');
+    const originalLabel = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Processing...';
     try {
+      // Re-fetch current config to get the configured max delay hours
+      const cfgResponse = await fetch(API_URL + '/api/scheduled-teardown', { credentials: 'same-origin' });
+      const cfgData = await cfgResponse.json();
+      const delayHours = (cfgData.success && cfgData.config && cfgData.config.maxDelayHours) || 4;
+
       const response = await fetch(API_URL + '/api/scheduled-teardown', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delayHours: 2 }),
+        body: JSON.stringify({ delayHours }),
       });
       const data = await response.json();
       if (data.success) {
-        showToast('Teardown delayed by 2 hours');
+        showToast('Teardown delayed by ' + delayHours + ' hours');
         loadScheduledTeardownConfig();
       } else {
         showToast(data.error || 'Failed to delay', 'error');
         btn.disabled = false;
-        btn.textContent = 'Delay Teardown by 2 Hours';
+        btn.textContent = originalLabel;
       }
     } catch {
       showToast('Failed to delay teardown', 'error');
       btn.disabled = false;
-      btn.textContent = 'Delay Teardown by 2 Hours';
+      btn.textContent = originalLabel;
     }
   }
 

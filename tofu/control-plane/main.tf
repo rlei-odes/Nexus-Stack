@@ -131,6 +131,8 @@ resource "cloudflare_pages_project" "control_plane" {
         SERVER_TYPE                  = var.server_type
         SERVER_LOCATION              = var.server_location
         ALLOW_DISABLE_AUTO_SHUTDOWN  = tostring(var.allow_disable_auto_shutdown)
+        MAX_EXTENSIONS_PER_DAY       = tostring(var.max_extensions_per_day)
+        MAX_DELAY_HOURS              = tostring(var.max_delay_hours)
       }
       
       d1_databases = {
@@ -155,6 +157,8 @@ resource "cloudflare_pages_project" "control_plane" {
         SERVER_TYPE                  = var.server_type
         SERVER_LOCATION              = var.server_location
         ALLOW_DISABLE_AUTO_SHUTDOWN  = tostring(var.allow_disable_auto_shutdown)
+        MAX_EXTENSIONS_PER_DAY       = tostring(var.max_extensions_per_day)
+        MAX_DELAY_HOURS              = tostring(var.max_delay_hours)
       }
       
       d1_databases = {
