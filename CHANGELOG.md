@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.42.0...v0.43.0) (2026-04-09)
+
+
+### 🚀 Features
+
+* **stacks:** Add pg_ducklake - PostgreSQL with DuckLake extension ([7cf0ade](https://github.com/stefanko-ch/Nexus-Stack/commit/7cf0aded8f8848ef0e2a0a569caa97135d847114))
+* **stacks:** Add pg_ducklake - PostgreSQL with DuckLake extension ([9699124](https://github.com/stefanko-ch/Nexus-Stack/commit/9699124a781b2a79f28d9eb423c8ccd9f29c340a)), closes [#331](https://github.com/stefanko-ch/Nexus-Stack/issues/331)
+
+
+### 🐛 Bug Fixes
+
+* **scripts:** Require full S3 var set before generating pg_ducklake S3 secret ([c14c09e](https://github.com/stefanko-ch/Nexus-Stack/commit/c14c09eab0a99df5c50b08dc6508cef87ce82a0f))
+
 ## [0.42.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.41.0...v0.42.0) (2026-04-02)
 
 
