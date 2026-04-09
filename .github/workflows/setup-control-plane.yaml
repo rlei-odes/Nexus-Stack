@@ -827,23 +827,42 @@ jobs:
           echo "🩺 Running Worker diagnostic health check..."
           WORKER_NAME="nexus-${DOMAIN//./-}-worker"
 
-          # Fetch the account's workers.dev subdomain (e.g. "stefanko-ch")
+          # 1. Fetch the account's workers.dev subdomain (e.g. "stefanko-ch")
           SUBDOMAIN_RESPONSE=$(curl -sS \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")
           SUBDOMAIN=$(echo "$SUBDOMAIN_RESPONSE" | jq -r '.result.subdomain // empty')
 
           if [ -z "$SUBDOMAIN" ]; then
-            echo "❌ Could not determine workers.dev subdomain for this account"
+            echo "⚠️  Could not determine workers.dev subdomain for this account"
             echo "   Cloudflare API response: $SUBDOMAIN_RESPONSE"
             echo "   Skipping health check - the worker may still be functional"
             exit 0
           fi
 
+          # 2. Enable workers.dev subdomain for this script via Cloudflare API.
+          #    The cloudflare_workers_script_subdomain TF resource only exists
+          #    in provider v5+ - we are pinned to v4, so we use the API directly.
+          #    Endpoint: POST /accounts/{id}/workers/scripts/{name}/subdomain
+          ENABLE_RESPONSE=$(curl -sS -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"enabled": true, "previews_enabled": false}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/subdomain")
+          ENABLE_SUCCESS=$(echo "$ENABLE_RESPONSE" | jq -r '.success // false')
+
+          if [ "$ENABLE_SUCCESS" != "true" ]; then
+            echo "⚠️  Could not enable workers.dev subdomain for $WORKER_NAME"
+            echo "   API response: $ENABLE_RESPONSE"
+            echo "   Skipping health check - the worker may still be functional"
+            exit 0
+          fi
+          echo "  ✓ workers.dev subdomain enabled for $WORKER_NAME"
+
           WORKER_URL="https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev/health/diagnostic"
           echo "  Worker URL: $WORKER_URL"
 
-          # Workers.dev subdomain propagation can take a few seconds after enable - retry briefly
+          # 3. Workers.dev subdomain propagation can take a few seconds after enable - retry briefly
           DIAG_HTTP_CODE=""
           DIAG_BODY=""
           for i in $(seq 1 10); do
