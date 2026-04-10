@@ -19,13 +19,13 @@ variable "hcloud_token" {
 variable "server_type" {
   description = "Hetzner server type (e.g., cax11, cax21, cpx21)"
   type        = string
-  default     = "cax31"  # 4 vCPU, 8GB RAM (ARM)
+  default     = "cax21"  # 4 vCPU, 8GB RAM (ARM)
 }
 
 variable "server_location" {
   description = "Hetzner datacenter location"
   type        = string
-  default     = "fsn1"  # Falkenstein, Germany
+  default     = "nbg1"  # Nuremberg, Germany
 }
 
 variable "server_image" {
@@ -178,13 +178,13 @@ variable "hetzner_object_storage_secret_key" {
 variable "hetzner_object_storage_server" {
   description = "Hetzner Object Storage server (from control-plane output)"
   type        = string
-  default     = "fsn1.your-objectstorage.com"
+  default     = "nbg1.your-objectstorage.com"
 }
 
 variable "hetzner_object_storage_region" {
   description = "Hetzner Object Storage region (from control-plane output)"
   type        = string
-  default     = "fsn1"
+  default     = "nbg1"
 }
 
 variable "hetzner_s3_bucket" {
