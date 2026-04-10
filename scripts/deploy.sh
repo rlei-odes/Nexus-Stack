@@ -153,6 +153,7 @@ NOCODB_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_admin_password // empt
 NOCODB_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_db_password // empty')
 NOCODB_JWT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.nocodb_jwt_secret // empty')
 DINKY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dinky_admin_password // empty')
+CONSOLE_PASS=$(echo "$SECRETS_JSON" | jq -r '.console_password // empty')
 APPSMITH_ENCRYPTION_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.appsmith_encryption_password // empty')
 APPSMITH_ENCRYPTION_SALT=$(echo "$SECRETS_JSON" | jq -r '.appsmith_encryption_salt // empty')
 DIFY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_admin_password // empty')
@@ -340,6 +341,11 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
         echo -e "${GREEN}  ✓ SSH connection established${NC}"
         rm -f "$SSH_ERR"
         trap - EXIT
+        # Set root password for Hetzner console access
+        if [ -n "$CONSOLE_PASS" ]; then
+            printf 'root:%s\n' "$CONSOLE_PASS" | ssh nexus "chpasswd" 2>/dev/null
+            echo -e "${GREEN}  ✓ Console password set (available in Infisical)${NC}"
+        fi
         break
     fi
     RETRY=$((RETRY + 1))
@@ -1775,7 +1781,8 @@ EOF
         build_folder "config" \
             "DOMAIN" "$DOMAIN" \
             "ADMIN_EMAIL" "$ADMIN_EMAIL" \
-            "ADMIN_USERNAME" "$ADMIN_USERNAME"
+            "ADMIN_USERNAME" "$ADMIN_USERNAME" \
+            "CONSOLE_PASSWORD" "$CONSOLE_PASS"
 
         if [ -n "$R2_DATA_ENDPOINT" ] && [ -n "$R2_DATA_ACCESS_KEY" ] && [ -n "$R2_DATA_SECRET_KEY" ] && [ -n "$R2_DATA_BUCKET" ]; then
             build_folder "r2-datalake" \

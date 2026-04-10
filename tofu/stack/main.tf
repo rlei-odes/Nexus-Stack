@@ -400,6 +400,11 @@ resource "random_password" "dinky_admin" {
   special = false
 }
 
+resource "random_password" "console_password" {
+  length  = 24
+  special = false
+}
+
 resource "random_password" "appsmith_encryption_password" {
   length  = 32
   special = false
