@@ -20,11 +20,14 @@ on:
       - 'README.md'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   trigger-rebuild:
     name: Trigger website rebuild
-    # Only run on the original repo, not forks
-    if: github.repository == 'stefanko-ch/Nexus-Stack'
+    # Only run on the original repo and when the dispatch token is configured
+    if: github.repository == 'stefanko-ch/Nexus-Stack' && vars.WEBSITE_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger nexus-stack.ch rebuild
