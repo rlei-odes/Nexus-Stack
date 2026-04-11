@@ -11,24 +11,24 @@ Documentation in this repo is the **single source of truth** for [nexus-stack.ch
 ## How It Works
 
 ```
-Nexus-Stack repo                    nexus-stack.ch repo
+Nexus-Stack repo                    Cloudflare Workers Builds
 ┌──────────────────┐                ┌──────────────────┐
-│ docs/stacks/*.md  │                │ Astro Content    │
-│ docs/*.md         │  ──push to──>  │ Loaders fetch    │
-│ docs/tutorials/*  │  ──main────>   │ from GitHub at   │
-│ services.yaml     │                │ build time       │
+│ docs/stacks/*.md  │                │ fetch-docs.mjs   │
+│ docs/*.md         │  ──push to──>  │ fetches docs     │
+│ docs/tutorials/*  │  ──main────>   │ from GitHub,     │
+│ services.yaml     │                │ then astro build │
 └──────────────────┘                └──────────────────┘
          │                                   │
          │ sync-docs-site.yml                │
-         │ (repository_dispatch)             │
+         │ (Cloudflare Deploy Hook)          │
          └──────────────────────────────────>┘
-                triggers rebuild
+              curl POST triggers rebuild
 ```
 
 1. A push to `main` that changes `docs/`, `services.yaml`, or `README.md` triggers the `sync-docs-site.yml` workflow
-2. The workflow sends a `repository_dispatch` event to the `stefanko-ch/nexus-stack.ch` repo
-3. The website repo rebuilds, fetching fresh content from `raw.githubusercontent.com`
-4. Cloudflare Pages deploys the updated site
+2. The workflow calls the Cloudflare Deploy Hook via `curl -X POST`
+3. Cloudflare Workers Builds runs `fetch-docs.mjs` (fetches docs from GitHub) then `astro build`
+4. The updated site is deployed to the edge
 
 ## Content Mapping
 

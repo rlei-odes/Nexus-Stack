@@ -49,8 +49,9 @@ jobs:
 
           echo "Triggering nexus-stack.ch rebuild..."
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DEPLOY_HOOK")
-          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "201" ]; then
+          if [ "$RESPONSE" -ge 200 ] && [ "$RESPONSE" -lt 300 ]; then
             echo "✓ Website rebuild triggered (HTTP $RESPONSE)"
           else
-            echo "⚠️ Deploy hook returned HTTP $RESPONSE (non-fatal)"
+            echo "❌ Deploy hook returned HTTP $RESPONSE"
+            exit 1
           fi
