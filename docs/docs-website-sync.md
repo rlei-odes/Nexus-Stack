@@ -106,7 +106,16 @@ This section is only relevant for the repository owner. Forks do not need this s
    - **Name**: `WEBSITE_DISPATCH_TOKEN`
    - **Value**: The PAT from step 1
 
-### 3. Website Repo Setup
+### 3. Enable Website Sync
+
+1. Go to [Nexus-Stack repo settings > Secrets and variables > Actions > Variables](https://github.com/stefanko-ch/Nexus-Stack/settings/variables/actions)
+2. Add a new repository variable:
+   - **Name**: `WEBSITE_SYNC_ENABLED`
+   - **Value**: `true`
+
+The sync workflow is gated on this variable. If it is missing or set to any other value, the job will be skipped even if `WEBSITE_DISPATCH_TOKEN` is configured.
+
+### 4. Website Repo Setup
 
 In the `nexus-stack.ch` repo, add a `repository_dispatch` trigger to the build workflow:
 

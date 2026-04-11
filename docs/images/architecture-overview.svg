@@ -113,7 +113,7 @@
   <rect x="587" y="470" width="55" height="22" rx="3" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
   <text x="614" y="485" fill="#888" font-size="8" text-anchor="middle">+58</text>
 
-  <text x="480" y="525" fill="#555" font-size="8" text-anchor="middle">62 services available across 18 categories</text>
+  <text x="480" y="525" fill="#555" font-size="8" text-anchor="middle">61 services available across 18 categories</text>
 
   <!-- Persistent Volume -->
   <rect x="295" y="555" width="170" height="32" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>

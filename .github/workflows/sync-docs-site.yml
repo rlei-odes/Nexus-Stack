@@ -26,7 +26,7 @@ permissions:
 jobs:
   trigger-rebuild:
     name: Trigger website rebuild
-    # Only run on the original repo and when the dispatch token is configured
+    # Only run on the original repo and when website sync is enabled via repo variable
     if: github.repository == 'stefanko-ch/Nexus-Stack' && vars.WEBSITE_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
