@@ -431,7 +431,7 @@ Docker Hub limits anonymous image pulls to **100 pulls per 6 hours per IP**. Add
 
 Documentation in `docs/` can be synced to [nexus-stack.ch](https://nexus-stack.ch) when changes are pushed to `main`. This is handled by the `sync-docs-site.yml` workflow and only runs on the original repository (not on forks).
 
-See [Website Sync Guide](docs-website-sync.md) for setup instructions. Sync requires adding the `WEBSITE_DISPATCH_TOKEN` secret and setting the `WEBSITE_SYNC_ENABLED` repository variable to `true`.
+See [Website Sync Guide](docs-website-sync.md) for setup instructions. Sync requires a Cloudflare Deploy Hook URL stored as `WEBSITE_DEPLOY_HOOK` secret and the `WEBSITE_SYNC_ENABLED` repository variable set to `true`.
 
 ## 📚 Next Steps
 

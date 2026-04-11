@@ -11,24 +11,24 @@ Documentation in this repo is the **single source of truth** for [nexus-stack.ch
 ## How It Works
 
 ```
-Nexus-Stack repo                    nexus-stack.ch repo
+Nexus-Stack repo                    Cloudflare Workers Builds
 ┌──────────────────┐                ┌──────────────────┐
-│ docs/stacks/*.md  │                │ Astro Content    │
-│ docs/*.md         │  ──push to──>  │ Loaders fetch    │
-│ docs/tutorials/*  │  ──main────>   │ from GitHub at   │
-│ services.yaml     │                │ build time       │
+│ docs/stacks/*.md  │                │ fetch-docs.mjs   │
+│ docs/*.md         │  ──push to──>  │ fetches docs     │
+│ docs/tutorials/*  │  ──main────>   │ from GitHub,     │
+│ services.yaml     │                │ then astro build │
 └──────────────────┘                └──────────────────┘
          │                                   │
          │ sync-docs-site.yml                │
-         │ (repository_dispatch)             │
+         │ (Cloudflare Deploy Hook)          │
          └──────────────────────────────────>┘
-                triggers rebuild
+              curl POST triggers rebuild
 ```
 
 1. A push to `main` that changes `docs/`, `services.yaml`, or `README.md` triggers the `sync-docs-site.yml` workflow
-2. The workflow sends a `repository_dispatch` event to the `stefanko-ch/nexus-stack.ch` repo
-3. The website repo rebuilds, fetching fresh content from `raw.githubusercontent.com`
-4. Cloudflare Pages deploys the updated site
+2. The workflow calls the Cloudflare Deploy Hook via `curl -X POST`
+3. Cloudflare Workers Builds runs `scripts/fetch-docs.mjs` (fetches docs from GitHub) then `astro build`
+4. The updated site is deployed to the edge
 
 ## Content Mapping
 
@@ -91,20 +91,20 @@ order: 1
 
 This section is only relevant for the repository owner. Forks do not need this setup — the sync workflow is skipped automatically.
 
-### 1. Create a GitHub PAT
+### 1. Create a Cloudflare Deploy Hook
 
-1. Go to [GitHub Settings > Developer settings > Fine-grained tokens](https://github.com/settings/tokens?type=beta)
-2. Create a new token with:
-   - **Repository access**: Only `stefanko-ch/nexus-stack.ch`
-   - **Permissions**: Contents → Read and Write
-3. Copy the token
+1. Go to Cloudflare Dashboard > Workers & Pages > `nexus-stack-ch` > Settings > Builds > Deploy Hooks
+2. Create a hook:
+   - **Name**: `nexus-stack-docs-sync`
+   - **Branch**: `main`
+3. Copy the generated URL
 
 ### 2. Add the Secret
 
 1. Go to [Nexus-Stack repo settings > Secrets > Actions](https://github.com/stefanko-ch/Nexus-Stack/settings/secrets/actions)
 2. Add a new secret:
-   - **Name**: `WEBSITE_DISPATCH_TOKEN`
-   - **Value**: The PAT from step 1
+   - **Name**: `WEBSITE_DEPLOY_HOOK`
+   - **Value**: The Deploy Hook URL from step 1
 
 ### 3. Enable Website Sync
 
@@ -113,30 +113,14 @@ This section is only relevant for the repository owner. Forks do not need this s
    - **Name**: `WEBSITE_SYNC_ENABLED`
    - **Value**: `true`
 
-The sync workflow is gated on this variable. If it is missing or set to any other value, the job will be skipped even if `WEBSITE_DISPATCH_TOKEN` is configured.
-
-### 4. Website Repo Setup
-
-In the `nexus-stack.ch` repo, add a `repository_dispatch` trigger to the build workflow:
-
-```yaml
-on:
-  push:
-    branches: [main]
-  repository_dispatch:
-    types: [docs-updated]
-```
-
-The Astro Content Loaders in the website repo handle fetching and rendering the docs.
+The sync workflow is gated on this variable. If it is missing or set to any other value, the job will be skipped.
 
 ## Fork Safety
 
-The sync workflow has three independent protection layers:
+The sync workflow is gated by three conditions that must all be true for it to run:
 
-| Layer | How it works |
-|-------|-------------|
-| Repo check | `if: github.repository == 'stefanko-ch/Nexus-Stack'` skips on any fork |
-| Missing secret | Forks don't have `WEBSITE_DISPATCH_TOKEN`, dispatch fails silently |
-| PAT scope | Token only has access to the specific target repo |
+1. **Repository check** — `github.repository == 'stefanko-ch/Nexus-Stack'` in the job-level `if:`. This is the primary gate: forks have a different repository name, so the job is skipped entirely.
+2. **Sync enabled** — `vars.WEBSITE_SYNC_ENABLED == 'true'` must be set as a repository variable. Not configured by default.
+3. **Deploy hook configured** — `WEBSITE_DEPLOY_HOOK` secret must contain the Cloudflare Deploy Hook URL. The step fails if sync is enabled but the hook is missing.
 
-Forks can safely ignore the `sync-docs-site.yml` workflow. It will never run and never fail.
+Forks can safely ignore the `sync-docs-site.yml` workflow. The repository check alone prevents it from running.
