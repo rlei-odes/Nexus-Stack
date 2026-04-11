@@ -24,6 +24,26 @@ Appsmith is an open-source framework for building internal tools and custom UIs.
 
 On first access, Appsmith shows a registration screen. The first user to register becomes the admin. Complete this setup before sharing access with others.
 
+### Admin Account
+
+On first access, Appsmith shows a registration screen to create the initial admin account. **The first user to register becomes the instance admin** — complete this before sharing the URL with others. There are no pre-configured credentials; the account you create here is stored in Appsmith's internal database. Keep the credentials safe as they are not managed by Infisical.
+
+### Connecting to the Nexus-Stack PostgreSQL Database
+
+Since Appsmith and the PostgreSQL stack share the same Docker network (`app-network`), you can connect directly using the internal container hostname.
+
+In Appsmith, go to **Datasources → New datasource → PostgreSQL** and enter:
+
+| Field | Value |
+|-------|-------|
+| Host | `postgres` |
+| Port | `5432` |
+| Database | `postgres` |
+| Username | `nexus-postgres` |
+| Password | From Infisical → `postgres` folder → `POSTGRES_PASSWORD` |
+
+No firewall rules or additional configuration are required.
+
 ### Persistent Data
 
 All application data (apps, datasources, configurations) is stored in the `appsmith_data` Docker volume mounted at `/appsmith-stacks` inside the container. Data persists across container restarts.
