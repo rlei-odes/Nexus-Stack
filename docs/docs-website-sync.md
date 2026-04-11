@@ -6,7 +6,7 @@ order: 7
 
 # Website Documentation Sync
 
-Documentation in this repo is the **single source of truth** for [nexus-stack.ch](https://nexus-stack.ch). The website fetches docs at build time — no content is duplicated between repos.
+Documentation in this repo is the **single source of truth** for [nexus-stack.ch](https://nexus-stack.ch). The website fetches all docs at build time — no content is duplicated between repos.
 
 ## How It Works
 
