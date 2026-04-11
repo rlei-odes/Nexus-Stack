@@ -91,20 +91,20 @@ order: 1
 
 This section is only relevant for the repository owner. Forks do not need this setup — the sync workflow is skipped automatically.
 
-### 1. Create a GitHub PAT
+### 1. Create a Cloudflare Deploy Hook
 
-1. Go to [GitHub Settings > Developer settings > Fine-grained tokens](https://github.com/settings/tokens?type=beta)
-2. Create a new token with:
-   - **Repository access**: Only `stefanko-ch/nexus-stack.ch`
-   - **Permissions**: Contents → Read and Write
-3. Copy the token
+1. Go to Cloudflare Dashboard > Workers & Pages > `nexus-stack-ch` > Settings > Builds > Deploy Hooks
+2. Create a hook:
+   - **Name**: `nexus-stack-docs-sync`
+   - **Branch**: `main`
+3. Copy the generated URL
 
 ### 2. Add the Secret
 
 1. Go to [Nexus-Stack repo settings > Secrets > Actions](https://github.com/stefanko-ch/Nexus-Stack/settings/secrets/actions)
 2. Add a new secret:
-   - **Name**: `WEBSITE_DISPATCH_TOKEN`
-   - **Value**: The PAT from step 1
+   - **Name**: `WEBSITE_DEPLOY_HOOK`
+   - **Value**: The Deploy Hook URL from step 1
 
 ### 3. Enable Website Sync
 
@@ -113,21 +113,7 @@ This section is only relevant for the repository owner. Forks do not need this s
    - **Name**: `WEBSITE_SYNC_ENABLED`
    - **Value**: `true`
 
-The sync workflow is gated on this variable. If it is missing or set to any other value, the job will be skipped even if `WEBSITE_DISPATCH_TOKEN` is configured.
-
-### 4. Website Repo Setup
-
-In the `nexus-stack.ch` repo, add a `repository_dispatch` trigger to the build workflow:
-
-```yaml
-on:
-  push:
-    branches: [main]
-  repository_dispatch:
-    types: [docs-updated]
-```
-
-The Astro Content Loaders in the website repo handle fetching and rendering the docs.
+The sync workflow is gated on this variable. If it is missing or set to any other value, the job will be skipped.
 
 ## Fork Safety
 
@@ -136,7 +122,7 @@ The sync workflow has three independent protection layers:
 | Layer | How it works |
 |-------|-------------|
 | Repo check | `if: github.repository == 'stefanko-ch/Nexus-Stack'` skips on any fork |
-| Missing secret | Forks don't have `WEBSITE_DISPATCH_TOKEN`, dispatch fails silently |
-| PAT scope | Token only has access to the specific target repo |
+| Missing variable | Forks don't have `WEBSITE_SYNC_ENABLED`, job is skipped |
+| Missing secret | Forks don't have `WEBSITE_DEPLOY_HOOK`, script exits cleanly |
 
 Forks can safely ignore the `sync-docs-site.yml` workflow. It will never run and never fail.

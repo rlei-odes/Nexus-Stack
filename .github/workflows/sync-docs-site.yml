@@ -1,12 +1,19 @@
 # =============================================================================
 # Sync Documentation to nexus-stack.ch Website
 # =============================================================================
-# Triggers a rebuild of the Astro website when documentation changes.
-# The website fetches docs from this repo at build time via Content Loaders.
+# Triggers a rebuild of the nexus-stack.ch website via Cloudflare Deploy Hook
+# when documentation changes. The website fetches docs from this repo at build
+# time via a pre-build script (scripts/fetch-docs.mjs).
 #
 # Fork safety: This workflow only runs on the original repo (stefanko-ch/Nexus-Stack).
-# Forks don't have the WEBSITE_DISPATCH_TOKEN secret and the repo check prevents
+# Forks don't have the WEBSITE_DEPLOY_HOOK secret and the repo check prevents
 # the workflow from even attempting to run.
+#
+# Setup:
+# 1. Create a Deploy Hook in Cloudflare: Workers > nexus-stack-ch > Settings >
+#    Builds > Deploy Hooks (name: "nexus-stack-docs-sync", branch: main)
+# 2. Store the hook URL as WEBSITE_DEPLOY_HOOK secret in this repo
+# 3. Set WEBSITE_SYNC_ENABLED repo variable to "true"
 # =============================================================================
 
 name: Sync docs to website
@@ -29,20 +36,21 @@ jobs:
     # Only run on the original repo and when website sync is enabled via repo variable
     if: github.repository == 'stefanko-ch/Nexus-Stack' && vars.WEBSITE_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
-    env:
-      HAS_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN != '' }}
     steps:
-      - name: Check dispatch token
-        if: env.HAS_TOKEN != 'true'
+      - name: Trigger Cloudflare Deploy Hook
+        env:
+          DEPLOY_HOOK: ${{ secrets.WEBSITE_DEPLOY_HOOK }}
         run: |
-          echo "⏭️ WEBSITE_DISPATCH_TOKEN not configured - skipping website sync"
-          echo "   See docs/docs-website-sync.md for setup instructions"
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "⏭️ WEBSITE_DEPLOY_HOOK not configured - skipping website sync"
+            echo "   See docs/docs-website-sync.md for setup instructions"
+            exit 0
+          fi
 
-      - name: Trigger nexus-stack.ch rebuild
-        if: env.HAS_TOKEN == 'true'
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
-          repository: stefanko-ch/nexus-stack.ch
-          event-type: docs-updated
-          client-payload: '{"sha": "${{ github.sha }}", "ref": "${{ github.ref }}"}'
+          echo "Triggering nexus-stack.ch rebuild..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DEPLOY_HOOK")
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "201" ]; then
+            echo "✓ Website rebuild triggered (HTTP $RESPONSE)"
+          else
+            echo "⚠️ Deploy hook returned HTTP $RESPONSE (non-fatal)"
+          fi
