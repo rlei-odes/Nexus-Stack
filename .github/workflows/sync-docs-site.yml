@@ -30,7 +30,14 @@ jobs:
     if: github.repository == 'stefanko-ch/Nexus-Stack' && vars.WEBSITE_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: Check dispatch token
+        if: ${{ secrets.WEBSITE_DISPATCH_TOKEN == '' }}
+        run: |
+          echo "⏭️ WEBSITE_DISPATCH_TOKEN not configured - skipping website sync"
+          echo "   See docs/docs-website-sync.md for setup instructions"
+
       - name: Trigger nexus-stack.ch rebuild
+        if: ${{ secrets.WEBSITE_DISPATCH_TOKEN != '' }}
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}

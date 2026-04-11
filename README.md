@@ -242,6 +242,9 @@ This setup achieves **zero open ports** after deployment:
 
 ![Security Flow](docs/images/architecture-security.svg)
 
+- Services are protected by Cloudflare Access (email OTP)
+- Set `public = true` in config if you want a service publicly accessible (bypasses Zero Trust)
+
 ## Documentation
 
 | Document | Description |
