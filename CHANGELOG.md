@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.44.0...v0.45.0) (2026-04-11)
+
+
+### 🚀 Features
+
+* **docs:** Add website sync workflow and frontmatter for nexus-stack.ch ([b235cbf](https://github.com/stefanko-ch/Nexus-Stack/commit/b235cbf54efc856aa8b1b040e0db32949781c174))
+* **docs:** Add website sync workflow and frontmatter to all docs ([56a7e8a](https://github.com/stefanko-ch/Nexus-Stack/commit/56a7e8a22094662abd9137e951306384a06674fc)), closes [#399](https://github.com/stefanko-ch/Nexus-Stack/issues/399)
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Address PR [#404](https://github.com/stefanko-ch/Nexus-Stack/issues/404) review feedback ([06e6043](https://github.com/stefanko-ch/Nexus-Stack/commit/06e60438aed404aa6c2f1d8b84edd9d8a3ee1d21))
+* **ci:** Address PR [#405](https://github.com/stefanko-ch/Nexus-Stack/issues/405) review feedback - add permissions block and sync guard ([f8d76f0](https://github.com/stefanko-ch/Nexus-Stack/commit/f8d76f0e5cac3342d3b96921a32f694e73fb9f95))
+* **ci:** Use env var for secrets check in step conditions (actionlint) ([5ab83b5](https://github.com/stefanko-ch/Nexus-Stack/commit/5ab83b5a5cfbf824558d97d3ef053f3e1aaae1d0))
+* **control-plane:** Add D1 logging to 5 unlogged API endpoints ([a21d8db](https://github.com/stefanko-ch/Nexus-Stack/commit/a21d8db6fd8d26aca163d01cd15c4af67527071b))
+* **control-plane:** Address PR [#402](https://github.com/stefanko-ch/Nexus-Stack/issues/402) review feedback ([c1fc22d](https://github.com/stefanko-ch/Nexus-Stack/commit/c1fc22d122d09a7ff121fc7a47d77a5124bd95fd))
+* **control-plane:** Use arrayBuffer for byte-accurate body size check ([7416e4a](https://github.com/stefanko-ch/Nexus-Stack/commit/7416e4a54c51f94189126713c39ebb0608cb2dd9))
+* **docs:** Address PR [#405](https://github.com/stefanko-ch/Nexus-Stack/issues/405) review feedback - sync guard docs and stack count ([a936c91](https://github.com/stefanko-ch/Nexus-Stack/commit/a936c91531b2ef592b6d59e0f23fb1401c4f0f5f))
+* **docs:** Address PR [#405](https://github.com/stefanko-ch/Nexus-Stack/issues/405) review feedback - token guard and security text ([3e6a78c](https://github.com/stefanko-ch/Nexus-Stack/commit/3e6a78c4b25c2ab7c08a171935e2931fa93d054d))
+* **docs:** Move bluesky-flink-tutorial from stacks/ to tutorials/ ([d3276c3](https://github.com/stefanko-ch/Nexus-Stack/commit/d3276c3bb397ee9af4566dcad98e5ca2618ecafc))
+* **docs:** Redesign architecture SVG with cleaner layout ([854b1d3](https://github.com/stefanko-ch/Nexus-Stack/commit/854b1d3c0c69b55b1017b54716a2be60d7c2e85f))
+* **scripts:** Restore LOG_FILE variable used by debug logging ([a3ca51f](https://github.com/stefanko-ch/Nexus-Stack/commit/a3ca51f8bede2b33f708aaf4e6dda3aad7475f97))
+* Stability overhaul across infrastructure, workflows, and Docker stacks ([12f7847](https://github.com/stefanko-ch/Nexus-Stack/commit/12f78474282a3db6014d571b8a1c0e0384da7a6f))
+* Stability overhaul across infrastructure, workflows, and Docker stacks ([6b359e7](https://github.com/stefanko-ch/Nexus-Stack/commit/6b359e7fcfa051832e5ab7b083fac1fc1094f3d4))
+
+
+### 📚 Documentation
+
+* Add website sync documentation ([7d3ec47](https://github.com/stefanko-ch/Nexus-Stack/commit/7d3ec476394bc520c90fb775454ed12840c89d93))
+* Replace Mermaid diagrams with hand-crafted SVGs ([f34b9a9](https://github.com/stefanko-ch/Nexus-Stack/commit/f34b9a986970b69fe10d12b3c03a957bdec4a378))
+
+
+### 🔧 Maintenance
+
+* **ci:** Migrate Cloudflare Pages to Build Image v3 ([ae896a4](https://github.com/stefanko-ch/Nexus-Stack/commit/ae896a48d1c866e6489314bb2052967133e434f5))
+* **ci:** Migrate Cloudflare Pages to Build Image v3 ([2b2a395](https://github.com/stefanko-ch/Nexus-Stack/commit/2b2a395121ffe815d395afa0ec8a1c5482c9a2e4)), closes [#252](https://github.com/stefanko-ch/Nexus-Stack/issues/252)
+
 ## [0.44.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.43.0...v0.44.0) (2026-04-09)
 
 
