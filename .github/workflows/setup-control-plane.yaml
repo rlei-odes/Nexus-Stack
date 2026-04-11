@@ -1152,22 +1152,22 @@ jobs:
 
           rm wrangler.toml
 
-          # Ensure Pages project uses Build Image v3 (v1 deprecated Sept 2026, v2 Feb 2027)
-          # The cloudflare_pages_project TF resource in provider v4 does not support
-          # build_system_version, so we set it via the API after deploy.
-          echo "  Setting Pages build system version to v3..."
-          BUILD_VERSION_RESPONSE=$(curl -s -X PATCH \
-            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/pages/projects/$PROJECT_NAME" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d '{"build_config":{"build_system_version":"3"}}')
-          if echo "$BUILD_VERSION_RESPONSE" | grep -q '"success":true'; then
-            echo "  ✓ Build system version set to v3"
-          else
-            echo "  ⚠️ Could not set build system version (non-fatal): $BUILD_VERSION_RESPONSE"
-          fi
-
           if [ "$DEPLOY_OK" = "true" ]; then
+            # Ensure Pages project uses Build Image v3 (v1 deprecated Sept 2026, v2 Feb 2027)
+            # The cloudflare_pages_project TF resource in provider v4 does not support
+            # build_system_version, so we set it via the API after deploy.
+            echo "  Setting Pages build system version to v3..."
+            BUILD_VERSION_RESPONSE=$(curl --silent --show-error --fail-with-body -X PATCH \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/$PROJECT_NAME" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{"build_config":{"build_system_version":"3"}}' 2>&1) || true
+            if echo "$BUILD_VERSION_RESPONSE" | grep -q '"success":true'; then
+              echo "  ✓ Build system version set to v3"
+            else
+              echo "  ⚠️ Could not set build system version (non-fatal): ${BUILD_VERSION_RESPONSE:0:200}"
+            fi
+
             if [ -n "$KV_NAMESPACE_ID" ]; then
               echo "✅ Control Plane deployed with D1 + KV bindings!"
             else
