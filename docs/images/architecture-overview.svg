@@ -1,205 +1,175 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" font-family="'SF Mono', 'Fira Code', 'Consolas', monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 750" font-family="'SF Mono','Fira Code','Consolas',monospace">
   <defs>
-    <linearGradient id="ao-glow" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#00ff88;stop-opacity:0.1"/>
-      <stop offset="100%" style="stop-color:#00ff88;stop-opacity:0.03"/>
-    </linearGradient>
-    <filter id="ao-shadow">
-      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#00ff88" flood-opacity="0.25"/>
-    </filter>
-    <marker id="ao-arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#00ff88"/>
-    </marker>
-    <marker id="ao-arrow-dim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#334"/>
-    </marker>
-    <marker id="ao-arrow-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#f6821f"/>
-    </marker>
+    <filter id="g"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#00ff88" flood-opacity="0.3"/></filter>
+    <marker id="ag" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#00ff88"/></marker>
+    <marker id="ao" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#f6821f"/></marker>
+    <marker id="ad" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#667"/></marker>
+    <marker id="ar" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#d63939"/></marker>
   </defs>
 
-  <!-- Background -->
-  <rect width="960" height="620" rx="12" fill="#0a0a0f"/>
-  <rect width="960" height="620" rx="12" fill="url(#ao-glow)" opacity="0.5"/>
+  <rect width="880" height="750" rx="12" fill="#0a0a0f"/>
 
-  <!-- ===== GITHUB GROUP ===== -->
-  <rect x="20" y="20" width="200" height="160" rx="8" fill="#12121a" stroke="#1e1e2e" stroke-width="1"/>
-  <text x="120" y="46" fill="#e0e0e0" font-size="12" font-weight="bold" text-anchor="middle">GitHub</text>
-  <line x1="40" y1="55" x2="200" y2="55" stroke="#1e1e2e" stroke-width="1"/>
+  <!-- ====== LEFT COLUMN: Users & TCP ====== -->
 
-  <rect x="35" y="68" width="170" height="28" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="120" y="87" fill="#c0c0c0" font-size="10" text-anchor="middle">Actions (CI/CD)</text>
+  <rect x="30" y="30" width="160" height="70" rx="8" fill="#0d2818" stroke="#00ff88" stroke-width="1.5" filter="url(#g)"/>
+  <text x="110" y="58" fill="#00ff88" font-size="12" font-weight="bold" text-anchor="middle">Users</text>
+  <text x="110" y="78" fill="#00cc6a" font-size="8" text-anchor="middle">service.yourdomain.com</text>
 
-  <rect x="35" y="104" width="170" height="28" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="120" y="123" fill="#c0c0c0" font-size="10" text-anchor="middle">Secrets</text>
+  <rect x="30" y="670" width="160" height="55" rx="8" fill="#12121a" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="110" y="694" fill="#999" font-size="10" text-anchor="middle">TCP Clients</text>
+  <text x="110" y="710" fill="#556" font-size="8" text-anchor="middle">Kafka, psql, S3 API</text>
 
-  <rect x="35" y="140" width="170" height="28" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="120" y="159" fill="#c0c0c0" font-size="10" text-anchor="middle">Release Please</text>
+  <!-- ====== CENTER: Main flow top-to-bottom ====== -->
 
-  <!-- ===== CLOUDFLARE GROUP ===== -->
-  <rect x="280" y="20" width="400" height="260" rx="8" fill="#12121a" stroke="#f6821f" stroke-width="1" stroke-opacity="0.4"/>
-  <text x="480" y="46" fill="#f6821f" font-size="12" font-weight="bold" text-anchor="middle">Cloudflare</text>
-  <line x1="300" y1="55" x2="660" y2="55" stroke="#1e1e2e" stroke-width="1"/>
+  <!-- Cloudflare: DNS -->
+  <rect x="270" y="30" width="150" height="40" rx="6" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.8"/>
+  <text x="345" y="55" fill="#e0c0a0" font-size="11" text-anchor="middle">DNS Records</text>
 
-  <!-- Row 1 -->
-  <rect x="295" y="68" width="115" height="28" rx="5" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.5"/>
-  <text x="352" y="87" fill="#c0c0c0" font-size="10" text-anchor="middle">DNS Records</text>
+  <!-- Arrow: Users -> DNS -->
+  <line x1="190" y1="55" x2="270" y2="50" stroke="#00ff88" stroke-width="2" marker-end="url(#ag)"/>
 
-  <rect x="422" y="68" width="115" height="28" rx="5" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.5"/>
-  <text x="480" y="87" fill="#c0c0c0" font-size="10" text-anchor="middle">Zero Trust</text>
+  <!-- Cloudflare: Zero Trust Access -->
+  <rect x="270" y="100" width="150" height="50" rx="6" fill="#1a1a2e" stroke="#00ff88" stroke-width="1.2" filter="url(#g)"/>
+  <text x="345" y="122" fill="#00ff88" font-size="10" font-weight="bold" text-anchor="middle">Zero Trust</text>
+  <text x="345" y="138" fill="#00cc6a" font-size="8" text-anchor="middle">Email OTP</text>
 
-  <rect x="549" y="68" width="115" height="28" rx="5" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.5"/>
-  <text x="606" y="87" fill="#c0c0c0" font-size="10" text-anchor="middle">Tunnel</text>
+  <!-- Arrow: DNS -> Zero Trust -->
+  <line x1="345" y1="70" x2="345" y2="100" stroke="#f6821f" stroke-width="1.5" marker-end="url(#ao)"/>
 
-  <!-- Row 2 -->
-  <rect x="295" y="108" width="115" height="28" rx="5" fill="#1a1a2e" stroke="#00ff88" stroke-width="1" filter="url(#ao-shadow)"/>
-  <text x="352" y="127" fill="#00ff88" font-size="10" text-anchor="middle">Pages (UI+API)</text>
+  <!-- Cloudflare: Tunnel -->
+  <rect x="270" y="180" width="150" height="40" rx="6" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.8"/>
+  <text x="345" y="205" fill="#e0c0a0" font-size="11" text-anchor="middle">Tunnel</text>
 
-  <rect x="422" y="108" width="115" height="28" rx="5" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.5"/>
-  <text x="480" y="127" fill="#c0c0c0" font-size="10" text-anchor="middle">Worker</text>
+  <!-- Arrow: Zero Trust -> Tunnel -->
+  <line x1="345" y1="150" x2="345" y2="180" stroke="#f6821f" stroke-width="1.5" marker-end="url(#ao)"/>
+  <text x="355" y="170" fill="#00cc6a" font-size="7">authenticated</text>
 
-  <!-- Row 3: Storage -->
-  <rect x="295" y="155" width="75" height="44" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="332" y="175" fill="#888" font-size="9" text-anchor="middle">D1</text>
-  <text x="332" y="189" fill="#555" font-size="7" text-anchor="middle">state, logs</text>
+  <!-- cloudflared agent -->
+  <rect x="270" y="260" width="150" height="40" rx="6" fill="#1a1a2e" stroke="#f6821f" stroke-width="0.8"/>
+  <text x="345" y="285" fill="#e0c0a0" font-size="11" text-anchor="middle">cloudflared</text>
 
-  <rect x="380" y="155" width="75" height="44" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="417" y="175" fill="#888" font-size="9" text-anchor="middle">R2</text>
-  <text x="417" y="189" fill="#555" font-size="7" text-anchor="middle">tofu state</text>
-
-  <rect x="465" y="155" width="75" height="44" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="502" y="175" fill="#888" font-size="9" text-anchor="middle">KV</text>
-  <text x="502" y="189" fill="#555" font-size="7" text-anchor="middle">config</text>
-
-  <!-- Access policies -->
-  <rect x="295" y="212" width="370" height="28" rx="5" fill="#0d1a12" stroke="#00ff88" stroke-width="0.5"/>
-  <text x="480" y="231" fill="#00cc6a" font-size="9" text-anchor="middle">Access Policies: Email OTP authentication for all private services</text>
-
-  <!-- Resend (external) -->
-  <rect x="740" y="20" width="200" height="65" rx="8" fill="#12121a" stroke="#1e1e2e" stroke-width="1"/>
-  <text x="840" y="46" fill="#888" font-size="11" font-weight="bold" text-anchor="middle">Resend</text>
-  <text x="840" y="66" fill="#555" font-size="9" text-anchor="middle">Email notifications</text>
-
-  <!-- ===== HETZNER CLOUD GROUP ===== -->
-  <rect x="280" y="310" width="400" height="290" rx="8" fill="#12121a" stroke="#d63939" stroke-width="1" stroke-opacity="0.4"/>
-  <text x="480" y="336" fill="#d63939" font-size="12" font-weight="bold" text-anchor="middle">Hetzner Cloud</text>
-  <line x1="300" y1="345" x2="660" y2="345" stroke="#1e1e2e" stroke-width="1"/>
+  <!-- Arrow: Tunnel -> cloudflared -->
+  <line x1="345" y1="220" x2="345" y2="260" stroke="#f6821f" stroke-width="2" marker-end="url(#ao)"/>
+  <text x="355" y="244" fill="#f6821f" font-size="7">encrypted</text>
 
   <!-- Firewall -->
-  <rect x="295" y="355" width="370" height="28" rx="5" fill="#1a0d0d" stroke="#d63939" stroke-width="0.5"/>
-  <text x="480" y="374" fill="#d63939" font-size="9" text-anchor="middle">Firewall: 0 open ports (TCP rules managed via Control Plane)</text>
+  <rect x="270" y="330" width="340" height="34" rx="5" fill="#1a0d0d" stroke="#d63939" stroke-width="0.8"/>
+  <text x="440" y="352" fill="#d63939" font-size="9" text-anchor="middle">Firewall: 0 open ports (TCP rules via Control Plane)</text>
+
+  <!-- Arrow: cloudflared -> Firewall bypass -->
+  <line x1="345" y1="300" x2="345" y2="330" stroke="#f6821f" stroke-width="1.5" marker-end="url(#ao)"/>
 
   <!-- Server -->
-  <rect x="295" y="395" width="370" height="32" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="420" y="416" fill="#c0c0c0" font-size="10" text-anchor="middle">Server: Ubuntu 24.04 ARM (cax31)</text>
-  <text x="630" y="416" fill="#555" font-size="9" text-anchor="middle">cloudflared</text>
+  <rect x="270" y="390" width="340" height="34" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="440" y="412" fill="#c0c0c0" font-size="10" text-anchor="middle">Server: Ubuntu 24.04 ARM (cax31)</text>
 
-  <!-- Docker containers -->
-  <rect x="305" y="440" width="350" height="100" rx="6" fill="#0d1a12" stroke="#00ff88" stroke-width="0.5"/>
-  <text x="480" y="460" fill="#00ff88" font-size="10" font-weight="bold" text-anchor="middle">Docker Containers</text>
+  <!-- Arrow: through firewall -> server -->
+  <line x1="345" y1="364" x2="345" y2="390" stroke="#f6821f" stroke-width="1.5" marker-end="url(#ao)"/>
 
-  <rect x="315" y="470" width="65" height="22" rx="3" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="347" y="485" fill="#888" font-size="8" text-anchor="middle">Infisical</text>
+  <!-- Docker Containers -->
+  <rect x="270" y="450" width="340" height="120" rx="6" fill="#0d1a12" stroke="#00ff88" stroke-width="0.6"/>
+  <text x="440" y="475" fill="#00ff88" font-size="11" font-weight="bold" text-anchor="middle">Docker Containers</text>
 
-  <rect x="388" y="470" width="65" height="22" rx="3" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="420" y="485" fill="#888" font-size="8" text-anchor="middle">Grafana</text>
+  <rect x="285" y="490" width="68" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="319" y="506" fill="#999" font-size="8" text-anchor="middle">Infisical</text>
+  <rect x="361" y="490" width="68" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="395" y="506" fill="#999" font-size="8" text-anchor="middle">Grafana</text>
+  <rect x="437" y="490" width="50" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="462" y="506" fill="#999" font-size="8" text-anchor="middle">n8n</text>
+  <rect x="495" y="490" width="50" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="520" y="506" fill="#999" font-size="8" text-anchor="middle">Gitea</text>
 
-  <rect x="461" y="470" width="55" height="22" rx="3" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="488" y="485" fill="#888" font-size="8" text-anchor="middle">n8n</text>
+  <text x="440" y="545" fill="#556" font-size="9" text-anchor="middle">+ 57 more services (61 total, 18 categories)</text>
 
-  <rect x="524" y="470" width="55" height="22" rx="3" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="551" y="485" fill="#888" font-size="8" text-anchor="middle">Gitea</text>
-
-  <rect x="587" y="470" width="55" height="22" rx="3" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="614" y="485" fill="#888" font-size="8" text-anchor="middle">+58</text>
-
-  <text x="480" y="525" fill="#555" font-size="8" text-anchor="middle">61 services available across 18 categories</text>
+  <!-- Arrow: server -> Docker -->
+  <line x1="345" y1="424" x2="345" y2="450" stroke="#00ff88" stroke-width="1.5" marker-end="url(#ag)"/>
 
   <!-- Persistent Volume -->
-  <rect x="295" y="555" width="170" height="32" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="380" y="576" fill="#888" font-size="9" text-anchor="middle">Persistent Volume (Gitea)</text>
+  <rect x="270" y="595" width="180" height="30" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="360" y="615" fill="#999" font-size="9" text-anchor="middle">Persistent Volume (Gitea)</text>
 
-  <!-- ===== HETZNER OBJECT STORAGE ===== -->
-  <rect x="740" y="310" width="200" height="130" rx="8" fill="#12121a" stroke="#d63939" stroke-width="1" stroke-opacity="0.4"/>
-  <text x="840" y="336" fill="#d63939" font-size="11" font-weight="bold" text-anchor="middle">Hetzner S3</text>
-  <line x1="760" y1="345" x2="920" y2="345" stroke="#1e1e2e" stroke-width="1"/>
+  <!-- Hetzner Cloud border -->
+  <rect x="260" y="320" width="360" height="320" rx="8" fill="none" stroke="#d63939" stroke-width="1" stroke-opacity="0.3"/>
+  <text x="440" y="638" fill="#d63939" font-size="10" font-weight="bold" text-anchor="middle" opacity="0.5">Hetzner Cloud</text>
 
-  <rect x="755" y="355" width="170" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="840" y="372" fill="#888" font-size="9" text-anchor="middle">LakeFS bucket</text>
+  <!-- ====== RIGHT COLUMN: GitHub, CF Storage, Hetzner S3 ====== -->
 
-  <rect x="755" y="385" width="170" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="840" y="402" fill="#888" font-size="9" text-anchor="middle">pg-ducklake bucket</text>
+  <!-- GitHub -->
+  <rect x="680" y="30" width="170" height="150" rx="8" fill="#12121a" stroke="#1e1e2e" stroke-width="1"/>
+  <text x="765" y="55" fill="#e0e0e0" font-size="12" font-weight="bold" text-anchor="middle">GitHub</text>
+  <line x1="700" y1="65" x2="830" y2="65" stroke="#1e1e2e" stroke-width="1"/>
+  <rect x="695" y="78" width="140" height="26" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="765" y="96" fill="#c0c0c0" font-size="10" text-anchor="middle">Actions (CI/CD)</text>
+  <rect x="695" y="112" width="140" height="26" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="765" y="130" fill="#c0c0c0" font-size="10" text-anchor="middle">Secrets</text>
+  <rect x="695" y="146" width="140" height="26" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="765" y="164" fill="#c0c0c0" font-size="10" text-anchor="middle">Release Please</text>
 
-  <rect x="755" y="415" width="170" height="24" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
-  <text x="840" y="432" fill="#888" font-size="9" text-anchor="middle">General bucket</text>
+  <!-- Arrow: GitHub Actions -> Server (deploy, right side) -->
+  <path d="M 765 180 L 765 407 L 610 407" stroke="#00ff88" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+  <text x="775" y="300" fill="#00ff88" font-size="8" font-weight="bold" transform="rotate(-90 775 300)">deploy</text>
 
-  <!-- ===== CONNECTIONS ===== -->
+  <!-- Cloudflare Storage group -->
+  <rect x="680" y="210" width="170" height="175" rx="8" fill="#12121a" stroke="#f6821f" stroke-width="1" stroke-opacity="0.3"/>
+  <text x="765" y="235" fill="#f6821f" font-size="11" font-weight="bold" text-anchor="middle">CF Storage</text>
+  <line x1="700" y1="245" x2="830" y2="245" stroke="#1e1e2e" stroke-width="1"/>
 
-  <!-- GitHub Actions -> R2 (state) -->
-  <path d="M 220 90 L 260 90 Q 270 90 270 100 L 270 175 L 380 175" stroke="#334" stroke-width="1.5" fill="none" marker-end="url(#ao-arrow-dim)"/>
-  <text x="275" y="135" fill="#444" font-size="7" transform="rotate(-90 275 135)">state</text>
+  <rect x="695" y="255" width="140" height="32" rx="5" fill="#1a1a2e" stroke="#00ff88" stroke-width="0.8" filter="url(#g)"/>
+  <text x="765" y="273" fill="#00ff88" font-size="10" text-anchor="middle">Pages (UI+API)</text>
 
-  <!-- GitHub Actions -> Server (deploy via SSH/tunnel) -->
-  <path d="M 220 105 L 250 105 Q 260 105 260 115 L 260 410 L 295 410" stroke="#00ff88" stroke-width="1.5" fill="none" marker-end="url(#ao-arrow)"/>
-  <text x="248" y="300" fill="#00cc6a" font-size="7" transform="rotate(-90 248 300)">deploy</text>
+  <rect x="695" y="297" width="140" height="26" rx="5" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="1"/>
+  <text x="765" y="315" fill="#c0c0c0" font-size="10" text-anchor="middle">Worker</text>
 
-  <!-- Tunnel -> cloudflared -> Docker -->
-  <path d="M 606 96 L 640 96 Q 660 96 660 116 L 660 410 L 660 410" stroke="#f6821f" stroke-width="1.5" fill="none" marker-end="url(#ao-arrow-orange)"/>
-  <text x="670" y="260" fill="#f6821f" font-size="7" transform="rotate(-90 670 260)">encrypted tunnel</text>
+  <rect x="695" y="335" width="44" height="36" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="717" y="352" fill="#999" font-size="9" text-anchor="middle">D1</text>
+  <text x="717" y="365" fill="#556" font-size="6" text-anchor="middle">state</text>
 
-  <!-- Pages <-> D1 -->
-  <line x1="352" y1="136" x2="332" y2="155" stroke="#334" stroke-width="1" stroke-dasharray="3,2"/>
+  <rect x="745" y="335" width="38" height="36" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="764" y="352" fill="#999" font-size="9" text-anchor="middle">R2</text>
+  <text x="764" y="365" fill="#556" font-size="6" text-anchor="middle">tofu</text>
 
-  <!-- Pages <-> KV -->
-  <line x1="410" y1="136" x2="502" y2="155" stroke="#334" stroke-width="1" stroke-dasharray="3,2"/>
+  <rect x="789" y="335" width="38" height="36" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="808" y="352" fill="#999" font-size="9" text-anchor="middle">KV</text>
+  <text x="808" y="365" fill="#556" font-size="6" text-anchor="middle">cfg</text>
 
-  <!-- Worker -> GitHub API -->
-  <path d="M 480 136 L 480 145 Q 480 150 475 150 L 230 150 Q 220 150 220 145 L 220 105" stroke="#334" stroke-width="1" fill="none" stroke-dasharray="3,2"/>
-  <text x="350" y="146" fill="#444" font-size="7">trigger teardown</text>
+  <!-- Resend -->
+  <rect x="680" y="415" width="170" height="50" rx="8" fill="#12121a" stroke="#1e1e2e" stroke-width="1"/>
+  <text x="765" y="438" fill="#999" font-size="11" font-weight="bold" text-anchor="middle">Resend</text>
+  <text x="765" y="455" fill="#556" font-size="8" text-anchor="middle">Email notifications</text>
 
-  <!-- Worker -> Resend -->
-  <path d="M 537 122 L 740 52" stroke="#334" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#ao-arrow-dim)"/>
+  <!-- Arrow: Worker -> Resend -->
+  <line x1="765" y1="323" x2="765" y2="335" stroke="#667" stroke-width="1" stroke-dasharray="3,2"/>
+  <path d="M 765 371 L 765 415" stroke="#667" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#ad)"/>
+  <text x="775" y="398" fill="#667" font-size="7">notify</text>
 
-  <!-- Docker -> Hetzner S3 -->
-  <path d="M 655 490 L 730 490 Q 740 490 740 480 L 740 400 L 755 400" stroke="#334" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#ao-arrow-dim)"/>
-  <text x="735" y="465" fill="#444" font-size="7" transform="rotate(-90 735 465)">S3 API</text>
+  <!-- Hetzner S3 -->
+  <rect x="680" y="490" width="170" height="130" rx="8" fill="#12121a" stroke="#d63939" stroke-width="1" stroke-opacity="0.3"/>
+  <text x="765" y="515" fill="#d63939" font-size="11" font-weight="bold" text-anchor="middle">Hetzner S3</text>
+  <line x1="700" y1="525" x2="830" y2="525" stroke="#1e1e2e" stroke-width="1"/>
+  <rect x="695" y="535" width="140" height="22" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="765" y="550" fill="#999" font-size="8" text-anchor="middle">LakeFS bucket</text>
+  <rect x="695" y="562" width="140" height="22" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="765" y="577" fill="#999" font-size="8" text-anchor="middle">pg-ducklake bucket</text>
+  <rect x="695" y="589" width="140" height="22" rx="4" fill="#1a1a2e" stroke="#2a2a3e" stroke-width="0.5"/>
+  <text x="765" y="604" fill="#999" font-size="8" text-anchor="middle">General bucket</text>
 
-  <!-- DNS -> Tunnel -->
-  <line x1="410" y1="82" x2="422" y2="82" stroke="#f6821f" stroke-width="1"/>
+  <!-- Arrow: Docker -> Hetzner S3 -->
+  <path d="M 610 520 L 680 555" stroke="#667" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#ad)"/>
+  <text x="650" y="530" fill="#667" font-size="7">S3 API</text>
 
-  <!-- DNS CNAME label -->
-  <text x="416" y="76" fill="#555" font-size="6">CNAME</text>
+  <!-- Arrow: TCP Clients -> Firewall (direct) -->
+  <path d="M 110 670 L 110 347 L 270 347" stroke="#d63939" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#ar)"/>
+  <text x="98" y="520" fill="#d63939" font-size="8" transform="rotate(-90 98 520)">A record (direct)</text>
 
-  <!-- Zero Trust protects Tunnel -->
-  <line x1="537" y1="82" x2="549" y2="82" stroke="#f6821f" stroke-width="1" stroke-dasharray="2,2"/>
-
-  <!-- User entry point -->
-  <rect x="20" y="310" width="200" height="80" rx="8" fill="#0d2818" stroke="#00ff88" stroke-width="1" filter="url(#ao-shadow)"/>
-  <text x="120" y="340" fill="#00ff88" font-size="11" font-weight="bold" text-anchor="middle">Users</text>
-  <text x="120" y="358" fill="#00cc6a" font-size="9" text-anchor="middle">HTTPS via Cloudflare</text>
-  <text x="120" y="374" fill="#555" font-size="8" text-anchor="middle">service.yourdomain.com</text>
-
-  <!-- User -> DNS -->
-  <path d="M 120 310 L 120 82 L 295 82" stroke="#00ff88" stroke-width="1.5" fill="none" marker-end="url(#ao-arrow)"/>
-  <text x="130" y="200" fill="#00cc6a" font-size="7" transform="rotate(-90 130 200)">HTTPS request</text>
-
-  <!-- TCP path label -->
-  <rect x="20" y="420" width="200" height="55" rx="8" fill="#12121a" stroke="#2a2a3e" stroke-width="1"/>
-  <text x="120" y="444" fill="#888" font-size="9" text-anchor="middle">TCP Clients</text>
-  <text x="120" y="460" fill="#555" font-size="8" text-anchor="middle">Kafka, PostgreSQL, S3</text>
-
-  <!-- TCP -> Server (direct A record) -->
-  <path d="M 220 448 L 260 448 Q 270 448 270 438 L 270 375 L 295 375" stroke="#d63939" stroke-width="1" fill="none" stroke-dasharray="4,2" marker-end="url(#ao-arrow-dim)"/>
-  <text x="248" y="420" fill="#555" font-size="7" transform="rotate(-90 248 420)">A record</text>
-
-  <!-- Legend -->
-  <text x="740" y="490" fill="#444" font-size="8">Legend:</text>
-  <line x1="740" y1="502" x2="770" y2="502" stroke="#00ff88" stroke-width="1.5"/>
-  <text x="778" y="506" fill="#555" font-size="8">Deploy / HTTPS</text>
-  <line x1="740" y1="518" x2="770" y2="518" stroke="#f6821f" stroke-width="1.5"/>
-  <text x="778" y="522" fill="#555" font-size="8">Cloudflare Tunnel</text>
-  <line x1="740" y1="534" x2="770" y2="534" stroke="#334" stroke-width="1" stroke-dasharray="3,2"/>
-  <text x="778" y="538" fill="#555" font-size="8">Internal / API</text>
-  <line x1="740" y1="550" x2="770" y2="550" stroke="#d63939" stroke-width="1" stroke-dasharray="4,2"/>
-  <text x="778" y="554" fill="#555" font-size="8">Direct TCP (A record)</text>
+  <!-- ====== LEGEND ====== -->
+  <rect x="30" y="120" width="170" height="120" rx="6" fill="#12121a" stroke="#1e1e2e" stroke-width="1"/>
+  <text x="115" y="142" fill="#888" font-size="9" font-weight="bold" text-anchor="middle">Legend</text>
+  <line x1="45" y1="158" x2="75" y2="158" stroke="#00ff88" stroke-width="2"/>
+  <text x="83" y="162" fill="#999" font-size="8">Deploy / HTTPS</text>
+  <line x1="45" y1="178" x2="75" y2="178" stroke="#f6821f" stroke-width="2"/>
+  <text x="83" y="182" fill="#999" font-size="8">CF Tunnel</text>
+  <line x1="45" y1="198" x2="75" y2="198" stroke="#667" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="83" y="202" fill="#999" font-size="8">Internal / API</text>
+  <line x1="45" y1="218" x2="75" y2="218" stroke="#d63939" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="83" y="222" fill="#999" font-size="8">Direct TCP</text>
 </svg>
