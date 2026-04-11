@@ -151,15 +151,15 @@ export async function onRequestPost(context) {
   }
 
   try {
-    // Reject oversized payloads (read body text first to enforce limit regardless of headers)
-    const bodyText = await request.text();
-    if (bodyText.length > 1048576) {
+    // Reject oversized payloads based on actual byte size, not UTF-16 code units
+    const bodyBuffer = await request.arrayBuffer();
+    if (bodyBuffer.byteLength > 1048576) {
       return new Response(JSON.stringify({ success: false, error: 'Request body too large' }), {
         status: 413, headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    const body = JSON.parse(bodyText);
+    const body = JSON.parse(new TextDecoder().decode(bodyBuffer));
     const serviceName = body.service;
     const enabled = body.enabled;
 
