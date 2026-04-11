@@ -1,3 +1,7 @@
+---
+title: "Wetty"
+---
+
 ## Wetty
 
 ![Wetty](https://img.shields.io/badge/Wetty-000000?logo=gnubash&logoColor=white)

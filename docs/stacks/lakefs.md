@@ -1,3 +1,7 @@
+---
+title: "LakeFS"
+---
+
 ## LakeFS
 
 ![LakeFS](https://img.shields.io/badge/LakeFS-00B4D8?logo=git&logoColor=white)

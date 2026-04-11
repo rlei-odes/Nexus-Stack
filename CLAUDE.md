@@ -94,10 +94,16 @@ Nexus-Stack/
 │   ├── init-r2-state.sh        # R2 bucket + credentials setup
 │   ├── setup-control-panel-secrets.sh  # Control Panel secrets setup
 │   └── check-control-panel-env.sh
-└── docs/                       # Documentation
+└── docs/                       # Documentation (single source of truth for nexus-stack.ch)
     ├── CONTRIBUTING.md         # Contribution guidelines
     ├── setup-guide.md          # Setup instructions
-    └── stacks.md               # Stack documentation
+    ├── control-plane.md        # Control Plane user guide
+    ├── debugging.md            # Debugging guide
+    ├── ssh-access.md           # SSH access guide
+    ├── troubleshooting.md      # Troubleshooting guide
+    ├── docs-website-sync.md    # How docs sync to nexus-stack.ch
+    ├── stacks/                 # Per-service documentation (one .md per service)
+    └── tutorials/              # Tutorials and walkthroughs
 ```
 
 ## Key Commands
@@ -762,6 +768,24 @@ Use prefixes that match commit types:
 - Follow best security practices to protect sensitive data
 - Follow Conventional Commits for all commit messages
 - Always adapt documentation to reflect any changes made
+
+## Documentation Drift Prevention
+
+**Every PR must be checked for documentation impact.** Before creating or finalizing a PR, verify:
+
+1. **Does this change affect any documentation?** Check:
+   - `docs/stacks/*.md` - if a service was added, changed, or removed
+   - `docs/setup-guide.md` - if setup steps, secrets, or workflows changed
+   - `docs/control-plane.md` - if the Control Plane UI or API changed
+   - `docs/debugging.md` / `docs/troubleshooting.md` - if debugging steps changed
+   - `docs/docs-website-sync.md` - if the sync mechanism changed
+   - `README.md` - if architecture, stack count, or overview changed
+   - `services.yaml` - if service metadata changed (port, subdomain, image, description)
+   - `CLAUDE.md` - if development guidelines or project structure changed
+
+2. **Update affected docs in the same PR.** Never leave docs out of sync - the website at nexus-stack.ch pulls directly from `docs/` and `services.yaml`, so stale docs = stale website.
+
+3. **Stack count:** If stacks were added or removed, update the count in `README.md` heading `## Available Stacks (N)` and verify badges match the table.
 
 ## Closing Issues via PRs
 

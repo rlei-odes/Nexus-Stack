@@ -1,3 +1,7 @@
+---
+title: "Mailpit"
+---
+
 ## Mailpit
 
 ![Mailpit](https://img.shields.io/badge/Mailpit-F36F21?logo=maildotru&logoColor=white)

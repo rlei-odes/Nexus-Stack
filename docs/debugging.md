@@ -1,3 +1,9 @@
+---
+title: "Debugging"
+description: "How to debug issues with Nexus-Stack services"
+order: 3
+---
+
 # Debugging Guide
 
 This guide explains how to debug issues with Nexus-Stack services.

@@ -1,3 +1,7 @@
+---
+title: "Kafdrop"
+---
+
 ## Kafdrop
 
 ![Kafdrop](https://img.shields.io/badge/Kafdrop-000000?logo=apachekafka&logoColor=white)

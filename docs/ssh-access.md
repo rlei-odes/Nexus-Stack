@@ -1,3 +1,9 @@
+---
+title: "SSH Access"
+description: "Connect to the Nexus-Stack server via SSH for debugging and maintenance"
+order: 4
+---
+
 # SSH Access Guide
 
 This guide explains how to connect to the Nexus-Stack server via SSH for debugging and maintenance.

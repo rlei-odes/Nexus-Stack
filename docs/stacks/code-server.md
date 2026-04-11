@@ -1,3 +1,7 @@
+---
+title: "code-server"
+---
+
 ## code-server
 
 ![code-server](https://img.shields.io/badge/code--server-007ACC?logo=visualstudiocode&logoColor=white)

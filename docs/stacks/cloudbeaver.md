@@ -1,3 +1,7 @@
+---
+title: "CloudBeaver"
+---
+
 ## CloudBeaver
 
 ![CloudBeaver](https://img.shields.io/badge/CloudBeaver-3776AB?logo=dbeaver&logoColor=white)

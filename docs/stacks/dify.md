@@ -1,3 +1,7 @@
+---
+title: "Dify"
+---
+
 ## Dify
 
 ![Dify](https://img.shields.io/badge/Dify-1677FF?logoColor=white)

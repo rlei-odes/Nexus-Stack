@@ -1,3 +1,7 @@
+---
+title: "Hoppscotch"
+---
+
 ## Hoppscotch
 
 ![Hoppscotch](https://img.shields.io/badge/Hoppscotch-201718?logo=hoppscotch&logoColor=white)

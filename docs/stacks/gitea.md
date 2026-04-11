@@ -1,3 +1,7 @@
+---
+title: "Gitea"
+---
+
 ## Gitea
 
 ![Gitea](https://img.shields.io/badge/Gitea-609926?logo=gitea&logoColor=white)

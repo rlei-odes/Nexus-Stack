@@ -1,3 +1,7 @@
+---
+title: "Soda Core"
+---
+
 ## Soda Core
 
 ![Soda](https://img.shields.io/badge/Soda-6C47FF?logo=database&logoColor=white)

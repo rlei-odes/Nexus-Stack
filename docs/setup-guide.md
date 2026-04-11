@@ -1,3 +1,9 @@
+---
+title: "Setup Guide"
+description: "Complete installation and configuration guide for Nexus-Stack"
+order: 1
+---
+
 # 🚀 Nexus Setup Guide
 
 This guide walks you through the complete setup of Nexus Stack.
@@ -420,6 +426,12 @@ Docker Hub limits anonymous image pulls to **100 pulls per 6 hours per IP**. Add
    ```
 
 ---
+
+## 🌐 Website Documentation Sync (Optional)
+
+Documentation in `docs/` can be synced to [nexus-stack.ch](https://nexus-stack.ch) when changes are pushed to `main`. This is handled by the `sync-docs-site.yml` workflow and only runs on the original repository (not on forks).
+
+See [Website Sync Guide](docs-website-sync.md) for setup instructions. Sync requires adding the `WEBSITE_DISPATCH_TOKEN` secret and setting the `WEBSITE_SYNC_ENABLED` repository variable to `true`.
 
 ## 📚 Next Steps
 

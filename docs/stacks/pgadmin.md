@@ -1,3 +1,7 @@
+---
+title: "pgAdmin"
+---
+
 ## pgAdmin
 
 ![pgAdmin](https://img.shields.io/badge/pgAdmin-336791?logo=postgresql&logoColor=white)

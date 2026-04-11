@@ -1,3 +1,7 @@
+---
+title: "OpenMetadata"
+---
+
 ## OpenMetadata
 
 ![OpenMetadata](https://img.shields.io/badge/OpenMetadata-7147E8?logoColor=white)

@@ -1,3 +1,7 @@
+---
+title: "Infisical"
+---
+
 ## Infisical
 
 ![Infisical](https://img.shields.io/badge/Infisical-000000?logo=infisical&logoColor=white)

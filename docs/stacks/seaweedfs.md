@@ -1,3 +1,7 @@
+---
+title: "SeaweedFS"
+---
+
 ## SeaweedFS
 
 ![SeaweedFS](https://img.shields.io/badge/SeaweedFS-4CAF50?logo=amazons3&logoColor=white)

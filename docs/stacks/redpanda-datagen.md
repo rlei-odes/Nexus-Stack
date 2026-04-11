@@ -1,3 +1,7 @@
+---
+title: "Redpanda Datagen"
+---
+
 ## Redpanda Datagen
 
 ![Redpanda Datagen](https://img.shields.io/badge/Redpanda_Datagen-E4405F?logo=redpanda&logoColor=white)

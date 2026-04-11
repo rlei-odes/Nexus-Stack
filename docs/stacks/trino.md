@@ -1,3 +1,7 @@
+---
+title: "Trino"
+---
+
 ## Trino
 
 ![Trino](https://img.shields.io/badge/Trino-DD00A1?logo=trino&logoColor=white)

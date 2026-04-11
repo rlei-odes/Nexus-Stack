@@ -1,3 +1,7 @@
+---
+title: "pg_ducklake"
+---
+
 ## pg_ducklake
 
 ![pg_ducklake](https://img.shields.io/badge/pg__ducklake-336791?logo=postgresql&logoColor=white)

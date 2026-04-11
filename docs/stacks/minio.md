@@ -1,3 +1,7 @@
+---
+title: "MinIO"
+---
+
 ## MinIO
 
 ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white)

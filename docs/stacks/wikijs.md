@@ -1,3 +1,7 @@
+---
+title: "Wiki.js"
+---
+
 ## Wiki.js
 
 ![Wiki.js](https://img.shields.io/badge/Wiki.js-1976D2?logo=wikidotjs&logoColor=white)

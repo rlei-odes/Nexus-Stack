@@ -1,3 +1,7 @@
+---
+title: "Ollama + Open WebUI"
+---
+
 ## Ollama + Open WebUI
 
 ![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white)

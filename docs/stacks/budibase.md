@@ -1,3 +1,7 @@
+---
+title: "Budibase"
+---
+
 ## Budibase
 
 ![Budibase](https://img.shields.io/badge/Budibase-9981F5?logo=budibase&logoColor=white)

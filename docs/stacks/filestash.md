@@ -1,3 +1,7 @@
+---
+title: "Filestash"
+---
+
 ## Filestash
 
 ![Filestash](https://img.shields.io/badge/Filestash-2B3A67?logo=files&logoColor=white)

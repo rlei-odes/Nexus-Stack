@@ -1,3 +1,7 @@
+---
+title: "RisingWave"
+---
+
 ## RisingWave
 
 ![RisingWave](https://img.shields.io/badge/RisingWave-0065FF?logoColor=white)
