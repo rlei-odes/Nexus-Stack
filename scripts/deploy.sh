@@ -20,7 +20,7 @@ STACKS_DIR="$PROJECT_ROOT/stacks"
 REMOTE_STACKS_DIR="/opt/docker-server/stacks"
 
 # Escape single quotes for safe SQL interpolation
-escape_sql() { echo "${1//\'/\'\'}"; }
+escape_sql() { printf '%s' "${1//\'/\'\'}"; }
 
 # Colors
 RED='\033[0;31m'

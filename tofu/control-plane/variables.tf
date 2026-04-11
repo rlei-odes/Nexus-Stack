@@ -78,13 +78,13 @@ variable "max_delay_hours" {
 }
 
 variable "notification_cron" {
-  description = "Cron schedule for teardown notification email (UTC). Default: 20:45 UTC = 21:45 CET"
+  description = "Cron schedule for teardown notification email (UTC). Default: 20:45 UTC (21:45 CET / 22:45 CEST)"
   type        = string
   default     = "45 20 * * *"
 }
 
 variable "teardown_cron" {
-  description = "Cron schedule for teardown execution (UTC). Default: 21:00 UTC = 22:00 CET"
+  description = "Cron schedule for teardown execution (UTC). Default: 21:00 UTC (22:00 CET / 23:00 CEST)"
   type        = string
   default     = "0 21 * * *"
 }
