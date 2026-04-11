@@ -5,9 +5,8 @@
 # when documentation changes. The website fetches docs from this repo at build
 # time via a pre-build script (scripts/fetch-docs.mjs).
 #
-# Fork safety: This workflow only runs on the original repo (stefanko-ch/Nexus-Stack).
-# Forks don't have the WEBSITE_DEPLOY_HOOK secret and the repo check prevents
-# the workflow from even attempting to run.
+# Fork safety: The job-level `if` condition checks `github.repository` —
+# forks have a different repository name so the job is skipped entirely.
 #
 # Setup:
 # 1. Create a Deploy Hook in Cloudflare: Workers > nexus-stack-ch > Settings >
