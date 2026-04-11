@@ -6,6 +6,7 @@
  * Includes validation and error handling.
  */
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+import { logApiCall, logError } from './_utils/logger.js';
 
 export async function onRequestPost(context) {
   const { env, request } = context;
@@ -41,9 +42,12 @@ export async function onRequestPost(context) {
     });
 
     if (response.status === 204) {
-      return new Response(JSON.stringify({ 
-        success: true, 
-        message: 'Destroy workflow triggered successfully' 
+      await logApiCall(env.NEXUS_DB, '/api/destroy', 'POST', {
+        action: 'destroy_all_triggered',
+      });
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'Destroy workflow triggered successfully'
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -73,9 +77,10 @@ export async function onRequestPost(context) {
     });
   } catch (error) {
     console.error('Destroy endpoint error:', error);
-    return new Response(JSON.stringify({ 
-      success: false, 
-      error: 'Network error while triggering workflow' 
+    await logError(env.NEXUS_DB, '/api/destroy', 'POST', error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Network error while triggering workflow'
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
