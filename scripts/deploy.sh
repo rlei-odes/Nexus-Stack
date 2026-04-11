@@ -158,6 +158,8 @@ NOCODB_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_admin_password // empt
 NOCODB_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_db_password // empty')
 NOCODB_JWT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.nocodb_jwt_secret // empty')
 DINKY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dinky_admin_password // empty')
+APPSMITH_ENCRYPTION_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.appsmith_encryption_password // empty')
+APPSMITH_ENCRYPTION_SALT=$(echo "$SECRETS_JSON" | jq -r '.appsmith_encryption_salt // empty')
 DIFY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_admin_password // empty')
 DIFY_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_db_password // empty')
 DIFY_REDIS_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_redis_password // empty')
@@ -1109,6 +1111,19 @@ EOF
     echo -e "${GREEN}  ✓ S3 Manager .env generated${NC}"
 fi
 
+# Appsmith
+if echo "$ENABLED_SERVICES" | grep -qw "appsmith" && [ -n "$APPSMITH_ENCRYPTION_PASSWORD" ] && [ -n "$APPSMITH_ENCRYPTION_SALT" ]; then
+    echo "  Generating Appsmith config from OpenTofu secrets..."
+    cat > "$STACKS_DIR/appsmith/.env" << EOF
+# Auto-generated from OpenTofu secrets - DO NOT COMMIT
+APPSMITH_ENCRYPTION_PASSWORD=${APPSMITH_ENCRYPTION_PASSWORD}
+APPSMITH_ENCRYPTION_SALT=${APPSMITH_ENCRYPTION_SALT}
+APPSMITH_DISABLE_TELEMETRY=true
+APPSMITH_CUSTOM_DOMAIN=https://appsmith.${DOMAIN}
+EOF
+    echo -e "${GREEN}  ✓ Appsmith .env generated${NC}"
+fi
+
 # NocoDB
 if echo "$ENABLED_SERVICES" | grep -qw "nocodb" && [ -n "$NOCODB_DB_PASS" ] && [ -n "$NOCODB_ADMIN_PASS" ] && [ -n "$NOCODB_JWT_SECRET" ]; then
     echo "  Generating NocoDB config from OpenTofu secrets..."
@@ -1913,6 +1928,10 @@ EOF
             "NOCODB_PASSWORD" "$NOCODB_ADMIN_PASS" \
             "NOCODB_DB_PASSWORD" "$NOCODB_DB_PASS" \
             "NOCODB_JWT_SECRET" "$NOCODB_JWT_SECRET"
+
+        build_folder "appsmith" \
+            "APPSMITH_ENCRYPTION_PASSWORD" "$APPSMITH_ENCRYPTION_PASSWORD" \
+            "APPSMITH_ENCRYPTION_SALT" "$APPSMITH_ENCRYPTION_SALT"
 
         build_folder "dinky" \
             "DINKY_USERNAME" "admin" \
