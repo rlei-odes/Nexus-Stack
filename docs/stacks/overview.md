@@ -101,6 +101,7 @@ Cloudflare Tunnels handle HTTPS perfectly, but a few services need raw TCP acces
 | **[ClickHouse](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/clickhouse.md)** | `clickhouse/clickhouse-server:25.8.16.34` | Columnar OLAP database optimized for analytical queries over billions of rows. Typical pairing: a Debezium → Redpanda → ClickHouse CDC pipeline turning a transactional PostgreSQL into sub-second analytics. |
 | **[CloudBeaver](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/cloudbeaver.md)** | `dbeaver/cloudbeaver:24` | DBeaver's web UI — full universal database IDE with ER diagrams, data editor, and SQL completion. The power-user choice for multi-engine work. |
 | **[pgAdmin](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/pgadmin.md)** | `dpage/pgadmin4:9` | The PostgreSQL admin and query client, browser-based. Use this if you live in PostgreSQL; use Adminer or CloudBeaver if you need multi-engine access. |
+| **[pg-ducklake](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/pg-ducklake.md)** | `postgres:17-alpine` + DuckDB extension | PostgreSQL with the DuckDB extension for analytical queries. Stores Parquet files on Hetzner Object Storage (S3) for columnar analytics alongside transactional workloads. Internal-only. |
 | **[PostgreSQL](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/postgres.md)** | `postgres:17-alpine` | The default relational database used as the storage backend for many other stacks (Wiki.js, Gitea, Metabase, Superset, Dagster, OpenMetadata, Soda, Kestra). Internal-only — no public endpoint. |
 | **[RisingWave](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/risingwave.md)** | `risingwavelabs/risingwave:v2.8.1` | PostgreSQL-wire-compatible streaming database. Write SQL `CREATE MATERIALIZED VIEW … FROM kafka_source`, get real-time results. Think "Flink SQL but you query it like Postgres". |
 
@@ -219,7 +220,7 @@ A full Git + CI + remote-IDE setup with email testing. Around 3 GB RAM.
 **LLM playground** — `ollama` · `dify` · `postgres` · `portainer`
 Local LLMs via Ollama, a workflow builder for RAG / agents via Dify. Heavy — needs at least a `cax31` server (8 GB RAM) and probably more.
 
-**Data engineer's swiss army knife** — `redpanda` · `flink` · `dinky` · `postgres` · `clickhouse` · `grafana` · `kestra` · `jupyter`
+**Data engineer's Swiss Army knife** — `redpanda` · `flink` · `dinky` · `postgres` · `clickhouse` · `grafana` · `kestra` · `jupyter`
 Stream + batch processing, two databases, an orchestrator, a notebook, full observability. Around 6 GB RAM.
 
 ## Resource considerations
