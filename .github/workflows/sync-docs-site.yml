@@ -42,9 +42,9 @@ jobs:
           DEPLOY_HOOK: ${{ secrets.WEBSITE_DEPLOY_HOOK }}
         run: |
           if [ -z "$DEPLOY_HOOK" ]; then
-            echo "⏭️ WEBSITE_DEPLOY_HOOK not configured - skipping website sync"
+            echo "❌ WEBSITE_DEPLOY_HOOK not configured but website sync is enabled"
             echo "   See docs/docs-website-sync.md for setup instructions"
-            exit 0
+            exit 1
           fi
 
           echo "Triggering nexus-stack.ch rebuild..."

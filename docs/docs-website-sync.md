@@ -27,7 +27,7 @@ Nexus-Stack repo                    Cloudflare Workers Builds
 
 1. A push to `main` that changes `docs/`, `services.yaml`, or `README.md` triggers the `sync-docs-site.yml` workflow
 2. The workflow calls the Cloudflare Deploy Hook via `curl -X POST`
-3. Cloudflare Workers Builds runs `fetch-docs.mjs` (fetches docs from GitHub) then `astro build`
+3. Cloudflare Workers Builds runs `scripts/fetch-docs.mjs` (fetches docs from GitHub) then `astro build`
 4. The updated site is deployed to the edge
 
 ## Content Mapping
@@ -117,12 +117,10 @@ The sync workflow is gated on this variable. If it is missing or set to any othe
 
 ## Fork Safety
 
-The sync workflow has three independent protection layers:
+The sync workflow is gated by three conditions that must all be true for it to run:
 
-| Layer | How it works |
-|-------|-------------|
-| Repo check | `if: github.repository == 'stefanko-ch/Nexus-Stack'` skips on any fork |
-| Missing variable | Forks don't have `WEBSITE_SYNC_ENABLED`, job is skipped |
-| Missing secret | Forks don't have `WEBSITE_DEPLOY_HOOK`, script exits cleanly |
+1. **Repository check** — `github.repository == 'stefanko-ch/Nexus-Stack'` in the job-level `if:`. This is the primary gate: forks have a different repository name, so the job is skipped entirely.
+2. **Sync enabled** — `vars.WEBSITE_SYNC_ENABLED == 'true'` must be set as a repository variable. Not configured by default.
+3. **Deploy hook configured** — `WEBSITE_DEPLOY_HOOK` secret must contain the Cloudflare Deploy Hook URL. The step fails if sync is enabled but the hook is missing.
 
-Forks can safely ignore the `sync-docs-site.yml` workflow. It will never run and never fail.
+Forks can safely ignore the `sync-docs-site.yml` workflow. The repository check alone prevents it from running.
