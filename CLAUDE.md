@@ -94,10 +94,16 @@ Nexus-Stack/
 │   ├── init-r2-state.sh        # R2 bucket + credentials setup
 │   ├── setup-control-panel-secrets.sh  # Control Panel secrets setup
 │   └── check-control-panel-env.sh
-└── docs/                       # Documentation
+└── docs/                       # Documentation (single source of truth for nexus-stack.ch)
     ├── CONTRIBUTING.md         # Contribution guidelines
     ├── setup-guide.md          # Setup instructions
-    └── stacks.md               # Stack documentation
+    ├── control-plane.md        # Control Plane user guide
+    ├── debugging.md            # Debugging guide
+    ├── ssh-access.md           # SSH access guide
+    ├── troubleshooting.md      # Troubleshooting guide
+    ├── docs-website-sync.md    # How docs sync to nexus-stack.ch
+    ├── stacks/                 # Per-service documentation (one .md per service)
+    └── tutorials/              # Tutorials and walkthroughs
 ```
 
 ## Key Commands

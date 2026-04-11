@@ -427,6 +427,12 @@ Docker Hub limits anonymous image pulls to **100 pulls per 6 hours per IP**. Add
 
 ---
 
+## 🌐 Website Documentation Sync (Optional)
+
+Documentation in `docs/` is automatically synced to [nexus-stack.ch](https://nexus-stack.ch) when changes are pushed to `main`. This is handled by the `sync-docs-site.yml` workflow and only runs on the original repository (not on forks).
+
+See [Website Sync Guide](docs-website-sync.md) for setup instructions.
+
 ## 📚 Next Steps
 
 - Enable/disable services via Control Plane
