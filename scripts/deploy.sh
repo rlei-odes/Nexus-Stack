@@ -440,6 +440,9 @@ fi
 echo ""
 echo -e "${YELLOW}[3/7] Preparing stacks...${NC}"
 
+# Debug log file for troubleshooting
+LOG_FILE="/tmp/debug.log"
+
 # Get enabled services from tofu output
 TOFU_ERR=$(mktemp)
 if ! ENABLED_SERVICES_JSON=$(cd "$TOFU_DIR" && tofu output -json enabled_services 2>"$TOFU_ERR"); then
