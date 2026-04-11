@@ -1,3 +1,7 @@
+---
+title: "RustFS"
+---
+
 ## RustFS
 
 ![RustFS](https://img.shields.io/badge/RustFS-B7410E?logo=rust&logoColor=white)

@@ -1,3 +1,7 @@
+---
+title: "S3 Manager"
+---
+
 ## S3 Manager
 
 ![S3 Manager](https://img.shields.io/badge/S3_Manager-2E7D32?logo=amazons3&logoColor=white)

@@ -1,3 +1,7 @@
+---
+title: "Jupyter PySpark"
+---
+
 ## Jupyter PySpark
 
 ![Jupyter](https://img.shields.io/badge/Jupyter-F37726?logo=jupyter&logoColor=white)

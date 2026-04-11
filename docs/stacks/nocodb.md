@@ -1,3 +1,7 @@
+---
+title: "NocoDB"
+---
+
 ## NocoDB
 
 ![NocoDB](https://img.shields.io/badge/NocoDB-1F2937?logo=nocodb&logoColor=white)

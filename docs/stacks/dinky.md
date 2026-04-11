@@ -1,3 +1,7 @@
+---
+title: "Dinky"
+---
+
 ## Dinky
 
 ![Dinky](https://img.shields.io/badge/Dinky-1677FF?logo=apacheflink&logoColor=white)

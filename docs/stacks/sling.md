@@ -1,3 +1,7 @@
+---
+title: "Sling"
+---
+
 ## Sling
 
 ![Sling](https://img.shields.io/badge/Sling-FF6B35?logo=data&logoColor=white)

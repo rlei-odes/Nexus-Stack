@@ -1,3 +1,7 @@
+---
+title: "Redpanda Console"
+---
+
 ## Redpanda Console
 
 ![Redpanda Console](https://img.shields.io/badge/Redpanda_Console-E4405F?logo=redpanda&logoColor=white)

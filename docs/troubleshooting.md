@@ -1,3 +1,9 @@
+---
+title: "Troubleshooting"
+description: "Common issues and solutions for Nexus-Stack"
+order: 5
+---
+
 # Troubleshooting Guide
 
 ## Firewall Management

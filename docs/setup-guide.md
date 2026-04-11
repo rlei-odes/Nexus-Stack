@@ -1,3 +1,9 @@
+---
+title: "Setup Guide"
+description: "Complete installation and configuration guide for Nexus-Stack"
+order: 1
+---
+
 # 🚀 Nexus Setup Guide
 
 This guide walks you through the complete setup of Nexus Stack.

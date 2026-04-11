@@ -1,3 +1,7 @@
+---
+title: "Vector"
+---
+
 ## Vector
 
 ![Vector](https://img.shields.io/badge/Vector-3B2F63?logo=vector&logoColor=white)

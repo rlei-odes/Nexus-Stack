@@ -1,3 +1,7 @@
+---
+title: "Adminer"
+---
+
 ## Adminer
 
 ![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)

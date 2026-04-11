@@ -1,3 +1,9 @@
+---
+title: "Contributing"
+description: "How to contribute to the Nexus-Stack project"
+order: 6
+---
+
 # Contributing to NEXUS STACK
 
 ## Commit Convention

@@ -1,3 +1,7 @@
+---
+title: "Uptime Kuma"
+---
+
 ## Uptime Kuma
 
 ![Uptime Kuma](https://img.shields.io/badge/Uptime%20Kuma-5CDD8B?logo=uptimekuma&logoColor=white)

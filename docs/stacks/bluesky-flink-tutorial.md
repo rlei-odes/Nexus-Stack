@@ -1,3 +1,7 @@
+---
+title: "BlueSky Real-Time Streaming with Flink SQL"
+---
+
 # BlueSky Real-Time Streaming with Flink SQL
 
 This tutorial walks through streaming live BlueSky posts into Redpanda and querying them with Flink SQL via Dinky.

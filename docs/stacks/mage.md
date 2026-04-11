@@ -1,3 +1,7 @@
+---
+title: "Mage"
+---
+
 ## Mage
 
 ![Mage](https://img.shields.io/badge/Mage-6B4FBB?logo=mage&logoColor=white)

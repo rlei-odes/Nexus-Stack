@@ -1,3 +1,7 @@
+---
+title: "Windmill"
+---
+
 ## Windmill
 
 ![Windmill](https://img.shields.io/badge/Windmill-3B82F6?logo=windowsterminal&logoColor=white)

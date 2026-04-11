@@ -1,3 +1,7 @@
+---
+title: "Redpanda Connect"
+---
+
 ## Redpanda Connect
 
 ![Redpanda Connect](https://img.shields.io/badge/Redpanda_Connect-E4405F?logo=redpanda&logoColor=white)

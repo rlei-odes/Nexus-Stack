@@ -1,3 +1,7 @@
+---
+title: "Quickwit"
+---
+
 ## Quickwit
 
 ![Quickwit](https://img.shields.io/badge/Quickwit-FF6B6B?logo=quickwit&logoColor=white)

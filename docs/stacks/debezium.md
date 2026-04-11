@@ -1,3 +1,7 @@
+---
+title: "Debezium"
+---
+
 ## Debezium
 
 ![Debezium](https://img.shields.io/badge/Debezium-4E8CBF?logo=debezium&logoColor=white)

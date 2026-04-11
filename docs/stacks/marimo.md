@@ -1,3 +1,7 @@
+---
+title: "Marimo"
+---
+
 ## Marimo
 
 ![Marimo](https://img.shields.io/badge/Marimo-1C1C1C?logo=python&logoColor=white)

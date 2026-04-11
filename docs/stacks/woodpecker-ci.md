@@ -1,3 +1,7 @@
+---
+title: "Woodpecker CI"
+---
+
 ## Woodpecker CI
 
 ![Woodpecker CI](https://img.shields.io/badge/Woodpecker_CI-4CAF50?logo=woodpeckerci&logoColor=white)

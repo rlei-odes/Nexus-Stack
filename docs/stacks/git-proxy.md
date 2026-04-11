@@ -1,3 +1,7 @@
+---
+title: "Git Proxy"
+---
+
 ## Git Proxy
 
 ![Git Proxy](https://img.shields.io/badge/Git_Proxy-009639?logo=nginx&logoColor=white)

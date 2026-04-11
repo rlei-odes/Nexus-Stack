@@ -1,3 +1,7 @@
+---
+title: "Apache Superset"
+---
+
 ## Apache Superset
 
 ![Apache Superset](https://img.shields.io/badge/Apache_Superset-20A6A4?logo=apachesuperset&logoColor=white)

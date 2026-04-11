@@ -1,3 +1,7 @@
+---
+title: "Metabase"
+---
+
 ## Metabase
 
 ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white)

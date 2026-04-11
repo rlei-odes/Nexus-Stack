@@ -1,3 +1,7 @@
+---
+title: "Apache Spark"
+---
+
 ## Apache Spark
 
 ![Spark](https://img.shields.io/badge/Apache_Spark-E25A1C?logo=apachespark&logoColor=white)

@@ -1,3 +1,7 @@
+---
+title: "Redpanda"
+---
+
 ## Redpanda
 
 ![Redpanda](https://img.shields.io/badge/Redpanda-E4405F?logo=redpanda&logoColor=white)

@@ -1,3 +1,7 @@
+---
+title: "Kafka-UI"
+---
+
 ## Kafka-UI
 
 ![Kafka-UI](https://img.shields.io/badge/Kafka--UI-000000?logo=apachekafka&logoColor=white)

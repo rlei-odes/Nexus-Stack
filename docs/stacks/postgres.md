@@ -1,3 +1,7 @@
+---
+title: "PostgreSQL"
+---
+
 ## PostgreSQL
 
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-336791?logo=postgresql&logoColor=white)

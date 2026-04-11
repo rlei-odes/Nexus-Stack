@@ -1,3 +1,9 @@
+---
+title: "Control Plane"
+description: "Web interface for managing Nexus-Stack infrastructure and services"
+order: 2
+---
+
 # Control Plane User Guide
 
 The Control Plane is your web interface for managing Nexus-Stack infrastructure. Access it at:

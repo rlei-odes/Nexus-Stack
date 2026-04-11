@@ -1,0 +1,36 @@
+# =============================================================================
+# Sync Documentation to nexus-stack.ch Website
+# =============================================================================
+# Triggers a rebuild of the Astro website when documentation changes.
+# The website fetches docs from this repo at build time via Content Loaders.
+#
+# Fork safety: This workflow only runs on the original repo (stefanko-ch/Nexus-Stack).
+# Forks don't have the WEBSITE_DISPATCH_TOKEN secret and the repo check prevents
+# the workflow from even attempting to run.
+# =============================================================================
+
+name: Sync docs to website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'services.yaml'
+      - 'README.md'
+  workflow_dispatch:
+
+jobs:
+  trigger-rebuild:
+    name: Trigger website rebuild
+    # Only run on the original repo, not forks
+    if: github.repository == 'stefanko-ch/Nexus-Stack'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger nexus-stack.ch rebuild
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+          repository: stefanko-ch/nexus-stack.ch
+          event-type: docs-updated
+          client-payload: '{"sha": "${{ github.sha }}", "ref": "${{ github.ref }}"}'

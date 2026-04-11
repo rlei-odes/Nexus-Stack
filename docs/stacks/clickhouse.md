@@ -1,3 +1,7 @@
+---
+title: "ClickHouse"
+---
+
 ## ClickHouse
 
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC00?logo=clickhouse&logoColor=black)

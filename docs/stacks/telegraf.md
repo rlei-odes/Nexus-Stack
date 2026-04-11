@@ -1,3 +1,7 @@
+---
+title: "Telegraf"
+---
+
 ## Telegraf
 
 ![Telegraf](https://img.shields.io/badge/Telegraf-22ADF6?logo=influxdb&logoColor=white)
