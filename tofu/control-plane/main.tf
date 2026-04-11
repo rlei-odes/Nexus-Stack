@@ -71,12 +71,12 @@ resource "cloudflare_workers_script" "scheduled_teardown" {
 
   plain_text_binding {
     name = "NOTIFICATION_CRON"
-    text = "45 20 * * *"  # Notification at 20:45 UTC (21:45 CET)
+    text = var.notification_cron
   }
 
   plain_text_binding {
     name = "TEARDOWN_CRON"
-    text = "0 21 * * *"  # Teardown at 21:00 UTC (22:00 CET)
+    text = var.teardown_cron
   }
 
   # Note: RESEND_API_KEY and GITHUB_TOKEN are set via setup-control-plane-secrets.sh
@@ -88,9 +88,9 @@ resource "cloudflare_workers_script" "scheduled_teardown" {
 resource "cloudflare_workers_cron_trigger" "scheduled_teardown" {
   account_id  = var.cloudflare_account_id
   script_name = cloudflare_workers_script.scheduled_teardown.name
-  schedules   = [
-    "45 20 * * *",  # Notification at 20:45 UTC (21:45 CET)
-    "0 21 * * *",   # Teardown at 21:00 UTC (22:00 CET)
+  schedules = [
+    var.notification_cron,
+    var.teardown_cron,
   ]
 }
 
@@ -246,7 +246,7 @@ resource "cloudflare_zero_trust_access_policy" "control_plane_email" {
 resource "minio_s3_bucket" "lakefs" {
   count         = var.hetzner_object_storage_access_key != "" ? 1 : 0
   bucket        = "${local.resource_prefix}-lakefs"
-  force_destroy = true
+  force_destroy = false
 }
 
 # -----------------------------------------------------------------------------
@@ -258,7 +258,7 @@ resource "minio_s3_bucket" "lakefs" {
 resource "minio_s3_bucket" "general" {
   count         = var.hetzner_object_storage_access_key != "" ? 1 : 0
   bucket        = local.resource_prefix
-  force_destroy = true
+  force_destroy = false
 }
 
 # -----------------------------------------------------------------------------
@@ -271,7 +271,7 @@ resource "minio_s3_bucket" "general" {
 resource "minio_s3_bucket" "pgducklake" {
   count         = var.hetzner_object_storage_access_key != "" ? 1 : 0
   bucket        = "${local.resource_prefix}-pgducklake"
-  force_destroy = true
+  force_destroy = false
 }
 
 # -----------------------------------------------------------------------------

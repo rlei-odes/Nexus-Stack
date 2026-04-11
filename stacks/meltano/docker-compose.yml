@@ -38,6 +38,10 @@ services:
         fi;
         exec sleep infinity
       "
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - meltano-data:/project
     networks:
@@ -51,6 +55,10 @@ services:
     image: postgres:16-alpine
     container_name: meltano-db
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     environment:
       - POSTGRES_USER=nexus-meltano
       - POSTGRES_PASSWORD=${MELTANO_DB_PASSWORD}

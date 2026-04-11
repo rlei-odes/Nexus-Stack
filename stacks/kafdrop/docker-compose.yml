@@ -19,6 +19,10 @@ services:
       - KAFKA_BROKERCONNECT=redpanda:9092
       - SCHEMAREGISTRY_CONNECT=http://redpanda:8081
       - JVM_OPTS=-Xms32M -Xmx128M
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     networks:
       - app-network
     healthcheck:

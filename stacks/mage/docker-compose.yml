@@ -31,6 +31,10 @@ services:
       DEFAULT_OWNER_USERNAME: ${ADMIN_USERNAME:-admin}
       # Server settings
       MAGE_PUBLIC_HOST: https://mage.${DOMAIN}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - mage_data:/home/src
     networks:

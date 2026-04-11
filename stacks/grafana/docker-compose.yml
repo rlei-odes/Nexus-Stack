@@ -35,6 +35,10 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_AUTH_DISABLE_LOGIN_FORM=false
       - GF_AUTH_BASIC_ENABLED=true
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - grafana-data:/var/lib/grafana
       - ./provisioning:/etc/grafana/provisioning:ro

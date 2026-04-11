@@ -94,7 +94,7 @@ jobs:
   spin-up:
     name: Spin Up Nexus-Stack
     needs: [setup-control-plane, configure-initial-services]
-    if: ${{ always() && needs.setup-control-plane.result == 'success' }}
+    if: ${{ always() && needs.setup-control-plane.result == 'success' && needs.configure-initial-services.result != 'failure' }}
     uses: ./.github/workflows/spin-up.yml
     with:
       # Pass R2 credentials from setup-control-plane to spin-up

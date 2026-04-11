@@ -73,6 +73,10 @@ services:
     <<: *dify-shared
     image: ${IMAGE_DIFY:-langgenius/dify-api:1.13.0}
     container_name: dify-api
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     environment:
       <<: *dify-env
       MODE: api

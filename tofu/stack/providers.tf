@@ -39,15 +39,15 @@ terraform {
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 4.0"
+      version = "~> 4.49"
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.0"
+      version = "~> 3.6"
     }
     minio = {
       source  = "aminueza/minio"
-      version = ">= 3.13.0"
+      version = "~> 3.13"
     }
   }
 }

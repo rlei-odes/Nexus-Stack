@@ -30,6 +30,10 @@ services:
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_CONSOLE_ENABLE: "true"
     command: /data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     volumes:
       - rustfs_data:/data
     networks:

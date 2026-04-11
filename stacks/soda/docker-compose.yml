@@ -22,6 +22,10 @@ services:
       - SODA_DB_USER=nexus-soda
       - SODA_DB_PASSWORD=${SODA_DB_PASSWORD}
       - SODA_DB_NAME=soda
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     volumes:
       - soda-data:/workspace
     working_dir: /workspace
@@ -37,6 +41,10 @@ services:
     image: postgres:16-alpine
     container_name: soda-db
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     environment:
       - POSTGRES_USER=nexus-soda
       - POSTGRES_PASSWORD=${SODA_DB_PASSWORD}

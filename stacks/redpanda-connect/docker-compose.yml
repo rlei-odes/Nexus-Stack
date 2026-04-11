@@ -28,6 +28,10 @@ services:
       - "4195:4195"
     environment:
       - CONNECT_BROKERS=redpanda:9092
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     networks:
       - app-network
     healthcheck:

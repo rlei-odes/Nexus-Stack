@@ -15,6 +15,16 @@ services:
     image: ${IMAGE_SLING:-nexus-sling:1.5.13}
     container_name: sling
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "sling --version || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     volumes:
       - sling-data:/workspace
     networks:

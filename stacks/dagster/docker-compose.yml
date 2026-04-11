@@ -22,6 +22,10 @@ services:
     image: ${IMAGE_DAGSTER:-nexus-dagster:1.12.21}
     container_name: dagster
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     env_file:
       - .env
     ports:
@@ -55,6 +59,10 @@ services:
     image: ${IMAGE_DAGSTER:-nexus-dagster:1.12.21}
     container_name: dagster-daemon
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     env_file:
       - .env
     command: ["dagster-daemon", "run"]
@@ -80,6 +88,10 @@ services:
     image: postgres:16-alpine
     container_name: dagster-postgres
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     env_file:
       - .env
     environment:

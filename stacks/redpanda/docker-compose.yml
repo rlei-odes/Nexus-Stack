@@ -15,6 +15,10 @@ services:
       - start
       # All configuration is in /etc/redpanda/redpanda.yaml
       # No CLI flags to prevent config file rewrites
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     volumes:
       - redpanda-data:/var/lib/redpanda/data
       - ./config:/etc/redpanda

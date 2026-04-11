@@ -7,6 +7,7 @@
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
 export async function onRequestGet(context) {
   const { env } = context;
@@ -71,7 +72,7 @@ export async function onRequestPost(context) {
 
     // Test connection before saving
     try {
-      const testRes = await fetch(`${host}/api/2.0/clusters/list`, {
+      const testRes = await fetchWithTimeout(`${host}/api/2.0/clusters/list`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (testRes.status === 401) {

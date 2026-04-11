@@ -34,6 +34,10 @@ services:
     command: prefect server start --no-services
     ports:
       - "4200:4200"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - prefect-data:/root/.prefect
     depends_on:
@@ -90,6 +94,10 @@ services:
         fi;
         exec prefect worker start --pool local-pool
       "
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - prefect-flows:/flows
     depends_on:

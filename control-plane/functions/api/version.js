@@ -4,6 +4,8 @@
  * 
  * Returns the latest release version from GitHub
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+
 export async function onRequestGet(context) {
   const { env } = context;
   
@@ -27,7 +29,7 @@ export async function onRequestGet(context) {
     // Fetch the latest release from GitHub
     const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/latest`;
     
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
         'Accept': 'application/vnd.github.v3+json',

@@ -5,6 +5,7 @@
  * Reads credentials from CREDENTIALS_JSON secret and sends them via Resend.
  * Email matches the style of the "Stack Online" notification.
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
 export async function onRequestPost(context) {
   const { env } = context;
@@ -109,14 +110,14 @@ export async function onRequestPost(context) {
       emailPayload.cc = [adminEmail];
     }
 
-    const resendResponse = await fetch('https://api.resend.com/emails', {
+    const resendResponse = await fetchWithTimeout('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.RESEND_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(emailPayload)
-    });
+    }, 15000);
 
     if (!resendResponse.ok) {
       const error = await resendResponse.json();

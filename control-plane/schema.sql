@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS services (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_services_category ON services(category);
+CREATE INDEX IF NOT EXISTS idx_services_enabled ON services(enabled);
+
 -- Firewall rules for external TCP access
 -- Controls which ports are opened on the Hetzner firewall for direct TCP connections
 -- enabled = what the user wants (staged)

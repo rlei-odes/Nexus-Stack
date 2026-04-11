@@ -77,6 +77,18 @@ variable "max_delay_hours" {
   default     = 4
 }
 
+variable "notification_cron" {
+  description = "Cron schedule for teardown notification email (UTC). Default: 20:45 UTC = 21:45 CET"
+  type        = string
+  default     = "45 20 * * *"
+}
+
+variable "teardown_cron" {
+  description = "Cron schedule for teardown execution (UTC). Default: 21:00 UTC = 22:00 CET"
+  type        = string
+  default     = "0 21 * * *"
+}
+
 # =============================================================================
 # Hetzner Cloud (for persistent volumes)
 # =============================================================================

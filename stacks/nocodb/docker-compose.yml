@@ -20,6 +20,10 @@ services:
     ports:
       - "8091:8080"
     env_file: .env
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     volumes:
       - nocodb-data:/usr/app/data
     networks:

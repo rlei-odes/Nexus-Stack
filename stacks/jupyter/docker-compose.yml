@@ -83,6 +83,10 @@ services:
         required: false
     ports:
       - "8087:8888"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - jupyter-data:/home/jovyan/work
       - ./spark-init.py:/opt/spark-init.py:ro

@@ -30,6 +30,16 @@ services:
       WOODPECKER_EXPERT_FORGE_OAUTH_HOST: https://gitea.${DOMAIN}
       WOODPECKER_GITEA_CLIENT: ${WOODPECKER_GITEA_CLIENT}
       WOODPECKER_GITEA_SECRET: ${WOODPECKER_GITEA_SECRET}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8000/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     ports:
       - "8084:8000"
     volumes:
@@ -49,6 +59,10 @@ services:
       WOODPECKER_SERVER: woodpecker-server:9000
       WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET}
       WOODPECKER_MAX_WORKFLOWS: 2
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

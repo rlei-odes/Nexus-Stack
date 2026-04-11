@@ -15,6 +15,10 @@ services:
     restart: unless-stopped
     ports:
       - "8096:80"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - budibase_data:/data
     networks:

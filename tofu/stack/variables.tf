@@ -75,16 +75,31 @@ variable "cloudflare_account_id" {
 variable "cloudflare_zone_id" {
   description = "Cloudflare Zone ID for your domain"
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-f0-9]{32}$", var.cloudflare_zone_id))
+    error_message = "Cloudflare zone_id must be a 32-character hex string."
+  }
 }
 
 variable "domain" {
   description = "Your domain name (e.g., example.com)"
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.domain))
+    error_message = "Domain must be a valid domain name (e.g., example.com)."
+  }
 }
 
 variable "admin_email" {
   description = "Admin email for Cloudflare Access (full access including SSH)"
   type        = string
+
+  validation {
+    condition     = can(regex("^[^@]+@[^@]+\\.[^@]+$", var.admin_email))
+    error_message = "Admin email must be a valid email address."
+  }
 }
 
 variable "user_email" {
