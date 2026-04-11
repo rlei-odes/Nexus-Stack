@@ -22,11 +22,16 @@ services:
       - appsmith_data:/appsmith-stacks
     networks:
       - app-network
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
 
 volumes:
   appsmith_data:

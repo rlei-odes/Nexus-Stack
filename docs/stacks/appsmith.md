@@ -1,3 +1,7 @@
+---
+title: "Appsmith"
+---
+
 ## Appsmith
 
 ![Appsmith](https://img.shields.io/badge/Appsmith-F86A2E?logo=appsmith&logoColor=white)
