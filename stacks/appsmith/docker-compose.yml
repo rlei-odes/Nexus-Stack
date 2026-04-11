@@ -1,0 +1,41 @@
+# =============================================================================
+# Appsmith - Low-Code Platform for Internal Tools
+# =============================================================================
+# Open-source framework for building admin panels, dashboards, and internal
+# tools. Connect to databases and APIs, build UIs with drag-and-drop widgets,
+# and write JavaScript for business logic.
+#
+# Access: https://appsmith.<domain>
+# Docs: https://docs.appsmith.com/
+# =============================================================================
+
+services:
+  appsmith:
+    image: ${IMAGE_APPSMITH:-appsmith/appsmith-ce:v1.98}
+    container_name: appsmith
+    restart: unless-stopped
+    ports:
+      - "8098:80"
+    env_file:
+      - .env
+    volumes:
+      - appsmith_data:/appsmith-stacks
+    networks:
+      - app-network
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  appsmith_data:
+
+networks:
+  app-network:
+    external: true

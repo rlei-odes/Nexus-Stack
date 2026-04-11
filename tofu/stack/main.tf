@@ -406,6 +406,17 @@ resource "random_password" "dinky_admin" {
   special = false
 }
 
+# Appsmith encryption keys
+resource "random_password" "appsmith_encryption_password" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "appsmith_encryption_salt" {
+  length  = 32
+  special = false
+}
+
 # Note: Hetzner Object Storage bucket is created in control-plane/main.tf
 # to persist through teardown. The bucket name is passed via hetzner_s3_bucket variable.
 

@@ -10,6 +10,7 @@ Images are pinned to **major versions** where supported for automatic security p
 |---------|-------|-----|----------|
 | AKHQ | `tchiotludo/akhq` | `0.27.0` | Exact ¹ |
 | Adminer | `adminer` | `latest` | Latest ² |
+| Appsmith | `appsmith/appsmith-ce` | `v1.98` | Minor |
 | Budibase | `budibase/budibase` | `latest` | Latest ² |
 | CloudBeaver | `dbeaver/cloudbeaver` | `24` | Major |
 | ClickHouse | `clickhouse/clickhouse-server` | `25.8.16.34` | Exact ¹ |
@@ -118,6 +119,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **AKHQ** | Kafka/Redpanda management GUI | [akhq.md](akhq.md) |
 | **Adminer** | Lightweight database management tool | [adminer.md](adminer.md) |
 | **Apache Spark** | Distributed data processing engine | [spark.md](spark.md) |
+| **Appsmith** | Low-code platform for admin panels and internal tools | [appsmith.md](appsmith.md) |
 | **Budibase** | Low-code platform for internal tools | [budibase.md](budibase.md) |
 | **CloudBeaver** | Web-based database management tool | [cloudbeaver.md](cloudbeaver.md) |
 | **ClickHouse** | Columnar database for real-time analytics | [clickhouse.md](clickhouse.md) |
