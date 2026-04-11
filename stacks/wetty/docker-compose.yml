@@ -40,6 +40,10 @@ services:
       # SSH-Agent socket for public key authentication
       # Always use /ssh-agent in container (mounted from host)
       - SSH_AUTH_SOCK=/ssh-agent
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     volumes:
       # Mount SSH-Agent socket (read-only) for secure key access
       # Use SSH_AUTH_SOCK from .env file for host path, mount to /ssh-agent in container

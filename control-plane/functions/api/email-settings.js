@@ -5,6 +5,7 @@
  *
  * Configuration stored in Cloudflare D1 database
  */
+import { logApiCall, logError } from './_utils/logger.js';
 
 async function getConfig(db, key, defaultValue = null) {
   try {
@@ -99,6 +100,13 @@ export async function onRequestPost(context) {
     const notifyOnSpinup = await getConfig(db, 'notify_on_spinup', 'true');
     const silentMode = await getConfig(db, 'silent_mode', 'false');
 
+    await logApiCall(db, '/api/email-settings', 'POST', {
+      action: 'update_email_settings',
+      notifyOnShutdown: notifyOnShutdown === 'true',
+      notifyOnSpinup: notifyOnSpinup === 'true',
+      silentMode: silentMode === 'true',
+    });
+
     return new Response(JSON.stringify({
       success: true,
       settings: {
@@ -110,6 +118,7 @@ export async function onRequestPost(context) {
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
+    await logError(db, '/api/email-settings', 'POST', error);
     return new Response(JSON.stringify({
       success: false,
       error: error.message

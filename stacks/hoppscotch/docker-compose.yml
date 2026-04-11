@@ -21,6 +21,10 @@ services:
     # Run migrations before starting the app
     command: >
       sh -c "pnpm exec prisma migrate deploy && exec node /usr/src/app/aio_run.mjs"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - app-network
       - hoppscotch-internal

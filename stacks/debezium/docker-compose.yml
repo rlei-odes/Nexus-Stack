@@ -30,6 +30,10 @@ services:
       - STATUS_STORAGE_REPLICATION_FACTOR=1
       - KEY_CONVERTER_SCHEMAS_ENABLE=false
       - VALUE_CONVERTER_SCHEMAS_ENABLE=false
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - app-network
     healthcheck:

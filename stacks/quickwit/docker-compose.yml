@@ -21,6 +21,10 @@ services:
       - "8092:7280"
     environment:
       QW_ENABLE_OPENTELEMETRY_OTLP_EXPORTER: "false"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     volumes:
       - quickwit-data:/quickwit/qwdata
     command: ["run"]

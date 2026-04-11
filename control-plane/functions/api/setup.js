@@ -5,6 +5,9 @@
  * Triggers the GitHub Actions setup-control-plane.yaml workflow.
  * Includes validation, error handling, and retry logic.
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+import { logApiCall, logError } from './_utils/logger.js';
+
 export async function onRequestPost(context) {
   const { env } = context;
   
@@ -22,7 +25,7 @@ export async function onRequestPost(context) {
   const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/setup-control-plane.yaml/dispatches`;
   
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
@@ -34,12 +37,15 @@ export async function onRequestPost(context) {
     });
 
     if (response.status === 204) {
-      return new Response(JSON.stringify({ 
-        success: true, 
-        message: 'Setup workflow triggered successfully' 
+      await logApiCall(env.NEXUS_DB, '/api/setup', 'POST', {
+        action: 'setup_control_plane_triggered',
+      });
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'Setup workflow triggered successfully'
       }), {
         status: 200,
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
         },
       });
@@ -68,9 +74,10 @@ export async function onRequestPost(context) {
     });
   } catch (error) {
     console.error('Setup endpoint error:', error);
-    return new Response(JSON.stringify({ 
-      success: false, 
-      error: 'Network error while triggering workflow' 
+    await logError(env.NEXUS_DB, '/api/setup', 'POST', error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Network error while triggering workflow'
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

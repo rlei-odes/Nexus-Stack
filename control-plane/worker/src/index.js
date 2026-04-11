@@ -12,6 +12,17 @@
  * - notification_time: "21:45" (default, 15 min before)
  */
 
+// Fetch with timeout to prevent hanging requests
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 // D1 Helper Functions
 async function getConfigValue(db, key, defaultValue = null) {
   try {
@@ -179,9 +190,17 @@ async function cleanupOldLogs(env) {
 
 async function handleScheduledTeardown(event, env) {
   try {
-    // Check if D1 database is configured
+    // Fail fast if critical bindings are missing
     if (!env.NEXUS_DB) {
-      console.log('D1 database not configured');
+      console.error('D1 database not configured');
+      return;
+    }
+    const requiredVars = ['GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO', 'DOMAIN'];
+    const missing = requiredVars.filter(v => !env[v]);
+    if (missing.length > 0) {
+      const msg = `Missing required environment variables: ${missing.join(', ')}`;
+      console.error(msg);
+      await logToD1(env.NEXUS_DB, 'error', msg, { missing });
       return;
     }
 
@@ -221,12 +240,18 @@ async function handleScheduledTeardown(event, env) {
     }
 
     // Check if infrastructure is actually deployed before proceeding
-    // Only skip for known-not-deployed states; treat unknown/running as fail-open
+    // Fail-closed: skip teardown for any non-deployed or unknown state
     const infraState = await checkInfraStatus(env);
     if (infraState === 'torn-down' || infraState === 'offline') {
       const message = `Infrastructure is not deployed (state: ${infraState}), skipping scheduled teardown`;
       console.log(message);
       await logToD1(env.NEXUS_DB, 'info', message, { infraState });
+      return;
+    }
+    if (infraState === 'unknown') {
+      const message = 'Could not determine infrastructure state (GitHub API unreachable?), skipping teardown as safety precaution';
+      console.warn(message);
+      await logToD1(env.NEXUS_DB, 'warn', message, { infraState });
       return;
     }
 
@@ -244,9 +269,23 @@ async function handleScheduledTeardown(event, env) {
     const notificationCron = env.NOTIFICATION_CRON || "45 20 * * *";
     const teardownCron = env.TEARDOWN_CRON || "0 21 * * *";
 
-    // Validate cron format (5 fields: minute hour day month weekday)
-    const cronFormatRegex = /^(\S+\s+){4}\S+$/;
-    if (!cronFormatRegex.test(notificationCron) || !cronFormatRegex.test(teardownCron)) {
+    // Validate cron format (5 fields with valid ranges)
+    function isValidCron(cron) {
+      const parts = cron.trim().split(/\s+/);
+      if (parts.length !== 5) return false;
+      const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+      return parts.every((part, i) => {
+        if (part === '*') return true;
+        if (/^\*\/\d+$/.test(part)) return parseInt(part.slice(2)) >= 1 && parseInt(part.slice(2)) <= ranges[i][1];
+        return part.split(',').every(v => {
+          const m = v.match(/^(\d+)(?:-(\d+))?$/);
+          if (!m) return false;
+          const lo = parseInt(m[1]), hi = m[2] ? parseInt(m[2]) : lo;
+          return lo >= ranges[i][0] && hi <= ranges[i][1] && lo <= hi;
+        });
+      });
+    }
+    if (!isValidCron(notificationCron) || !isValidCron(teardownCron)) {
       console.warn(`Invalid cron format detected - notification: ${notificationCron}, teardown: ${teardownCron}`);
       await logToD1(env.NEXUS_DB, 'warn', 'Invalid cron format in environment variables', {
         notificationCron,
@@ -281,13 +320,13 @@ async function handleScheduledTeardown(event, env) {
  */
 async function checkInfraStatus(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
-    console.warn('Missing GitHub env vars for status check, assuming deployed');
-    return 'deployed'; // Fail open: if we can't check, proceed with teardown
+    console.warn('Missing GitHub env vars for status check');
+    return 'unknown';
   }
 
   try {
     const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=100`;
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
         'Accept': 'application/vnd.github.v3+json',
@@ -296,13 +335,13 @@ async function checkInfraStatus(env) {
     });
 
     if (!response.ok) {
-      console.warn(`GitHub API returned ${response.status}, assuming deployed`);
-      return 'deployed'; // Fail open
+      console.warn(`GitHub API returned ${response.status}, cannot determine infra state`);
+      return 'unknown';
     }
 
     const data = await response.json();
     if (!data.workflow_runs || !Array.isArray(data.workflow_runs)) {
-      return 'deployed'; // Fail open
+      return 'unknown';
     }
 
     const WORKFLOW_PATHS = {
@@ -363,8 +402,8 @@ async function checkInfraStatus(env) {
 
     return 'unknown';
   } catch (error) {
-    console.warn('Failed to check infra status, assuming deployed:', error.message);
-    return 'deployed'; // Fail open
+    console.warn('Failed to check infra status:', error.message);
+    return 'unknown';
   }
 }
 
@@ -449,14 +488,14 @@ async function sendNotification(env, config) {
       emailPayload.cc = [env.ADMIN_EMAIL];
     }
 
-    const response = await fetch('https://api.resend.com/emails', {
+    const response = await fetchWithTimeout('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.RESEND_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(emailPayload),
-    });
+    }, 15000);
 
     if (response.ok) {
       const recipientMsg = userEmail ? `${userEmail} (cc: ${env.ADMIN_EMAIL})` : env.ADMIN_EMAIL;
@@ -498,7 +537,7 @@ async function triggerTeardown(env, config) {
   try {
     const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/teardown.yml/dispatches`;
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,

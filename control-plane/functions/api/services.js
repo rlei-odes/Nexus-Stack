@@ -151,7 +151,15 @@ export async function onRequestPost(context) {
   }
 
   try {
-    const body = await request.json();
+    // Reject oversized payloads based on actual byte size, not UTF-16 code units
+    const bodyBuffer = await request.arrayBuffer();
+    if (bodyBuffer.byteLength > 1048576) {
+      return new Response(JSON.stringify({ success: false, error: 'Request body too large' }), {
+        status: 413, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = JSON.parse(new TextDecoder().decode(bodyBuffer));
     const serviceName = body.service;
     const enabled = body.enabled;
 
@@ -213,23 +221,23 @@ export async function onRequestPost(context) {
       });
     }
 
-    // Update enabled state (preserve deployed state)
-    await env.NEXUS_DB.prepare(`
-      UPDATE services SET enabled = ?, updated_at = datetime('now') WHERE name = ?
-    `).bind(enabled ? 1 : 0, serviceName).run();
+    // Atomic batch: update + count pending + log
+    const [, pendingResult] = await env.NEXUS_DB.batch([
+      env.NEXUS_DB.prepare(
+        `UPDATE services SET enabled = ?, updated_at = datetime('now') WHERE name = ?`
+      ).bind(enabled ? 1 : 0, serviceName),
+      env.NEXUS_DB.prepare(
+        `SELECT COUNT(*) as count FROM services WHERE enabled != deployed`
+      ),
+    ]);
+    const pendingChangesCount = pendingResult.results?.[0]?.count || 0;
 
-    // Log the service toggle
+    // Log outside the batch (non-critical)
     await logApiCall(env.NEXUS_DB, '/api/services', 'POST', {
       action: 'toggle_service',
       service: serviceName,
       enabled: enabled,
     });
-
-    // Get pending changes count
-    const pendingResult = await env.NEXUS_DB.prepare(`
-      SELECT COUNT(*) as count FROM services WHERE enabled != deployed
-    `).first();
-    const pendingChangesCount = pendingResult?.count || 0;
 
     return new Response(JSON.stringify({
       success: true,

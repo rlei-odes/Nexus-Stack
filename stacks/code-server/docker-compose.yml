@@ -40,6 +40,10 @@ services:
         required: false
     ports:
       - "8100:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     volumes:
       - code-server-data:/home/coder
     networks:

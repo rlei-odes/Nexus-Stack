@@ -477,7 +477,8 @@ resource "hcloud_server" "main" {
     
     # Install Docker
     curl -fsSL https://get.docker.com | sh
-    
+    command -v docker >/dev/null 2>&1 || { echo "FATAL: Docker installation failed" >&2; exit 1; }
+
     # Install security tools
     apt-get install -y fail2ban unattended-upgrades
     
@@ -501,7 +502,8 @@ resource "hcloud_server" "main" {
     curl -L --output cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$${CLOUDFLARED_ARCH}.deb"
     dpkg -i cloudflared.deb
     rm cloudflared.deb
-    
+    command -v cloudflared >/dev/null 2>&1 || { echo "FATAL: cloudflared installation failed" >&2; exit 1; }
+
     # Create app directories
     mkdir -p /opt/docker-server/stacks
     
@@ -604,8 +606,10 @@ resource "cloudflare_record" "ssh" {
 }
 
 # Dynamic DNS records for all enabled services
+# Depends on tunnel config to ensure traffic can be routed before DNS points to tunnel
 resource "cloudflare_record" "services" {
-  for_each = local.enabled_services_with_subdomain
+  for_each   = local.enabled_services_with_subdomain
+  depends_on = [cloudflare_zero_trust_tunnel_cloudflared_config.main]
 
   zone_id = var.cloudflare_zone_id
   name    = each.value.subdomain
@@ -629,7 +633,7 @@ locals {
 }
 
 resource "cloudflare_record" "firewall_tcp" {
-  for_each = local.firewall_dns_records
+  for_each = var.ipv6_only ? {} : local.firewall_dns_records
 
   zone_id = var.cloudflare_zone_id
   name    = each.value.dns_record
@@ -691,7 +695,9 @@ resource "cloudflare_zero_trust_access_policy" "ssh_service_token" {
 }
 
 # Infisical Service Token for Control Plane API (server-to-server, no browser required)
+# Only created when Infisical is in the enabled private services
 resource "cloudflare_zero_trust_access_service_token" "infisical" {
+  count      = contains(keys(local.private_services_with_subdomain), "infisical") ? 1 : 0
   account_id = var.cloudflare_account_id
   name       = "${local.resource_prefix}-infisical-token"
   duration   = "forever"
@@ -699,6 +705,7 @@ resource "cloudflare_zero_trust_access_service_token" "infisical" {
 
 # Allow Service Token to access Infisical
 resource "cloudflare_zero_trust_access_policy" "infisical_service_token" {
+  count          = contains(keys(local.private_services_with_subdomain), "infisical") ? 1 : 0
   zone_id        = var.cloudflare_zone_id
   application_id = cloudflare_zero_trust_access_application.services["infisical"].id
   name           = "Service Token Infisical Access"
@@ -706,7 +713,7 @@ resource "cloudflare_zero_trust_access_policy" "infisical_service_token" {
   decision       = "non_identity"
 
   include {
-    service_token = [cloudflare_zero_trust_access_service_token.infisical.id]
+    service_token = [cloudflare_zero_trust_access_service_token.infisical[0].id]
   }
 }
 

@@ -5,6 +5,8 @@
  * Returns the current infrastructure state based on GitHub Actions workflow runs.
  * More robust than before - uses workflow file paths instead of name matching.
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+
 export async function onRequestGet(context) {
   const { env, request } = context;
   
@@ -34,9 +36,9 @@ export async function onRequestGet(context) {
   };
 
   try {
-    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=20`;
+    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=100`;
     
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
         'Accept': 'application/vnd.github.v3+json',

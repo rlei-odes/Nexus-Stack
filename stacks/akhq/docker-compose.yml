@@ -27,6 +27,10 @@ services:
               connect:
                 - name: "debezium"
                   url: "http://debezium:8083"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - app-network
     healthcheck:

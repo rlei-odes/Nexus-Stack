@@ -5,6 +5,7 @@
  * Returns server info, time information, scheduled teardown details, and workflow details
  * Configuration stored in Cloudflare D1 database
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
 // D1 Helper Functions
 async function getConfig(db, key, defaultValue = null) {
@@ -176,7 +177,7 @@ export async function onRequestGet(context) {
 
     // Get workflow details from GitHub API
     const workflowUrl = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/runs?per_page=20`;
-    const workflowResponse = await fetch(workflowUrl, {
+    const workflowResponse = await fetchWithTimeout(workflowUrl, {
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
         'Accept': 'application/vnd.github.v3+json',

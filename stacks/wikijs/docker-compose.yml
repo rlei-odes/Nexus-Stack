@@ -25,6 +25,10 @@ services:
       DB_NAME: wikijs
     ports:
       - "3005:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     depends_on:
       wikijs-db:
         condition: service_healthy

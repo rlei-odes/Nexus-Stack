@@ -57,6 +57,10 @@ services:
             tmp-dir:
               path: /tmp/kestra-wd/tmp
           url: ${KESTRA_URL}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - kestra-data:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock

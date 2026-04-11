@@ -5,6 +5,8 @@
  * Reads credentials from CREDENTIALS_JSON secret and sends them via Resend.
  * Email matches the style of the "Stack Online" notification.
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+import { logApiCall, logError } from './_utils/logger.js';
 
 export async function onRequestPost(context) {
   const { env } = context;
@@ -109,14 +111,14 @@ export async function onRequestPost(context) {
       emailPayload.cc = [adminEmail];
     }
 
-    const resendResponse = await fetch('https://api.resend.com/emails', {
+    const resendResponse = await fetchWithTimeout('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.RESEND_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(emailPayload)
-    });
+    }, 15000);
 
     if (!resendResponse.ok) {
       const error = await resendResponse.json();
@@ -126,17 +128,23 @@ export async function onRequestPost(context) {
     const emailResult = await resendResponse.json();
 
     const recipientMsg = userEmail ? `${userEmail} (cc: ${adminEmail})` : adminEmail;
+    await logApiCall(env.NEXUS_DB, '/api/send-credentials', 'POST', {
+      action: 'credentials_sent',
+      recipient: recipientMsg,
+      emailId: emailResult.id,
+    });
     return new Response(JSON.stringify({
       success: true,
       message: `Credentials sent to ${recipientMsg}`,
       emailId: emailResult.id
-    }), { 
-      status: 200, 
-      headers: { 'Content-Type': 'application/json' } 
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
     console.error('Failed to send credentials email:', error);
+    await logError(env.NEXUS_DB, '/api/send-credentials', 'POST', error);
     return new Response(JSON.stringify({
       success: false,
       error: `Failed to send email: ${error.message}`

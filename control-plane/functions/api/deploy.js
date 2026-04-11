@@ -7,6 +7,7 @@
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
 export async function onRequestPost(context) {
   const { env, request } = context;
@@ -30,7 +31,7 @@ export async function onRequestPost(context) {
   const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/setup-control-plane.yaml/dispatches`;
   
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,

@@ -28,6 +28,10 @@ services:
           adminApi:
             enabled: true
             urls: ["http://redpanda:9644"]
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     ports:
       - "8180:8080"
     networks:

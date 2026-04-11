@@ -28,6 +28,10 @@ services:
       # Console configuration
       MINIO_BROWSER_REDIRECT_URL: https://minio.${DOMAIN}
     command: server /data --console-address ":9001"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     volumes:
       - minio_data:/data
     networks:

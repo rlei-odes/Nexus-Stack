@@ -34,6 +34,10 @@ services:
       -filer
       -filer.port=8888
       -dir=/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     volumes:
       - seaweedfs_data:/data
       - ./s3.json:/etc/seaweedfs/s3.json:ro

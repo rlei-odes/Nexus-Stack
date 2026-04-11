@@ -29,6 +29,10 @@ services:
       - "5691:5691"
     expose:
       - "1250"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     volumes:
       - risingwave-data:/risingwave
     networks:

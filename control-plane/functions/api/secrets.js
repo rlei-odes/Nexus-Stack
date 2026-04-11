@@ -8,6 +8,7 @@
  * Uses CF-Access-Client-Id/Secret headers to bypass Cloudflare Access
  * for server-to-server authentication (no browser login required).
  */
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
 async function safeJsonParse(response, label) {
   const contentType = response.headers.get('content-type') || '';
@@ -56,7 +57,7 @@ export async function onRequestGet(context) {
     }
 
     // Step 1: List all folders
-    const foldersRes = await fetch(
+    const foldersRes = await fetchWithTimeout(
       `${baseUrl}/api/v1/folders?workspaceId=${projectId}&environment=${environment}&path=/`,
       { headers }
     );
@@ -76,7 +77,7 @@ export async function onRequestGet(context) {
     const warnings = [];
     const folderPromises = folders.map(async (folder) => {
       try {
-        const secretsRes = await fetch(
+        const secretsRes = await fetchWithTimeout(
           `${baseUrl}/api/v3/secrets/raw?workspaceId=${projectId}&environment=${environment}&secretPath=/${folder.name}`,
           { headers }
         );
@@ -111,7 +112,7 @@ export async function onRequestGet(context) {
     folderPromises.push(
       (async () => {
         try {
-          const rootRes = await fetch(
+          const rootRes = await fetchWithTimeout(
             `${baseUrl}/api/v3/secrets/raw?workspaceId=${projectId}&environment=${environment}&secretPath=/`,
             { headers }
           );

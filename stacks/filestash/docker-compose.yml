@@ -21,6 +21,10 @@ services:
     ports:
       - "8334:8334"
     env_file: .env
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     volumes:
       - filestash_data:/app/data/state
     networks:

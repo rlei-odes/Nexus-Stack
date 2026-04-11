@@ -18,6 +18,10 @@ services:
     environment:
       - ADMINER_DEFAULT_SERVER=postgres
       - ADMINER_DESIGN=pepa-linha
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     networks:
       - app-network
     healthcheck:

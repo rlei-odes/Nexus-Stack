@@ -15,6 +15,10 @@ services:
     restart: unless-stopped
     ports:
       - "4196:4195"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     volumes:
       - ./config.yaml:/connect.yaml:ro
     networks:

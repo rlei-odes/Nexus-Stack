@@ -20,8 +20,18 @@ services:
       - MB_ADMIN_EMAIL=nexus@metabase.local
       - MB_ANON_TRACKING_ENABLED=false
       - JAVA_TIMEZONE=Europe/Zurich
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     volumes:
       - metabase_data:/metabase-data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - app-network
 

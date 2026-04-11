@@ -25,6 +25,10 @@ services:
       # Debezium Kafka Connect cluster
       - KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME=debezium
       - KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS=http://debezium:8083
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - app-network
     healthcheck:

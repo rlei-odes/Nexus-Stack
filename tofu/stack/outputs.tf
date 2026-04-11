@@ -3,8 +3,8 @@
 # =============================================================================
 
 output "server_ip" {
-  description = "Public IPv4 address of the server"
-  value       = hcloud_server.main.ipv4_address
+  description = "Public IP address of the server (IPv4 or IPv6 depending on config)"
+  value       = var.ipv6_only ? hcloud_server.main.ipv6_address : hcloud_server.main.ipv4_address
 }
 
 output "server_id" {
@@ -63,10 +63,10 @@ output "ssh_service_token" {
 output "infisical_service_token" {
   description = "Service Token for Infisical API access from Control Plane (no browser login required)"
   sensitive   = true
-  value = {
-    client_id     = cloudflare_zero_trust_access_service_token.infisical.client_id
-    client_secret = cloudflare_zero_trust_access_service_token.infisical.client_secret
-  }
+  value = length(cloudflare_zero_trust_access_service_token.infisical) > 0 ? {
+    client_id     = cloudflare_zero_trust_access_service_token.infisical[0].client_id
+    client_secret = cloudflare_zero_trust_access_service_token.infisical[0].client_secret
+  } : null
 }
 
 # =============================================================================

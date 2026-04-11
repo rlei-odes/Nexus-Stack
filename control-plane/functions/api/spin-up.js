@@ -7,6 +7,7 @@
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
+import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
 /**
  * Get enabled services from D1
@@ -54,7 +55,7 @@ export async function onRequestPost(context) {
 
     const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/spin-up.yml/dispatches`;
     
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.GITHUB_TOKEN}`,

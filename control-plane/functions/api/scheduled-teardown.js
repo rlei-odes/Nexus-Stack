@@ -6,6 +6,8 @@
  * Configuration stored in Cloudflare D1 database
  */
 
+import { logApiCall, logError } from './_utils/logger.js';
+
 // D1 Helper Functions
 async function getConfig(db, key, defaultValue = null) {
   try {
@@ -361,6 +363,18 @@ export async function onRequestPost(context) {
       await setConfig(env.NEXUS_DB, 'notification_time', notificationTime);
     }
 
+    // Log config changes (exclude delay-only requests, those are logged by logExtension)
+    if (enabled !== undefined || timezone || teardownTime || notificationTime) {
+      await logApiCall(env.NEXUS_DB, '/api/scheduled-teardown', 'POST', {
+        action: 'update_teardown_config',
+        user: userEmail,
+        ...(enabled !== undefined && { enabled }),
+        ...(timezone && { timezone }),
+        ...(teardownTime && { teardownTime }),
+        ...(notificationTime && { notificationTime }),
+      });
+    }
+
     // Get updated config
     const updatedEnabled = await getConfig(env.NEXUS_DB, 'teardown_enabled', 'true');
     const updatedTimezone = await getConfig(env.NEXUS_DB, 'teardown_timezone', 'Europe/Zurich');
@@ -390,6 +404,7 @@ export async function onRequestPost(context) {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    await logError(env.NEXUS_DB, '/api/scheduled-teardown', 'POST', error);
     return new Response(JSON.stringify({
       success: false,
       error: error.message,

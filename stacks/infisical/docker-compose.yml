@@ -34,6 +34,10 @@ services:
       - REDIS_URL=redis://infisical-redis:6379
       # Disable telemetry
       - TELEMETRY_ENABLED=false
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     depends_on:
       infisical-db:
         condition: service_healthy
