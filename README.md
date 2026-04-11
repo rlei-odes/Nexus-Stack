@@ -64,32 +64,7 @@ After deployment you'll have:
 
 ### Quick Start Flow
 
-```mermaid
-flowchart LR
-    subgraph prep ["1. Preparation"]
-        A[Fork Repository] --> B[Create Accounts]
-        B --> B1[Hetzner]
-        B --> B2[Cloudflare]
-        B --> B3[Resend]
-        B --> B4[Docker Hub - Optional]
-    end
-
-    subgraph config ["2. Configuration"]
-        B1 & B2 & B3 --> C[Generate API Tokens]
-        C --> D[Add GitHub Secrets]
-    end
-
-    subgraph deploy ["3. Deploy"]
-        D --> E[Run Initial Setup]
-        E --> F[Control Plane Ready]
-        F --> G[Services Running]
-    end
-
-    subgraph access ["4. Access"]
-        G --> H[Login via Email OTP]
-        H --> I[Use Services]
-    end
-```
+![Quick Start Flow](docs/images/architecture-quickstart.svg)
 
 ## Available Stacks (61)
 
@@ -250,39 +225,7 @@ gh workflow run initial-setup.yaml -f enabled_services="grafana,n8n,portainer"
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph GH ["GitHub"]
-        Actions["GitHub Actions"]
-        Secrets["Secrets"]
-    end
-
-    subgraph CF ["Cloudflare"]
-        DNS["DNS"]
-        Access["Zero Trust Access"]
-        Tunnel["Tunnel"]
-        Pages["Control Plane"]
-        D1[("D1 Database")]
-        R2[("R2 State")]
-    end
-
-    subgraph HZ ["Hetzner Cloud"]
-        FW["Firewall (0 ports)"]
-        Server["Ubuntu 24.04 ARM"]
-        Agent["cloudflared"]
-        subgraph Docker ["Docker Containers"]
-            Infisical & Grafana & n8n & More["..."]
-        end
-    end
-
-    Actions -->|Deploy| Server
-    Actions -->|State| R2
-    Pages --> D1
-    DNS --> Tunnel
-    Tunnel --> Agent
-    Agent --> Docker
-    Access -.->|Protects| Tunnel
-```
+![Architecture Overview](docs/images/architecture-overview.svg)
 
 ## Security
 
@@ -297,21 +240,7 @@ This setup achieves **zero open ports** after deployment:
 
 > **Firewall Management:** For TCP-based services (Kafka, PostgreSQL, MinIO S3 API), the Control Plane provides a Firewall Management page to selectively open ports. DNS A records are created pointing directly to the server IP (`proxied = false`). All firewall rules are automatically reset on every Teardown for security.
 
-```mermaid
-flowchart LR
-    User(["User"]) --> DNS["DNS Lookup"]
-    DNS --> Edge["Cloudflare Edge"]
-    Edge --> Auth{"Cloudflare Access"}
-    Auth -->|"Not authenticated"| OTP["Email OTP"]
-    OTP --> Auth
-    Auth -->|"Authenticated"| Tunnel["Tunnel"]
-    Tunnel --> Agent["cloudflared"]
-    Agent --> Container["Docker Service"]
-    Container --> Response(["Response"])
-```
-
-- Services are protected by Cloudflare Access (email OTP)
-- Set `public = true` in config if you want a service publicly accessible
+![Security Flow](docs/images/architecture-security.svg)
 
 ## Documentation
 
