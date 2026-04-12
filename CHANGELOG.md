@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.1...v0.45.2) (2026-04-12)
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Add --region to all Hetzner S3 API calls ([fc66b3e](https://github.com/stefanko-ch/Nexus-Stack/commit/fc66b3e7b683e56b3084f58df93c35673bc151e6))
+* **ci:** Add pgducklake bucket to destroy & setup workflows ([31dc739](https://github.com/stefanko-ch/Nexus-Stack/commit/31dc73969c562cabc889d78148db0aa375230068))
+* **ci:** Make Hetzner Object Storage non-blocking in setup workflow ([2785b3a](https://github.com/stefanko-ch/Nexus-Stack/commit/2785b3a14c10af74b64b3bef771d2e34b7705686))
+* **ci:** Upgrade setup-node v5, fix Hetzner Object Storage resilience ([9970c92](https://github.com/stefanko-ch/Nexus-Stack/commit/9970c92fcb472ed8ab182f9ea47c72b9e1cbf1c3))
+
+
+### 🔧 Maintenance
+
+* **ci:** Upgrade actions/setup-node from v4 to v5 (Node.js 24) ([03f6c08](https://github.com/stefanko-ch/Nexus-Stack/commit/03f6c0874d0f5df1457099d478927cf556eb325e))
+
 ## [0.45.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.0...v0.45.1) (2026-04-11)
 
 
