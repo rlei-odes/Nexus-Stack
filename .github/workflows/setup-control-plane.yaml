@@ -623,7 +623,7 @@ jobs:
 
           # Health check: verify Hetzner Object Storage is reachable
           if ! AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
-               aws s3api list-buckets --endpoint-url "$HZ_ENDPOINT" --max-items 1 >/dev/null 2>&1; then
+               aws s3api list-buckets --region "$HZ_REGION" --endpoint-url "$HZ_ENDPOINT" --max-items 1 >/dev/null 2>&1; then
             echo "⚠️  Hetzner Object Storage is unavailable - skipping bucket setup"
             echo "   Buckets will be created/imported on next run when service is back"
             echo "   Affected services: LakeFS, Filestash, pg_ducklake (no S3 backend)"
@@ -659,13 +659,13 @@ jobs:
 
             # Create bucket via AWS CLI (no ACL/policy issues)
             if AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
-               aws s3api head-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>/dev/null; then
+               aws s3api head-bucket --bucket "$BUCKET" --region "$HZ_REGION" --endpoint-url "$HZ_ENDPOINT" 2>/dev/null; then
               echo "✅ $BUCKET already exists in Hetzner"
             else
               echo "🪣 Creating $BUCKET (endpoint: $HZ_ENDPOINT)..."
               CREATE_RC=0
               CREATE_OUTPUT=$(AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
-                 aws s3api create-bucket --bucket "$BUCKET" --endpoint-url "$HZ_ENDPOINT" 2>&1) || CREATE_RC=$?
+                 aws s3api create-bucket --bucket "$BUCKET" --region "$HZ_REGION" --endpoint-url "$HZ_ENDPOINT" 2>&1) || CREATE_RC=$?
               if [ "$CREATE_RC" -eq 0 ]; then
                 echo "✅ $BUCKET created"
               elif echo "$CREATE_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|BucketAlreadyExists"; then
