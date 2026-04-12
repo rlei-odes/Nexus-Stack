@@ -619,9 +619,18 @@ jobs:
           HZ_AK="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SK="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
 
-          for BUCKET in "${RESOURCE_PREFIX}-lakefs" "${RESOURCE_PREFIX}"; do
+          # All Hetzner S3 buckets: name -> Terraform resource mapping
+          declare -A BUCKET_MAP=(
+            ["${RESOURCE_PREFIX}-lakefs"]="lakefs[0]"
+            ["${RESOURCE_PREFIX}"]="general[0]"
+            ["${RESOURCE_PREFIX}-pgducklake"]="pgducklake[0]"
+          )
+
+          for BUCKET in "${!BUCKET_MAP[@]}"; do
+            RES_NAME="${BUCKET_MAP[$BUCKET]}"
+            RESOURCE_NAME="minio_s3_bucket.${RES_NAME}"
+
             # Skip if already in state
-            RESOURCE_NAME="minio_s3_bucket.$([ "$BUCKET" = "${RESOURCE_PREFIX}-lakefs" ] && echo 'lakefs[0]' || echo 'general[0]')"
             if tofu state show "$RESOURCE_NAME" >/dev/null 2>&1; then
               echo "✅ $BUCKET already in state"
               continue
@@ -647,8 +656,7 @@ jobs:
             fi
 
             # Import into state so tofu apply doesn't try to create (and fail on ACL)
-            IMPORT_RESOURCE="minio_s3_bucket.$([ "$BUCKET" = "${RESOURCE_PREFIX}-lakefs" ] && echo 'lakefs[0]' || echo 'general[0]')"
-            if tofu import -var-file=config.tfvars "$IMPORT_RESOURCE" "$BUCKET" 2>/dev/null; then
+            if tofu import -var-file=config.tfvars "$RESOURCE_NAME" "$BUCKET" 2>/dev/null; then
               echo "✅ $BUCKET imported into state"
             else
               echo "⚠️  Import failed for $BUCKET - tofu apply will handle it"
