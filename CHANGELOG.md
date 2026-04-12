@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.2...v0.45.3) (2026-04-12)
+
+
+### 🐛 Bug Fixes
+
+* **tofu:** Split comma-separated user_email in allowed_emails ([e3fe040](https://github.com/stefanko-ch/Nexus-Stack/commit/e3fe040c9c5cafde29e965721c7ba98c47919735))
+* **tofu:** Split comma-separated user_email in allowed_emails ([b5697d1](https://github.com/stefanko-ch/Nexus-Stack/commit/b5697d1e7fe7b8bf085a204802ed8e0e8ada2023))
+* **tofu:** Trim whitespace from split email entries ([8a3f91f](https://github.com/stefanko-ch/Nexus-Stack/commit/8a3f91fa49065a8f1c2a03414a9ecb75a6cebd43))
+
 ## [0.45.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.1...v0.45.2) (2026-04-12)
 
 
