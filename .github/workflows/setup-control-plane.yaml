@@ -596,9 +596,11 @@ jobs:
           fi
 
       - name: Pre-create Hetzner Object Storage buckets (avoids provider ACL issues)
+        id: hetzner_s3
         run: |
           if [ -z "${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}" ]; then
             echo "ℹ️  Hetzner Object Storage not configured - skipping"
+            echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -618,6 +620,25 @@ jobs:
           export TF_VAR_hetzner_object_storage_region="${HZ_REGION}"
           HZ_AK="${{ secrets.HETZNER_OBJECT_STORAGE_ACCESS_KEY }}"
           HZ_SK="${{ secrets.HETZNER_OBJECT_STORAGE_SECRET_KEY }}"
+
+          # Health check: verify Hetzner Object Storage is reachable
+          if ! AWS_ACCESS_KEY_ID="$HZ_AK" AWS_SECRET_ACCESS_KEY="$HZ_SK" \
+               aws s3api list-buckets --endpoint-url "$HZ_ENDPOINT" --max-items 1 >/dev/null 2>&1; then
+            echo "⚠️  Hetzner Object Storage is unavailable - skipping bucket setup"
+            echo "   Buckets will be created/imported on next run when service is back"
+            echo "   Affected services: LakeFS, Filestash, pg_ducklake (no S3 backend)"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+
+            # Remove any existing bucket resources from state so tofu apply doesn't
+            # try to refresh them against the unavailable service
+            for RESOURCE in $(tofu state list 2>/dev/null | grep '^minio_s3_bucket\.' || true); do
+              echo "   Removing $RESOURCE from state (will re-import later)..."
+              tofu state rm "$RESOURCE" 2>/dev/null || true
+            done
+            exit 0
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
           # All Hetzner S3 buckets: name -> Terraform resource mapping
           declare -A BUCKET_MAP=(
@@ -669,6 +690,14 @@ jobs:
           source ../.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+
+          # If Hetzner Object Storage is unavailable, clear credentials so MinIO
+          # provider resources get count=0 and tofu doesn't try to reach the service
+          if [ "${{ steps.hetzner_s3.outputs.available }}" != "true" ]; then
+            echo "⚠️  Hetzner Object Storage unavailable - deploying without S3 buckets"
+            export TF_VAR_hetzner_object_storage_access_key=""
+            export TF_VAR_hetzner_object_storage_secret_key=""
+          fi
 
           echo "🏗️  Deploying Control Plane infrastructure (Cloudflare Pages + Worker)..."
           tofu apply -var-file=config.tfvars -auto-approve
