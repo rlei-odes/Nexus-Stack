@@ -13,7 +13,11 @@ locals {
   resource_prefix = "nexus-${replace(var.domain, ".", "-")}"
 
   # List of emails allowed to access control plane (admin + optional user)
-  allowed_emails = compact([var.admin_email, var.user_email])
+  # user_email may be comma-separated, so split it into individual entries
+  allowed_emails = distinct(compact(concat(
+    [var.admin_email],
+    split(",", var.user_email)
+  )))
 }
 
 # -----------------------------------------------------------------------------
