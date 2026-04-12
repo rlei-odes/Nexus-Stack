@@ -227,10 +227,13 @@ jobs:
           echo "💾 Protecting KV namespace from destroy..."
           tofu state rm cloudflare_workers_kv_namespace.config 2>/dev/null || true
 
-          # Protect Hetzner S3 buckets from destruction (keeps student data)
+          # Protect ALL Hetzner S3 buckets from destruction (keeps student data)
+          # Uses dynamic discovery so new buckets are automatically covered
           echo "💾 Protecting Hetzner S3 buckets from destroy..."
-          tofu state rm 'minio_s3_bucket.lakefs[0]' 2>/dev/null || true
-          tofu state rm 'minio_s3_bucket.general[0]' 2>/dev/null || true
+          for RESOURCE in $(tofu state list 2>/dev/null | grep '^minio_s3_bucket\.' || true); do
+            echo "   Removing $RESOURCE from state..."
+            tofu state rm "$RESOURCE" 2>/dev/null || true
+          done
 
           echo "🗑️  Destroying Control Plane (Pages, Worker, DNS)..."
           if ! tofu destroy -var-file=config.tfvars -auto-approve; then
