@@ -712,9 +712,9 @@ jobs:
           if ! tofu state show cloudflare_workers_kv_namespace.config >/dev/null 2>&1; then
             KV_TITLE="nexus-${DOMAIN_SLUG}-config"
             echo "🔍 KV namespace not in state - checking Cloudflare for '${KV_TITLE}'..."
-            KV_ID=$(curl -sf "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces" \
+            KV_ID=$(curl -sf "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces?per_page=100" \
               -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" | \
-              jq -r --arg title "$KV_TITLE" '.result[] | select(.title==$title) | .id // empty' 2>/dev/null || echo "")
+              jq -r --arg title "$KV_TITLE" '.result[] | select(.title==$title) | .id // empty' 2>/dev/null | head -1 || echo "")
             if [ -n "$KV_ID" ]; then
               echo "💾 Importing orphaned KV namespace (ID: $KV_ID)..."
               tofu import -var-file=config.tfvars cloudflare_workers_kv_namespace.config "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/${KV_ID}" || \
