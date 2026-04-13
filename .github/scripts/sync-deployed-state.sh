@@ -316,6 +316,7 @@ if not data or 'services' not in data:
 
 services = data['services']
 insert_statements = []
+cleanup_statements = []
 
 # DNS record mapping for known services
 dns_records = {
@@ -331,23 +332,38 @@ for name, config in services.items():
     if not tcp_ports:
         continue
 
+    safe_name = name.replace("'", "''")
+    valid_ports = []
+
     for label, port in tcp_ports.items():
         if not isinstance(port, int) or port < 1 or port > 65535:
             continue
+        valid_ports.append(port)
         # Escape values for SQL
         safe_label = label.replace("'", "''")
-        safe_name = name.replace("'", "''")
         dns_record = dns_records.get(name, {}).get(label, '')
         safe_dns_record = dns_record.replace("'", "''")
         insert_sql = f"INSERT OR IGNORE INTO firewall_rules (service_name, port, protocol, label, enabled, deployed, source_ips, dns_record, updated_at) VALUES ('{safe_name}', {port}, 'tcp', '{safe_label}', 0, 0, '', '{safe_dns_record}', datetime('now'));"
         insert_statements.append(insert_sql)
 
+    # Delete stale firewall rules whose port is no longer in services.yaml tcp_ports
+    if valid_ports:
+        ports_list = ', '.join(str(p) for p in valid_ports)
+        cleanup_sql = f"DELETE FROM firewall_rules WHERE service_name = '{safe_name}' AND port NOT IN ({ports_list});"
+        cleanup_statements.append(cleanup_sql)
+
 with open('/tmp/init_firewall_rules.sql', 'w') as f:
     f.write('\n'.join(insert_statements))
     if insert_statements:
         f.write('\n')
+    # Append cleanup after inserts
+    if cleanup_statements:
+        f.write('\n'.join(cleanup_statements))
+        f.write('\n')
 
 print(f"  Generated {len(insert_statements)} firewall rule insert statements")
+if cleanup_statements:
+    print(f"  Generated {len(cleanup_statements)} stale port cleanup statements")
 FWEOF
 
   if [ -f /tmp/init_firewall_rules.sql ] && [ -s /tmp/init_firewall_rules.sql ]; then
