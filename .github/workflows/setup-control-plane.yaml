@@ -699,6 +699,47 @@ jobs:
             export TF_VAR_hetzner_object_storage_secret_key=""
           fi
 
+          # =================================================================
+          # Pre-apply reconciliation: import orphaned resources
+          # Safety net for when earlier import steps were skipped due to
+          # failures (e.g., init-r2-state.sh failed, job aborted, but
+          # resources still exist in Cloudflare/Hetzner from a previous run)
+          # =================================================================
+          DOMAIN="${{ secrets.DOMAIN }}"
+          DOMAIN_SLUG="${DOMAIN//./-}"
+
+          # KV Namespace
+          if ! tofu state show cloudflare_workers_kv_namespace.config >/dev/null 2>&1; then
+            KV_TITLE="nexus-${DOMAIN_SLUG}-config"
+            echo "🔍 KV namespace not in state - checking Cloudflare for '${KV_TITLE}'..."
+            KV_ID=$(curl -sf "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces" \
+              -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" | \
+              jq -r --arg title "$KV_TITLE" '.result[] | select(.title==$title) | .id // empty' 2>/dev/null || echo "")
+            if [ -n "$KV_ID" ]; then
+              echo "💾 Importing orphaned KV namespace (ID: $KV_ID)..."
+              tofu import -var-file=config.tfvars cloudflare_workers_kv_namespace.config "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/${KV_ID}" || \
+                echo "⚠️  KV import failed (non-fatal, tofu apply will attempt create)"
+            else
+              echo "ℹ️  No existing KV namespace found - will create new one"
+            fi
+          fi
+
+          # Persistent Volume
+          if ! tofu state show hcloud_volume.persistent >/dev/null 2>&1; then
+            VOL_NAME="nexus-${DOMAIN_SLUG}-data"
+            echo "🔍 Persistent volume not in state - checking Hetzner for '${VOL_NAME}'..."
+            VOL_ID=$(curl -sf "https://api.hetzner.cloud/v1/volumes?name=${VOL_NAME}" \
+              -H "Authorization: Bearer ${{ secrets.HCLOUD_TOKEN }}" | \
+              jq -r '.volumes[0].id // empty' 2>/dev/null || echo "")
+            if [ -n "$VOL_ID" ] && [ "$VOL_ID" != "null" ]; then
+              echo "💾 Importing orphaned persistent volume (ID: $VOL_ID)..."
+              tofu import -var-file=config.tfvars hcloud_volume.persistent "$VOL_ID" || \
+                echo "⚠️  Volume import failed (non-fatal, tofu apply will attempt create)"
+            else
+              echo "ℹ️  No existing persistent volume found - will create new one"
+            fi
+          fi
+
           echo "🏗️  Deploying Control Plane infrastructure (Cloudflare Pages + Worker)..."
           tofu apply -var-file=config.tfvars -auto-approve
 
