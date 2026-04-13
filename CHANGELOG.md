@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.3...v0.46.0) (2026-04-13)
+
+
+### 🚀 Features
+
+* **tofu:** Consolidate R2 API tokens from 2 to 1 per deployment ([d461a1e](https://github.com/stefanko-ch/Nexus-Stack/commit/d461a1ed80a46bc3be8394d92e864e9baa509540))
+* **tofu:** Consolidate R2 API tokens from 2 to 1 per deployment ([b9b6e80](https://github.com/stefanko-ch/Nexus-Stack/commit/b9b6e80cabc45388e0d7cfc2ac390e0a9c7e7975))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Check DELETE response before logging success for old token cleanup ([e99fbd2](https://github.com/stefanko-ch/Nexus-Stack/commit/e99fbd2386720621d8a535d50c3b99b54646bbde))
+* **ci:** Ensure data bucket exists when init-r2-state.sh is skipped ([9334dc5](https://github.com/stefanko-ch/Nexus-Stack/commit/9334dc5a177b295a3c54bb8844c98d0bea613b56))
+* **tofu:** Address PR review comments ([cb01683](https://github.com/stefanko-ch/Nexus-Stack/commit/cb016831630e3a7063f4f96b6017be236e961080))
+* **tofu:** Address second round of PR review comments ([5786034](https://github.com/stefanko-ch/Nexus-Stack/commit/5786034880c1491090ab468f208c991300c789cc))
+* **tofu:** Branch on 404 for state bucket check, fail fast on other HTTP codes ([0b72b90](https://github.com/stefanko-ch/Nexus-Stack/commit/0b72b90ae579e8c45178887a159c28726a540b6d))
+
 ## [0.45.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.2...v0.45.3) (2026-04-12)
 
 
