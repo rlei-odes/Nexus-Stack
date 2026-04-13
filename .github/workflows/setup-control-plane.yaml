@@ -710,6 +710,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          EXISTING_R2_DATA_BUCKET: ${{ secrets.R2_DATA_BUCKET }}
         run: |
           # The unified R2 token (created by init-r2-state.sh) handles both
           # state and data access. No separate data token needed.
@@ -725,29 +726,39 @@ jobs:
           fi
 
           DOMAIN_SLUG=$(echo "$DOMAIN" | tr '.' '-')
-          BUCKET_NAME="${R2_DATA_BUCKET:-nexus-${DOMAIN_SLUG}-data}"
+          # Priority: existing secret > credentials file > derived default
+          # This preserves custom bucket names set for Education mode
+          BUCKET_NAME="${EXISTING_R2_DATA_BUCKET:-${R2_DATA_BUCKET:-nexus-${DOMAIN_SLUG}-data}}"
 
           echo "📦 Using unified R2 credentials for datalake"
           echo "   Bucket: $BUCKET_NAME"
 
           # Clean up old Cloudflare API tokens (migration from 2-token to 1-token)
-          # This runs even when init-r2-state.sh was skipped (existing credentials),
-          # ensuring old tokens are removed on re-runs of existing deployments.
+          # Only delete old tokens if the unified nexus-r2-{slug} token already exists,
+          # to avoid invalidating credentials that are still in use.
+          UNIFIED_TOKEN_NAME="nexus-r2-${DOMAIN_SLUG}"
           OLD_NAMES=("nexus-r2-terraform-state-${DOMAIN_SLUG}" "nexus-r2-data-${DOMAIN_SLUG}")
           ALL_TOKENS=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
 
           if echo "$ALL_TOKENS" | jq -e '.success == true' >/dev/null 2>&1; then
-            for OLD_NAME in "${OLD_NAMES[@]}"; do
-              OLD_ID=$(echo "$ALL_TOKENS" | jq -r --arg n "$OLD_NAME" \
-                '.result[] | select(.name == $n) | .id' 2>/dev/null | head -1 || true)
-              if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "null" ]; then
-                echo "  Cleaning up old token '$OLD_NAME'..."
-                curl -sf -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$OLD_ID" \
-                  -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" >/dev/null 2>&1 || true
-                echo "  ✅ Deleted old token '$OLD_NAME'"
-              fi
-            done
+            UNIFIED_EXISTS=$(echo "$ALL_TOKENS" | jq -r --arg n "$UNIFIED_TOKEN_NAME" \
+              '.result[] | select(.name == $n) | .id' 2>/dev/null | head -1 || true)
+
+            if [ -n "$UNIFIED_EXISTS" ] && [ "$UNIFIED_EXISTS" != "null" ]; then
+              for OLD_NAME in "${OLD_NAMES[@]}"; do
+                OLD_ID=$(echo "$ALL_TOKENS" | jq -r --arg n "$OLD_NAME" \
+                  '.result[] | select(.name == $n) | .id' 2>/dev/null | head -1 || true)
+                if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "null" ]; then
+                  echo "  Cleaning up old token '$OLD_NAME'..."
+                  curl -sf -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$OLD_ID" \
+                    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" >/dev/null 2>&1 || true
+                  echo "  ✅ Deleted old token '$OLD_NAME'"
+                fi
+              done
+            else
+              echo "  ⚠️  Unified token '$UNIFIED_TOKEN_NAME' not found — skipping old token cleanup"
+            fi
           fi
 
           # Save data bucket name as GitHub Secret

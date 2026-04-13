@@ -199,31 +199,6 @@ R2_STORAGE_WRITE_PERMISSION_ID="bf7481a1826f439697cb59a20b22293e"
 # Consolidated to reduce Cloudflare API token usage (50-token limit)
 TOKEN_NAME="nexus-r2-${DOMAIN_SLUG}"
 
-# Clean up old-format tokens from previous deployments (migration)
-OLD_TOKEN_NAMES=("nexus-r2-terraform-state-${DOMAIN_SLUG}" "nexus-r2-data-${DOMAIN_SLUG}")
-ALL_TOKENS=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
-    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
-
-if echo "$ALL_TOKENS" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1; then
-    for OLD_NAME in "${OLD_TOKEN_NAMES[@]}"; do
-        OLD_TOKEN_ID=$(echo "$ALL_TOKENS" | jq -r --arg name "$OLD_NAME" \
-            '.result[] | select(.name == $name) | .id' 2>/dev/null | head -n 1 || true)
-        if [ -n "${OLD_TOKEN_ID}" ] && [ "${OLD_TOKEN_ID}" != "null" ]; then
-            echo -e "  ${YELLOW}→${NC} Cleaning up old token '${OLD_NAME}'..."
-            DELETE_RESP=$(curl -s -X DELETE \
-                "https://api.cloudflare.com/client/v4/user/tokens/${OLD_TOKEN_ID}" \
-                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
-            if echo "$DELETE_RESP" | grep -q '"success":true'; then
-                echo -e "  ${GREEN}✓${NC} Deleted old token '${OLD_NAME}'"
-            else
-                echo -e "  ${YELLOW}⚠${NC}  Could not delete old token '${OLD_NAME}' (non-fatal)"
-            fi
-        fi
-    done
-else
-    echo -e "  ${YELLOW}⚠${NC}  Skipping cleanup of old R2 tokens (could not parse token list response; non-fatal)"
-fi
-
 # Create User API token for R2 with account-level R2 permissions
 # Using account resource instead of bucket-specific resource for broader access
 # No expiration - token must remain valid for state access
@@ -380,6 +355,33 @@ EOF
 
 chmod 600 "$R2_CREDENTIALS_FILE"
 echo -e "  ${GREEN}✓${NC} Saved credentials to $R2_CREDENTIALS_FILE"
+
+# Clean up old-format tokens now that the new unified token is persisted.
+# Done AFTER credential persistence so that if token creation had failed,
+# the old tokens would still be valid.
+OLD_TOKEN_NAMES=("nexus-r2-terraform-state-${DOMAIN_SLUG}" "nexus-r2-data-${DOMAIN_SLUG}")
+ALL_TOKENS=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+
+if echo "$ALL_TOKENS" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1; then
+    for OLD_NAME in "${OLD_TOKEN_NAMES[@]}"; do
+        OLD_TOKEN_ID=$(echo "$ALL_TOKENS" | jq -r --arg name "$OLD_NAME" \
+            '.result[] | select(.name == $name) | .id' 2>/dev/null | head -n 1 || true)
+        if [ -n "${OLD_TOKEN_ID}" ] && [ "${OLD_TOKEN_ID}" != "null" ]; then
+            echo -e "  ${YELLOW}→${NC} Cleaning up old token '${OLD_NAME}'..."
+            DELETE_RESP=$(curl -s -X DELETE \
+                "https://api.cloudflare.com/client/v4/user/tokens/${OLD_TOKEN_ID}" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+            if echo "$DELETE_RESP" | grep -q '"success":true'; then
+                echo -e "  ${GREEN}✓${NC} Deleted old token '${OLD_NAME}'"
+            else
+                echo -e "  ${YELLOW}⚠${NC}  Could not delete old token '${OLD_NAME}' (non-fatal)"
+            fi
+        fi
+    done
+else
+    echo -e "  ${YELLOW}⚠${NC}  Skipping cleanup of old R2 tokens (could not parse token list response; non-fatal)"
+fi
 
 # =============================================================================
 # Step 3: Generate backend.hcl
