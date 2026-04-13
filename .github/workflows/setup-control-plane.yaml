@@ -708,13 +708,13 @@ jobs:
         id: r2_data
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           DOMAIN: ${{ secrets.DOMAIN }}
           EXISTING_R2_DATA_BUCKET: ${{ secrets.R2_DATA_BUCKET }}
         run: |
           # The unified R2 token (created by init-r2-state.sh) handles both
           # state and data access. No separate data token needed.
-          # Data bucket was also created by init-r2-state.sh.
 
           # Source unified credentials
           if [ -f tofu/.r2-credentials ]; then
@@ -732,6 +732,32 @@ jobs:
 
           echo "📦 Using unified R2 credentials for datalake"
           echo "   Bucket: $BUCKET_NAME"
+
+          # Ensure data bucket exists (init-r2-state.sh may have been skipped
+          # when credentials were pre-seeded, e.g. Education mode)
+          R2_API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}"
+          BUCKET_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${R2_API}/r2/buckets/${BUCKET_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+
+          if [ "$BUCKET_HTTP" = "200" ]; then
+            echo "  ✅ Data bucket exists"
+          elif [ "$BUCKET_HTTP" = "404" ]; then
+            echo "  Creating data bucket '$BUCKET_NAME'..."
+            CREATE_BODY=$(curl -s -X POST "${R2_API}/r2/buckets" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${BUCKET_NAME}\"}")
+            if echo "$CREATE_BODY" | jq -e '.success == true' >/dev/null 2>&1; then
+              echo "  ✅ Data bucket created"
+            else
+              echo "  ❌ Failed to create data bucket: $(echo "$CREATE_BODY" | jq -r '.errors[0].message // "unknown"')"
+              exit 1
+            fi
+          else
+            echo "  ❌ Failed to check data bucket (HTTP $BUCKET_HTTP)"
+            exit 1
+          fi
 
           # Clean up old Cloudflare API tokens (migration from 2-token to 1-token)
           # Only delete old tokens if the unified nexus-r2-{slug} token already exists,
