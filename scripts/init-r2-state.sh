@@ -126,7 +126,7 @@ DATA_HTTP_CODE=$(echo "$DATA_BUCKET_CHECK" | tail -n1)
 
 if [ "$DATA_HTTP_CODE" = "200" ]; then
     echo -e "  ${GREEN}✓${NC} Data bucket '${DATA_BUCKET_NAME}' already exists"
-else
+elif [ "$DATA_HTTP_CODE" = "404" ]; then
     echo -e "  ${YELLOW}→${NC} Creating data bucket '${DATA_BUCKET_NAME}'..."
 
     DATA_CREATE_RESPONSE=$(curl -s -X POST \
@@ -143,6 +143,10 @@ else
         echo "     Check Cloudflare dashboard for details"
         exit 1
     fi
+else
+    echo -e "  ${RED}❌ Failed to check data bucket (HTTP ${DATA_HTTP_CODE})${NC}"
+    echo "     Response: $(echo "$DATA_BUCKET_CHECK" | sed '$d')"
+    exit 1
 fi
 
 # =============================================================================
@@ -200,21 +204,25 @@ OLD_TOKEN_NAMES=("nexus-r2-terraform-state-${DOMAIN_SLUG}" "nexus-r2-data-${DOMA
 ALL_TOKENS=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
     -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
 
-for OLD_NAME in "${OLD_TOKEN_NAMES[@]}"; do
-    OLD_TOKEN_ID=$(echo "$ALL_TOKENS" | jq -r --arg name "$OLD_NAME" \
-        '.result[] | select(.name == $name) | .id' | head -n 1)
-    if [ -n "$OLD_TOKEN_ID" ]; then
-        echo -e "  ${YELLOW}→${NC} Cleaning up old token '${OLD_NAME}'..."
-        DELETE_RESP=$(curl -s -X DELETE \
-            "https://api.cloudflare.com/client/v4/user/tokens/${OLD_TOKEN_ID}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
-        if echo "$DELETE_RESP" | grep -q '"success":true'; then
-            echo -e "  ${GREEN}✓${NC} Deleted old token '${OLD_NAME}'"
-        else
-            echo -e "  ${YELLOW}⚠${NC}  Could not delete old token '${OLD_NAME}' (non-fatal)"
+if echo "$ALL_TOKENS" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1; then
+    for OLD_NAME in "${OLD_TOKEN_NAMES[@]}"; do
+        OLD_TOKEN_ID=$(echo "$ALL_TOKENS" | jq -r --arg name "$OLD_NAME" \
+            '.result[] | select(.name == $name) | .id' 2>/dev/null | head -n 1 || true)
+        if [ -n "${OLD_TOKEN_ID}" ] && [ "${OLD_TOKEN_ID}" != "null" ]; then
+            echo -e "  ${YELLOW}→${NC} Cleaning up old token '${OLD_NAME}'..."
+            DELETE_RESP=$(curl -s -X DELETE \
+                "https://api.cloudflare.com/client/v4/user/tokens/${OLD_TOKEN_ID}" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+            if echo "$DELETE_RESP" | grep -q '"success":true'; then
+                echo -e "  ${GREEN}✓${NC} Deleted old token '${OLD_NAME}'"
+            else
+                echo -e "  ${YELLOW}⚠${NC}  Could not delete old token '${OLD_NAME}' (non-fatal)"
+            fi
         fi
-    fi
-done
+    done
+else
+    echo -e "  ${YELLOW}⚠${NC}  Skipping cleanup of old R2 tokens (could not parse token list response; non-fatal)"
+fi
 
 # Create User API token for R2 with account-level R2 permissions
 # Using account resource instead of bucket-specific resource for broader access
