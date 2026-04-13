@@ -1475,7 +1475,11 @@ FWEOF
             PORTS_LIST=""
             for p in $REDPANDA_PORTS; do
                 if [ "$p" = "9092" ]; then
+                    # Kafka: external 9092 → internal 19092 (SASL listener)
                     PORTS_LIST="${PORTS_LIST}      - \"9092:19092\"\n"
+                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
+                    # Schema Registry: external port → internal 8081
+                    PORTS_LIST="${PORTS_LIST}      - \"$p:8081\"\n"
                 else
                     PORTS_LIST="${PORTS_LIST}      - \"$p:$p\"\n"
                 fi
@@ -1499,12 +1503,13 @@ RPEOF
                 "stacks/redpanda/config/redpanda-firewall.yaml.template" > "$REDPANDA_FIREWALL_CONFIG"
 
             echo "    RedPanda configured for external access (SASL):"
-            if echo "$REDPANDA_PORTS" | grep -q "9092"; then
-                echo "      Kafka: redpanda-kafka.$DOMAIN:9092 (SASL_PLAINTEXT)"
-            fi
-            if echo "$REDPANDA_PORTS" | grep -q "8081"; then
-                echo "      Schema Registry: redpanda-schema-registry.$DOMAIN:8081"
-            fi
+            for p in $REDPANDA_PORTS; do
+                if [ "$p" = "9092" ]; then
+                    echo "      Kafka: redpanda-kafka.$DOMAIN:9092 (SASL_PLAINTEXT)"
+                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
+                    echo "      Schema Registry: redpanda-schema-registry.$DOMAIN:$p"
+                fi
+            done
         fi
     fi
 
