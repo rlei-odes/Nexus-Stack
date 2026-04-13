@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.46.0...v0.46.1) (2026-04-13)
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Add per_page and head -1 guard to KV namespace lookup ([dcbf810](https://github.com/stefanko-ch/Nexus-Stack/commit/dcbf810ae430bfe0f63d1c6497fb59be3c630185))
+* **ci:** Add pre-apply reconciliation for orphaned KV namespace and volume ([c0fdc3e](https://github.com/stefanko-ch/Nexus-Stack/commit/c0fdc3e47b4bd96580520fbc63b419af73226b3a))
+* **ci:** Add pre-apply reconciliation for orphaned KV namespace and volume ([c7990de](https://github.com/stefanko-ch/Nexus-Stack/commit/c7990de3b894b6c8b32b5bf7592e42df362a5694))
+
 ## [0.46.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.45.3...v0.46.0) (2026-04-13)
 
 
