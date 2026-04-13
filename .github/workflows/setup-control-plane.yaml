@@ -777,9 +777,13 @@ jobs:
                   '.result[] | select(.name == $n) | .id' 2>/dev/null | head -1 || true)
                 if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "null" ]; then
                   echo "  Cleaning up old token '$OLD_NAME'..."
-                  curl -sf -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$OLD_ID" \
-                    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" >/dev/null 2>&1 || true
-                  echo "  ✅ Deleted old token '$OLD_NAME'"
+                  DELETE_BODY=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/user/tokens/$OLD_ID" \
+                    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" 2>/dev/null) || true
+                  if echo "$DELETE_BODY" | grep -q '"success":true'; then
+                    echo "  ✅ Deleted old token '$OLD_NAME'"
+                  else
+                    echo "  ⚠️  Could not delete old token '$OLD_NAME' (non-fatal)"
+                  fi
                 fi
               done
             else
