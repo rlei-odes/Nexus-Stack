@@ -87,8 +87,8 @@ jobs:
       TF_VAR_external_s3_bucket: ${{ secrets.EXTERNAL_S3_BUCKET }}
       TF_VAR_external_s3_label: ${{ secrets.EXTERNAL_S3_LABEL }}
       # R2 Datalake (auto-created during setup, inputs override secrets for first-run)
-      TF_VAR_r2_data_access_key: ${{ inputs.r2_data_access_key || secrets.R2_DATA_ACCESS_KEY_ID }}
-      TF_VAR_r2_data_secret_key: ${{ inputs.r2_data_secret_key || secrets.R2_DATA_SECRET_ACCESS_KEY }}
+      TF_VAR_r2_data_access_key: ${{ inputs.r2_data_access_key || secrets.R2_DATA_ACCESS_KEY_ID || secrets.R2_ACCESS_KEY_ID }}
+      TF_VAR_r2_data_secret_key: ${{ inputs.r2_data_secret_key || secrets.R2_DATA_SECRET_ACCESS_KEY || secrets.R2_SECRET_ACCESS_KEY }}
       TF_VAR_r2_data_bucket: ${{ inputs.r2_data_bucket || secrets.R2_DATA_BUCKET }}
 
     steps:
