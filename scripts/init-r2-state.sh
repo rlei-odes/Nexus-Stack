@@ -95,15 +95,15 @@ RESPONSE=$(echo "$BUCKET_CHECK" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
     echo -e "  ${GREEN}✓${NC} Bucket '${BUCKET_NAME}' already exists"
-else
+elif [ "$HTTP_CODE" = "404" ]; then
     echo -e "  ${YELLOW}→${NC} Creating bucket '${BUCKET_NAME}'..."
-    
+
     CREATE_RESPONSE=$(curl -s -X POST \
         "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets" \
         -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
         -H "Content-Type: application/json" \
         -d "{\"name\": \"${BUCKET_NAME}\"}")
-    
+
     if echo "$CREATE_RESPONSE" | grep -q '"success":true'; then
         echo -e "  ${GREEN}✓${NC} Bucket created successfully"
     else
@@ -112,6 +112,10 @@ else
         echo "     Check Cloudflare dashboard for details"
         exit 1
     fi
+else
+    echo -e "  ${RED}❌ Failed to check state bucket (HTTP ${HTTP_CODE})${NC}"
+    echo "     Response: ${RESPONSE}"
+    exit 1
 fi
 
 # Check/Create data datalake bucket
