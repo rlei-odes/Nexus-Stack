@@ -104,8 +104,8 @@ import Layout from '../layouts/Layout.astro';
 
   .fw-card:last-child { margin-bottom: 0; }
   .fw-card:hover { border-color: rgba(0, 255, 136, 0.2); }
-  .fw-card.has-pending { border-left-color: var(--warning); }
   .fw-card.has-enabled { border-left-color: var(--warning); }
+  .fw-card.has-pending { border-left-color: #ffd700; }
 
   .fw-card-header {
     display: flex;
@@ -318,7 +318,7 @@ import Layout from '../layouts/Layout.astro';
       return;
     }
     const groups = groupRules(rules);
-    const domainDisplay = currentDomain || '&lt;domain&gt;';
+    const domainDisplay = currentDomain || '<domain>';
     let html = '';
 
     for (const [service, serviceRules] of Object.entries(groups)) {
@@ -369,7 +369,7 @@ import Layout from '../layouts/Layout.astro';
     const list = document.getElementById('connectionList');
     if (enabled.length === 0) { section.style.display = 'none'; return; }
     section.style.display = 'block';
-    const domainDisplay = currentDomain || '&lt;domain&gt;';
+    const domainDisplay = currentDomain || '<domain>';
     list.innerHTML = enabled.map(r =>
       '<div class="connection-item">' +
         '<span class="connection-label">' + escapeHtml(r.label || r.serviceName) + ':</span>' +
