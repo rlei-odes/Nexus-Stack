@@ -14,6 +14,7 @@ import Layout from '../layouts/Layout.astro';
     <h2>Firewall Rules</h2>
     <div class="actions">
       <button class="btn-primary" onclick="loadRules()">Refresh</button>
+      <button class="btn-spinup" id="btn-trigger-spinup" onclick="triggerSpinUp()">Apply &amp; Spin Up</button>
     </div>
     <div id="rulesContainer">
       <div class="loading"><span class="spinner"></span> Loading firewall rules...</div>
@@ -24,13 +25,15 @@ import Layout from '../layouts/Layout.astro';
     </p>
   </div>
 
-  <div class="connection-info" id="connectionSection" style="display: none;">
-    <h2>Connection Info</h2>
-    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">
-      Use these hostnames to connect from external clients (e.g., Databricks).
-      DNS records are created after Spin Up.
-    </p>
-    <div id="connectionList"></div>
+  <div id="connectionSection" style="display: none;">
+    <div class="section">
+      <h2>Connection Info</h2>
+      <p class="notice" style="margin-top: 0; margin-bottom: 1rem;">
+        Use these hostnames to connect from external clients (e.g., Databricks).
+        DNS records are created after Spin Up.
+      </p>
+      <div id="connectionList"></div>
+    </div>
   </div>
 </Layout>
 
@@ -59,84 +62,208 @@ import Layout from '../layouts/Layout.astro';
     margin-bottom: 1.5rem;
   }
 
-  .rule-item {
+  .actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .btn-spinup {
+    background: rgba(0, 170, 255, 0.1);
+    border: 1px solid rgba(0, 170, 255, 0.4);
+    color: var(--info);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    padding: 0.6rem 1.2rem;
+    cursor: pointer;
+    transition: all 0.3s;
+    border-radius: 4px;
+  }
+
+  .btn-spinup:hover:not(:disabled) {
+    background: rgba(0, 170, 255, 0.2);
+    border-color: var(--info);
+    box-shadow: 0 0 15px rgba(0, 170, 255, 0.3);
+  }
+
+  .btn-spinup:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Service cards */
+  .fw-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .fw-card:last-child { margin-bottom: 0; }
+  .fw-card:hover { border-color: rgba(0, 255, 136, 0.2); }
+  .fw-card.has-pending { border-left-color: var(--warning); }
+  .fw-card.has-enabled { border-left-color: var(--warning); }
+
+  .fw-card-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    margin-bottom: 0.5rem;
-    transition: border-color 0.2s;
+    padding: 0.8rem 1rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-bottom: 1px solid rgba(42, 42, 62, 0.5);
   }
 
-  .rule-item:last-child { margin-bottom: 0; }
-  .rule-item.pending { border-left: 3px solid var(--warning); }
+  .fw-card-name {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
 
-  .rule-details {
+  .fw-card-badges {
     display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .fw-card-badge {
+    font-size: 0.6rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .fw-card-badge.pending {
+    background: rgba(255, 215, 0, 0.15);
+    color: #ffd700;
+    border: 1px solid rgba(255, 215, 0, 0.3);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+  .fw-card-badge.enabled-count {
+    background: rgba(255, 170, 0, 0.15);
+    color: var(--warning);
+    border: 1px solid rgba(255, 170, 0, 0.3);
+  }
+
+  .fw-card-body { padding: 0; }
+
+  /* Individual rule rows */
+  .fw-rule {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid rgba(42, 42, 62, 0.3);
+    transition: background 0.2s;
+  }
+
+  .fw-rule:last-child { border-bottom: none; }
+  .fw-rule:hover { background: rgba(0, 255, 136, 0.02); }
+
+  .fw-rule-info {
     flex: 1;
+    min-width: 0;
   }
 
-  .rule-header {
+  .fw-rule-top {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    margin-bottom: 0.25rem;
   }
 
-  .rule-service { font-weight: bold; color: var(--accent); font-size: 0.9rem; }
-  .rule-label { font-size: 0.75rem; color: var(--text-secondary); background: var(--bg-card); padding: 0.1rem 0.5rem; border-radius: 3px; }
-  .rule-port { font-size: 0.8rem; color: var(--text-muted); }
-  .pending-label { font-size: 0.65rem; background: var(--warning); color: #000; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold; }
-
-  .source-ip-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
-  }
-
-  .source-ip-input {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
+  .fw-rule-label {
+    font-weight: 600;
+    font-size: 0.85rem;
     color: var(--text-primary);
-    padding: 0.4rem 0.6rem;
+  }
+
+  .fw-rule-protocol {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(42, 42, 62, 0.5);
+    text-transform: uppercase;
+  }
+
+  .fw-rule-pending {
+    font-size: 0.6rem;
+    background: var(--warning);
+    color: #000;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-weight: bold;
+  }
+
+  .fw-rule-port {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+
+  .fw-rule-dns {
+    font-size: 0.75rem;
+    color: var(--info);
+  }
+
+  .fw-rule-ip {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+  }
+
+  .fw-rule-ip label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-bottom: 0;
+    white-space: nowrap;
+  }
+
+  .fw-rule-ip input {
+    background: rgba(0, 10, 5, 0.8);
+    border: 1px solid var(--border);
+    color: #c0d0c0;
+    padding: 0.3rem 0.5rem;
     font-family: inherit;
     font-size: 0.75rem;
-    border-radius: 4px;
+    border-radius: 3px;
     flex: 1;
-    max-width: 300px;
+    max-width: 260px;
   }
 
-  .source-ip-input:focus { outline: none; border-color: var(--accent); }
-  .source-ip-input::placeholder { color: var(--text-muted); }
-  .source-ip-label { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+  .fw-rule-ip input:focus { outline: none; border-color: var(--accent); }
+  .fw-rule-ip input::placeholder { color: #607080; }
 
-  .btn-save-ip {
+  .fw-rule-ip .btn-save-ip {
     background: var(--bg-card);
     border: 1px solid var(--border);
     color: var(--accent);
-    padding: 0.4rem 0.6rem;
+    padding: 0.3rem 0.5rem;
     font-family: inherit;
-    font-size: 0.75rem;
-    border-radius: 4px;
+    font-size: 0.7rem;
+    border-radius: 3px;
     cursor: pointer;
     transition: border-color 0.2s;
+    white-space: nowrap;
   }
 
-  .btn-save-ip:hover { border-color: var(--accent); }
+  .fw-rule-ip .btn-save-ip:hover { border-color: var(--accent); }
 
-  .connection-info {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.5rem;
-    margin-bottom: 1.5rem;
+  .fw-rule-toggle {
+    flex-shrink: 0;
   }
 
+  /* Connection info */
   .connection-item {
     display: flex;
     align-items: center;
@@ -159,24 +286,15 @@ import Layout from '../layouts/Layout.astro';
 
   .connection-label { font-size: 0.8rem; color: var(--text-secondary); }
 
-  .service-group { margin-bottom: 1.5rem; }
-  .service-group:last-child { margin-bottom: 0; }
-  .service-group-title {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    margin-bottom: 0.5rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid var(--border);
-  }
-
   .empty { text-align: center; padding: 2rem; color: var(--text-secondary); }
   .notice { font-size: 0.8rem; color: var(--text-muted); margin-top: 1rem; line-height: 1.5; }
-  .actions { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
 </style>
 
 <script is:inline>
+  function escapeHtml(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   function escapeAttr(str) {
     return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
@@ -200,32 +318,47 @@ import Layout from '../layouts/Layout.astro';
       return;
     }
     const groups = groupRules(rules);
-    const domainDisplay = currentDomain || '<domain>';
+    const domainDisplay = currentDomain || '&lt;domain&gt;';
     let html = '';
+
     for (const [service, serviceRules] of Object.entries(groups)) {
-      html += '<div class="service-group"><div class="service-group-title">' + service + '</div>';
+      const enabledCount = serviceRules.filter(r => r.enabled).length;
+      const hasPending = serviceRules.some(r => r.pending);
+      const cardClasses = ['fw-card'];
+      if (hasPending) cardClasses.push('has-pending');
+      if (enabledCount > 0) cardClasses.push('has-enabled');
+
+      html += '<div class="' + cardClasses.join(' ') + '">';
+      html += '<div class="fw-card-header">';
+      html += '<span class="fw-card-name">' + escapeHtml(service) + '</span>';
+      html += '<div class="fw-card-badges">';
+      if (hasPending) html += '<span class="fw-card-badge pending">Pending</span>';
+      if (enabledCount > 0) html += '<span class="fw-card-badge enabled-count">' + enabledCount + '/' + serviceRules.length + ' open</span>';
+      html += '</div></div>';
+
+      html += '<div class="fw-card-body">';
       for (const rule of serviceRules) {
-        const pendingClass = rule.pending ? ' pending' : '';
-        const pendingBadge = rule.pending ? '<span class="pending-label">PENDING</span>' : '';
         const toggleClass = rule.enabled ? ' active' : '';
-        html += '<div class="rule-item' + pendingClass + '">' +
-          '<div class="rule-details">' +
-            '<div class="rule-header">' +
-              '<span class="rule-service">' + escapeHtml(rule.label || rule.serviceName) + '</span>' +
-              '<span class="rule-label">' + escapeHtml(rule.protocol.toUpperCase()) + '</span>' +
-              pendingBadge +
-            '</div>' +
-            '<span class="rule-port">Port ' + rule.port + (rule.dnsRecord ? ' &mdash; ' + escapeHtml(rule.dnsRecord) + '.' + escapeHtml(domainDisplay) : '') + '</span>' +
-            '<div class="source-ip-row">' +
-              '<span class="source-ip-label">Source IPs:</span>' +
-              '<input type="text" class="source-ip-input" id="ip-' + rule.serviceName + '-' + rule.port + '" value="' + escapeAttr(rule.sourceIps) + '" placeholder="0.0.0.0/0 (open to all)">' +
-              '<button class="btn-save-ip" onclick="saveSourceIps(\'' + rule.serviceName + '\', ' + rule.port + ', ' + rule.enabled + ')">Save</button>' +
-            '</div>' +
-          '</div>' +
-          '<div class="toggle-switch' + toggleClass + '" onclick="toggleRule(\'' + rule.serviceName + '\', ' + rule.port + ', ' + !rule.enabled + ')"></div>' +
-        '</div>';
+        html += '<div class="fw-rule">';
+        html += '<div class="fw-rule-info">';
+        html += '<div class="fw-rule-top">';
+        html += '<span class="fw-rule-label">' + escapeHtml(rule.label || rule.serviceName) + '</span>';
+        html += '<span class="fw-rule-protocol">' + escapeHtml(rule.protocol) + '</span>';
+        if (rule.pending) html += '<span class="fw-rule-pending">STAGED</span>';
+        html += '</div>';
+        html += '<span class="fw-rule-port">Port ' + rule.port;
+        if (rule.dnsRecord) html += ' &mdash; <span class="fw-rule-dns">' + escapeHtml(rule.dnsRecord) + '.' + escapeHtml(domainDisplay) + '</span>';
+        html += '</span>';
+        html += '<div class="fw-rule-ip">';
+        html += '<label>Source IPs:</label>';
+        html += '<input type="text" id="ip-' + escapeAttr(rule.serviceName) + '-' + rule.port + '" value="' + escapeAttr(rule.sourceIps) + '" placeholder="0.0.0.0/0 (open to all)">';
+        html += '<button class="btn-save-ip" onclick="saveSourceIps(\'' + escapeAttr(rule.serviceName) + '\', ' + rule.port + ', ' + rule.enabled + ')">Save</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '<div class="fw-rule-toggle"><div class="toggle-switch' + toggleClass + '" onclick="toggleRule(\'' + escapeAttr(rule.serviceName) + '\', ' + rule.port + ', ' + !rule.enabled + ')"></div></div>';
+        html += '</div>';
       }
-      html += '</div>';
+      html += '</div></div>';
     }
     container.innerHTML = html;
   }
@@ -236,7 +369,7 @@ import Layout from '../layouts/Layout.astro';
     const list = document.getElementById('connectionList');
     if (enabled.length === 0) { section.style.display = 'none'; return; }
     section.style.display = 'block';
-    const domainDisplay = currentDomain || '<domain>';
+    const domainDisplay = currentDomain || '&lt;domain&gt;';
     list.innerHTML = enabled.map(r =>
       '<div class="connection-item">' +
         '<span class="connection-label">' + escapeHtml(r.label || r.serviceName) + ':</span>' +
@@ -256,7 +389,7 @@ import Layout from '../layouts/Layout.astro';
       renderConnectionInfo(currentRules);
     } catch (err) {
       document.getElementById('rulesContainer').innerHTML =
-        '<div class="empty" style="color: var(--error);">Error: ' + err.message + '</div>';
+        '<div class="empty" style="color: var(--error);">Error: ' + escapeHtml(err.message) + '</div>';
     }
   }
 
@@ -293,6 +426,42 @@ import Layout from '../layouts/Layout.astro';
       await loadRules();
     } catch (err) {
       showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  async function triggerSpinUp() {
+    const btn = document.getElementById('btn-trigger-spinup');
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Triggering...';
+
+    try {
+      const res = await fetch('/api/spin-up', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        showToast('Session expired - please refresh the page', 'error');
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        return;
+      }
+      const data = await res.json();
+      if (data.success) {
+        showToast('Spin Up triggered! Firewall changes will be applied.');
+        btn.innerHTML = 'Triggered!';
+        setTimeout(() => { btn.disabled = false; btn.innerHTML = originalHTML; }, 5000);
+      } else {
+        showToast(data.error || 'Failed to trigger Spin Up', 'error');
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+      }
+    } catch {
+      showToast('Network error - please try again', 'error');
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
     }
   }
 
