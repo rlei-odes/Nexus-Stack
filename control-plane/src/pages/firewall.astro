@@ -93,13 +93,14 @@ import Layout from '../layouts/Layout.astro';
 
   /* Service cards */
   .fw-card {
-    background: var(--bg-card);
-    border: 2px solid var(--border);
+    background: rgba(26, 26, 46, 0.8);
+    border: 1px solid rgba(0, 255, 136, 0.15);
     border-left: 4px solid var(--border);
-    border-radius: 6px;
-    margin-bottom: 2rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
     overflow: hidden;
     transition: border-color 0.2s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   }
 
   .fw-card:last-child { margin-bottom: 0; }
@@ -111,9 +112,9 @@ import Layout from '../layouts/Layout.astro';
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.75rem 1rem;
-    background: rgba(0, 0, 0, 0.45);
-    border-bottom: 2px solid var(--border);
+    padding: 0.8rem 1.2rem;
+    background: rgba(0, 255, 136, 0.05);
+    border-bottom: 1px solid rgba(0, 255, 136, 0.1);
   }
 
   .fw-card-name {
@@ -160,8 +161,8 @@ import Layout from '../layouts/Layout.astro';
     display: flex;
     align-items: center;
     gap: 1rem;
-    padding: 1rem 1rem 1.2rem;
-    border-bottom: 2px solid var(--border);
+    padding: 1rem 1.2rem;
+    border-bottom: 1px solid rgba(42, 42, 62, 0.6);
     transition: background 0.2s;
   }
 
