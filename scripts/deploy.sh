@@ -1475,7 +1475,11 @@ FWEOF
             PORTS_LIST=""
             for p in $REDPANDA_PORTS; do
                 if [ "$p" = "9092" ]; then
+                    # Kafka: external 9092 → internal 19092 (SASL listener)
                     PORTS_LIST="${PORTS_LIST}      - \"9092:19092\"\n"
+                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
+                    # Schema Registry: external port → internal 8081
+                    PORTS_LIST="${PORTS_LIST}      - \"$p:8081\"\n"
                 else
                     PORTS_LIST="${PORTS_LIST}      - \"$p:$p\"\n"
                 fi
@@ -1499,12 +1503,13 @@ RPEOF
                 "stacks/redpanda/config/redpanda-firewall.yaml.template" > "$REDPANDA_FIREWALL_CONFIG"
 
             echo "    RedPanda configured for external access (SASL):"
-            if echo "$REDPANDA_PORTS" | grep -q "9092"; then
-                echo "      Kafka: redpanda-kafka.$DOMAIN:9092 (SASL_PLAINTEXT)"
-            fi
-            if echo "$REDPANDA_PORTS" | grep -q "8081"; then
-                echo "      Schema Registry: redpanda-schema-registry.$DOMAIN:8081"
-            fi
+            for p in $REDPANDA_PORTS; do
+                if [ "$p" = "9092" ]; then
+                    echo "      Kafka: redpanda-kafka.$DOMAIN:9092 (SASL_PLAINTEXT)"
+                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
+                    echo "      Schema Registry: redpanda-schema-registry.$DOMAIN:$p"
+                fi
+            done
         fi
     fi
 
@@ -3195,29 +3200,56 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                     echo -e "${GREEN}  ✓ Read access granted to '$GITEA_USER_USERNAME'${NC}"
                 fi
 
-                # Restart git-integrated services now that the fork repo is available.
-                # Deferred from the Gitea setup block above so services start only after
-                # the fork exists and can be cloned successfully.
-                # Only runs once (for the first mirror) using the RESTARTED_GIT_SERVICES flag.
-                if [ "${FORKED_WORKSPACE:-}" = "1" ] && [ "${RESTARTED_GIT_SERVICES:-}" != "1" ]; then
-                    RESTARTED_GIT_SERVICES=1
-                    GIT_RESTART_SVCS=""
-                    for SVC in jupyter marimo code-server meltano prefect; do
-                        if echo "$ENABLED_SERVICES" | grep -qw "$SVC"; then
-                            GIT_RESTART_SVCS="$GIT_RESTART_SVCS $SVC"
-                        fi
-                    done
-                    if [ -n "$GIT_RESTART_SVCS" ]; then
-                        echo "  Restarting services with Git integration (fork ready)..."
-                        for SVC in $GIT_RESTART_SVCS; do
-                            ssh nexus "cd $REMOTE_STACKS_DIR/$SVC && docker compose restart" >/dev/null 2>&1 || true
-                            echo "    Restarted $SVC"
-                        done
-                        echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
+                # Sync fork from upstream mirror (ensures fork has latest code on every Spin Up)
+                # Uses Gitea's merge-upstream API to fast-forward the fork from the mirror.
+                if [ "${FORKED_WORKSPACE:-}" = "1" ] && [ "${SYNCED_FORK:-}" != "1" ]; then
+                    SYNCED_FORK=1
+                    ORIG_NAME=$(basename "$REPO_URL" .git)
+                    GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
+                    SYNC_FORK_NAME="${ORIG_NAME}_${GITEA_USER_SANITIZED}"
+                    echo "  Syncing fork ${GITEA_USER_USERNAME}/${SYNC_FORK_NAME} from upstream..."
+
+                    # First trigger mirror sync to pull latest from GitHub
+                    ssh nexus "curl -s -X POST \
+                        'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/mirror-sync' \
+                        -H 'Authorization: token $GITEA_TOKEN'" >/dev/null 2>&1 || true
+                    # Wait briefly for mirror sync to complete
+                    sleep 3
+
+                    # Merge upstream into fork (fast-forward)
+                    MERGE_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                        -X POST 'http://localhost:3200/api/v1/repos/$GITEA_USER_USERNAME/$SYNC_FORK_NAME/merge-upstream' \
+                        -H 'Authorization: token $GITEA_TOKEN' \
+                        -H 'Content-Type: application/json' \
+                        -d '{\"branch\":\"main\"}'")
+
+                    if [ "$MERGE_RESULT" = "200" ]; then
+                        echo -e "${GREEN}  ✓ Fork synced from upstream (new commits merged)${NC}"
+                    elif [ "$MERGE_RESULT" = "409" ]; then
+                        echo "  ✓ Fork already up to date"
+                    else
+                        echo -e "${YELLOW}  ⚠ Fork sync returned HTTP $MERGE_RESULT (may need manual sync)${NC}"
                     fi
                 fi
             fi
         done
+    fi
+
+    # Restart git-integrated services so they pick up the latest fork content.
+    # Runs after mirror sync + fork update to ensure services clone/pull the newest code.
+    GIT_RESTART_SVCS=""
+    for SVC in jupyter marimo code-server meltano prefect; do
+        if echo "$ENABLED_SERVICES" | grep -qw "$SVC"; then
+            GIT_RESTART_SVCS="$GIT_RESTART_SVCS $SVC"
+        fi
+    done
+    if [ -n "$GIT_RESTART_SVCS" ]; then
+        echo "  Restarting services with Git integration..."
+        for SVC in $GIT_RESTART_SVCS; do
+            ssh nexus "cd $REMOTE_STACKS_DIR/$SVC && docker compose restart" >/dev/null 2>&1 || true
+            echo "    Restarted $SVC"
+        done
+        echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
     fi
 fi
 

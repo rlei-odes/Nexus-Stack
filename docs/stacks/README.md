@@ -208,7 +208,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 | **MinIO** (S3 API) | 9000 | `s3.<domain>` | S3/HTTP |
 | **PostgreSQL** | 5432 | `postgres.<domain>` | PostgreSQL |
 | **RedPanda** (Kafka) | 9092 | `redpanda.<domain>` | Kafka |
-| **RedPanda** (Schema Registry) | 8081 | `redpanda-schema-registry.<domain>` | HTTP |
+| **RedPanda** (Schema Registry) | 18081 | `redpanda-schema-registry.<domain>` | HTTP |
 | **RustFS** (S3 API) | 9003 | `rustfs-s3.<domain>` | S3/HTTP |
 | **RisingWave** (PostgreSQL) | 4566 | `risingwave.<domain>` | PostgreSQL |
 | **SeaweedFS** (S3 API) | 8333 | `seaweedfs-s3.<domain>` | S3/HTTP |
@@ -220,7 +220,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 redpanda.yourdomain.com:9092
 
 # RedPanda Schema Registry
-curl http://redpanda-schema-registry.yourdomain.com:8081/subjects
+curl http://redpanda-schema-registry.yourdomain.com:18081/subjects
 
 # PostgreSQL
 psql -h postgres.yourdomain.com -p 5432 -U postgres

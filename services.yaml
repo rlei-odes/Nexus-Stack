@@ -583,7 +583,7 @@ services:
     image: "redpandadata/redpanda:v24.3"
     tcp_ports:
       kafka: 9092
-      schema-registry: 8081
+      schema-registry: 18081
 
   seaweedfs:
     port: 8888
