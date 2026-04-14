@@ -20,7 +20,7 @@ Redpanda is a Kafka-compatible streaming data platform that is simpler, faster, 
 |---------|-------|
 | Default Port (Admin) | `9644` |
 | Kafka Port | `9092` |
-| Schema Registry Port | `8081` |
+| Schema Registry Port | `18081` |
 | Suggested Subdomain | `redpanda` |
 | Public Access | No (streaming infrastructure) |
 | Website | [redpanda.com](https://redpanda.com) |
