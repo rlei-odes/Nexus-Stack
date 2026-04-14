@@ -95,15 +95,15 @@ import Layout from '../layouts/Layout.astro';
   .fw-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-left: 3px solid var(--border);
+    border-left: 4px solid var(--border);
     border-radius: 6px;
-    margin-bottom: 1rem;
+    margin-bottom: 1.5rem;
     overflow: hidden;
     transition: border-color 0.2s;
   }
 
   .fw-card:last-child { margin-bottom: 0; }
-  .fw-card:hover { border-color: rgba(0, 255, 136, 0.2); }
+  .fw-card:hover { border-color: rgba(0, 255, 136, 0.3); }
   .fw-card.has-enabled { border-left-color: var(--warning); }
   .fw-card.has-pending { border-left-color: #ffd700; }
 
@@ -111,17 +111,17 @@ import Layout from '../layouts/Layout.astro';
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.8rem 1rem;
-    background: rgba(0, 0, 0, 0.2);
-    border-bottom: 1px solid rgba(42, 42, 62, 0.5);
+    padding: 0.75rem 1rem;
+    background: rgba(0, 0, 0, 0.35);
+    border-bottom: 1px solid var(--border);
   }
 
   .fw-card-name {
     font-weight: 700;
-    font-size: 0.95rem;
+    font-size: 1rem;
     color: var(--accent);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.1em;
   }
 
   .fw-card-badges {
@@ -160,13 +160,13 @@ import Layout from '../layouts/Layout.astro';
     display: flex;
     align-items: center;
     gap: 1rem;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid rgba(42, 42, 62, 0.3);
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid var(--border);
     transition: background 0.2s;
   }
 
   .fw-rule:last-child { border-bottom: none; }
-  .fw-rule:hover { background: rgba(0, 255, 136, 0.02); }
+  .fw-rule:hover { background: rgba(0, 255, 136, 0.03); }
 
   .fw-rule-info {
     flex: 1;
