@@ -328,18 +328,21 @@ dns_records = {
 for name, config in services.items():
     if not validate_service_name(name):
         continue
+    safe_name = name.replace("'", "''")
     tcp_ports = config.get('tcp_ports', {})
+
     if not tcp_ports:
+        # Service exists but has no tcp_ports — delete all its stale firewall rules
+        cleanup_sql = f"DELETE FROM firewall_rules WHERE service_name = '{safe_name}';"
+        cleanup_statements.append(cleanup_sql)
         continue
 
-    safe_name = name.replace("'", "''")
     valid_ports = []
 
     for label, port in tcp_ports.items():
         if not isinstance(port, int) or port < 1 or port > 65535:
             continue
         valid_ports.append(port)
-        # Escape values for SQL
         safe_label = label.replace("'", "''")
         dns_record = dns_records.get(name, {}).get(label, '')
         safe_dns_record = dns_record.replace("'", "''")
@@ -368,7 +371,7 @@ FWEOF
 
   if [ -f /tmp/init_firewall_rules.sql ] && [ -s /tmp/init_firewall_rules.sql ]; then
     FW_COUNT=$(wc -l < /tmp/init_firewall_rules.sql | tr -d ' ')
-    echo "  Executing $FW_COUNT firewall rule INSERT statements..."
+    echo "  Executing $FW_COUNT firewall rule statements (inserts + cleanups)..."
 
     set +e
     FW_OUTPUT=$(npx wrangler@latest d1 execute "$D1_DATABASE_NAME" \
