@@ -87,8 +87,8 @@ import Layout from '../layouts/Layout.astro';
     cursor: not-allowed;
   }
 
-  /* Service cards */
-  .fw-card {
+  /* Service cards — :global() required because elements are created dynamically via innerHTML */
+  :global(.fw-card) {
     background: rgba(26, 26, 46, 0.8);
     border: 1px solid rgba(0, 255, 136, 0.15);
     border-left: 4px solid var(--border);
@@ -99,12 +99,12 @@ import Layout from '../layouts/Layout.astro';
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   }
 
-  .fw-card:last-child { margin-bottom: 0; }
-  .fw-card:hover { border-color: rgba(0, 255, 136, 0.3); }
-  .fw-card.has-enabled { border-left-color: var(--warning); }
-  .fw-card.has-pending { border-left-color: #ffd700; }
+  :global(.fw-card:last-child) { margin-bottom: 0; }
+  :global(.fw-card:hover) { border-color: rgba(0, 255, 136, 0.3); }
+  :global(.fw-card.has-enabled) { border-left-color: var(--warning); }
+  :global(.fw-card.has-pending) { border-left-color: #ffd700; }
 
-  .fw-card-header {
+  :global(.fw-card-header) {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -113,7 +113,7 @@ import Layout from '../layouts/Layout.astro';
     border-bottom: 1px solid rgba(0, 255, 136, 0.1);
   }
 
-  .fw-card-name {
+  :global(.fw-card-name) {
     font-weight: 700;
     font-size: 1rem;
     color: var(--accent);
@@ -121,13 +121,13 @@ import Layout from '../layouts/Layout.astro';
     letter-spacing: 0.1em;
   }
 
-  .fw-card-badges {
+  :global(.fw-card-badges) {
     display: flex;
     gap: 0.4rem;
     align-items: center;
   }
 
-  .fw-card-badge {
+  :global(.fw-card-badge) {
     font-size: 0.6rem;
     padding: 0.15rem 0.4rem;
     border-radius: 3px;
@@ -135,7 +135,7 @@ import Layout from '../layouts/Layout.astro';
     letter-spacing: 0.5px;
   }
 
-  .fw-card-badge.pending {
+  :global(.fw-card-badge.pending) {
     background: rgba(255, 215, 0, 0.15);
     color: #ffd700;
     border: 1px solid rgba(255, 215, 0, 0.3);
@@ -144,16 +144,16 @@ import Layout from '../layouts/Layout.astro';
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
-  .fw-card-badge.enabled-count {
+  :global(.fw-card-badge.enabled-count) {
     background: rgba(255, 170, 0, 0.15);
     color: var(--warning);
     border: 1px solid rgba(255, 170, 0, 0.3);
   }
 
-  .fw-card-body { padding: 0; }
+  :global(.fw-card-body) { padding: 0; }
 
   /* Individual rule rows */
-  .fw-rule {
+  :global(.fw-rule) {
     display: flex;
     align-items: center;
     gap: 1rem;
@@ -162,28 +162,28 @@ import Layout from '../layouts/Layout.astro';
     transition: background 0.2s;
   }
 
-  .fw-rule:last-child { border-bottom: none; }
-  .fw-rule:hover { background: rgba(0, 255, 136, 0.03); }
+  :global(.fw-rule:last-child) { border-bottom: none; }
+  :global(.fw-rule:hover) { background: rgba(0, 255, 136, 0.03); }
 
-  .fw-rule-info {
+  :global(.fw-rule-info) {
     flex: 1;
     min-width: 0;
   }
 
-  .fw-rule-top {
+  :global(.fw-rule-top) {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 0.25rem;
   }
 
-  .fw-rule-label {
+  :global(.fw-rule-label) {
     font-weight: 600;
     font-size: 0.85rem;
     color: var(--text-primary);
   }
 
-  .fw-rule-protocol {
+  :global(.fw-rule-protocol) {
     font-size: 0.65rem;
     color: var(--text-muted);
     background: rgba(0, 0, 0, 0.3);
@@ -193,7 +193,7 @@ import Layout from '../layouts/Layout.astro';
     text-transform: uppercase;
   }
 
-  .fw-rule-pending {
+  :global(.fw-rule-pending) {
     font-size: 0.6rem;
     background: var(--warning);
     color: #000;
@@ -202,31 +202,31 @@ import Layout from '../layouts/Layout.astro';
     font-weight: bold;
   }
 
-  .fw-rule-port {
+  :global(.fw-rule-port) {
     font-size: 0.75rem;
     color: var(--text-muted);
   }
 
-  .fw-rule-dns {
+  :global(.fw-rule-dns) {
     font-size: 0.75rem;
     color: var(--info);
   }
 
-  .fw-rule-ip {
+  :global(.fw-rule-ip) {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     margin-top: 0.4rem;
   }
 
-  .fw-rule-ip label {
+  :global(.fw-rule-ip) label {
     font-size: 0.7rem;
     color: var(--text-muted);
     margin-bottom: 0;
     white-space: nowrap;
   }
 
-  .fw-rule-ip input {
+  :global(.fw-rule-ip) input {
     background: rgba(0, 10, 5, 0.8);
     border: 1px solid var(--border);
     color: #c0d0c0;
@@ -238,10 +238,10 @@ import Layout from '../layouts/Layout.astro';
     max-width: 260px;
   }
 
-  .fw-rule-ip input:focus { outline: none; border-color: var(--accent); }
-  .fw-rule-ip input::placeholder { color: #607080; }
+  :global(.fw-rule-ip) input:focus { outline: none; border-color: var(--accent); }
+  :global(.fw-rule-ip) input::placeholder { color: #607080; }
 
-  .fw-rule-ip .btn-save-ip {
+  :global(.fw-rule-ip .btn-save-ip) {
     background: var(--bg-card);
     border: 1px solid var(--border);
     color: var(--accent);
@@ -254,14 +254,14 @@ import Layout from '../layouts/Layout.astro';
     white-space: nowrap;
   }
 
-  .fw-rule-ip .btn-save-ip:hover { border-color: var(--accent); }
+  :global(.fw-rule-ip .btn-save-ip:hover) { border-color: var(--accent); }
 
-  .fw-rule-toggle {
+  :global(.fw-rule-toggle) {
     flex-shrink: 0;
   }
 
   /* Connection info */
-  .connection-item {
+  :global(.connection-item) {
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -269,9 +269,9 @@ import Layout from '../layouts/Layout.astro';
     border-bottom: 1px solid var(--border);
   }
 
-  .connection-item:last-child { border-bottom: none; }
+  :global(.connection-item:last-child) { border-bottom: none; }
 
-  .connection-host {
+  :global(.connection-host) {
     font-family: inherit;
     font-size: 0.85rem;
     color: var(--accent);
@@ -281,9 +281,9 @@ import Layout from '../layouts/Layout.astro';
     user-select: all;
   }
 
-  .connection-label { font-size: 0.8rem; color: var(--text-secondary); }
+  :global(.connection-label) { font-size: 0.8rem; color: var(--text-secondary); }
 
-  .empty { text-align: center; padding: 2rem; color: var(--text-secondary); }
+  :global(.empty) { text-align: center; padding: 2rem; color: var(--text-secondary); }
   .notice { font-size: 0.8rem; color: var(--text-muted); margin-top: 1rem; line-height: 1.5; }
 </style>
 
