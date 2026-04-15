@@ -207,7 +207,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 | **LakeFS** (S3 Gateway) | 8000 | `s3.lakefs.<domain>` | S3/HTTP |
 | **MinIO** (S3 API) | 9000 | `s3.<domain>` | S3/HTTP |
 | **PostgreSQL** | 5432 | `postgres.<domain>` | PostgreSQL |
-| **RedPanda** (Kafka) | 9092 | `redpanda.<domain>` | Kafka |
+| **RedPanda** (Kafka) | 9092 | `redpanda-kafka.<domain>` | Kafka |
 | **RedPanda** (Schema Registry) | 18081 | `redpanda-schema-registry.<domain>` | HTTP |
 | **RedPanda** (Admin API) | 9644 | `redpanda-admin.<domain>` | HTTP |
 | **Redpanda Connect** (HTTP API) | 4195 | `redpanda-connect.<domain>` | HTTP |
@@ -219,7 +219,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 
 ```bash
 # RedPanda Kafka (from Databricks or any Kafka client)
-redpanda.yourdomain.com:9092
+redpanda-kafka.yourdomain.com:9092
 
 # RedPanda Schema Registry
 curl http://redpanda-schema-registry.yourdomain.com:18081/subjects
