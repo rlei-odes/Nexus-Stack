@@ -210,7 +210,7 @@ OpenTofu creates inbound Hetzner firewall rules and DNS A records pointing direc
 | **RedPanda** (Kafka) | 9092 | `redpanda-kafka.<domain>` | Kafka |
 | **RedPanda** (Schema Registry) | 18081 | `redpanda-schema-registry.<domain>` | HTTP |
 | **RedPanda** (Admin API) | 9644 | `redpanda-admin.<domain>` | HTTP |
-| **Redpanda Connect** (HTTP API) | 4195 | `redpanda-connect.<domain>` | HTTP |
+| **Redpanda Connect** (HTTP API) | 4195 | `redpanda-connect-api.<domain>` | HTTP |
 | **RustFS** (S3 API) | 9003 | `rustfs-s3.<domain>` | S3/HTTP |
 | **RisingWave** (PostgreSQL) | 4566 | `risingwave.<domain>` | PostgreSQL |
 | **SeaweedFS** (S3 API) | 8333 | `seaweedfs-s3.<domain>` | S3/HTTP |
