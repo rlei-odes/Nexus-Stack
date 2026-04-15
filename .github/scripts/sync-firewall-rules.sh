@@ -108,6 +108,7 @@ if [ -f /tmp/sync_firewall_rules.sql ] && [ -s /tmp/sync_firewall_rules.sql ]; t
     echo "  ✅ Firewall rules synced"
   else
     echo "  ❌ Firewall rules sync failed" >&2
+    echo "$FW_OUTPUT" >&2
     rm -f /tmp/sync_firewall_rules.sql
     exit 1
   fi
