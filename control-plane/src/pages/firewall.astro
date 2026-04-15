@@ -142,8 +142,6 @@ import Layout from '../layouts/Layout.astro';
     animation: pulse 2s infinite;
   }
 
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-
   :global(.fw-card-badge.enabled-count) {
     background: rgba(255, 170, 0, 0.15);
     color: var(--warning);
@@ -347,8 +345,9 @@ import Layout from '../layouts/Layout.astro';
         if (rule.dnsRecord) html += ' &mdash; <span class="fw-rule-dns">' + escapeHtml(rule.dnsRecord) + '.' + escapeHtml(domainDisplay) + '</span>';
         html += '</span>';
         html += '<div class="fw-rule-ip">';
-        html += '<label>Source IPs:</label>';
-        html += '<input type="text" id="ip-' + escapeAttr(rule.serviceName) + '-' + rule.port + '" value="' + escapeAttr(rule.sourceIps) + '" placeholder="0.0.0.0/0 (open to all)">';
+        const inputId = 'ip-' + escapeAttr(rule.serviceName) + '-' + rule.port;
+        html += '<label for="' + inputId + '">Source IPs:</label>';
+        html += '<input type="text" id="' + inputId + '" value="' + escapeAttr(rule.sourceIps) + '" placeholder="0.0.0.0/0 (open to all)">';
         html += '<button class="btn-save-ip" onclick="saveSourceIps(\'' + escapeAttr(rule.serviceName) + '\', ' + rule.port + ', ' + rule.enabled + ')">Save</button>';
         html += '</div>';
         html += '</div>';
