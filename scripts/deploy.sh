@@ -1463,7 +1463,7 @@ FWEOF
     # Special handling for RedPanda: Generate firewall-specific config
     # Instead of using docker-compose override with CLI flags, we generate
     # a firewall-specific redpanda.yaml with external advertised addresses
-    REDPANDA_PORTS=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | startswith("redpanda-")) | .value.port' 2>/dev/null | sort -n)
+    REDPANDA_PORTS=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | test("^redpanda-[0-9]+$")) | .value.port' 2>/dev/null | sort -n)
     if [ -n "$REDPANDA_PORTS" ]; then
         echo "  Configuring RedPanda for external TCP access (with SASL)..."
 
