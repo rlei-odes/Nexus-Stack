@@ -2273,7 +2273,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
 fi
 
 # Configure RedPanda SASL authentication (only when external TCP ports are exposed)
-if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS" ] && [ -f "stacks/redpanda/docker-compose.firewall.yml" ]; then
+if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS" ]; then
     (
         echo "  Configuring RedPanda SASL..."
         # Wait for RedPanda admin API to be ready
