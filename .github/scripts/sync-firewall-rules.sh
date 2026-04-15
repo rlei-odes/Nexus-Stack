@@ -77,7 +77,10 @@ for name, config in services.items():
         dns_record = dns_records.get(name, {}).get(label, '')
         safe_dns_record = dns_record.replace("'", "''")
         statements.append(f"INSERT OR IGNORE INTO firewall_rules (service_name, port, protocol, label, enabled, deployed, source_ips, dns_record, updated_at) VALUES ('{safe_name}', {port}, 'tcp', '{safe_label}', 0, 0, '', '{safe_dns_record}', datetime('now'));")
-        statements.append(f"UPDATE firewall_rules SET label = '{safe_label}', dns_record = '{safe_dns_record}', updated_at = datetime('now') WHERE service_name = '{safe_name}' AND port = {port};")
+        if safe_dns_record:
+            statements.append(f"UPDATE firewall_rules SET label = '{safe_label}', dns_record = '{safe_dns_record}', updated_at = datetime('now') WHERE service_name = '{safe_name}' AND port = {port};")
+        else:
+            statements.append(f"UPDATE firewall_rules SET label = '{safe_label}', updated_at = datetime('now') WHERE service_name = '{safe_name}' AND port = {port};")
 
     if valid_ports:
         ports_list = ', '.join(str(p) for p in valid_ports)
@@ -96,7 +99,7 @@ if [ -f /tmp/sync_firewall_rules.sql ] && [ -s /tmp/sync_firewall_rules.sql ]; t
   echo "  Executing $FW_COUNT statements..."
 
   set +e
-  FW_OUTPUT=$(npx wrangler@latest d1 execute "$D1_DATABASE_NAME" \
+  FW_OUTPUT=$(npx wrangler@4 d1 execute "$D1_DATABASE_NAME" \
     --remote --file /tmp/sync_firewall_rules.sql 2>&1)
   FW_EXIT=$?
   set -e
@@ -104,7 +107,9 @@ if [ -f /tmp/sync_firewall_rules.sql ] && [ -s /tmp/sync_firewall_rules.sql ]; t
   if [ $FW_EXIT -eq 0 ]; then
     echo "  ✅ Firewall rules synced"
   else
-    echo "  ⚠️ Firewall rules sync had issues" >&2
+    echo "  ❌ Firewall rules sync failed" >&2
+    rm -f /tmp/sync_firewall_rules.sql
+    exit 1
   fi
   rm -f /tmp/sync_firewall_rules.sql
 fi

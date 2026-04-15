@@ -340,10 +340,13 @@ jobs:
           D1_DATABASE_NAME="nexus-${DOMAIN//./-}-db"
           echo "🔥 Syncing firewall rules from services.yaml to D1..."
           chmod +x .github/scripts/sync-firewall-rules.sh
-          CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-          CLOUDFLARE_ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
-          DOMAIN="${{ secrets.DOMAIN }}" \
-          bash .github/scripts/sync-firewall-rules.sh
+          if ! CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            CLOUDFLARE_ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
+            DOMAIN="${{ secrets.DOMAIN }}" \
+            bash .github/scripts/sync-firewall-rules.sh; then
+            echo "❌ Firewall rule sync failed — aborting to avoid stale firewall metadata"
+            exit 1
+          fi
 
           # Read enabled firewall rules from D1
           echo "🔥 Reading firewall rules from D1..."
