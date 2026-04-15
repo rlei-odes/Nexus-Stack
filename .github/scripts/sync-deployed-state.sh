@@ -349,6 +349,8 @@ for name, config in services.items():
         safe_dns_record = dns_record.replace("'", "''")
         insert_sql = f"INSERT OR IGNORE INTO firewall_rules (service_name, port, protocol, label, enabled, deployed, source_ips, dns_record, updated_at) VALUES ('{safe_name}', {port}, 'tcp', '{safe_label}', 0, 0, '', '{safe_dns_record}', datetime('now'));"
         insert_statements.append(insert_sql)
+        update_sql = f"UPDATE firewall_rules SET label = '{safe_label}', dns_record = '{safe_dns_record}', updated_at = datetime('now') WHERE service_name = '{safe_name}' AND port = {port};"
+        insert_statements.append(update_sql)
 
     # Delete stale firewall rules whose port is no longer in services.yaml tcp_ports
     if valid_ports:
