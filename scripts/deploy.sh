@@ -2276,20 +2276,26 @@ fi
 if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS" ]; then
     (
         echo "  Configuring RedPanda SASL..."
-        # Wait for RedPanda admin API to be ready
-        for i in $(seq 1 10); do
+        # Wait for RedPanda admin API to be ready (up to 60s — cold start is slow)
+        REDPANDA_READY=false
+        for i in $(seq 1 30); do
             if ssh nexus "docker exec redpanda curl -s --connect-timeout 2 'http://localhost:9644/v1/status/ready'" >/dev/null 2>&1; then
+                REDPANDA_READY=true
                 break
             fi
             sleep 2
         done
 
-        # SASL is configured in redpanda.yaml - just create user and set superuser
+        if [ "$REDPANDA_READY" != "true" ]; then
+            echo -e "${YELLOW}  ⚠ RedPanda admin API not ready after 60s — skipping SASL setup${NC}"
+            exit 0
+        fi
 
         # Create SASL user using rpk (password via stdin to avoid process list exposure)
         USER_RESULT=$(ssh nexus "echo '$REDPANDA_ADMIN_PASS' | docker exec -i redpanda rpk acl user create nexus-redpanda \
             --password-stdin \
             --mechanism SCRAM-SHA-256 2>&1" || echo "")
+        echo "  rpk user create result: $USER_RESULT"
 
         # Configure superuser (grants full permissions without ACLs)
         ssh nexus "docker exec redpanda rpk cluster config set superusers '[\"nexus-redpanda\"]'" >/dev/null 2>&1
