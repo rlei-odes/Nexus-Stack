@@ -584,6 +584,7 @@ services:
     tcp_ports:
       kafka: 9092
       schema-registry: 18081
+      admin: 9644
 
   seaweedfs:
     port: 8888
@@ -638,6 +639,8 @@ services:
     description: "Declarative data streaming framework for real-time pipelines."
     long_description: "Redpanda Connect (formerly Benthos) is a declarative stream processing framework. Define data pipelines in YAML to connect, transform, and route data between systems in real time. Supports 200+ connectors for databases, message brokers, cloud services, and more."
     image: "redpandadata/connect:4.43.0"
+    tcp_ports:
+      api: 4195
 
   redpanda-datagen:
     subdomain: "redpanda-datagen"
