@@ -335,8 +335,17 @@ jobs:
             fi
           fi
           
-          # Read enabled firewall rules from D1
+          # Sync firewall rules from services.yaml to D1 BEFORE reading them
+          # This ensures dns_record and label changes are applied before Tofu reads them
           D1_DATABASE_NAME="nexus-${DOMAIN//./-}-db"
+          echo "🔥 Syncing firewall rules from services.yaml to D1..."
+          chmod +x .github/scripts/sync-firewall-rules.sh
+          CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+          CLOUDFLARE_ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
+          DOMAIN="${{ secrets.DOMAIN }}" \
+          bash .github/scripts/sync-firewall-rules.sh
+
+          # Read enabled firewall rules from D1
           echo "🔥 Reading firewall rules from D1..."
           FIREWALL_RULES=$(npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
             --command "SELECT service_name, port, source_ips, dns_record FROM firewall_rules WHERE enabled = 1" 2>/dev/null \
