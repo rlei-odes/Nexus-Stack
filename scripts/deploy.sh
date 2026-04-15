@@ -1549,7 +1549,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "redpanda"; then
         }
 
         # Check if firewall is enabled for RedPanda
-        REDPANDA_FIREWALL_ENABLED=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | startswith("redpanda-")) | .value.port' 2>/dev/null)
+        REDPANDA_FIREWALL_ENABLED=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | test("^redpanda-[0-9]+$")) | .value.port' 2>/dev/null)
 
         if [ -n "$REDPANDA_FIREWALL_ENABLED" ] && [ -f "stacks/redpanda/config/redpanda-firewall.yaml" ]; then
             # Firewall mode: Use the generated firewall-specific config

@@ -41,8 +41,8 @@ try:
     with open('services.yaml', 'r') as f:
         data = yaml.safe_load(f)
 except Exception as e:
-    print(f"  Warning: Error reading services.yaml: {e}")
-    sys.exit(0)
+    print(f"  Error reading services.yaml: {e}")
+    sys.exit(1)
 
 if not data or 'services' not in data:
     print("  No services found - skipping")
