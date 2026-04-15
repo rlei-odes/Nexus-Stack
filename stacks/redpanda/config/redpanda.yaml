@@ -1,11 +1,13 @@
 # =============================================================================
 # RedPanda Production Configuration
 # =============================================================================
-# This configuration file contains ALL settings. No command-line flags are
-# used to prevent config file rewrites that strip authentication_method fields.
+# This configuration file contains ALL Redpanda settings. Seastar runtime
+# flags (--smp, --memory) are set in docker-compose.yml and do not trigger
+# config rewrites.
 #
-# IMPORTANT: Mixing CLI flags with mounted config files causes Redpanda to
-# rewrite this file, removing fields like authentication_method.
+# IMPORTANT: Do NOT add Redpanda-specific CLI flags (e.g. --kafka-addr) —
+# mixing them with this config file causes Redpanda to rewrite it, removing
+# fields like authentication_method.
 # See: https://github.com/redpanda-data/redpanda/issues/15902
 # =============================================================================
 

@@ -191,7 +191,9 @@ output "secrets" {
     pgadmin_password = random_password.pgadmin.result
 
     # RedPanda SASL (for external Kafka access)
-    redpanda_admin_password = random_password.redpanda_admin.result
+    redpanda_admin_password        = random_password.redpanda_admin.result
+    redpanda_kafka_public_url      = "redpanda-kafka.${var.domain}:9092"
+    redpanda_schema_registry_public_url = "http://redpanda-schema-registry.${var.domain}:18081"
 
     # RustFS
     rustfs_root_password = random_password.rustfs_root.result
