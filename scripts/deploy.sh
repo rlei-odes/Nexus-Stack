@@ -1463,7 +1463,7 @@ FWEOF
     # Special handling for RedPanda: Generate firewall-specific config
     # Instead of using docker-compose override with CLI flags, we generate
     # a firewall-specific redpanda.yaml with external advertised addresses
-    REDPANDA_PORTS=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | startswith("redpanda-")) | .value.port' 2>/dev/null | sort -n)
+    REDPANDA_PORTS=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | test("^redpanda-[0-9]+$")) | .value.port' 2>/dev/null | sort -n)
     if [ -n "$REDPANDA_PORTS" ]; then
         echo "  Configuring RedPanda for external TCP access (with SASL)..."
 
@@ -1549,7 +1549,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "redpanda"; then
         }
 
         # Check if firewall is enabled for RedPanda
-        REDPANDA_FIREWALL_ENABLED=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | startswith("redpanda-")) | .value.port' 2>/dev/null)
+        REDPANDA_FIREWALL_ENABLED=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | test("^redpanda-[0-9]+$")) | .value.port' 2>/dev/null)
 
         if [ -n "$REDPANDA_FIREWALL_ENABLED" ] && [ -f "stacks/redpanda/config/redpanda-firewall.yaml" ]; then
             # Firewall mode: Use the generated firewall-specific config
@@ -1977,7 +1977,9 @@ EOF
             "REDPANDA_SASL_USERNAME" "nexus-redpanda" \
             "REDPANDA_SASL_PASSWORD" "$REDPANDA_ADMIN_PASS" \
             "REDPANDA_KAFKA_PUBLIC_URL" "redpanda-kafka.${DOMAIN}:9092" \
-            "REDPANDA_SCHEMA_REGISTRY_PUBLIC_URL" "http://redpanda-schema-registry.${DOMAIN}:18081"
+            "REDPANDA_SCHEMA_REGISTRY_PUBLIC_URL" "redpanda-schema-registry.${DOMAIN}:18081" \
+            "REDPANDA_ADMIN_PUBLIC_URL" "redpanda-admin.${DOMAIN}:9644" \
+            "REDPANDA_CONNECT_PUBLIC_URL" "redpanda-connect-api.${DOMAIN}:4195"
 
         build_folder "meltano" \
             "MELTANO_DB_PASSWORD" "$MELTANO_DB_PASS"
@@ -2270,24 +2272,29 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
     CONFIG_JOBS+=($!)
 fi
 
-# Configure RedPanda SASL authentication (only when external TCP ports are exposed)
-if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS" ] && [ -f "stacks/redpanda/docker-compose.firewall.yml" ]; then
+# Configure RedPanda SASL authentication
+if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS" ]; then
     (
         echo "  Configuring RedPanda SASL..."
-        # Wait for RedPanda admin API to be ready
-        for i in $(seq 1 10); do
+        # Wait for RedPanda admin API to be ready (up to 60s — cold start is slow)
+        REDPANDA_READY=false
+        for i in $(seq 1 30); do
             if ssh nexus "docker exec redpanda curl -s --connect-timeout 2 'http://localhost:9644/v1/status/ready'" >/dev/null 2>&1; then
+                REDPANDA_READY=true
                 break
             fi
             sleep 2
         done
 
-        # SASL is configured in redpanda.yaml - just create user and set superuser
+        if [ "$REDPANDA_READY" != "true" ]; then
+            echo -e "${YELLOW}  ⚠ RedPanda admin API not ready after 60s — skipping SASL setup${NC}"
+            exit 0
+        fi
 
-        # Create SASL user using rpk (password via stdin to avoid process list exposure)
-        USER_RESULT=$(ssh nexus "echo '$REDPANDA_ADMIN_PASS' | docker exec -i redpanda rpk acl user create nexus-redpanda \
-            --password-stdin \
-            --mechanism SCRAM-SHA-256 2>&1" || echo "")
+        # Create SASL user (password via env var to avoid process list exposure)
+        USER_RESULT=$(ssh nexus "docker exec -e RPK_PASS='$REDPANDA_ADMIN_PASS' redpanda \
+            sh -c 'rpk acl user create nexus-redpanda --password \"\\$RPK_PASS\" --mechanism SCRAM-SHA-256' 2>&1" || echo "")
+        echo "  rpk user create result: $USER_RESULT"
 
         # Configure superuser (grants full permissions without ACLs)
         ssh nexus "docker exec redpanda rpk cluster config set superusers '[\"nexus-redpanda\"]'" >/dev/null 2>&1

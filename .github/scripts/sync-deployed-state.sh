@@ -320,7 +320,8 @@ cleanup_statements = []
 
 # DNS record mapping for known services
 dns_records = {
-    'redpanda': {'kafka': 'redpanda-kafka', 'schema-registry': 'redpanda-schema-registry'},
+    'redpanda': {'kafka': 'redpanda-kafka', 'schema-registry': 'redpanda-schema-registry', 'admin': 'redpanda-admin'},
+    'redpanda-connect': {'api': 'redpanda-connect-api'},
     'postgres': {'postgres': 'postgres'},
     'minio': {'s3-api': 's3'},
 }
@@ -348,6 +349,11 @@ for name, config in services.items():
         safe_dns_record = dns_record.replace("'", "''")
         insert_sql = f"INSERT OR IGNORE INTO firewall_rules (service_name, port, protocol, label, enabled, deployed, source_ips, dns_record, updated_at) VALUES ('{safe_name}', {port}, 'tcp', '{safe_label}', 0, 0, '', '{safe_dns_record}', datetime('now'));"
         insert_statements.append(insert_sql)
+        if safe_dns_record:
+            update_sql = f"UPDATE firewall_rules SET label = '{safe_label}', dns_record = '{safe_dns_record}', updated_at = datetime('now') WHERE service_name = '{safe_name}' AND port = {port};"
+        else:
+            update_sql = f"UPDATE firewall_rules SET label = '{safe_label}', updated_at = datetime('now') WHERE service_name = '{safe_name}' AND port = {port};"
+        insert_statements.append(update_sql)
 
     # Delete stale firewall rules whose port is no longer in services.yaml tcp_ports
     if valid_ports:
