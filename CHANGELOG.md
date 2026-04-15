@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.46.1...v0.47.0) (2026-04-15)
+
+
+### 🚀 Features
+
+* **control-plane:** Redesign Firewall page with service cards and Spin Up button ([e8c4f5f](https://github.com/stefanko-ch/Nexus-Stack/commit/e8c4f5f9525c68d6c7bd8cb63ea6dd78625f71de))
+* **control-plane:** Redesign Firewall page with service cards and Spin Up button ([9a58183](https://github.com/stefanko-ch/Nexus-Stack/commit/9a5818326c4ef4e0e11158b45d676c5559de0496))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Clean up stale firewall rules when tcp_ports removed from service ([78f131b](https://github.com/stefanko-ch/Nexus-Stack/commit/78f131bef44a5d7f4e5fa803fb1f605bbd0ff09e))
+* **control-plane:** Add :global() to dynamic CSS selectors so cards render ([310d0a2](https://github.com/stefanko-ch/Nexus-Stack/commit/310d0a2d97fb322c29d493cfc82327282b92375c))
+* **control-plane:** Distinct border colors for pending vs enabled, fix double-escape ([0877b1d](https://github.com/stefanko-ch/Nexus-Stack/commit/0877b1d84e38b1cfedbd550d73b265410078a0fc))
+* **control-plane:** Improve visual separation between firewall service cards ([f849dbe](https://github.com/stefanko-ch/Nexus-Stack/commit/f849dbef836d3a035636320ac39b6d78d7a6967d))
+* **control-plane:** Make firewall cards visually distinct with green-tinted borders and shadows ([db66787](https://github.com/stefanko-ch/Nexus-Stack/commit/db66787869cf65d7bbcce57bc8001d177f9e58e2))
+* **control-plane:** Remove duplicate keyframes, add label for-attribute ([073e9b7](https://github.com/stefanko-ch/Nexus-Stack/commit/073e9b7d197008fe015198c1c7da8b64f8f788df))
+* **control-plane:** Remove section background so firewall cards stand out ([c1a582c](https://github.com/stefanko-ch/Nexus-Stack/commit/c1a582ce758766671b525ef4e4fafc1514b36471))
+* **control-plane:** Stronger visual separation between firewall cards and rules ([5b02100](https://github.com/stefanko-ch/Nexus-Stack/commit/5b0210039b78ccdfcf2f4cd6a3fd0fd118fcea58))
+* **firewall:** Change schema-registry external port to 18081 and cleanup stale D1 rules ([5493cbb](https://github.com/stefanko-ch/Nexus-Stack/commit/5493cbb39aae61ec5a76c70e84775c2c6ca652b4))
+* **scripts:** Map RedPanda schema-registry port to correct internal port ([78453bc](https://github.com/stefanko-ch/Nexus-Stack/commit/78453bca16726fe2db1fc7e36f974002b69a1ca9))
+* **scripts:** Map RedPanda schema-registry port to correct internal port ([673c6c8](https://github.com/stefanko-ch/Nexus-Stack/commit/673c6c8ce8b1e84d9b29e5eb5843725a20484da1))
+* **scripts:** Sync fork from upstream mirror and restart git services on every Spin Up ([e75068e](https://github.com/stefanko-ch/Nexus-Stack/commit/e75068eeae663df2adb886b7f179616a3e1c702a))
+
+
+### 📚 Documentation
+
+* **stacks:** Update RedPanda schema-registry port from 8081 to 18081 ([200cb11](https://github.com/stefanko-ch/Nexus-Stack/commit/200cb1182c060692f0dd3fb5b8ca64df7d5a76e7))
+
 ## [0.46.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.46.0...v0.46.1) (2026-04-13)
 
 
