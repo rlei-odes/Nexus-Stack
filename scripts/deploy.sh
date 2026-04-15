@@ -1977,7 +1977,7 @@ EOF
             "REDPANDA_SASL_USERNAME" "nexus-redpanda" \
             "REDPANDA_SASL_PASSWORD" "$REDPANDA_ADMIN_PASS" \
             "REDPANDA_KAFKA_PUBLIC_URL" "redpanda-kafka.${DOMAIN}:9092" \
-            "REDPANDA_SCHEMA_REGISTRY_PUBLIC_URL" "redpanda-schema-registry.${DOMAIN}:18081"
+            "REDPANDA_SCHEMA_REGISTRY_PUBLIC_URL" "http://redpanda-schema-registry.${DOMAIN}:18081"
 
         build_folder "meltano" \
             "MELTANO_DB_PASSWORD" "$MELTANO_DB_PASS"
