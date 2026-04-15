@@ -2272,7 +2272,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
     CONFIG_JOBS+=($!)
 fi
 
-# Configure RedPanda SASL authentication (only when external TCP ports are exposed)
+# Configure RedPanda SASL authentication
 if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS" ]; then
     (
         echo "  Configuring RedPanda SASL..."
