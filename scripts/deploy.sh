@@ -2291,10 +2291,9 @@ if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS"
             exit 0
         fi
 
-        # Create SASL user
-        USER_RESULT=$(ssh nexus "docker exec redpanda rpk acl user create nexus-redpanda \
-            --password '$REDPANDA_ADMIN_PASS' \
-            --mechanism SCRAM-SHA-256 2>&1" || echo "")
+        # Create SASL user (password via env var to avoid process list exposure)
+        USER_RESULT=$(ssh nexus "docker exec -e RPK_PASS='$REDPANDA_ADMIN_PASS' redpanda \
+            sh -c 'rpk acl user create nexus-redpanda --password \"\\$RPK_PASS\" --mechanism SCRAM-SHA-256' 2>&1" || echo "")
         echo "  rpk user create result: $USER_RESULT"
 
         # Configure superuser (grants full permissions without ACLs)
