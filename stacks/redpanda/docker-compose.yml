@@ -13,9 +13,9 @@ services:
     command:
       - redpanda
       - start
+      # Seastar runtime flags — do not trigger Redpanda config rewrites
       - --smp=1
       - --memory=1536M
-      - --default-log-level=warn
     deploy:
       resources:
         limits:
