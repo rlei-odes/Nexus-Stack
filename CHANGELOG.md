@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.47.0...v0.48.0) (2026-04-15)
+
+
+### 🚀 Features
+
+* **firewall:** Add RedPanda Admin API and Connect ports to firewall management ([3f65316](https://github.com/stefanko-ch/Nexus-Stack/commit/3f65316046a5dfb46c70c9b620611911d01ba71b))
+* **firewall:** Add RedPanda Admin API and Connect ports to firewall management ([8df6221](https://github.com/stefanko-ch/Nexus-Stack/commit/8df622171702de7c3880a8dd119e050a8abe81da)), closes [#429](https://github.com/stefanko-ch/Nexus-Stack/issues/429)
+* **scripts:** Add RedPanda Admin and Connect public URLs to Infisical secrets ([fbaf152](https://github.com/stefanko-ch/Nexus-Stack/commit/fbaf152f7c4127b98b6a998089e3ebb0ba55bd4e))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Sync firewall rules to D1 before Tofu reads them ([3106447](https://github.com/stefanko-ch/Nexus-Stack/commit/310644720e456f95351583b9ff53d51c7c6aa04d))
+* **firewall:** Rename redpanda-connect DNS to redpanda-connect-api to avoid tunnel CNAME conflict ([95560ee](https://github.com/stefanko-ch/Nexus-Stack/commit/95560ee0487e244dc61f3605efa1927d89a8342d))
+* **scripts:** Add http:// scheme to Schema Registry public URL ([297e61c](https://github.com/stefanko-ch/Nexus-Stack/commit/297e61cd2f94795c45343e270d4a6a13c067478e))
+* **scripts:** Add RedPanda connection URLs to Infisical secrets ([6b6cc90](https://github.com/stefanko-ch/Nexus-Stack/commit/6b6cc904c0d6fc1694708bcd1cee585611f40385))
+* **scripts:** Address PR review — preserve dns_record, fail on sync errors, pin wrangler ([ec5d871](https://github.com/stefanko-ch/Nexus-Stack/commit/ec5d8712f2585f63a7896264e329f86289ee4b45))
+* **scripts:** Create RedPanda SASL user regardless of firewall port state ([0fabb1c](https://github.com/stefanko-ch/Nexus-Stack/commit/0fabb1c52b39181a9652e3109af36bc7c5062c66)), closes [#428](https://github.com/stefanko-ch/Nexus-Stack/issues/428)
+* **scripts:** Increase RedPanda SASL wait timeout to 60s and log rpk output ([fe9c5ca](https://github.com/stefanko-ch/Nexus-Stack/commit/fe9c5cac416dcc1743949844a9829e7db18ed31b))
+* **scripts:** Pass SASL password via env var instead of CLI argument ([a9c5d90](https://github.com/stefanko-ch/Nexus-Stack/commit/a9c5d90d18738d0f76d991107f3f1609f8fe5917))
+* **scripts:** Prevent redpanda-connect ports from being added to redpanda container ([4b0aa59](https://github.com/stefanko-ch/Nexus-Stack/commit/4b0aa599da9f5cf96842501da6680506e068c327))
+* **scripts:** Print wrangler output on firewall sync failure for diagnostics ([b3276a1](https://github.com/stefanko-ch/Nexus-Stack/commit/b3276a1d52309c2fd814517cbc3cbdca88bbdb6c))
+* **scripts:** Rename RedPanda URLs to PUBLIC to clarify firewall context ([783dbfc](https://github.com/stefanko-ch/Nexus-Stack/commit/783dbfc8cb93fa52ae080991cf7db47ea85d5713))
+* **scripts:** Update dns_record and label for existing firewall rules on sync ([9bd9970](https://github.com/stefanko-ch/Nexus-Stack/commit/9bd99703d046401ce96464cd892f4d1d64fd47b1))
+* **scripts:** Update stale comment on RedPanda SASL section ([c819065](https://github.com/stefanko-ch/Nexus-Stack/commit/c8190650b34029a8cfecfd258fd8578d0fd3163d))
+* **scripts:** Use --password flag for rpk user create instead of --password-stdin ([7c3c530](https://github.com/stefanko-ch/Nexus-Stack/commit/7c3c530c4fbe50a92fe264a3fbc469fcde1db93c))
+* **scripts:** Use strict regex for RedPanda firewall check and fail on YAML parse errors ([c3a91d9](https://github.com/stefanko-ch/Nexus-Stack/commit/c3a91d90aaa7b59a669fe714796e0e7641b3de70))
+* **stacks:** Add Seastar flags comment and remove unrelated log-level change ([c4f451c](https://github.com/stefanko-ch/Nexus-Stack/commit/c4f451caf88e133120b07298167d920e1904752f))
+* **stacks:** Prevent RedPanda OOM crash and add public URLs to Infisical ([d21a638](https://github.com/stefanko-ch/Nexus-Stack/commit/d21a638c50751a5dd9f4dc7ad53ef1c68613e935))
+* **stacks:** Prevent RedPanda OOM crash on multi-core servers ([3d5e724](https://github.com/stefanko-ch/Nexus-Stack/commit/3d5e72435c7a99bac35867dfb72866d74eb70338))
+* **tofu:** Add RedPanda public URLs to secrets output for Databricks sync ([e33418c](https://github.com/stefanko-ch/Nexus-Stack/commit/e33418c5051eaa880422ea6be086a81a4c2730c9))
+
+
+### 📚 Documentation
+
+* Fix RedPanda Kafka DNS record to match actual mapping ([b8b6232](https://github.com/stefanko-ch/Nexus-Stack/commit/b8b6232c9ee29b90ead8f4e3467e776548809564))
+
 ## [0.47.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.46.1...v0.47.0) (2026-04-15)
 
 
