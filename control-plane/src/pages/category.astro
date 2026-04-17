@@ -69,12 +69,19 @@ import Layout from '../layouts/Layout.astro';
   async function loadServices() {
     try {
       const response = await fetch('/api/services?category=' + encodeURIComponent(categorySlug), { credentials: 'same-origin' });
-      if (!response.ok) return;
+      if (!response.ok) {
+        document.getElementById('services-grid').innerHTML = '<div class="empty-state">Failed to load services (HTTP ' + response.status + '). Refresh the page to retry.</div>';
+        return;
+      }
       const data = await response.json();
-      if (data.success) renderServices(data.services || []);
+      if (data.success) {
+        renderServices(data.services || []);
+      } else {
+        document.getElementById('services-grid').innerHTML = '<div class="empty-state">Failed to load services. Refresh the page to retry.</div>';
+      }
     } catch (error) {
       console.error('Failed to load services:', error);
-      document.getElementById('services-grid').innerHTML = '<div class="empty-state">Failed to load services.</div>';
+      document.getElementById('services-grid').innerHTML = '<div class="empty-state">Failed to load services. Refresh the page to retry.</div>';
     }
   }
 

@@ -188,10 +188,16 @@ import StackTable from '../components/StackTable.astro';
     if (loading) return;
     const services = filteredServices();
     if (currentView === 'list') {
-      window.NS.renderTable(services);
+      window.NS.renderTable(services, currentEmptyMessage());
     } else {
       renderGrid(services);
     }
+  }
+
+  function currentEmptyMessage() {
+    if (loadError) return loadError;
+    if (allServices.length === 0) return 'No services found. Run Spin Up to initialize.';
+    return 'No stacks match the current filter.';
   }
 
   function renderGrid(services) {
@@ -286,10 +292,21 @@ import StackTable from '../components/StackTable.astro';
     }
   });
 
-  // Keyboard
+  // Keyboard — wrap the table controller so list-only shortcuts (j/k/Enter/e/c)
+  // are suppressed while the grid is active. The controller retains focus/items
+  // across view switches, so we gate via a live proxy instead of re-registering.
+  const gatedList = {
+    get items() { return currentView === 'list' ? window.NS.tableController.items : []; },
+    get focus() { return window.NS.tableController.focus; },
+    set focus(v) { window.NS.tableController.focus = v; },
+    render: function() { window.NS.tableController.render(); },
+    onOpen: function(s) { window.NS.tableController.onOpen(s); },
+    onToggle: function(s) { window.NS.tableController.onToggle(s); },
+    onCategory: function(s) { window.NS.tableController.onCategory(s); },
+  };
   window.NS.registerKeyboard({
     searchInputId: 'stacks-search',
-    list: window.NS.tableController,
+    list: gatedList,
   });
 
   // Reload whenever a toggle succeeds anywhere (fired by window.NS.toggleService).

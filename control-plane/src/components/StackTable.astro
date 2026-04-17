@@ -17,7 +17,7 @@
   </thead>
   <tbody id="stack-table-body"></tbody>
 </table>
-<p id="stack-table-empty" class="stack-table-empty" hidden>No stacks match the current filter.</p>
+<p id="stack-table-empty" class="stack-table-empty" hidden></p>
 
 <style>
   .stack-table {
@@ -130,11 +130,16 @@
     const state = {
       services: [],
       focusIndex: -1,
+      emptyText: 'No stacks match the current filter.',
     };
 
-    window.NS.renderTable = function(services) {
+    // host may pass a custom empty message so list and grid views stay
+    // consistent with each other ("loading..." / "failed to load" / "run
+    // spin up" / "no match").
+    window.NS.renderTable = function(services, emptyText) {
       state.services = services || [];
       state.focusIndex = state.services.length > 0 ? 0 : -1;
+      if (typeof emptyText === 'string') state.emptyText = emptyText;
       renderRows();
     };
 
@@ -143,6 +148,7 @@
     function renderRows() {
       tbody.innerHTML = '';
       if (state.services.length === 0) {
+        emptyEl.textContent = state.emptyText;
         emptyEl.hidden = false;
         return;
       }
