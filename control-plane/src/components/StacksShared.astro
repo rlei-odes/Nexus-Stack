@@ -12,7 +12,10 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
 
   // ---- Domain & URL -------------------------------------------------------
 
-  let cachedDomain = null;
+  // Seed from URL so stackUrl() works even if /api/info hasn't resolved yet
+  // (or fails permanently). The old control.foo / control-foo pages did this
+  // before the refactor — preserve the fallback.
+  let cachedDomain = window.location.hostname.replace(/^control[.-]/, '');
   let cachedSeparator = '.';
   let domainFetch = null;
 
@@ -27,7 +30,11 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
         }
         return { domain: cachedDomain, separator: cachedSeparator };
       })
-      .catch(function() { return { domain: cachedDomain, separator: cachedSeparator }; });
+      .catch(function() {
+        // Clear the memo so the next call can retry once connectivity returns.
+        domainFetch = null;
+        return { domain: cachedDomain, separator: cachedSeparator };
+      });
     return domainFetch;
   };
 
@@ -60,7 +67,9 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
 
   window.NS.renderStatusDot = function(service) {
     const b = window.NS.statusBadge(window.NS.resolveStatus(service));
-    return '<span class="status-dot ' + b.className + '" title="' + b.label + '">' + b.glyph + '</span>';
+    return '<span class="status-dot ' + b.className + '" role="img" aria-label="' + b.label + '" title="' + b.label + '">' +
+      '<span aria-hidden="true">' + b.glyph + '</span>' +
+    '</span>';
   };
 
   // ---- Service toggle -----------------------------------------------------
@@ -109,10 +118,14 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
         if (e.key === 'Escape') e.target.blur();
         return;
       }
+      // When a modal dialog is open, suppress all shortcuts (even our own)
+      // so background navigation/toggles don't fire "through" the overlay.
       const openDialog = document.querySelector('dialog[open]');
-      if (openDialog && e.key === 'Escape') {
-        openDialog.close();
-        e.preventDefault();
+      if (openDialog) {
+        if (e.key === 'Escape') {
+          openDialog.close();
+          e.preventDefault();
+        }
         return;
       }
 

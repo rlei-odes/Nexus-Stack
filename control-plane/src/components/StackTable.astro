@@ -177,7 +177,7 @@
           : '<span class="stack-row-url no-url">—</span>';
 
         tr.innerHTML =
-          '<td class="col-status"><span class="status-dot ' + badge.className + '" title="' + badge.label + '">' + badge.glyph + '</span></td>' +
+          '<td class="col-status">' + window.NS.renderStatusDot(service) + '</td>' +
           '<td class="col-name"><a class="stack-row-name" href="/category?cat=' + encodeURIComponent(service.category) + '#' + escapeHtml(service.name) + '">' + escapeHtml(service.name) + '</a><span class="stack-row-badges">' + badges + '</span></td>' +
           '<td class="col-category"><a class="stack-row-category" href="/category?cat=' + encodeURIComponent(service.category) + '">' + escapeHtml(catName) + '</a></td>' +
           '<td class="col-url">' + urlHtml + '</td>' +
@@ -211,10 +211,9 @@
       const target = toggleEl.dataset.target === 'true';
       toggleEl.classList.add('disabled');
       const result = await window.NS.toggleService(name, target);
-      if (result.success) {
-        // Let the host page re-fetch and re-render.
-        window.dispatchEvent(new Event('stacks:reload'));
-      } else {
+      // toggleService already dispatches 'stacks:updated' on success; the
+      // host page listens and re-fetches. Only restore UI on failure.
+      if (!result.success) {
         toggleEl.classList.remove('disabled');
       }
     }

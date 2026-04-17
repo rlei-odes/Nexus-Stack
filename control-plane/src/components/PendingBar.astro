@@ -7,8 +7,8 @@
 //   - 'stacks:updated' event dispatched by toggleService()
 ---
 
-<div id="pending-bar" class="pending-bar" hidden>
-  <span class="pending-bar-dot">◐</span>
+<div id="pending-bar" class="pending-bar" role="status" aria-live="polite" hidden>
+  <span class="pending-bar-dot" aria-hidden="true">◐</span>
   <span id="pending-bar-text" class="pending-bar-text">Loading...</span>
   <a id="pending-bar-view" class="pending-bar-action" href="/stacks?filter=pending">View</a>
   <a class="pending-bar-action primary" href="/?action=spin-up">Spin Up</a>

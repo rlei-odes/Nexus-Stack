@@ -125,6 +125,7 @@ import StackTable from '../components/StackTable.astro';
   const VIEW_KEY = 'stacksView';
 
   let allServices = [];
+  let loading = true;
   let currentView = (localStorage.getItem(VIEW_KEY) === 'list') ? 'list' : 'grid';
   let currentQuery = '';
   let currentFilter = null; // 'pending' from ?filter=pending query param
@@ -147,6 +148,7 @@ import StackTable from '../components/StackTable.astro';
       const data = await response.json();
       if (data.success) {
         allServices = data.services || [];
+        loading = false;
         applyFilterAndRender();
       }
     } catch (error) {
@@ -174,6 +176,9 @@ import StackTable from '../components/StackTable.astro';
   }
 
   function applyFilterAndRender() {
+    // Skip until first fetch resolves so the initial "Loading..." placeholder
+    // isn't replaced with a misleading "No services found" empty state.
+    if (loading) return;
     const services = filteredServices();
     if (currentView === 'list') {
       window.NS.renderTable(services);
@@ -215,9 +220,9 @@ import StackTable from '../components/StackTable.astro';
       card.href = '/category?cat=' + slug;
 
       let statsHtml = '';
-      if (stats.running > 0)  statsHtml += '<span class="running">● ' + stats.running + ' running</span>';
-      if (stats.pending > 0)  statsHtml += '<span class="pending">◐ ' + stats.pending + ' pending</span>';
-      if (stats.disabled > 0) statsHtml += '<span class="disabled">○ ' + stats.disabled + ' disabled</span>';
+      if (stats.running > 0)  statsHtml += '<span class="running"><span aria-hidden="true">●</span> ' + stats.running + ' running</span>';
+      if (stats.pending > 0)  statsHtml += '<span class="pending"><span aria-hidden="true">◐</span> ' + stats.pending + ' pending</span>';
+      if (stats.disabled > 0) statsHtml += '<span class="disabled"><span aria-hidden="true">○</span> ' + stats.disabled + ' disabled</span>';
       if (!statsHtml) statsHtml = '<span>—</span>';
 
       card.innerHTML =
@@ -275,10 +280,7 @@ import StackTable from '../components/StackTable.astro';
     list: window.NS.tableController,
   });
 
-  // Reload after a toggle from the table component
-  window.addEventListener('stacks:reload', loadServices);
-  // Reload when any page updates stacks (e.g. toggle on category.astro keeps
-  // this tab's state fresh via visibilitychange -> PendingBar already does this).
+  // Reload whenever a toggle succeeds anywhere (fired by window.NS.toggleService).
   window.addEventListener('stacks:updated', loadServices);
 
   loadServices();
