@@ -46,18 +46,25 @@ import Layout from '../layouts/Layout.astro';
 <script is:inline>
   let allServices = [];
 
+  let firstLoad = true;
+
   async function loadAllServices() {
     try {
       await window.NS.fetchDomain();
       const data = await window.NS.getServices();
       if (data && data.success) {
         allServices = data.services || [];
-        const params = new URLSearchParams(window.location.search);
-        const q = params.get('q') || '';
-        if (q) {
-          document.getElementById('search-input').value = q;
+        const input = document.getElementById('search-input');
+        // First load: seed from URL (deep-link support). Subsequent loads
+        // (e.g. after a toggle re-fetch): trust the live input value, since
+        // the URL is debounced 200ms and may be stale mid-typing.
+        if (firstLoad) {
+          const params = new URLSearchParams(window.location.search);
+          const q = params.get('q') || '';
+          if (q) input.value = q;
+          firstLoad = false;
         }
-        filterAndRender(q);
+        filterAndRender(input.value);
       }
     } catch (error) {
       console.error('Failed to load services:', error);
