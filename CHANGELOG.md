@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.49.0...v0.50.0) (2026-04-17)
+
+
+### 🚀 Features
+
+* **control-plane:** Grid/list toggle, pending bar, shortcut overlay on Stacks ([c2d3dab](https://github.com/stefanko-ch/Nexus-Stack/commit/c2d3dabb3a43204cc86f93e0f34c0798d4b177b2))
+* **control-plane:** Stacks UX overhaul — list view, tri-state status, keyboard, pending bar ([8e738f5](https://github.com/stefanko-ch/Nexus-Stack/commit/8e738f58864d49490ffcb5930911730422099988))
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Address PR review comment - preserve active search query on refresh ([8f7ee21](https://github.com/stefanko-ch/Nexus-Stack/commit/8f7ee21f3b09b937b668a8ec33ce469300951a28))
+* **control-plane:** Address PR review comments - attribute escaping + focus preservation ([0e0539a](https://github.com/stefanko-ch/Nexus-Stack/commit/0e0539a8f300be76c864373bb806fa8cac1c297d))
+* **control-plane:** Address PR review comments - dedup fetches, clearer errors ([2e46a0d](https://github.com/stefanko-ch/Nexus-Stack/commit/2e46a0d9acf3418aacfe04cb633b3dae63247237))
+* **control-plane:** Address PR review comments - gate shortcuts, plumb errors ([2fad01e](https://github.com/stefanko-ch/Nexus-Stack/commit/2fad01e52ddfc8ed92e87f6ed1ba5c442467560f))
+* **control-plane:** Address PR review comments - keyboard guards + PendingBar CTA ([67e0d90](https://github.com/stefanko-ch/Nexus-Stack/commit/67e0d907c512f01e7c58892ad667f51196f35b50))
+* **control-plane:** Address PR review comments - URL encoding, retry, loading state ([2c041ff](https://github.com/stefanko-ch/Nexus-Stack/commit/2c041ff26859312077be6ccf7507b4b818469f6c))
+* **control-plane:** Address PR review comments on Stacks UX overhaul ([e66ab46](https://github.com/stefanko-ch/Nexus-Stack/commit/e66ab46ddca2e14185c89c8b498072c407d105f0))
+* **control-plane:** Namespace status dot to avoid Dashboard class collision ([249a890](https://github.com/stefanko-ch/Nexus-Stack/commit/249a8902f3548a3e39cbfbdbceb4fc8609efa81b))
+
+
+### ♻️ Refactoring
+
+* **control-plane:** Extract shared stacks helpers and consolidate CATEGORIES ([2bca175](https://github.com/stefanko-ch/Nexus-Stack/commit/2bca17523b76a187a935d8e7eccbbc64104d4292))
+
 ## [0.49.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.48.1...v0.49.0) (2026-04-17)
 
 
