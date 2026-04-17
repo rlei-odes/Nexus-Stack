@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.48.1...v0.49.0) (2026-04-17)
+
+
+### 🚀 Features
+
+* **tofu/control-plane:** Add subdomain_separator and derive URLs ([4d3fb1a](https://github.com/stefanko-ch/Nexus-Stack/commit/4d3fb1a93380f06c976bb8d408ecda403027c2b9))
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Wire subdomain_separator through Terraform and workflows ([87700a6](https://github.com/stefanko-ch/Nexus-Stack/commit/87700a6fbd97736da7992302af4b701dca191a0c))
+* **tofu/control-plane:** Address PR review comments - use separator for DNS/Access/CORS ([f0cbd71](https://github.com/stefanko-ch/Nexus-Stack/commit/f0cbd71fd1c9c8ddb3c9ffd0c6ed7e5888e414bb))
+
+
+### 🔧 Maintenance
+
+* Pipe SUBDOMAIN_SEPARATOR secret into Control Plane tfvars ([fbc305a](https://github.com/stefanko-ch/Nexus-Stack/commit/fbc305a84be53bd7765ab7a895fb8a19f2195939))
+
 ## [0.48.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.48.0...v0.48.1) (2026-04-17)
 
 
