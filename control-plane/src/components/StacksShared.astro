@@ -22,7 +22,15 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
   window.NS.fetchDomain = function() {
     if (domainFetch) return domainFetch;
     domainFetch = fetch('/api/info', { credentials: 'same-origin' })
-      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(r) {
+        if (!r.ok) {
+          // Non-2xx: clear the memo so a later call can retry once the
+          // server recovers, and fall back to the URL-derived domain.
+          domainFetch = null;
+          return null;
+        }
+        return r.json();
+      })
       .then(function(d) {
         if (d && d.success && d.info && d.info.server) {
           if (d.info.server.domain) cachedDomain = d.info.server.domain;
@@ -31,7 +39,7 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
         return { domain: cachedDomain, separator: cachedSeparator };
       })
       .catch(function() {
-        // Clear the memo so the next call can retry once connectivity returns.
+        // Network/parse error — same retry treatment.
         domainFetch = null;
         return { domain: cachedDomain, separator: cachedSeparator };
       });

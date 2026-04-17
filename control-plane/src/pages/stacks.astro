@@ -118,7 +118,6 @@ import StackTable from '../components/StackTable.astro';
   :global(.category-card-stats .running)  { color: var(--accent); }
   :global(.category-card-stats .pending)  { color: var(--warning); }
   :global(.category-card-stats .disabled) { color: var(--text-muted); }
-  :global(.category-card-stats.empty)     { color: var(--text-muted); }
 </style>
 
 <script is:inline>
@@ -126,6 +125,7 @@ import StackTable from '../components/StackTable.astro';
 
   let allServices = [];
   let loading = true;
+  let loadError = null;
   let currentView = (localStorage.getItem(VIEW_KEY) === 'list') ? 'list' : 'grid';
   let currentQuery = '';
   let currentFilter = null; // 'pending' from ?filter=pending query param
@@ -146,11 +146,20 @@ import StackTable from '../components/StackTable.astro';
       const data = await window.NS.getServices();
       if (data && data.success) {
         allServices = data.services || [];
-        loading = false;
-        applyFilterAndRender();
+        loadError = null;
+      } else {
+        allServices = [];
+        loadError = 'Failed to load stacks. Refresh the page to retry.';
       }
     } catch (error) {
       console.error('Failed to load services:', error);
+      allServices = [];
+      loadError = 'Failed to load stacks. Refresh the page to retry.';
+    } finally {
+      // Always clear loading — leaving it set on failure strands the page on
+      // the "Loading..." placeholder forever.
+      loading = false;
+      applyFilterAndRender();
     }
   }
 
@@ -188,6 +197,11 @@ import StackTable from '../components/StackTable.astro';
   function renderGrid(services) {
     const grid = document.getElementById('categories-grid');
     grid.innerHTML = '';
+
+    if (loadError) {
+      grid.innerHTML = '<p class="loading-text">' + escapeHtml(loadError) + '</p>';
+      return;
+    }
 
     if (allServices.length === 0) {
       grid.innerHTML = '<p class="loading-text">No services found. Run Spin Up to initialize.</p>';

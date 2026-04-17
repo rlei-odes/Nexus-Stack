@@ -175,10 +175,13 @@
           ? '<a class="stack-row-url" href="' + url + '" target="_blank" rel="noopener">' + escapeHtml(url.replace(/^https:\/\//, '')) + '</a>'
           : '<span class="stack-row-url no-url">—</span>';
 
+        const categoryHref = '/category?cat=' + encodeURIComponent(service.category);
+        const serviceAnchor = '#' + encodeURIComponent(service.name);
+
         tr.innerHTML =
           '<td class="col-status">' + window.NS.renderStatusDot(service) + '</td>' +
-          '<td class="col-name"><a class="stack-row-name" href="/category?cat=' + encodeURIComponent(service.category) + '#' + escapeHtml(service.name) + '">' + escapeHtml(service.name) + '</a><span class="stack-row-badges">' + badges + '</span></td>' +
-          '<td class="col-category"><a class="stack-row-category" href="/category?cat=' + encodeURIComponent(service.category) + '">' + escapeHtml(catName) + '</a></td>' +
+          '<td class="col-name"><a class="stack-row-name" href="' + categoryHref + serviceAnchor + '">' + escapeHtml(service.name) + '</a><span class="stack-row-badges">' + badges + '</span></td>' +
+          '<td class="col-category"><a class="stack-row-category" href="' + categoryHref + '">' + escapeHtml(catName) + '</a></td>' +
           '<td class="col-url">' + urlHtml + '</td>' +
           '<td class="col-toggle"><div class="' + toggleClass + '" data-service="' + escapeHtml(service.name) + '" data-target="' + (!service.enabled) + '" title="' + escapeHtml(toggleTitle) + '"></div></td>';
 
@@ -234,7 +237,7 @@
         if (toggleEl) handleToggle(toggleEl);
       },
       onCategory: function(service) {
-        window.location.href = '/category?cat=' + encodeURIComponent(service.category) + '#' + service.name;
+        window.location.href = '/category?cat=' + encodeURIComponent(service.category) + '#' + encodeURIComponent(service.name);
       },
     };
   })();
