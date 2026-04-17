@@ -18,6 +18,12 @@ locals {
     [trimspace(var.admin_email)],
     [for email in split(",", var.user_email) : trimspace(email)]
   )))
+
+  # Control Plane URLs. Built from the base domain and the subdomain separator
+  # so flat-subdomain deployments (e.g. infisical-tenant.example.com) work
+  # without code changes. Consumed by Pages Functions and the teardown Worker.
+  infisical_url     = "https://infisical${var.subdomain_separator}${var.domain}"
+  control_plane_url = "https://control${var.subdomain_separator}${var.domain}"
 }
 
 # -----------------------------------------------------------------------------
@@ -51,6 +57,11 @@ resource "cloudflare_workers_script" "scheduled_teardown" {
   plain_text_binding {
     name = "DOMAIN"
     text = var.domain
+  }
+
+  plain_text_binding {
+    name = "CONTROL_PLANE_URL"
+    text = local.control_plane_url
   }
 
   plain_text_binding {
@@ -125,28 +136,31 @@ resource "cloudflare_pages_project" "control_plane" {
   account_id        = var.cloudflare_account_id
   name              = "${local.resource_prefix}-control"
   production_branch = "main"
-  
+
   build_config {
     build_command   = ""
     destination_dir = "pages"
     root_dir        = "control-plane"
   }
-  
+
   deployment_configs {
     production {
       environment_variables = {
-        GITHUB_OWNER                 = var.github_owner
-        GITHUB_REPO                  = var.github_repo
-        DOMAIN                       = var.domain
-        ADMIN_EMAIL                  = var.admin_email
-        USER_EMAIL                   = var.user_email
-        SERVER_TYPE                  = var.server_type
-        SERVER_LOCATION              = var.server_location
-        ALLOW_DISABLE_AUTO_SHUTDOWN  = tostring(var.allow_disable_auto_shutdown)
-        MAX_EXTENSIONS_PER_DAY       = tostring(var.max_extensions_per_day)
-        MAX_DELAY_HOURS              = tostring(var.max_delay_hours)
+        GITHUB_OWNER                = var.github_owner
+        GITHUB_REPO                 = var.github_repo
+        DOMAIN                      = var.domain
+        SUBDOMAIN_SEPARATOR         = var.subdomain_separator
+        INFISICAL_URL               = local.infisical_url
+        CONTROL_PLANE_URL           = local.control_plane_url
+        ADMIN_EMAIL                 = var.admin_email
+        USER_EMAIL                  = var.user_email
+        SERVER_TYPE                 = var.server_type
+        SERVER_LOCATION             = var.server_location
+        ALLOW_DISABLE_AUTO_SHUTDOWN = tostring(var.allow_disable_auto_shutdown)
+        MAX_EXTENSIONS_PER_DAY      = tostring(var.max_extensions_per_day)
+        MAX_DELAY_HOURS             = tostring(var.max_delay_hours)
       }
-      
+
       d1_databases = {
         NEXUS_DB = cloudflare_d1_database.nexus.id
       }
@@ -161,18 +175,21 @@ resource "cloudflare_pages_project" "control_plane" {
 
     preview {
       environment_variables = {
-        GITHUB_OWNER                 = var.github_owner
-        GITHUB_REPO                  = var.github_repo
-        DOMAIN                       = var.domain
-        ADMIN_EMAIL                  = var.admin_email
-        USER_EMAIL                   = var.user_email
-        SERVER_TYPE                  = var.server_type
-        SERVER_LOCATION              = var.server_location
-        ALLOW_DISABLE_AUTO_SHUTDOWN  = tostring(var.allow_disable_auto_shutdown)
-        MAX_EXTENSIONS_PER_DAY       = tostring(var.max_extensions_per_day)
-        MAX_DELAY_HOURS              = tostring(var.max_delay_hours)
+        GITHUB_OWNER                = var.github_owner
+        GITHUB_REPO                 = var.github_repo
+        DOMAIN                      = var.domain
+        SUBDOMAIN_SEPARATOR         = var.subdomain_separator
+        INFISICAL_URL               = local.infisical_url
+        CONTROL_PLANE_URL           = local.control_plane_url
+        ADMIN_EMAIL                 = var.admin_email
+        USER_EMAIL                  = var.user_email
+        SERVER_TYPE                 = var.server_type
+        SERVER_LOCATION             = var.server_location
+        ALLOW_DISABLE_AUTO_SHUTDOWN = tostring(var.allow_disable_auto_shutdown)
+        MAX_EXTENSIONS_PER_DAY      = tostring(var.max_extensions_per_day)
+        MAX_DELAY_HOURS             = tostring(var.max_delay_hours)
       }
-      
+
       d1_databases = {
         NEXUS_DB = cloudflare_d1_database.nexus.id
       }
@@ -201,7 +218,7 @@ resource "cloudflare_pages_domain" "control_plane" {
   account_id   = var.cloudflare_account_id
   project_name = cloudflare_pages_project.control_plane.name
   domain       = "control.${var.domain}"
-  
+
   depends_on = [cloudflare_record.control_plane]
 }
 
@@ -221,7 +238,7 @@ resource "cloudflare_zero_trust_access_application" "control_plane" {
 
   http_only_cookie_attribute = true
   same_site_cookie_attribute = "lax"
-  
+
   cors_headers {
     allowed_origins   = ["https://control.${var.domain}"]
     allowed_methods   = ["GET", "POST", "OPTIONS"]
