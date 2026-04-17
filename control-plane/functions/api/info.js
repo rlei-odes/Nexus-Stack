@@ -106,6 +106,7 @@ export async function onRequestGet(context) {
       type: serverType,
       location: serverLocation,
       domain: domain,
+      subdomainSeparator: env.SUBDOMAIN_SEPARATOR || '.',
       lastSpinUp: lastSpinUp,
       lastTeardown: lastTeardown,
     };
