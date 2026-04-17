@@ -41,7 +41,7 @@ export async function onRequestGet(context) {
       });
     }
 
-    const baseUrl = `https://infisical.${domain}`;
+    const baseUrl = context.env.INFISICAL_URL || `https://infisical.${domain}`;
     const environment = context.env.INFISICAL_ENV || 'dev';
     const headers = {
       'Authorization': `Bearer ${token}`,

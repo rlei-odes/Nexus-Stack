@@ -45,6 +45,8 @@ export async function onRequestPost(context) {
     const domain = env.DOMAIN;
     const adminEmail = env.ADMIN_EMAIL;
     const userEmail = env.USER_EMAIL && env.USER_EMAIL.trim() !== '' ? env.USER_EMAIL : null;
+    const infisicalUrl = env.INFISICAL_URL || `https://infisical.${domain}`;
+    const controlPlaneUrl = env.CONTROL_PLANE_URL || `https://control.${domain}`;
 
     // Only send Infisical credentials - all other credentials are stored in Infisical
     if (!credentials.infisical_admin_password) {
@@ -64,7 +66,7 @@ export async function onRequestPost(context) {
   <h2 style="color:#00ff88;font-size:16px;margin-top:24px">🔑 Infisical (Secret Manager)</h2>
   <div style="background:#1a1a2e;padding:12px;margin:8px 0;border-radius:4px;border-left:3px solid #00ff88">
     <div style="color:#ccc;font-size:14px">
-      <div>URL: <a href="https://infisical.${domain}" style="color:#00ff88">https://infisical.${domain}</a></div>
+      <div>URL: <a href="${infisicalUrl}" style="color:#00ff88">${infisicalUrl}</a></div>
       <div>Email: <span style="color:#fff">${adminEmail}</span></div>
       <div>Password: <span style="color:#fff;font-family:monospace">${credentials.infisical_admin_password}</span></div>
     </div>
@@ -91,7 +93,7 @@ export async function onRequestPost(context) {
   
   <h2 style="color:#00ff88;font-size:16px;margin-top:24px">🔗 Quick Links</h2>
   <ul style="color:#ccc;padding-left:20px">
-    <li><a href="https://control.${domain}" style="color:#00ff88">Control Panel</a> - Manage services &amp; view URLs</li>
+    <li><a href="${controlPlaneUrl}" style="color:#00ff88">Control Panel</a> - Manage services &amp; view URLs</li>
   </ul>
   
   <p style="color:#666;font-size:12px;margin-top:24px;border-top:1px solid #333;padding-top:16px">
