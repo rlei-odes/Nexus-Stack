@@ -1,0 +1,92 @@
+---
+// Persistent pending-changes indicator. Visible on every page once mounted.
+// Shows nothing until /api/services reports pendingChangesCount > 0.
+// Re-fetches on:
+//   - initial mount
+//   - page becoming visible again (visibilitychange)
+//   - 'stacks:updated' event dispatched by toggleService()
+---
+
+<div id="pending-bar" class="pending-bar" role="status" aria-live="polite" hidden>
+  <span class="pending-bar-dot" aria-hidden="true">◐</span>
+  <span id="pending-bar-text" class="pending-bar-text">Loading...</span>
+  <a id="pending-bar-view" class="pending-bar-action" href="/stacks?filter=pending">View</a>
+  <a class="pending-bar-action primary" href="/" title="Open the Dashboard and click Spin Up to deploy">Open Dashboard</a>
+</div>
+
+<style>
+  .pending-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    background: rgba(255, 170, 0, 0.08);
+    border: 1px solid rgba(255, 170, 0, 0.3);
+    border-left-width: 3px;
+    color: var(--warning);
+    padding: 0.6rem 1rem;
+    margin: 0 0 1.5rem 0;
+    font-size: 0.85rem;
+    border-radius: 3px;
+  }
+
+  .pending-bar[hidden] { display: none; }
+
+  .pending-bar-dot {
+    font-family: 'JetBrains Mono', monospace;
+    animation: pulse 2s infinite;
+  }
+
+  .pending-bar-text { flex: 1; }
+
+  .pending-bar-action {
+    color: var(--accent);
+    text-decoration: none;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    border-radius: 3px;
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+
+  .pending-bar-action:hover {
+    background: rgba(0, 255, 136, 0.1);
+  }
+
+  .pending-bar-action.primary {
+    background: rgba(0, 255, 136, 0.1);
+  }
+
+  .pending-bar-action.primary:hover {
+    background: rgba(0, 255, 136, 0.2);
+  }
+</style>
+
+<script is:inline>
+  (function() {
+    const bar = document.getElementById('pending-bar');
+    const text = document.getElementById('pending-bar-text');
+    if (!bar || !text) return;
+
+    async function refresh() {
+      // Shared cache in window.NS — if a stacks page also requested
+      // /api/services on the same tick, we reuse its response instead of
+      // firing a duplicate request.
+      const data = await window.NS.getServices();
+      if (!data) return; // Silent on failure — don't spam toasts for a background poll
+      const count = (data.success && typeof data.pendingChangesCount === 'number')
+        ? data.pendingChangesCount : 0;
+      if (count > 0) {
+        text.textContent = count + ' change' + (count === 1 ? '' : 's') + ' pending. Spin Up to deploy.';
+        bar.hidden = false;
+      } else {
+        bar.hidden = true;
+      }
+    }
+
+    refresh();
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden) refresh();
+    });
+    window.addEventListener('stacks:updated', refresh);
+  })();
+</script>

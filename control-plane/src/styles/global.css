@@ -143,6 +143,59 @@ h2 {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 /* =============================================================================
+   Stack status dots (tri-state: disabled / pending / running)
+   Namespaced as .stack-status-dot to avoid colliding with the solid-circle
+   .status-dot used in pages/index.astro (Dashboard infrastructure state).
+   ============================================================================= */
+.stack-status-dot {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.95rem;
+  width: 1em;
+  text-align: center;
+  vertical-align: baseline;
+  line-height: 1;
+}
+
+.stack-status-dot.status-running  { color: var(--accent); text-shadow: 0 0 6px rgba(0, 255, 136, 0.5); }
+.stack-status-dot.status-pending  { color: var(--warning); animation: pulse 2s infinite; }
+.stack-status-dot.status-disabled { color: var(--text-muted); opacity: 0.6; }
+
+/* =============================================================================
+   View toggle (grid / list)
+   ============================================================================= */
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-toggle button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.4rem 0.8rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.view-toggle button:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.view-toggle button:hover {
+  color: var(--accent);
+}
+
+.view-toggle button[aria-pressed="true"] {
+  background: rgba(0, 255, 136, 0.1);
+  color: var(--accent);
+}
+
+/* =============================================================================
    Service Cards
    ============================================================================= */
 .services-grid {

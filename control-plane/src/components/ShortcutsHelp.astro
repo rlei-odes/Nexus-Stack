@@ -1,0 +1,119 @@
+---
+// Keyboard shortcut overlay. Toggled by `?` via window.NS.registerKeyboard.
+// Lives as a native <dialog> so Escape closes it for free.
+---
+
+<dialog id="shortcuts-help" class="shortcuts-help">
+  <div class="shortcuts-help-body">
+    <div class="shortcuts-help-header">
+      <h3>Keyboard shortcuts</h3>
+      <button id="shortcuts-help-close" aria-label="Close">×</button>
+    </div>
+    <table>
+      <tbody>
+        <tr><td><kbd>/</kbd></td><td>Focus search</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Toggle this help</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close overlay / blur search</td></tr>
+        <tr><td><kbd>g</kbd> <kbd>d</kbd></td><td>Go to Dashboard</td></tr>
+        <tr><td><kbd>g</kbd> <kbd>s</kbd></td><td>Go to Stacks</td></tr>
+        <tr><td colspan="2" class="group">In list view</td></tr>
+        <tr><td><kbd>j</kbd> <kbd>↓</kbd></td><td>Next row</td></tr>
+        <tr><td><kbd>k</kbd> <kbd>↑</kbd></td><td>Previous row</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>Open stack URL</td></tr>
+        <tr><td><kbd>e</kbd> <kbd>Space</kbd></td><td>Toggle enabled</td></tr>
+        <tr><td><kbd>c</kbd></td><td>Open category page</td></tr>
+      </tbody>
+    </table>
+  </div>
+</dialog>
+
+<style>
+  .shortcuts-help {
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    border-radius: 4px;
+    padding: 0;
+    max-width: 420px;
+    width: calc(100% - 2rem);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  }
+
+  .shortcuts-help::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+  }
+
+  .shortcuts-help-body { padding: 1rem 1.2rem; }
+
+  .shortcuts-help-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.8rem;
+  }
+
+  .shortcuts-help-header h3 {
+    color: var(--accent);
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  #shortcuts-help-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.4rem;
+    cursor: pointer;
+    padding: 0 0.4rem;
+    line-height: 1;
+  }
+
+  #shortcuts-help-close:hover { color: var(--accent); }
+
+  .shortcuts-help table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+
+  .shortcuts-help td {
+    padding: 0.3rem 0.2rem;
+    vertical-align: middle;
+  }
+
+  .shortcuts-help td:first-child { white-space: nowrap; width: 45%; }
+
+  .shortcuts-help td.group {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding-top: 0.9rem;
+    border-top: 1px solid rgba(42, 42, 62, 0.5);
+  }
+
+  .shortcuts-help kbd {
+    background: rgba(0, 255, 136, 0.08);
+    border: 1px solid rgba(0, 255, 136, 0.25);
+    border-radius: 3px;
+    padding: 0.1rem 0.4rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--accent);
+    margin-right: 0.2rem;
+  }
+</style>
+
+<script is:inline>
+  (function() {
+    const dlg = document.getElementById('shortcuts-help');
+    const closeBtn = document.getElementById('shortcuts-help-close');
+    if (!dlg || !closeBtn) return;
+    closeBtn.addEventListener('click', function() { dlg.close(); });
+    // Click-outside-to-close — native <dialog> emits click on the dialog element
+    // when you click the backdrop.
+    dlg.addEventListener('click', function(e) {
+      if (e.target === dlg) dlg.close();
+    });
+  })();
+</script>

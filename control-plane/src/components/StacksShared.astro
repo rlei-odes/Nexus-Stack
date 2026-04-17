@@ -1,0 +1,236 @@
+---
+// Shared client-side helpers for the stacks-related pages.
+// Attaches constants and helpers to `window.NS` so the per-page
+// <script is:inline> blocks can consume them without duplicating code.
+import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
+---
+
+<script is:inline define:vars={{ CATEGORIES, CATEGORY_ORDER }}>
+  window.NS = window.NS || {};
+  window.NS.CATEGORIES = CATEGORIES;
+  window.NS.CATEGORY_ORDER = CATEGORY_ORDER;
+
+  // ---- Domain & URL -------------------------------------------------------
+
+  // Seed from URL so stackUrl() works even if /api/info hasn't resolved yet
+  // (or fails permanently). The old control.foo / control-foo pages did this
+  // before the refactor — preserve the fallback.
+  let cachedDomain = window.location.hostname.replace(/^control[.-]/, '');
+  let cachedSeparator = '.';
+  let domainFetch = null;
+
+  window.NS.fetchDomain = function() {
+    if (domainFetch) return domainFetch;
+    domainFetch = fetch('/api/info', { credentials: 'same-origin' })
+      .then(function(r) {
+        if (!r.ok) {
+          // Non-2xx: clear the memo so a later call can retry once the
+          // server recovers, and fall back to the URL-derived domain.
+          domainFetch = null;
+          return null;
+        }
+        return r.json();
+      })
+      .then(function(d) {
+        if (d && d.success && d.info && d.info.server) {
+          if (d.info.server.domain) cachedDomain = d.info.server.domain;
+          if (d.info.server.subdomainSeparator) cachedSeparator = d.info.server.subdomainSeparator;
+        }
+        return { domain: cachedDomain, separator: cachedSeparator };
+      })
+      .catch(function() {
+        // Network/parse error — same retry treatment.
+        domainFetch = null;
+        return { domain: cachedDomain, separator: cachedSeparator };
+      });
+    return domainFetch;
+  };
+
+  window.NS.stackUrl = function(service) {
+    if (!service || !service.subdomain || !cachedDomain) return '';
+    return 'https://' + service.subdomain + cachedSeparator + cachedDomain;
+  };
+
+  // ---- Services fetch cache -----------------------------------------------
+  // PendingBar (mounted globally in Layout) and the stacks pages both need
+  // /api/services. Share a single in-flight request and a short-lived cache
+  // so a page load doesn't double-fetch. Invalidated by toggleService().
+
+  const SERVICES_TTL_MS = 1000;
+  let servicesInflight = null;
+  let servicesCache = null;
+  let servicesCacheTime = 0;
+
+  window.NS.getServices = function() {
+    const now = Date.now();
+    if (servicesCache && (now - servicesCacheTime) < SERVICES_TTL_MS) {
+      return Promise.resolve(servicesCache);
+    }
+    if (servicesInflight) return servicesInflight;
+    servicesInflight = fetch('/api/services', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        servicesCache = data;
+        servicesCacheTime = Date.now();
+        servicesInflight = null;
+        return data;
+      })
+      .catch(function() {
+        servicesInflight = null;
+        return null;
+      });
+    return servicesInflight;
+  };
+
+  window.NS.invalidateServices = function() {
+    servicesCache = null;
+    servicesCacheTime = 0;
+  };
+
+  // ---- Tri-state status ---------------------------------------------------
+  // enabled + deployed -> running
+  // enabled + !deployed -> pending-enable
+  // !enabled + deployed -> pending-disable
+  // !enabled + !deployed -> disabled
+
+  window.NS.resolveStatus = function(service) {
+    if (service.enabled && service.deployed) return 'running';
+    if (service.enabled && !service.deployed) return 'pending-enable';
+    if (!service.enabled && service.deployed) return 'pending-disable';
+    return 'disabled';
+  };
+
+  window.NS.statusBadge = function(status) {
+    switch (status) {
+      case 'running':        return { glyph: '●', label: 'running',        className: 'status-running' };
+      case 'pending-enable': return { glyph: '◐', label: 'pending enable', className: 'status-pending' };
+      case 'pending-disable':return { glyph: '◐', label: 'pending disable',className: 'status-pending' };
+      default:               return { glyph: '○', label: 'disabled',       className: 'status-disabled' };
+    }
+  };
+
+  window.NS.renderStatusDot = function(service) {
+    const b = window.NS.statusBadge(window.NS.resolveStatus(service));
+    return '<span class="stack-status-dot ' + b.className + '" role="img" aria-label="' + b.label + '" title="' + b.label + '">' +
+      '<span aria-hidden="true">' + b.glyph + '</span>' +
+    '</span>';
+  };
+
+  // ---- Service toggle -----------------------------------------------------
+
+  window.NS.toggleService = async function(name, enabled) {
+    const action = enabled ? 'enable' : 'disable';
+    try {
+      const response = await fetch('/api/services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ service: name, enabled: enabled }),
+      });
+      let data = null;
+      try { data = await response.json(); } catch {}
+      if (!response.ok || !data || !data.success) {
+        const detail = (data && data.error) || ('HTTP ' + response.status);
+        const msg = 'Failed to ' + action + ' ' + name + ': ' + detail;
+        if (typeof showToast === 'function') showToast(msg, 'error');
+        return { success: false, error: msg };
+      }
+      if (typeof showToast === 'function') {
+        showToast(name + ' ' + (enabled ? 'enabled' : 'disabled') + '. Go to Dashboard to Spin Up.');
+      }
+      window.NS.invalidateServices();
+      window.dispatchEvent(new Event('stacks:updated'));
+      return { success: true };
+    } catch (err) {
+      const detail = err && err.message ? err.message : 'network error';
+      const msg = 'Failed to ' + action + ' ' + name + ': ' + detail;
+      if (typeof showToast === 'function') showToast(msg, 'error');
+      return { success: false, error: msg };
+    }
+  };
+
+  // ---- Keyboard bindings --------------------------------------------------
+  // Registers global shortcuts (/ ? g d g s Esc) plus list-specific nav
+  // (j/k Enter e c) if the page passes a list controller.
+
+  window.NS.registerKeyboard = function(opts) {
+    opts = opts || {};
+    const searchInputId = opts.searchInputId || null;
+    const list = opts.list || null;   // { items: [], getEl: i => element, onOpen, onToggle, onCategory }
+
+    let pendingG = false;
+    let gTimer = null;
+
+    // Tags where keystrokes have their own meaning (Space clicks a button,
+    // Enter submits a form, j/k types into a field, etc.). Shortcuts must
+    // not fire over these, or they override expected browser behaviour.
+    const INTERACTIVE_TAGS = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'];
+
+    function handler(e) {
+      const t = e.target;
+      if (t && (INTERACTIVE_TAGS.indexOf(t.tagName) !== -1 || t.isContentEditable)) {
+        if (e.key === 'Escape' && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) t.blur();
+        return;
+      }
+      // When a modal dialog is open, suppress all shortcuts (even our own)
+      // so background navigation/toggles don't fire "through" the overlay.
+      const openDialog = document.querySelector('dialog[open]');
+      if (openDialog) {
+        if (e.key === 'Escape') {
+          openDialog.close();
+          e.preventDefault();
+        }
+        return;
+      }
+
+      if (e.key === '/') {
+        if (searchInputId) {
+          const input = document.getElementById(searchInputId);
+          if (input) { input.focus(); input.select && input.select(); e.preventDefault(); return; }
+        }
+      }
+
+      if (e.key === '?') {
+        const help = document.getElementById('shortcuts-help');
+        if (help) { help.open ? help.close() : help.showModal(); e.preventDefault(); return; }
+      }
+
+      if (pendingG) {
+        pendingG = false;
+        clearTimeout(gTimer);
+        if (e.key === 'd') { window.location.href = '/'; e.preventDefault(); return; }
+        if (e.key === 's') { window.location.href = '/stacks'; e.preventDefault(); return; }
+        return;
+      }
+      if (e.key === 'g') {
+        pendingG = true;
+        gTimer = setTimeout(function() { pendingG = false; }, 1000);
+        return;
+      }
+
+      if (list && list.items && list.items.length > 0) {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          list.focus = Math.min((list.focus ?? -1) + 1, list.items.length - 1);
+          list.render && list.render();
+          e.preventDefault();
+          return;
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          list.focus = Math.max((list.focus ?? 0) - 1, 0);
+          list.render && list.render();
+          e.preventDefault();
+          return;
+        }
+        if (list.focus != null && list.focus >= 0 && list.focus < list.items.length) {
+          const item = list.items[list.focus];
+          if (e.key === 'Enter' && list.onOpen) { list.onOpen(item); e.preventDefault(); return; }
+          if ((e.key === 'e' || e.key === ' ') && list.onToggle) { list.onToggle(item); e.preventDefault(); return; }
+          if (e.key === 'c' && list.onCategory) { list.onCategory(item); e.preventDefault(); return; }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handler);
+    return function teardown() { document.removeEventListener('keydown', handler); };
+  };
+</script>

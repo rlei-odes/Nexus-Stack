@@ -44,55 +44,27 @@ import Layout from '../layouts/Layout.astro';
 </style>
 
 <script is:inline>
-  const CATEGORIES = {
-    'core': { name: 'Core Infrastructure' },
-    'databases': { name: 'Databases' },
-    'storage': { name: 'Object Storage' },
-    'db-management': { name: 'Database Management' },
-    'orchestration': { name: 'Data Orchestration' },
-    'streaming': { name: 'Stream Processing' },
-    'messaging': { name: 'Message Brokers' },
-    'analytics': { name: 'Analytics & BI' },
-    'data-quality': { name: 'Data Quality' },
-    'ai-ml': { name: 'AI & Machine Learning' },
-    'dev-tools': { name: 'Development Tools' },
-    'ci-cd': { name: 'CI/CD & Automation' },
-    'low-code': { name: 'Low-Code Platforms' },
-    'observability': { name: 'Observability' },
-    'knowledge': { name: 'Knowledge & Docs' },
-    'visual-tools': { name: 'Visual Tools' },
-    'files': { name: 'File Management' },
-    'server-access': { name: 'Server Access' },
-  };
-
-  const API_URL = window.location.origin;
   let allServices = [];
-  let stackDomain = window.location.hostname.replace(/^control[.-]/, '');
-  let subdomainSeparator = '.';
 
-  async function fetchDomain() {
-    try {
-      const res = await fetch(API_URL + '/api/info', { credentials: 'same-origin' });
-      const data = await res.json();
-      if (data.success && data.info?.server?.domain) stackDomain = data.info.server.domain;
-      if (data.success && data.info?.server?.subdomainSeparator) subdomainSeparator = data.info.server.subdomainSeparator;
-    } catch {}
-  }
+  let firstLoad = true;
 
   async function loadAllServices() {
     try {
-      await fetchDomain();
-      const response = await fetch(API_URL + '/api/services', { credentials: 'same-origin' });
-      if (!response.ok) return;
-      const data = await response.json();
-      if (data.success) {
+      await window.NS.fetchDomain();
+      const data = await window.NS.getServices();
+      if (data && data.success) {
         allServices = data.services || [];
-        const params = new URLSearchParams(window.location.search);
-        const q = params.get('q') || '';
-        if (q) {
-          document.getElementById('search-input').value = q;
-          filterAndRender(q);
+        const input = document.getElementById('search-input');
+        // First load: seed from URL (deep-link support). Subsequent loads
+        // (e.g. after a toggle re-fetch): trust the live input value, since
+        // the URL is debounced 200ms and may be stale mid-typing.
+        if (firstLoad) {
+          const params = new URLSearchParams(window.location.search);
+          const q = params.get('q') || '';
+          if (q) input.value = q;
+          firstLoad = false;
         }
+        filterAndRender(input.value);
       }
     } catch (error) {
       console.error('Failed to load services:', error);
@@ -112,10 +84,11 @@ import Layout from '../layouts/Layout.astro';
 
     const q = query.toLowerCase();
     const matches = allServices.filter(function(s) {
+      const catName = window.NS.CATEGORIES[s.category] ? window.NS.CATEGORIES[s.category].name.toLowerCase() : '';
       return s.name.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
         (s.long_description && s.long_description.toLowerCase().includes(q)) ||
-        (s.category && CATEGORIES[s.category] && CATEGORIES[s.category].name.toLowerCase().includes(q));
+        catName.includes(q);
     });
 
     if (matches.length === 0) {
@@ -135,6 +108,8 @@ import Layout from '../layouts/Layout.astro';
       const card = document.createElement('div');
       card.className = 'service-card' + (service.pending ? ' pending' : '');
 
+      const statusDotHtml = window.NS.renderStatusDot(service);
+
       let badges = '';
       if (service.core) badges += '<span class="badge badge-core">core</span>';
       if (service.admin_only) badges += '<span class="badge badge-admin">admin</span>';
@@ -144,7 +119,8 @@ import Layout from '../layouts/Layout.astro';
         badges += '<span class="badge badge-pending">' + (service.enabled ? 'will enable' : 'will disable') + '</span>';
       }
 
-      const catName = CATEGORIES[service.category] ? CATEGORIES[service.category].name : service.category;
+      const catMeta = window.NS.CATEGORIES[service.category];
+      const catName = catMeta ? catMeta.name : service.category;
       badges += '<span class="badge badge-category">' + escapeHtml(catName) + '</span>';
 
       const isDisabled = service.core || service.admin_only;
@@ -154,52 +130,42 @@ import Layout from '../layouts/Layout.astro';
       const desc = service.long_description || service.description || '';
 
       let openHtml = '';
-      if (service.subdomain && service.deployed) {
-        openHtml = '<a href="https://' + service.subdomain + subdomainSeparator + stackDomain + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
+      const url = window.NS.stackUrl(service);
+      if (url && service.deployed) {
+        openHtml = '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
       }
 
       let websiteHtml = '';
       if (service.website) {
         try {
           const wDomain = new URL(service.website).hostname.replace('www.', '');
-          websiteHtml = '<a href="' + escapeHtml(service.website) + '" target="_blank" rel="noopener" class="card-project-link">' + escapeHtml(wDomain) + '</a>';
+          websiteHtml = '<a href="' + escapeAttr(service.website) + '" target="_blank" rel="noopener" class="card-project-link">' + escapeHtml(wDomain) + '</a>';
         } catch {}
       }
 
       card.innerHTML =
         '<div class="card-header">' +
-          '<div><div class="card-name">' + escapeHtml(service.name) + ' ' + badges + '</div></div>' +
-          '<div class="' + toggleClass + '" title="' + escapeHtml(toggleTitle) + '" onclick="handleToggle(\'' + service.name + '\', ' + !service.enabled + ', this)"></div>' +
+          '<div><div class="card-name">' + statusDotHtml + ' ' + escapeHtml(service.name) + ' ' + badges + '</div></div>' +
+          '<div class="' + toggleClass + '" data-service="' + escapeAttr(service.name) + '" data-target="' + (!service.enabled) + '" title="' + escapeAttr(toggleTitle) + '"></div>' +
         '</div>' +
         '<div class="card-description">' + escapeHtml(desc) + '</div>' +
         '<div class="card-footer"><div class="card-meta">' + websiteHtml + '</div>' + openHtml + '</div>';
+
+      card.querySelector('.toggle-switch').addEventListener('click', function() { handleToggle(this); });
 
       grid.appendChild(card);
     });
   }
 
-  async function handleToggle(serviceName, enabled, toggleEl) {
+  async function handleToggle(toggleEl) {
     if (toggleEl.classList.contains('disabled')) return;
+    const name = toggleEl.dataset.service;
+    const target = toggleEl.dataset.target === 'true';
     toggleEl.classList.add('disabled');
-    try {
-      const response = await fetch(API_URL + '/api/services', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ service: serviceName, enabled: enabled }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        showToast(serviceName + ' ' + (enabled ? 'enabled' : 'disabled') + '. Deploy from Dashboard.');
-        await loadAllServices();
-        const query = document.getElementById('search-input').value;
-        filterAndRender(query);
-      } else {
-        showToast(data.error || 'Failed to update service', 'error');
-        toggleEl.classList.remove('disabled');
-      }
-    } catch {
-      showToast('Failed to update service', 'error');
+    const result = await window.NS.toggleService(name, target);
+    if (result.success) {
+      await loadAllServices();
+    } else {
       toggleEl.classList.remove('disabled');
     }
   }
@@ -215,6 +181,8 @@ import Layout from '../layouts/Layout.astro';
       history.replaceState(null, '', url);
     }, 200);
   });
+
+  window.NS.registerKeyboard({ searchInputId: 'search-input' });
 
   loadAllServices();
 </script>
