@@ -143,6 +143,23 @@ h2 {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 /* =============================================================================
+   Status dots (tri-state: disabled / pending / running)
+   ============================================================================= */
+.status-dot {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.95rem;
+  width: 1em;
+  text-align: center;
+  vertical-align: baseline;
+  line-height: 1;
+}
+
+.status-dot.status-running  { color: var(--accent); text-shadow: 0 0 6px rgba(0, 255, 136, 0.5); }
+.status-dot.status-pending  { color: var(--warning); animation: pulse 2s infinite; }
+.status-dot.status-disabled { color: var(--text-muted); opacity: 0.6; }
+
+/* =============================================================================
    Service Cards
    ============================================================================= */
 .services-grid {

@@ -1,0 +1,169 @@
+---
+// Shared client-side helpers for the stacks-related pages.
+// Attaches constants and helpers to `window.NS` so the per-page
+// <script is:inline> blocks can consume them without duplicating code.
+import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
+---
+
+<script is:inline define:vars={{ CATEGORIES, CATEGORY_ORDER }}>
+  window.NS = window.NS || {};
+  window.NS.CATEGORIES = CATEGORIES;
+  window.NS.CATEGORY_ORDER = CATEGORY_ORDER;
+
+  // ---- Domain & URL -------------------------------------------------------
+
+  let cachedDomain = null;
+  let cachedSeparator = '.';
+  let domainFetch = null;
+
+  window.NS.fetchDomain = function() {
+    if (domainFetch) return domainFetch;
+    domainFetch = fetch('/api/info', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (d && d.success && d.info && d.info.server) {
+          if (d.info.server.domain) cachedDomain = d.info.server.domain;
+          if (d.info.server.subdomainSeparator) cachedSeparator = d.info.server.subdomainSeparator;
+        }
+        return { domain: cachedDomain, separator: cachedSeparator };
+      })
+      .catch(function() { return { domain: cachedDomain, separator: cachedSeparator }; });
+    return domainFetch;
+  };
+
+  window.NS.stackUrl = function(service) {
+    if (!service || !service.subdomain || !cachedDomain) return '';
+    return 'https://' + service.subdomain + cachedSeparator + cachedDomain;
+  };
+
+  // ---- Tri-state status ---------------------------------------------------
+  // enabled + deployed -> running
+  // enabled + !deployed -> pending-enable
+  // !enabled + deployed -> pending-disable
+  // !enabled + !deployed -> disabled
+
+  window.NS.resolveStatus = function(service) {
+    if (service.enabled && service.deployed) return 'running';
+    if (service.enabled && !service.deployed) return 'pending-enable';
+    if (!service.enabled && service.deployed) return 'pending-disable';
+    return 'disabled';
+  };
+
+  window.NS.statusBadge = function(status) {
+    switch (status) {
+      case 'running':        return { glyph: '●', label: 'running',        className: 'status-running' };
+      case 'pending-enable': return { glyph: '◐', label: 'pending enable', className: 'status-pending' };
+      case 'pending-disable':return { glyph: '◐', label: 'pending disable',className: 'status-pending' };
+      default:               return { glyph: '○', label: 'disabled',       className: 'status-disabled' };
+    }
+  };
+
+  window.NS.renderStatusDot = function(service) {
+    const b = window.NS.statusBadge(window.NS.resolveStatus(service));
+    return '<span class="status-dot ' + b.className + '" title="' + b.label + '">' + b.glyph + '</span>';
+  };
+
+  // ---- Service toggle -----------------------------------------------------
+
+  window.NS.toggleService = async function(name, enabled) {
+    try {
+      const response = await fetch('/api/services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ service: name, enabled: enabled }),
+      });
+      let data = null;
+      try { data = await response.json(); } catch {}
+      if (!response.ok || !data || !data.success) {
+        const msg = (data && data.error) || ('HTTP ' + response.status);
+        if (typeof showToast === 'function') showToast(msg, 'error');
+        return { success: false, error: msg };
+      }
+      if (typeof showToast === 'function') {
+        showToast(name + ' ' + (enabled ? 'enabled' : 'disabled') + '. Go to Dashboard to Spin Up.');
+      }
+      window.dispatchEvent(new Event('stacks:updated'));
+      return { success: true };
+    } catch (err) {
+      const msg = err && err.message ? err.message : 'Network error';
+      if (typeof showToast === 'function') showToast(msg, 'error');
+      return { success: false, error: msg };
+    }
+  };
+
+  // ---- Keyboard bindings --------------------------------------------------
+  // Registers global shortcuts (/ ? g d g s Esc) plus list-specific nav
+  // (j/k Enter e c) if the page passes a list controller.
+
+  window.NS.registerKeyboard = function(opts) {
+    opts = opts || {};
+    const searchInputId = opts.searchInputId || null;
+    const list = opts.list || null;   // { items: [], getEl: i => element, onOpen, onToggle, onCategory }
+
+    let pendingG = false;
+    let gTimer = null;
+
+    function handler(e) {
+      if (e.target && ['INPUT', 'TEXTAREA'].indexOf(e.target.tagName) !== -1) {
+        if (e.key === 'Escape') e.target.blur();
+        return;
+      }
+      const openDialog = document.querySelector('dialog[open]');
+      if (openDialog && e.key === 'Escape') {
+        openDialog.close();
+        e.preventDefault();
+        return;
+      }
+
+      if (e.key === '/') {
+        if (searchInputId) {
+          const input = document.getElementById(searchInputId);
+          if (input) { input.focus(); input.select && input.select(); e.preventDefault(); return; }
+        }
+      }
+
+      if (e.key === '?') {
+        const help = document.getElementById('shortcuts-help');
+        if (help) { help.open ? help.close() : help.showModal(); e.preventDefault(); return; }
+      }
+
+      if (pendingG) {
+        pendingG = false;
+        clearTimeout(gTimer);
+        if (e.key === 'd') { window.location.href = '/'; e.preventDefault(); return; }
+        if (e.key === 's') { window.location.href = '/stacks'; e.preventDefault(); return; }
+        return;
+      }
+      if (e.key === 'g') {
+        pendingG = true;
+        gTimer = setTimeout(function() { pendingG = false; }, 1000);
+        return;
+      }
+
+      if (list && list.items && list.items.length > 0) {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          list.focus = Math.min((list.focus ?? -1) + 1, list.items.length - 1);
+          list.render && list.render();
+          e.preventDefault();
+          return;
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          list.focus = Math.max((list.focus ?? 0) - 1, 0);
+          list.render && list.render();
+          e.preventDefault();
+          return;
+        }
+        if (list.focus != null && list.focus >= 0 && list.focus < list.items.length) {
+          const item = list.items[list.focus];
+          if (e.key === 'Enter' && list.onOpen) { list.onOpen(item); e.preventDefault(); return; }
+          if ((e.key === 'e' || e.key === ' ') && list.onToggle) { list.onToggle(item); e.preventDefault(); return; }
+          if (e.key === 'c' && list.onCategory) { list.onCategory(item); e.preventDefault(); return; }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handler);
+    return function teardown() { document.removeEventListener('keydown', handler); };
+  };
+</script>
