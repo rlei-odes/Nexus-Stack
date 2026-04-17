@@ -21,9 +21,11 @@ locals {
 
   # Control Plane URLs. Built from the base domain and the subdomain separator
   # so flat-subdomain deployments (e.g. infisical-tenant.example.com) work
-  # without code changes. Consumed by Pages Functions and the teardown Worker.
-  infisical_url     = "https://infisical${var.subdomain_separator}${var.domain}"
-  control_plane_url = "https://control${var.subdomain_separator}${var.domain}"
+  # without code changes. Consumed by Pages Functions, the teardown Worker,
+  # and the DNS / Pages domain / Access app / CORS resources below.
+  control_plane_hostname = "control${var.subdomain_separator}${var.domain}"
+  infisical_url          = "https://infisical${var.subdomain_separator}${var.domain}"
+  control_plane_url      = "https://${local.control_plane_hostname}"
 }
 
 # -----------------------------------------------------------------------------
@@ -207,7 +209,7 @@ resource "cloudflare_pages_project" "control_plane" {
 
 resource "cloudflare_record" "control_plane" {
   zone_id = var.cloudflare_zone_id
-  name    = "control"
+  name    = local.control_plane_hostname
   content = "${cloudflare_pages_project.control_plane.name}.pages.dev"
   type    = "CNAME"
   proxied = true
@@ -217,7 +219,7 @@ resource "cloudflare_record" "control_plane" {
 resource "cloudflare_pages_domain" "control_plane" {
   account_id   = var.cloudflare_account_id
   project_name = cloudflare_pages_project.control_plane.name
-  domain       = "control.${var.domain}"
+  domain       = local.control_plane_hostname
 
   depends_on = [cloudflare_record.control_plane]
 }
@@ -229,7 +231,7 @@ resource "cloudflare_pages_domain" "control_plane" {
 resource "cloudflare_zero_trust_access_application" "control_plane" {
   zone_id          = var.cloudflare_zone_id
   name             = "${local.resource_prefix} Control Plane"
-  domain           = "control.${var.domain}"
+  domain           = local.control_plane_hostname
   type             = "self_hosted"
   session_duration = "24h"
 
@@ -240,7 +242,7 @@ resource "cloudflare_zero_trust_access_application" "control_plane" {
   same_site_cookie_attribute = "lax"
 
   cors_headers {
-    allowed_origins   = ["https://control.${var.domain}"]
+    allowed_origins   = [local.control_plane_url]
     allowed_methods   = ["GET", "POST", "OPTIONS"]
     allow_credentials = true
   }
