@@ -143,10 +143,8 @@ import StackTable from '../components/StackTable.astro';
   async function loadServices() {
     try {
       await window.NS.fetchDomain();
-      const response = await fetch('/api/services', { credentials: 'same-origin' });
-      if (!response.ok) return;
-      const data = await response.json();
-      if (data.success) {
+      const data = await window.NS.getServices();
+      if (data && data.success) {
         allServices = data.services || [];
         loading = false;
         applyFilterAndRender();

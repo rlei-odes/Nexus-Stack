@@ -154,7 +154,6 @@
         tr.dataset.index = String(idx);
         if (idx === state.focusIndex) tr.className = 'focused';
 
-        const badge = window.NS.statusBadge(window.NS.resolveStatus(service));
         const url = window.NS.stackUrl(service);
         const catMeta = window.NS.CATEGORIES[service.category];
         const catName = catMeta ? catMeta.name : service.category;

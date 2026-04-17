@@ -43,6 +43,42 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
     return 'https://' + service.subdomain + cachedSeparator + cachedDomain;
   };
 
+  // ---- Services fetch cache -----------------------------------------------
+  // PendingBar (mounted globally in Layout) and the stacks pages both need
+  // /api/services. Share a single in-flight request and a short-lived cache
+  // so a page load doesn't double-fetch. Invalidated by toggleService().
+
+  const SERVICES_TTL_MS = 1000;
+  let servicesInflight = null;
+  let servicesCache = null;
+  let servicesCacheTime = 0;
+
+  window.NS.getServices = function() {
+    const now = Date.now();
+    if (servicesCache && (now - servicesCacheTime) < SERVICES_TTL_MS) {
+      return Promise.resolve(servicesCache);
+    }
+    if (servicesInflight) return servicesInflight;
+    servicesInflight = fetch('/api/services', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        servicesCache = data;
+        servicesCacheTime = Date.now();
+        servicesInflight = null;
+        return data;
+      })
+      .catch(function() {
+        servicesInflight = null;
+        return null;
+      });
+    return servicesInflight;
+  };
+
+  window.NS.invalidateServices = function() {
+    servicesCache = null;
+    servicesCacheTime = 0;
+  };
+
   // ---- Tri-state status ---------------------------------------------------
   // enabled + deployed -> running
   // enabled + !deployed -> pending-enable
@@ -75,6 +111,7 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
   // ---- Service toggle -----------------------------------------------------
 
   window.NS.toggleService = async function(name, enabled) {
+    const action = enabled ? 'enable' : 'disable';
     try {
       const response = await fetch('/api/services', {
         method: 'POST',
@@ -85,17 +122,20 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
       let data = null;
       try { data = await response.json(); } catch {}
       if (!response.ok || !data || !data.success) {
-        const msg = (data && data.error) || ('HTTP ' + response.status);
+        const detail = (data && data.error) || ('HTTP ' + response.status);
+        const msg = 'Failed to ' + action + ' ' + name + ': ' + detail;
         if (typeof showToast === 'function') showToast(msg, 'error');
         return { success: false, error: msg };
       }
       if (typeof showToast === 'function') {
         showToast(name + ' ' + (enabled ? 'enabled' : 'disabled') + '. Go to Dashboard to Spin Up.');
       }
+      window.NS.invalidateServices();
       window.dispatchEvent(new Event('stacks:updated'));
       return { success: true };
     } catch (err) {
-      const msg = err && err.message ? err.message : 'Network error';
+      const detail = err && err.message ? err.message : 'network error';
+      const msg = 'Failed to ' + action + ' ' + name + ': ' + detail;
       if (typeof showToast === 'function') showToast(msg, 'error');
       return { success: false, error: msg };
     }

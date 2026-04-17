@@ -67,30 +67,20 @@
     const text = document.getElementById('pending-bar-text');
     if (!bar || !text) return;
 
-    let inflight = null;
-
     async function refresh() {
-      if (inflight) return inflight;
-      inflight = (async () => {
-        try {
-          const res = await fetch('/api/services', { credentials: 'same-origin' });
-          if (!res.ok) return;
-          const data = await res.json();
-          const count = (data && data.success && typeof data.pendingChangesCount === 'number')
-            ? data.pendingChangesCount : 0;
-          if (count > 0) {
-            text.textContent = count + ' change' + (count === 1 ? '' : 's') + ' pending. Spin Up to deploy.';
-            bar.hidden = false;
-          } else {
-            bar.hidden = true;
-          }
-        } catch {
-          // Silent — don't spam toasts for a background poll.
-        } finally {
-          inflight = null;
-        }
-      })();
-      return inflight;
+      // Shared cache in window.NS — if a stacks page also requested
+      // /api/services on the same tick, we reuse its response instead of
+      // firing a duplicate request.
+      const data = await window.NS.getServices();
+      if (!data) return; // Silent on failure — don't spam toasts for a background poll
+      const count = (data.success && typeof data.pendingChangesCount === 'number')
+        ? data.pendingChangesCount : 0;
+      if (count > 0) {
+        text.textContent = count + ' change' + (count === 1 ? '' : 's') + ' pending. Spin Up to deploy.';
+        bar.hidden = false;
+      } else {
+        bar.hidden = true;
+      }
     }
 
     refresh();
