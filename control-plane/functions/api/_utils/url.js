@@ -7,18 +7,23 @@
  * HTML email rendering via attribute-breaking characters.
  */
 
-/**
- * Returns the origin of `candidate` if it parses as an https: URL.
- * Otherwise returns `fallback`. The returned value is always either
- * a trusted fallback or a scheme+host string with no path/query.
- */
-export function safeHttpsUrl(candidate, fallback) {
-  if (!candidate) return fallback;
+function validateHttpsOrigin(url) {
+  if (!url) return null;
   try {
-    const u = new URL(candidate);
-    if (u.protocol !== 'https:') return fallback;
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return null;
     return u.origin;
   } catch {
-    return fallback;
+    return null;
   }
+}
+
+/**
+ * Returns the origin of `candidate` if it parses as an https: URL.
+ * Falls back to `fallback` (which is also validated the same way).
+ * Returns '' if neither validates — safer than leaking a malformed URL
+ * into a bearer-token fetch or an HTML href.
+ */
+export function safeHttpsUrl(candidate, fallback) {
+  return validateHttpsOrigin(candidate) || validateHttpsOrigin(fallback) || '';
 }

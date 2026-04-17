@@ -15,15 +15,19 @@
 // Duplicates functions/api/_utils/url.js. The worker is deployed as a single
 // raw file via Terraform (tofu/control-plane/main.tf -> file(...)), so it cannot
 // import from the Pages Functions _utils/ tree without introducing a bundler.
-function safeHttpsUrl(candidate, fallback) {
-  if (!candidate) return fallback;
+function validateHttpsOrigin(url) {
+  if (!url) return null;
   try {
-    const u = new URL(candidate);
-    if (u.protocol !== 'https:') return fallback;
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return null;
     return u.origin;
   } catch {
-    return fallback;
+    return null;
   }
+}
+
+function safeHttpsUrl(candidate, fallback) {
+  return validateHttpsOrigin(candidate) || validateHttpsOrigin(fallback) || '';
 }
 
 // Fetch with timeout to prevent hanging requests

@@ -102,6 +102,14 @@ export async function onRequestGet(context) {
     if (!serverLocation) serverLocation = env.SERVER_LOCATION || null;
     if (!domain) domain = env.DOMAIN || null;
 
+    // Validate domain as a hostname to prevent HTML/attribute injection
+    // when the UI interpolates it into hrefs. Allows alphanumerics, dots,
+    // and hyphens (standard DNS label characters); rejects scheme, slash,
+    // whitespace, quotes, or any other structural characters.
+    if (domain && !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(domain)) {
+      domain = null;
+    }
+
     // Allowlist subdomain separator to prevent HTML/attribute injection
     // when the UI concatenates this value into stack link hrefs.
     const rawSeparator = env.SUBDOMAIN_SEPARATOR;
