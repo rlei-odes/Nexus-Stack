@@ -9,17 +9,7 @@
  * for server-to-server authentication (no browser login required).
  */
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
-
-function safeHttpsUrl(candidate, fallback) {
-  if (!candidate) return fallback;
-  try {
-    const u = new URL(candidate);
-    if (u.protocol !== 'https:') return fallback;
-    return u.origin;
-  } catch {
-    return fallback;
-  }
-}
+import { safeHttpsUrl } from './_utils/url.js';
 
 async function safeJsonParse(response, label) {
   const contentType = response.headers.get('content-type') || '';

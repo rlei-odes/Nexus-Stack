@@ -12,6 +12,9 @@
  * - notification_time: "21:45" (default, 15 min before)
  */
 
+// Duplicates functions/api/_utils/url.js. The worker is deployed as a single
+// raw file via Terraform (tofu/control-plane/main.tf -> file(...)), so it cannot
+// import from the Pages Functions _utils/ tree without introducing a bundler.
 function safeHttpsUrl(candidate, fallback) {
   if (!candidate) return fallback;
   try {

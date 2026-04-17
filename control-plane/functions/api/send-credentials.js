@@ -7,17 +7,7 @@
  */
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
-
-function safeHttpsUrl(candidate, fallback) {
-  if (!candidate) return fallback;
-  try {
-    const u = new URL(candidate);
-    if (u.protocol !== 'https:') return fallback;
-    return u.origin;
-  } catch {
-    return fallback;
-  }
-}
+import { safeHttpsUrl } from './_utils/url.js';
 
 export async function onRequestPost(context) {
   const { env } = context;
