@@ -12,6 +12,24 @@
  * - notification_time: "21:45" (default, 15 min before)
  */
 
+// Duplicates functions/api/_utils/url.js. The worker is deployed as a single
+// raw file via Terraform (tofu/control-plane/main.tf -> file(...)), so it cannot
+// import from the Pages Functions _utils/ tree without introducing a bundler.
+function validateHttpsOrigin(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+function safeHttpsUrl(candidate, fallback) {
+  return validateHttpsOrigin(candidate) || validateHttpsOrigin(fallback) || '';
+}
+
 // Fetch with timeout to prevent hanging requests
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
@@ -449,6 +467,7 @@ async function sendNotification(env, config) {
 
   try {
     const teardownTime = `${config.teardownTime} ${getTimezoneAbbr(config.timezone)}`;
+    const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${env.DOMAIN}`);
 
     const emailHtml = `
       <div style="font-family:monospace;background:#0a0a0f;color:#00ff88;padding:20px">
@@ -467,7 +486,7 @@ async function sendNotification(env, config) {
         <p style="color:#fff">You can disable scheduled teardown via the Control Plane settings.</p>
         <h2 style="color:#00ff88;margin-top:2rem">🔗 Quick Links</h2>
         <ul>
-          <li><a href="https://control.${env.DOMAIN}" style="color:#00ff88">Control Plane</a> - Manage infrastructure</li>
+          <li><a href="${controlPlaneUrl}" style="color:#00ff88">Control Plane</a> - Manage infrastructure</li>
           <li><a href="https://github.com/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions" style="color:#00ff88">GitHub Actions</a> - View workflows</li>
         </ul>
         <div style="margin-top:2rem;padding:1rem;background:#1a1a2e;border-left:3px solid #ffaa00">

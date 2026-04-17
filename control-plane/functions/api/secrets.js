@@ -9,6 +9,7 @@
  * for server-to-server authentication (no browser login required).
  */
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+import { safeHttpsUrl } from './_utils/url.js';
 
 async function safeJsonParse(response, label) {
   const contentType = response.headers.get('content-type') || '';
@@ -41,7 +42,7 @@ export async function onRequestGet(context) {
       });
     }
 
-    const baseUrl = `https://infisical.${domain}`;
+    const baseUrl = safeHttpsUrl(context.env.INFISICAL_URL, `https://infisical.${domain}`);
     const environment = context.env.INFISICAL_ENV || 'dev';
     const headers = {
       'Authorization': `Bearer ${token}`,

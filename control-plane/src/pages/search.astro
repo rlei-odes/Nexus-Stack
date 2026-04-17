@@ -67,13 +67,15 @@ import Layout from '../layouts/Layout.astro';
 
   const API_URL = window.location.origin;
   let allServices = [];
-  let stackDomain = window.location.hostname.replace('control.', '');
+  let stackDomain = window.location.hostname.replace(/^control[.-]/, '');
+  let subdomainSeparator = '.';
 
   async function fetchDomain() {
     try {
       const res = await fetch(API_URL + '/api/info', { credentials: 'same-origin' });
       const data = await res.json();
       if (data.success && data.info?.server?.domain) stackDomain = data.info.server.domain;
+      if (data.success && data.info?.server?.subdomainSeparator) subdomainSeparator = data.info.server.subdomainSeparator;
     } catch {}
   }
 
@@ -153,7 +155,7 @@ import Layout from '../layouts/Layout.astro';
 
       let openHtml = '';
       if (service.subdomain && service.deployed) {
-        openHtml = '<a href="https://' + service.subdomain + '.' + stackDomain + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
+        openHtml = '<a href="https://' + service.subdomain + subdomainSeparator + stackDomain + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
       }
 
       let websiteHtml = '';

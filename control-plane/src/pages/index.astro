@@ -417,7 +417,8 @@ import Layout from '../layouts/Layout.astro';
   let currentAction = null;
   let pendingChangesCount = 0;
   let wasInProgress = false;
-  let stackDomain = window.location.hostname.replace('control.', '');
+  let stackDomain = window.location.hostname.replace(/^control[.-]/, '');
+  let subdomainSeparator = '.';
 
   const statusDescriptions = {
     'deployed': 'Infrastructure is running. All services are accessible.',
@@ -440,6 +441,9 @@ import Layout from '../layouts/Layout.astro';
       const data = await res.json();
       if (data.success && data.info?.server?.domain) {
         stackDomain = data.info.server.domain;
+      }
+      if (data.success && data.info?.server?.subdomainSeparator) {
+        subdomainSeparator = data.info.server.subdomainSeparator;
       }
     } catch {}
   }
@@ -631,7 +635,7 @@ import Layout from '../layouts/Layout.astro';
 
     services.forEach(s => {
       if (s.subdomain && s.deployed) {
-        const url = 'https://' + s.subdomain + '.' + stackDomain;
+        const url = 'https://' + s.subdomain + subdomainSeparator + stackDomain;
         html += '<a href="' + url + '" target="_blank" rel="noopener" class="stack-chip">' +
           escapeHtml(s.name) + '<span class="arrow">&#8599;</span></a>';
       } else {
