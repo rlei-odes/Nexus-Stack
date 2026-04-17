@@ -160,6 +160,40 @@ h2 {
 .status-dot.status-disabled { color: var(--text-muted); opacity: 0.6; }
 
 /* =============================================================================
+   View toggle (grid / list)
+   ============================================================================= */
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-toggle button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.4rem 0.8rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.view-toggle button:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.view-toggle button:hover {
+  color: var(--accent);
+}
+
+.view-toggle button[aria-pressed="true"] {
+  background: rgba(0, 255, 136, 0.1);
+  color: var(--accent);
+}
+
+/* =============================================================================
    Service Cards
    ============================================================================= */
 .services-grid {

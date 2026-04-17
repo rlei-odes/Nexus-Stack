@@ -2,6 +2,8 @@
 import Header from '../components/Header.astro';
 import Toast from '../components/Toast.astro';
 import StacksShared from '../components/StacksShared.astro';
+import PendingBar from '../components/PendingBar.astro';
+import ShortcutsHelp from '../components/ShortcutsHelp.astro';
 import '../styles/global.css';
 
 interface Props {
@@ -22,15 +24,18 @@ const { title, activeNav = '', narrow = false } = Astro.props;
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@700&display=swap" rel="stylesheet">
 </head>
 <body>
+  <!-- Shared helpers load first so page scripts can call window.NS.* / showToast during init -->
+  <Toast />
+  <StacksShared />
   <div class={narrow ? 'container-narrow' : 'container'}>
     <Header activeNav={activeNav} />
+    <PendingBar />
     <slot />
     <footer>
       <p>Built with lots of coffee by <a href="https://github.com/stefanko-ch" target="_blank" rel="noopener noreferrer">Stefan</a></p>
       <p>Powered by <a href="https://github.com/stefanko-ch/Nexus-Stack" target="_blank" rel="noopener noreferrer">Nexus-Stack</a></p>
     </footer>
   </div>
-  <Toast />
-  <StacksShared />
+  <ShortcutsHelp />
 </body>
 </html>

@@ -1,0 +1,243 @@
+---
+// Flat table view of all stacks. Rendered client-side from the services
+// array that each hosting page passes via window.NS.renderTable(...).
+// Density-oriented: one row per stack with status dot, name, category,
+// URL, toggle. Supports keyboard navigation via window.NS.registerKeyboard.
+---
+
+<table class="stack-table" id="stack-table">
+  <thead>
+    <tr>
+      <th class="col-status" aria-label="Status"></th>
+      <th class="col-name">Name</th>
+      <th class="col-category">Category</th>
+      <th class="col-url">URL</th>
+      <th class="col-toggle" aria-label="Enabled"></th>
+    </tr>
+  </thead>
+  <tbody id="stack-table-body"></tbody>
+</table>
+<p id="stack-table-empty" class="stack-table-empty" hidden>No stacks match the current filter.</p>
+
+<style>
+  .stack-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+  }
+
+  .stack-table thead th {
+    text-align: left;
+    padding: 0.5rem 0.8rem;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.3);
+    font-weight: 400;
+  }
+
+  .stack-table .col-status  { width: 2.2rem; text-align: center; }
+  .stack-table .col-toggle  { width: 3.5rem; text-align: right; }
+  .stack-table .col-category{ width: 20%; }
+  .stack-table .col-url     { width: 28%; }
+
+  .stack-table tbody tr {
+    border-bottom: 1px solid rgba(42, 42, 62, 0.5);
+    transition: background 0.12s;
+  }
+
+  .stack-table tbody tr:last-child { border-bottom: none; }
+
+  .stack-table tbody tr:hover,
+  .stack-table tbody tr.focused {
+    background: rgba(0, 255, 136, 0.06);
+  }
+
+  .stack-table tbody tr.focused {
+    outline: 1px solid rgba(0, 255, 136, 0.4);
+    outline-offset: -1px;
+  }
+
+  .stack-table td {
+    padding: 0.45rem 0.8rem;
+    vertical-align: middle;
+  }
+
+  .stack-table td.col-status { text-align: center; font-size: 1rem; line-height: 1; }
+
+  .stack-row-name {
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .stack-row-url {
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    max-width: 100%;
+  }
+
+  .stack-row-url:hover { color: var(--accent); }
+
+  .stack-row-url.no-url { color: var(--text-muted); opacity: 0.5; }
+
+  .stack-row-category {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+  }
+
+  .stack-row-badges {
+    display: inline-flex;
+    gap: 0.3rem;
+    margin-left: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .stack-table .toggle-switch {
+    margin-left: auto;
+  }
+
+  .stack-table-empty {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2rem;
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 768px) {
+    .stack-table .col-category,
+    .stack-table .col-url,
+    .stack-table .col-toggle { display: none; }
+    .stack-table td { padding: 0.5rem 0.6rem; }
+  }
+</style>
+
+<script is:inline>
+  (function() {
+    const tbody = document.getElementById('stack-table-body');
+    const emptyEl = document.getElementById('stack-table-empty');
+    if (!tbody || !emptyEl) return;
+
+    const state = {
+      services: [],
+      focusIndex: -1,
+    };
+
+    window.NS.renderTable = function(services) {
+      state.services = services || [];
+      state.focusIndex = state.services.length > 0 ? 0 : -1;
+      renderRows();
+    };
+
+    window.NS.getTableState = function() { return state; };
+
+    function renderRows() {
+      tbody.innerHTML = '';
+      if (state.services.length === 0) {
+        emptyEl.hidden = false;
+        return;
+      }
+      emptyEl.hidden = true;
+
+      state.services.forEach(function(service, idx) {
+        const tr = document.createElement('tr');
+        tr.dataset.serviceName = service.name;
+        tr.dataset.index = String(idx);
+        if (idx === state.focusIndex) tr.className = 'focused';
+
+        const badge = window.NS.statusBadge(window.NS.resolveStatus(service));
+        const url = window.NS.stackUrl(service);
+        const catMeta = window.NS.CATEGORIES[service.category];
+        const catName = catMeta ? catMeta.name : service.category;
+
+        let badges = '';
+        if (service.core) badges += '<span class="badge badge-core">core</span>';
+        if (service.admin_only) badges += '<span class="badge badge-admin">admin</span>';
+        if (!service.subdomain) badges += '<span class="badge badge-internal">internal</span>';
+        if (service.pending) {
+          badges += '<span class="badge badge-pending">' + (service.enabled ? 'will enable' : 'will disable') + '</span>';
+        }
+
+        const isDisabled = service.core || service.admin_only;
+        const toggleClass = 'toggle-switch' + (service.enabled ? ' active' : '') + (isDisabled ? ' disabled' : '');
+        const toggleTitle = service.core ? 'Core service - cannot be disabled' :
+                           service.admin_only ? 'Admin-only - managed via GitHub Actions' : '';
+
+        const urlHtml = url && service.deployed
+          ? '<a class="stack-row-url" href="' + url + '" target="_blank" rel="noopener">' + escapeHtml(url.replace(/^https:\/\//, '')) + '</a>'
+          : '<span class="stack-row-url no-url">—</span>';
+
+        tr.innerHTML =
+          '<td class="col-status"><span class="status-dot ' + badge.className + '" title="' + badge.label + '">' + badge.glyph + '</span></td>' +
+          '<td class="col-name"><a class="stack-row-name" href="/category?cat=' + encodeURIComponent(service.category) + '#' + escapeHtml(service.name) + '">' + escapeHtml(service.name) + '</a><span class="stack-row-badges">' + badges + '</span></td>' +
+          '<td class="col-category"><a class="stack-row-category" href="/category?cat=' + encodeURIComponent(service.category) + '">' + escapeHtml(catName) + '</a></td>' +
+          '<td class="col-url">' + urlHtml + '</td>' +
+          '<td class="col-toggle"><div class="' + toggleClass + '" data-service="' + escapeHtml(service.name) + '" data-target="' + (!service.enabled) + '" title="' + escapeHtml(toggleTitle) + '"></div></td>';
+
+        tr.querySelector('.toggle-switch').addEventListener('click', function(e) {
+          e.stopPropagation();
+          handleToggle(this);
+        });
+        tr.addEventListener('click', function() {
+          state.focusIndex = idx;
+          applyFocusClass();
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function applyFocusClass() {
+      Array.prototype.forEach.call(tbody.querySelectorAll('tr'), function(tr, idx) {
+        tr.classList.toggle('focused', idx === state.focusIndex);
+        if (idx === state.focusIndex) {
+          tr.scrollIntoView({ block: 'nearest' });
+        }
+      });
+    }
+
+    async function handleToggle(toggleEl) {
+      if (toggleEl.classList.contains('disabled')) return;
+      const name = toggleEl.dataset.service;
+      const target = toggleEl.dataset.target === 'true';
+      toggleEl.classList.add('disabled');
+      const result = await window.NS.toggleService(name, target);
+      if (result.success) {
+        // Let the host page re-fetch and re-render.
+        window.dispatchEvent(new Event('stacks:reload'));
+      } else {
+        toggleEl.classList.remove('disabled');
+      }
+    }
+
+    // Expose focus/apply so the page's keyboard registration can drive it.
+    window.NS.tableController = {
+      get focus() { return state.focusIndex; },
+      set focus(v) { state.focusIndex = v; applyFocusClass(); },
+      get items() { return state.services; },
+      render: applyFocusClass,
+      onOpen: function(service) {
+        const url = window.NS.stackUrl(service);
+        if (url && service.deployed) window.open(url, '_blank', 'noopener');
+      },
+      onToggle: function(service) {
+        const tr = tbody.querySelector('tr[data-service-name="' + (window.CSS && CSS.escape ? CSS.escape(service.name) : service.name) + '"]');
+        if (!tr) return;
+        const toggleEl = tr.querySelector('.toggle-switch');
+        if (toggleEl) handleToggle(toggleEl);
+      },
+      onCategory: function(service) {
+        window.location.href = '/category?cat=' + encodeURIComponent(service.category) + '#' + service.name;
+      },
+    };
+  })();
+</script>

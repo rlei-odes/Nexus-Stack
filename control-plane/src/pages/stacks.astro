@@ -1,24 +1,49 @@
 ---
 import Layout from '../layouts/Layout.astro';
+import StackTable from '../components/StackTable.astro';
 ---
 
 <Layout title="Stack Management" activeNav="stacks">
   <div class="services-panel">
-    <h2>Stack Management</h2>
-    <div class="search-panel">
-      <input type="text" id="global-search" class="search-input" placeholder="Search stacks..." autocomplete="off">
-      <div id="search-results" class="search-dropdown"></div>
+    <div class="panel-header">
+      <h2>Stack Management</h2>
+      <div class="panel-controls">
+        <div class="view-toggle" role="group" aria-label="View">
+          <button id="view-grid" aria-pressed="true">Grid</button>
+          <button id="view-list" aria-pressed="false">List</button>
+        </div>
+      </div>
     </div>
-    <div class="categories-grid" id="categories-grid">
-      <p class="loading-text">Loading categories...</p>
+
+    <div class="search-panel">
+      <input type="text" id="stacks-search" class="search-input" placeholder='Search stacks... (press "/" to focus, Enter for full search)' autocomplete="off">
+    </div>
+
+    <div id="grid-view" class="view">
+      <div class="categories-grid" id="categories-grid">
+        <p class="loading-text">Loading categories...</p>
+      </div>
+    </div>
+
+    <div id="list-view" class="view" hidden>
+      <StackTable />
     </div>
   </div>
 </Layout>
 
 <style>
-  .services-panel {
-    margin-bottom: 2rem;
+  .services-panel { margin-bottom: 2rem; }
+
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1rem;
   }
+
+  .panel-header h2 { margin: 0; }
 
   .search-panel {
     position: relative;
@@ -44,93 +69,6 @@ import Layout from '../layouts/Layout.astro';
   }
 
   .search-input::placeholder { color: #607080; }
-
-  .search-dropdown {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bg-card);
-    border: 1px solid rgba(0, 255, 136, 0.2);
-    border-top: none;
-    border-radius: 0 0 4px 4px;
-    z-index: 50;
-    max-height: 420px;
-    overflow-y: auto;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  }
-
-  .search-dropdown.visible { display: block; }
-
-  :global(.search-result-item) {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid rgba(42, 42, 62, 0.5);
-    text-decoration: none;
-    color: inherit;
-    transition: background 0.2s;
-  }
-
-  :global(.search-result-item:last-of-type) {
-    border-bottom: none;
-  }
-
-  :global(.search-result-item:hover) {
-    background: rgba(0, 255, 136, 0.06);
-  }
-
-  :global(.search-result-name) {
-    color: var(--accent);
-    font-weight: 700;
-    font-size: 0.85rem;
-  }
-
-  :global(.search-result-desc) {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    margin-top: 0.15rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  :global(.search-result-badge) {
-    font-size: 0.65rem;
-    color: var(--accent);
-    border: 1px solid rgba(0, 255, 136, 0.25);
-    background: rgba(0, 255, 136, 0.08);
-    padding: 0.2rem 0.5rem;
-    border-radius: 3px;
-    margin-left: auto;
-    flex-shrink: 0;
-    white-space: nowrap;
-  }
-
-  :global(.search-all-link) {
-    display: block;
-    padding: 0.7rem 1rem;
-    color: var(--accent);
-    font-size: 0.8rem;
-    text-decoration: none;
-    text-align: center;
-    border-top: 1px solid rgba(0, 255, 136, 0.15);
-    background: rgba(0, 255, 136, 0.03);
-    transition: background 0.2s;
-  }
-
-  :global(.search-all-link:hover) {
-    background: rgba(0, 255, 136, 0.08);
-  }
-
-  :global(.search-no-results) {
-    padding: 1.2rem 1rem;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    text-align: center;
-  }
 
   .categories-grid {
     display: grid;
@@ -173,162 +111,175 @@ import Layout from '../layouts/Layout.astro';
     margin-top: 0.5rem;
     font-size: 0.75rem;
     display: flex;
-    gap: 1rem;
+    gap: 0.9rem;
+    flex-wrap: wrap;
   }
 
-  :global(.category-card-stats .enabled) { color: var(--accent); }
-  :global(.category-card-stats .pending) { color: var(--warning); }
+  :global(.category-card-stats .running)  { color: var(--accent); }
+  :global(.category-card-stats .pending)  { color: var(--warning); }
+  :global(.category-card-stats .disabled) { color: var(--text-muted); }
+  :global(.category-card-stats.empty)     { color: var(--text-muted); }
 </style>
 
 <script is:inline>
-  const CATEGORIES = {
-    'core': { name: 'Core Infrastructure' },
-    'databases': { name: 'Databases' },
-    'storage': { name: 'Object Storage' },
-    'db-management': { name: 'Database Management' },
-    'orchestration': { name: 'Data Orchestration' },
-    'streaming': { name: 'Stream Processing' },
-    'messaging': { name: 'Message Brokers' },
-    'analytics': { name: 'Analytics & BI' },
-    'data-quality': { name: 'Data Quality' },
-    'ai-ml': { name: 'AI & Machine Learning' },
-    'dev-tools': { name: 'Development Tools' },
-    'ci-cd': { name: 'CI/CD & Automation' },
-    'low-code': { name: 'Low-Code Platforms' },
-    'observability': { name: 'Observability' },
-    'knowledge': { name: 'Knowledge & Docs' },
-    'visual-tools': { name: 'Visual Tools' },
-    'files': { name: 'File Management' },
-    'server-access': { name: 'Server Access' },
-  };
-
-  const CATEGORY_ORDER = [
-    'core', 'databases', 'storage', 'db-management', 'orchestration', 'streaming',
-    'messaging', 'analytics', 'data-quality', 'ai-ml', 'dev-tools',
-    'ci-cd', 'low-code', 'observability', 'knowledge', 'visual-tools',
-    'files', 'server-access'
-  ];
+  const VIEW_KEY = 'stacksView';
 
   let allServices = [];
+  let currentView = (localStorage.getItem(VIEW_KEY) === 'list') ? 'list' : 'grid';
+  let currentQuery = '';
+  let currentFilter = null; // 'pending' from ?filter=pending query param
+
+  function setView(view) {
+    currentView = view;
+    localStorage.setItem(VIEW_KEY, view);
+    document.getElementById('view-grid').setAttribute('aria-pressed', view === 'grid');
+    document.getElementById('view-list').setAttribute('aria-pressed', view === 'list');
+    document.getElementById('grid-view').hidden = view !== 'grid';
+    document.getElementById('list-view').hidden = view !== 'list';
+    applyFilterAndRender();
+  }
 
   async function loadServices() {
     try {
+      await window.NS.fetchDomain();
       const response = await fetch('/api/services', { credentials: 'same-origin' });
       if (!response.ok) return;
       const data = await response.json();
       if (data.success) {
         allServices = data.services || [];
-        renderCategoryGrid(data.categoryCounts || {});
+        applyFilterAndRender();
       }
     } catch (error) {
       console.error('Failed to load services:', error);
     }
   }
 
-  function renderCategoryGrid(categoryCounts) {
+  function filteredServices() {
+    let services = allServices.slice();
+    if (currentFilter === 'pending') {
+      services = services.filter(function(s) { return s.pending; });
+    }
+    if (currentQuery) {
+      const q = currentQuery.toLowerCase();
+      services = services.filter(function(s) {
+        const cat = window.NS.CATEGORIES[s.category];
+        const catName = cat ? cat.name.toLowerCase() : '';
+        return s.name.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q) ||
+          (s.long_description && s.long_description.toLowerCase().includes(q)) ||
+          catName.includes(q);
+      });
+    }
+    return services;
+  }
+
+  function applyFilterAndRender() {
+    const services = filteredServices();
+    if (currentView === 'list') {
+      window.NS.renderTable(services);
+    } else {
+      renderGrid(services);
+    }
+  }
+
+  function renderGrid(services) {
     const grid = document.getElementById('categories-grid');
     grid.innerHTML = '';
 
-    if (Object.keys(categoryCounts).length === 0) {
+    if (allServices.length === 0) {
       grid.innerHTML = '<p class="loading-text">No services found. Run Spin Up to initialize.</p>';
       return;
     }
 
-    CATEGORY_ORDER.forEach(slug => {
-      const stats = categoryCounts[slug];
+    // Aggregate by category.
+    const counts = {};
+    services.forEach(function(s) {
+      if (!s.category) return;
+      if (!counts[s.category]) counts[s.category] = { total: 0, running: 0, pending: 0, disabled: 0 };
+      counts[s.category].total++;
+      const status = window.NS.resolveStatus(s);
+      if (status === 'running') counts[s.category].running++;
+      else if (status === 'pending-enable' || status === 'pending-disable') counts[s.category].pending++;
+      else counts[s.category].disabled++;
+    });
+
+    let rendered = 0;
+    window.NS.CATEGORY_ORDER.forEach(function(slug) {
+      const stats = counts[slug];
       if (!stats) return;
-      const cat = CATEGORIES[slug];
+      const cat = window.NS.CATEGORIES[slug];
       if (!cat) return;
 
       const card = document.createElement('a');
       card.className = 'category-card';
       card.href = '/category?cat=' + slug;
 
-      let statsHtml = '<span class="enabled">' + stats.enabled + ' / ' + stats.total + ' enabled</span>';
-      if (stats.pending > 0) {
-        statsHtml += '<span class="pending">' + stats.pending + ' pending</span>';
-      }
+      let statsHtml = '';
+      if (stats.running > 0)  statsHtml += '<span class="running">● ' + stats.running + ' running</span>';
+      if (stats.pending > 0)  statsHtml += '<span class="pending">◐ ' + stats.pending + ' pending</span>';
+      if (stats.disabled > 0) statsHtml += '<span class="disabled">○ ' + stats.disabled + ' disabled</span>';
+      if (!statsHtml) statsHtml = '<span>—</span>';
 
       card.innerHTML =
         '<div style="display: flex; justify-content: space-between; align-items: flex-start;">' +
-          '<div class="category-card-name">' + cat.name + '</div>' +
+          '<div class="category-card-name">' + escapeHtml(cat.name) + '</div>' +
           '<div class="category-card-count">' + stats.total + '</div>' +
         '</div>' +
         '<div class="category-card-stats">' + statsHtml + '</div>';
 
       grid.appendChild(card);
+      rendered++;
     });
+
+    if (rendered === 0) {
+      grid.innerHTML = '<p class="loading-text">No stacks match the current filter.</p>';
+    }
   }
 
-  // Search
-  let searchTimeout;
-  function handleSearch(query) {
-    clearTimeout(searchTimeout);
-    const dropdown = document.getElementById('search-results');
+  // Init from URL + localStorage
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('filter') === 'pending') {
+    currentFilter = 'pending';
+    // Pending filter is most useful in list view — auto-switch.
+    currentView = 'list';
+    localStorage.setItem(VIEW_KEY, 'list');
+  }
+  const initialQuery = urlParams.get('q') || '';
+  if (initialQuery) currentQuery = initialQuery;
 
-    if (!query || query.length < 2) {
-      dropdown.classList.remove('visible');
-      dropdown.innerHTML = '';
-      return;
-    }
+  setView(currentView);
+  if (initialQuery) document.getElementById('stacks-search').value = initialQuery;
 
-    searchTimeout = setTimeout(() => {
-      const q = query.toLowerCase();
-      const matches = allServices.filter(s =>
-        s.name.toLowerCase().includes(q) ||
-        s.description.toLowerCase().includes(q) ||
-        (s.long_description && s.long_description.toLowerCase().includes(q)) ||
-        (s.category && CATEGORIES[s.category] && CATEGORIES[s.category].name.toLowerCase().includes(q))
-      ).slice(0, 8);
+  // Event wiring
+  document.getElementById('view-grid').addEventListener('click', function() { setView('grid'); });
+  document.getElementById('view-list').addEventListener('click', function() { setView('list'); });
 
-      dropdown.innerHTML = '';
-
-      if (matches.length === 0) {
-        dropdown.innerHTML = '<div class="search-no-results">No stacks found</div>';
-        dropdown.classList.add('visible');
-        return;
-      }
-
-      matches.forEach(s => {
-        const item = document.createElement('a');
-        item.className = 'search-result-item';
-        item.href = '/category?cat=' + s.category + '#' + s.name;
-        item.style.textDecoration = 'none';
-        item.style.color = 'inherit';
-
-        const catName = CATEGORIES[s.category] ? CATEGORIES[s.category].name : s.category;
-        item.innerHTML =
-          '<div style="flex: 1; min-width: 0;">' +
-            '<div class="search-result-name">' + escapeHtml(s.name) + '</div>' +
-            '<div class="search-result-desc">' + escapeHtml(s.description) + '</div>' +
-          '</div>' +
-          '<span class="search-result-badge">' + escapeHtml(catName) + '</span>';
-        dropdown.appendChild(item);
-      });
-
-      const allLink = document.createElement('a');
-      allLink.className = 'search-all-link';
-      allLink.href = '/search?q=' + encodeURIComponent(query);
-      allLink.textContent = 'View all results for "' + query + '"';
-      dropdown.appendChild(allLink);
-
-      dropdown.classList.add('visible');
+  let searchTimer;
+  const searchInput = document.getElementById('stacks-search');
+  searchInput.addEventListener('input', function(e) {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function() {
+      currentQuery = e.target.value;
+      applyFilterAndRender();
     }, 150);
-  }
-
-  // Event listeners
-  document.getElementById('global-search').addEventListener('input', function() {
-    handleSearch(this.value);
   });
-
-  document.addEventListener('click', (e) => {
-    const dropdown = document.getElementById('search-results');
-    const input = document.getElementById('global-search');
-    if (!dropdown.contains(e.target) && e.target !== input) {
-      dropdown.classList.remove('visible');
+  searchInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && searchInput.value.trim()) {
+      window.location.href = '/search?q=' + encodeURIComponent(searchInput.value.trim());
     }
   });
 
-  // Init
+  // Keyboard
+  window.NS.registerKeyboard({
+    searchInputId: 'stacks-search',
+    list: window.NS.tableController,
+  });
+
+  // Reload after a toggle from the table component
+  window.addEventListener('stacks:reload', loadServices);
+  // Reload when any page updates stacks (e.g. toggle on category.astro keeps
+  // this tab's state fresh via visibilitychange -> PendingBar already does this).
+  window.addEventListener('stacks:updated', loadServices);
+
   loadServices();
 </script>
