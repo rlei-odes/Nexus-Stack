@@ -111,7 +111,7 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
 
   window.NS.renderStatusDot = function(service) {
     const b = window.NS.statusBadge(window.NS.resolveStatus(service));
-    return '<span class="status-dot ' + b.className + '" role="img" aria-label="' + b.label + '" title="' + b.label + '">' +
+    return '<span class="stack-status-dot ' + b.className + '" role="img" aria-label="' + b.label + '" title="' + b.label + '">' +
       '<span aria-hidden="true">' + b.glyph + '</span>' +
     '</span>';
   };
