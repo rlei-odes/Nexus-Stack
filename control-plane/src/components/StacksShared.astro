@@ -161,9 +161,15 @@ import { CATEGORIES, CATEGORY_ORDER } from '../lib/categories.ts';
     let pendingG = false;
     let gTimer = null;
 
+    // Tags where keystrokes have their own meaning (Space clicks a button,
+    // Enter submits a form, j/k types into a field, etc.). Shortcuts must
+    // not fire over these, or they override expected browser behaviour.
+    const INTERACTIVE_TAGS = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'];
+
     function handler(e) {
-      if (e.target && ['INPUT', 'TEXTAREA'].indexOf(e.target.tagName) !== -1) {
-        if (e.key === 'Escape') e.target.blur();
+      const t = e.target;
+      if (t && (INTERACTIVE_TAGS.indexOf(t.tagName) !== -1 || t.isContentEditable)) {
+        if (e.key === 'Escape' && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) t.blur();
         return;
       }
       // When a modal dialog is open, suppress all shortcuts (even our own)
