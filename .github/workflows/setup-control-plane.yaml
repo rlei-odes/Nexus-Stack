@@ -163,13 +163,14 @@ jobs:
         run: |
           # Control Plane config (emails from secrets)
           cat > tofu/control-plane/config.tfvars << EOF
-          server_type     = "cax31"
-          server_location = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
-          domain          = "${{ secrets.DOMAIN }}"
-          admin_email     = "${{ secrets.TF_VAR_admin_email }}"
-          user_email      = "${{ secrets.TF_VAR_user_email }}"
-          github_owner    = "${{ github.repository_owner }}"
-          github_repo     = "${{ github.event.repository.name }}"
+          server_type         = "cax31"
+          server_location     = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          domain              = "${{ secrets.DOMAIN }}"
+          subdomain_separator = "${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}"
+          admin_email         = "${{ secrets.TF_VAR_admin_email }}"
+          user_email          = "${{ secrets.TF_VAR_user_email }}"
+          github_owner        = "${{ github.repository_owner }}"
+          github_repo         = "${{ github.event.repository.name }}"
           EOF
           sed -i 's/^          //' tofu/control-plane/config.tfvars
 

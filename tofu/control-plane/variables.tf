@@ -25,6 +25,16 @@ variable "domain" {
   type        = string
 }
 
+variable "subdomain_separator" {
+  description = "Separator between service subdomain and base domain. '.' for standard dot-subdomains (default, requires wildcard cert at 3rd level), '-' for flat subdomains used when provisioning tenants under a shared base domain."
+  type        = string
+  default     = "."
+  validation {
+    condition     = contains([".", "-"], var.subdomain_separator)
+    error_message = "subdomain_separator must be '.' or '-'."
+  }
+}
+
 variable "admin_email" {
   description = "Admin email for Cloudflare Access (full access including SSH)"
   type        = string
