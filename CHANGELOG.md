@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.48.0...v0.48.1) (2026-04-17)
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Address PR review comments - extract safeHttpsUrl helper ([a2c47ba](https://github.com/stefanko-ch/Nexus-Stack/commit/a2c47bac252662f3ff33b6be4c4c4de2412d3523))
+* **control-plane:** Address PR review comments - validate fallbacks and domain ([0d03031](https://github.com/stefanko-ch/Nexus-Stack/commit/0d030315e6ec494dcca52bd62ff8d498f45de397))
+* **control-plane:** Address PR review comments - validate URL/separator env vars ([4e36a0b](https://github.com/stefanko-ch/Nexus-Stack/commit/4e36a0b6c74598204deddac44a7995b16b849d26))
+* **control-plane:** Extend flat-subdomain support to stack links and teardown email ([4e2e260](https://github.com/stefanko-ch/Nexus-Stack/commit/4e2e26087a7d3d1bf5b71bfcf3b2392a2506b923))
+* **control-plane:** Support configurable URLs for flat-subdomain deployments ([9a44353](https://github.com/stefanko-ch/Nexus-Stack/commit/9a4435323a1d68901abab290e7bbb5293634193e))
+* **control-plane:** Support INFISICAL_URL and CONTROL_PLANE_URL env vars ([727318c](https://github.com/stefanko-ch/Nexus-Stack/commit/727318cc3d5cfc48611341f944819d0a5919e039))
+
 ## [0.48.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.47.0...v0.48.0) (2026-04-15)
 
 
