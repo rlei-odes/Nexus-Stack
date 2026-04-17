@@ -8,6 +8,17 @@
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
 
+function safeHttpsUrl(candidate, fallback) {
+  if (!candidate) return fallback;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== 'https:') return fallback;
+    return u.origin;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function onRequestPost(context) {
   const { env } = context;
 
@@ -45,8 +56,8 @@ export async function onRequestPost(context) {
     const domain = env.DOMAIN;
     const adminEmail = env.ADMIN_EMAIL;
     const userEmail = env.USER_EMAIL && env.USER_EMAIL.trim() !== '' ? env.USER_EMAIL : null;
-    const infisicalUrl = env.INFISICAL_URL || `https://infisical.${domain}`;
-    const controlPlaneUrl = env.CONTROL_PLANE_URL || `https://control.${domain}`;
+    const infisicalUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
+    const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${domain}`);
 
     // Only send Infisical credentials - all other credentials are stored in Infisical
     if (!credentials.infisical_admin_password) {

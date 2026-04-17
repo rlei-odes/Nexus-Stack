@@ -102,11 +102,16 @@ export async function onRequestGet(context) {
     if (!serverLocation) serverLocation = env.SERVER_LOCATION || null;
     if (!domain) domain = env.DOMAIN || null;
 
+    // Allowlist subdomain separator to prevent HTML/attribute injection
+    // when the UI concatenates this value into stack link hrefs.
+    const rawSeparator = env.SUBDOMAIN_SEPARATOR;
+    const subdomainSeparator = (rawSeparator === '.' || rawSeparator === '-') ? rawSeparator : '.';
+
     info.server = {
       type: serverType,
       location: serverLocation,
       domain: domain,
-      subdomainSeparator: env.SUBDOMAIN_SEPARATOR || '.',
+      subdomainSeparator,
       lastSpinUp: lastSpinUp,
       lastTeardown: lastTeardown,
     };

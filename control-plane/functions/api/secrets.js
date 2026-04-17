@@ -10,6 +10,17 @@
  */
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 
+function safeHttpsUrl(candidate, fallback) {
+  if (!candidate) return fallback;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== 'https:') return fallback;
+    return u.origin;
+  } catch {
+    return fallback;
+  }
+}
+
 async function safeJsonParse(response, label) {
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
@@ -41,7 +52,7 @@ export async function onRequestGet(context) {
       });
     }
 
-    const baseUrl = context.env.INFISICAL_URL || `https://infisical.${domain}`;
+    const baseUrl = safeHttpsUrl(context.env.INFISICAL_URL, `https://infisical.${domain}`);
     const environment = context.env.INFISICAL_ENV || 'dev';
     const headers = {
       'Authorization': `Bearer ${token}`,
