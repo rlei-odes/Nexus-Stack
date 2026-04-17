@@ -16,4 +16,16 @@
     div.textContent = text;
     return div.innerHTML;
   }
+
+  // Escapes a value for safe insertion into an HTML attribute.
+  // escapeHtml() alone is insufficient — text-node escaping doesn't cover
+  // ", ', which can still break attribute quoting.
+  function escapeAttr(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
 </script>

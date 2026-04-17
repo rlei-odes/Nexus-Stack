@@ -127,21 +127,21 @@ import Layout from '../layouts/Layout.astro';
       let openHtml = '';
       const url = window.NS.stackUrl(service);
       if (url && service.deployed) {
-        openHtml = '<a href="' + url + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
+        openHtml = '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener" class="card-open-link">Open &#8599;</a>';
       }
 
       let websiteHtml = '';
       if (service.website) {
         try {
           const wDomain = new URL(service.website).hostname.replace('www.', '');
-          websiteHtml = '<a href="' + escapeHtml(service.website) + '" target="_blank" rel="noopener" class="card-project-link">' + escapeHtml(wDomain) + '</a>';
+          websiteHtml = '<a href="' + escapeAttr(service.website) + '" target="_blank" rel="noopener" class="card-project-link">' + escapeHtml(wDomain) + '</a>';
         } catch {}
       }
 
       card.innerHTML =
         '<div class="card-header">' +
           '<div class="card-name-section"><div class="card-name">' + statusDotHtml + ' ' + escapeHtml(service.name) + ' ' + badges + '</div></div>' +
-          '<div class="' + toggleClass + '" id="toggle-' + service.name + '" title="' + escapeHtml(toggleTitle) + '" data-service="' + escapeHtml(service.name) + '" data-target="' + (!service.enabled) + '"></div>' +
+          '<div class="' + toggleClass + '" id="toggle-' + escapeAttr(service.name) + '" title="' + escapeAttr(toggleTitle) + '" data-service="' + escapeAttr(service.name) + '" data-target="' + (!service.enabled) + '"></div>' +
         '</div>' +
         '<div class="card-description">' + escapeHtml(desc) + '</div>' +
         '<div class="card-footer"><div class="card-meta">' + websiteHtml + '</div>' + openHtml + '</div>';
