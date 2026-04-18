@@ -57,7 +57,7 @@
 
 ## Getting Started
 
-→ See the **[Setup Guide](docs/setup-guide.md)** for complete installation instructions.
+→ See the **[Setup Guide](docs/admin-guides/setup-guide.md)** for complete installation instructions.
 
 After deployment you'll have:
 - `https://control.yourdomain.com` - Control Panel to manage services and view URLs
@@ -223,7 +223,7 @@ Manage your Nexus-Stack infrastructure via web interface at `https://control.YOU
 gh workflow run initial-setup.yaml -f enabled_services="grafana,n8n,portainer"
 ```
 
-→ See [docs/setup-guide.md](docs/setup-guide.md) for configuration details.
+→ See [docs/admin-guides/setup-guide.md](docs/admin-guides/setup-guide.md) for configuration details.
 
 ## Architecture
 
@@ -251,8 +251,8 @@ This setup achieves **zero open ports** after deployment:
 
 | Document | Description |
 |----------|-------------|
-| [Setup Guide](docs/setup-guide.md) | Complete installation and configuration |
-| [Control Plane Guide](docs/control-plane.md) | How to use the Control Plane web interface |
+| [Setup Guide](docs/admin-guides/setup-guide.md) | Complete installation and configuration |
+| [Control Plane Guide](docs/user-guides/control-plane.md) | How to use the Control Plane web interface |
 | [Stacks](docs/stacks/README.md) | Available services and how to add new ones |
 | [Contributing](docs/CONTRIBUTING.md) | How to contribute to the project |
 

@@ -11,4 +11,4 @@ are now maintained in the **CLAUDE.md** file.
 
 - **[CLAUDE.md](CLAUDE.md)** - Main agent instruction file
 - **[CONTRIBUTING.md](docs/CONTRIBUTING.md)** - Contribution guidelines
-- **[Setup Guide](docs/setup-guide.md)** - Installation instructions
+- **[Setup Guide](docs/admin-guides/setup-guide.md)** - Installation instructions
