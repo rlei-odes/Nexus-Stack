@@ -63,3 +63,6 @@ stacks/*/docker-compose.firewall.yml
 control-plane/node_modules/
 control-plane/dist/
 control-plane/.astro/
+
+# Wrangler CLI local cache (account id, pages config — should never be committed)
+.wrangler/
