@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.1...v0.50.2) (2026-04-18)
+
+
+### 📚 Documentation
+
+* Split docs/ into user-guides/ and admin-guides/ ([b0905a2](https://github.com/stefanko-ch/Nexus-Stack/commit/b0905a2df6b180d6ee42120121c0306c5e9a4650))
+* Split docs/ into user-guides/ and admin-guides/ subdirectories ([a7f7670](https://github.com/stefanko-ch/Nexus-Stack/commit/a7f7670ee282475e881dfc6abdbc220a09269349))
+
+
+### 🔧 Maintenance
+
+* Untrack .wrangler/ cache files and add to .gitignore ([7d7be96](https://github.com/stefanko-ch/Nexus-Stack/commit/7d7be96fbce7892809394c7b9d67fae3f93cc59a))
+
 ## [0.50.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.0...v0.50.1) (2026-04-18)
 
 
