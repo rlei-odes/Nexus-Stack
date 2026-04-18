@@ -151,9 +151,6 @@ resource "cloudflare_pages_project" "control_plane" {
         GITHUB_OWNER                = var.github_owner
         GITHUB_REPO                 = var.github_repo
         DOMAIN                      = var.domain
-        SUBDOMAIN_SEPARATOR         = var.subdomain_separator
-        INFISICAL_URL               = local.infisical_url
-        CONTROL_PLANE_URL           = local.control_plane_url
         ADMIN_EMAIL                 = var.admin_email
         USER_EMAIL                  = var.user_email
         SERVER_TYPE                 = var.server_type
@@ -162,6 +159,9 @@ resource "cloudflare_pages_project" "control_plane" {
         MAX_EXTENSIONS_PER_DAY      = tostring(var.max_extensions_per_day)
         MAX_DELAY_HOURS             = tostring(var.max_delay_hours)
       }
+      # Note: SUBDOMAIN_SEPARATOR, INFISICAL_URL, CONTROL_PLANE_URL are set as Pages
+      # secrets (not environment_variables) in setup-control-plane.yaml's "Set Control
+      # Plane secrets" step — environment_variables get wiped by `wrangler pages deploy`.
 
       d1_databases = {
         NEXUS_DB = cloudflare_d1_database.nexus.id
@@ -180,9 +180,6 @@ resource "cloudflare_pages_project" "control_plane" {
         GITHUB_OWNER                = var.github_owner
         GITHUB_REPO                 = var.github_repo
         DOMAIN                      = var.domain
-        SUBDOMAIN_SEPARATOR         = var.subdomain_separator
-        INFISICAL_URL               = local.infisical_url
-        CONTROL_PLANE_URL           = local.control_plane_url
         ADMIN_EMAIL                 = var.admin_email
         USER_EMAIL                  = var.user_email
         SERVER_TYPE                 = var.server_type
@@ -191,6 +188,8 @@ resource "cloudflare_pages_project" "control_plane" {
         MAX_EXTENSIONS_PER_DAY      = tostring(var.max_extensions_per_day)
         MAX_DELAY_HOURS             = tostring(var.max_delay_hours)
       }
+      # Same note as production: SUBDOMAIN_SEPARATOR / INFISICAL_URL / CONTROL_PLANE_URL
+      # are Pages secrets, not env vars.
 
       d1_databases = {
         NEXUS_DB = cloudflare_d1_database.nexus.id

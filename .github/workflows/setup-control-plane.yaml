@@ -994,6 +994,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          SUBDOMAIN_SEPARATOR: ${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}
           ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
           USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
         run: |
@@ -1038,6 +1039,27 @@ jobs:
               --project-name="$PROJECT_NAME" 2>&1; then
               echo "⚠️  Failed to set DOMAIN"
             fi
+          fi
+
+          # SUBDOMAIN_SEPARATOR + derived URLs. These MUST be secrets (not Terraform
+          # environment_variables) because `wrangler pages deploy` later in this
+          # workflow wipes env_vars that aren't listed in wrangler.toml. Secrets
+          # survive that wipe; that's how DOMAIN, GITHUB_TOKEN, etc. already work.
+          if [ -n "$DOMAIN" ] && [ -n "$SUBDOMAIN_SEPARATOR" ]; then
+            INFISICAL_URL="https://infisical${SUBDOMAIN_SEPARATOR}${DOMAIN}"
+            CONTROL_PLANE_URL="https://control${SUBDOMAIN_SEPARATOR}${DOMAIN}"
+
+            echo "  Setting SUBDOMAIN_SEPARATOR secret..."
+            echo "$SUBDOMAIN_SEPARATOR" | npx wrangler@4 pages secret put SUBDOMAIN_SEPARATOR \
+              --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set SUBDOMAIN_SEPARATOR"
+
+            echo "  Setting INFISICAL_URL secret..."
+            echo "$INFISICAL_URL" | npx wrangler@4 pages secret put INFISICAL_URL \
+              --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set INFISICAL_URL"
+
+            echo "  Setting CONTROL_PLANE_URL secret..."
+            echo "$CONTROL_PLANE_URL" | npx wrangler@4 pages secret put CONTROL_PLANE_URL \
+              --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set CONTROL_PLANE_URL"
           fi
 
           if [ -n "$ADMIN_EMAIL" ]; then
