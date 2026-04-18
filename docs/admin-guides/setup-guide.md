@@ -314,7 +314,7 @@ Or set via environment variable:
 TF_VAR_max_delay_hours=2 TF_VAR_max_extensions_per_day=5 gh workflow run setup-control-plane.yaml
 ```
 
-See [Control Plane User Guide](control-plane.md#administrator-policy-infrastructure-level) for details.
+See [Control Plane User Guide](../user-guides/control-plane.md#administrator-policy-infrastructure-level) for details.
 
 ### Hetzner Object Storage for LakeFS
 

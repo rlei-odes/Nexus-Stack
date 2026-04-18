@@ -42,7 +42,7 @@ jobs:
         run: |
           if [ -z "$DEPLOY_HOOK" ]; then
             echo "❌ WEBSITE_DEPLOY_HOOK not configured but website sync is enabled"
-            echo "   See docs/docs-website-sync.md for setup instructions"
+            echo "   See docs/admin-guides/docs-website-sync.md for setup instructions"
             exit 1
           fi
 

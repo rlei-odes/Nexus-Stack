@@ -233,6 +233,6 @@ The Control Plane needs these environment variables (set in Cloudflare Pages):
 
 ## See Also
 
-- [Setup Guide](setup-guide.md) - Initial setup instructions
+- [Setup Guide](../admin-guides/setup-guide.md) - Initial setup instructions
 - [Stacks Documentation](stacks.md) - Detailed stack information
 - [control-panel/README.md](../control-panel/README.md) - Developer documentation

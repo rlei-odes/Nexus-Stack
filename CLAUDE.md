@@ -95,13 +95,15 @@ Nexus-Stack/
 │   ├── setup-control-panel-secrets.sh  # Control Panel secrets setup
 │   └── check-control-panel-env.sh
 └── docs/                       # Documentation (single source of truth for nexus-stack.ch)
-    ├── CONTRIBUTING.md         # Contribution guidelines
-    ├── setup-guide.md          # Setup instructions
-    ├── control-plane.md        # Control Plane user guide
-    ├── debugging.md            # Debugging guide
-    ├── ssh-access.md           # SSH access guide
-    ├── troubleshooting.md      # Troubleshooting guide
-    ├── docs-website-sync.md    # How docs sync to nexus-stack.ch
+    ├── CONTRIBUTING.md         # Contribution guidelines (GitHub-only, not synced)
+    ├── user-guides/            # End-user guides (students/participants using a Control Plane)
+    │   └── control-plane.md    # Control Plane web UI walkthrough
+    ├── admin-guides/           # Operator/self-hoster guides
+    │   ├── setup-guide.md      # Initial infrastructure setup
+    │   ├── debugging.md        # Log inspection, systemd, Docker
+    │   ├── ssh-access.md       # SSH via Cloudflare Tunnel
+    │   ├── troubleshooting.md  # Common operational issues
+    │   └── docs-website-sync.md# How these docs sync to nexus-stack.ch
     ├── stacks/                 # Per-service documentation (one .md per service)
     └── tutorials/              # Tutorials and walkthroughs
 ```
@@ -775,10 +777,10 @@ Use prefixes that match commit types:
 
 1. **Does this change affect any documentation?** Check:
    - `docs/stacks/*.md` - if a service was added, changed, or removed
-   - `docs/setup-guide.md` - if setup steps, secrets, or workflows changed
-   - `docs/control-plane.md` - if the Control Plane UI or API changed
-   - `docs/debugging.md` / `docs/troubleshooting.md` - if debugging steps changed
-   - `docs/docs-website-sync.md` - if the sync mechanism changed
+   - `docs/admin-guides/setup-guide.md` - if setup steps, secrets, or workflows changed
+   - `docs/user-guides/control-plane.md` - if the Control Plane UI or API changed
+   - `docs/admin-guides/debugging.md` / `docs/admin-guides/troubleshooting.md` - if debugging steps changed
+   - `docs/admin-guides/docs-website-sync.md` - if the sync mechanism changed
    - `README.md` - if architecture, stack count, or overview changed
    - `services.yaml` - if service metadata changed (port, subdomain, image, description)
    - `CLAUDE.md` - if development guidelines or project structure changed
