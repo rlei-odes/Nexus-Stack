@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.0...v0.50.1) (2026-04-18)
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Make SUBDOMAIN_SEPARATOR/INFISICAL_URL/CONTROL_PLANE_URL secret failures fatal ([780cd52](https://github.com/stefanko-ch/Nexus-Stack/commit/780cd52c9cf9eb99784ec655873f2d85e14c8df7))
+* **control-plane:** Set SUBDOMAIN_SEPARATOR/INFISICAL_URL/CONTROL_PLANE_URL as Pages secrets ([c2d25c2](https://github.com/stefanko-ch/Nexus-Stack/commit/c2d25c210723a1968ebc65ed74c32d8812c0e5bc))
+* **control-plane:** Set SUBDOMAIN_SEPARATOR/INFISICAL_URL/CONTROL_PLANE_URL as Pages secrets ([2466474](https://github.com/stefanko-ch/Nexus-Stack/commit/2466474838c951add7d6f2722c3a04e67e19726a))
+
 ## [0.50.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.49.0...v0.50.0) (2026-04-17)
 
 
