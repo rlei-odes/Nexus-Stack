@@ -9,6 +9,14 @@ import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
 import { safeHttpsUrl } from './_utils/url.js';
 
+// Resend-accepted email formats. Hoisted to module scope so the regex
+// objects are created once per Worker boot instead of once per request.
+//   plain:     `email@example.com` (no angle brackets)
+//   bracketed: `Name <email@example.com>` (non-empty display name + both brackets)
+const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
+const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
+
 export async function onRequestPost(context) {
   const { env } = context;
 
@@ -48,14 +56,8 @@ export async function onRequestPost(context) {
 
     // USER_EMAIL may be a single address or a comma-separated list
     // (e.g. when multiple admin emails are piped through from the admin panel).
-    // Resend rejects a to[] entry that contains commas, so split + trim +
-    // validate. Two explicit alternatives cover Resend's accepted formats;
-    // half-bracketed / no-display-name variants are excluded.
-    //   plain:     `email@example.com`
-    //   bracketed: `Name <email@example.com>` (non-empty display name required)
-    const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
-    const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
-    const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
+    // Split + trim + validate against the Resend-accepted email regex
+    // (hoisted to module scope above).
     const userEmails = (env.USER_EMAIL || '')
       .split(',')
       .map((e) => e.trim())

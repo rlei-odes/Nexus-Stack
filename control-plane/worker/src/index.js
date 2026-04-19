@@ -15,6 +15,15 @@
 // Duplicates functions/api/_utils/url.js. The worker is deployed as a single
 // raw file via Terraform (tofu/control-plane/main.tf -> file(...)), so it cannot
 // import from the Pages Functions _utils/ tree without introducing a bundler.
+
+// Resend-accepted email formats. Hoisted to module scope so the regex
+// objects are created once per Worker boot instead of once per notification.
+//   plain:     `email@example.com` (no angle brackets)
+//   bracketed: `Name <email@example.com>` (non-empty display name + both brackets)
+const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
+const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
+
 function validateHttpsOrigin(url) {
   if (!url) return null;
   try {
@@ -463,15 +472,8 @@ async function sendNotification(env, config) {
   }
 
   // Email recipients: User as primary, Admin + extra users in CC.
-  // USER_EMAIL may be comma-separated (e.g. admin panel sets multiple emails);
-  // Resend rejects a to[] entry that contains commas, so split + validate.
-  // Two explicit alternatives cover Resend's accepted formats; half-bracketed
-  // / no-display-name variants are excluded.
-  //   plain:     `email@example.com`
-  //   bracketed: `Name <email@example.com>` (non-empty display name required)
-  const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
-  const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
-  const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
+  // USER_EMAIL may be comma-separated. Validation via the Resend-accepted
+  // email regex hoisted to module scope at the top of the file.
   const userEmails = (env.USER_EMAIL || '')
     .split(',')
     .map((e) => e.trim())
