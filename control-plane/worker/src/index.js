@@ -15,6 +15,15 @@
 // Duplicates functions/api/_utils/url.js. The worker is deployed as a single
 // raw file via Terraform (tofu/control-plane/main.tf -> file(...)), so it cannot
 // import from the Pages Functions _utils/ tree without introducing a bundler.
+
+// Resend-accepted email formats. Hoisted to module scope so the regex
+// objects are created once per Worker boot instead of once per notification.
+//   plain:     `email@example.com` (no angle brackets)
+//   bracketed: `Name <email@example.com>` (non-empty display name + both brackets)
+const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
+const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
+
 function validateHttpsOrigin(url) {
   if (!url) return null;
   try {
@@ -462,8 +471,15 @@ async function sendNotification(env, config) {
     return;
   }
 
-  // Email recipients: User as primary, Admin in CC
-  const userEmail = env.USER_EMAIL && env.USER_EMAIL.trim() !== '' ? env.USER_EMAIL : null;
+  // Email recipients: User as primary, Admin + extra users in CC.
+  // USER_EMAIL may be comma-separated. Validation via the Resend-accepted
+  // email regex hoisted to module scope at the top of the file.
+  const userEmails = (env.USER_EMAIL || '')
+    .split(',')
+    .map((e) => e.trim())
+    .filter(isValidResendEmail);
+  const userEmail = userEmails[0] || null;
+  const extraUserEmails = userEmails.slice(1);
 
   try {
     const teardownTime = `${config.teardownTime} ${getTimezoneAbbr(config.timezone)}`;
@@ -504,7 +520,7 @@ async function sendNotification(env, config) {
       html: emailHtml,
     };
     if (userEmail) {
-      emailPayload.cc = [env.ADMIN_EMAIL];
+      emailPayload.cc = [env.ADMIN_EMAIL, ...extraUserEmails];
     }
 
     const response = await fetchWithTimeout('https://api.resend.com/emails', {
@@ -517,7 +533,10 @@ async function sendNotification(env, config) {
     }, 15000);
 
     if (response.ok) {
-      const recipientMsg = userEmail ? `${userEmail} (cc: ${env.ADMIN_EMAIL})` : env.ADMIN_EMAIL;
+      const ccList = emailPayload.cc || [];
+      const recipientMsg = userEmail
+        ? (ccList.length > 0 ? `${userEmail} (cc: ${ccList.join(', ')})` : userEmail)
+        : env.ADMIN_EMAIL;
       const message = `Notification email sent to ${recipientMsg}`;
       console.log(`✅ ${message}`);
       await logToD1(env.NEXUS_DB, 'info', message);

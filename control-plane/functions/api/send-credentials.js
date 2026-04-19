@@ -9,6 +9,14 @@ import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
 import { safeHttpsUrl } from './_utils/url.js';
 
+// Resend-accepted email formats. Hoisted to module scope so the regex
+// objects are created once per Worker boot instead of once per request.
+//   plain:     `email@example.com` (no angle brackets)
+//   bracketed: `Name <email@example.com>` (non-empty display name + both brackets)
+const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
+const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
+
 export async function onRequestPost(context) {
   const { env } = context;
 
@@ -45,7 +53,19 @@ export async function onRequestPost(context) {
     const credentials = JSON.parse(credentialsJson);
     const domain = env.DOMAIN;
     const adminEmail = env.ADMIN_EMAIL;
-    const userEmail = env.USER_EMAIL && env.USER_EMAIL.trim() !== '' ? env.USER_EMAIL : null;
+
+    // USER_EMAIL may be a single address or a comma-separated list
+    // (e.g. when multiple admin emails are piped through from the admin panel).
+    // Split + trim + validate against the Resend-accepted email regex
+    // (hoisted to module scope above).
+    const userEmails = (env.USER_EMAIL || '')
+      .split(',')
+      .map((e) => e.trim())
+      .filter(isValidResendEmail);
+    const primaryUserEmail = userEmails[0] || null;
+    const extraUserEmails = userEmails.slice(1);
+    // Back-compat: keep `userEmail` as the primary for downstream logic.
+    const userEmail = primaryUserEmail;
     const infisicalUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
     const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${domain}`);
 
@@ -103,7 +123,7 @@ export async function onRequestPost(context) {
 </div>
     `;
 
-    // Send email via Resend (User as primary, Admin in CC)
+    // Send email via Resend (User as primary, Admin + extra users in CC)
     const emailPayload = {
       from: `Nexus-Stack <nexus@${domain}>`,
       to: userEmail ? [userEmail] : [adminEmail],
@@ -111,7 +131,7 @@ export async function onRequestPost(context) {
       html: emailHTML
     };
     if (userEmail) {
-      emailPayload.cc = [adminEmail];
+      emailPayload.cc = [adminEmail, ...extraUserEmails];
     }
 
     const resendResponse = await fetchWithTimeout('https://api.resend.com/emails', {
@@ -130,7 +150,10 @@ export async function onRequestPost(context) {
 
     const emailResult = await resendResponse.json();
 
-    const recipientMsg = userEmail ? `${userEmail} (cc: ${adminEmail})` : adminEmail;
+    const ccList = emailPayload.cc || [];
+    const recipientMsg = userEmail
+      ? (ccList.length > 0 ? `${userEmail} (cc: ${ccList.join(', ')})` : userEmail)
+      : adminEmail;
     await logApiCall(env.NEXUS_DB, '/api/send-credentials', 'POST', {
       action: 'credentials_sent',
       recipient: recipientMsg,
