@@ -61,6 +61,15 @@ resource "cloudflare_workers_script" "scheduled_teardown" {
     text = var.domain
   }
 
+  # BASE_DOMAIN is the Resend-verified parent domain used as the email
+  # sender. Empty default falls back to `domain` at runtime in the worker
+  # code, so single-stack installs (where `domain` IS the verified
+  # Resend domain) don't need to set anything.
+  plain_text_binding {
+    name = "BASE_DOMAIN"
+    text = var.base_domain
+  }
+
   plain_text_binding {
     name = "CONTROL_PLANE_URL"
     text = local.control_plane_url

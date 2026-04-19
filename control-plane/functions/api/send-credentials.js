@@ -52,6 +52,12 @@ export async function onRequestPost(context) {
 
     const credentials = JSON.parse(credentialsJson);
     const domain = env.DOMAIN;
+    // Resend requires the sender domain to be verified. On multi-tenant
+    // deployments (e.g. Nexus-Stack-for-Education) DOMAIN is a per-user
+    // subdomain that isn't registered with Resend, but BASE_DOMAIN is the
+    // shared parent that IS verified. Fall back to DOMAIN for single-stack
+    // installs where BASE_DOMAIN isn't set.
+    const fromDomain = env.BASE_DOMAIN || env.DOMAIN;
     const adminEmail = env.ADMIN_EMAIL;
 
     // USER_EMAIL may be a single address or a comma-separated list
@@ -125,7 +131,7 @@ export async function onRequestPost(context) {
 
     // Send email via Resend (User as primary, Admin + extra users in CC)
     const emailPayload = {
-      from: `Nexus-Stack <nexus@${domain}>`,
+      from: `Nexus-Stack <nexus@${fromDomain}>`,
       to: userEmail ? [userEmail] : [adminEmail],
       subject: '🔐 Nexus-Stack Credentials',
       html: emailHTML

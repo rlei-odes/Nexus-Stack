@@ -52,6 +52,7 @@ jobs:
       TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
       TF_VAR_domain: ${{ secrets.DOMAIN }}
+      TF_VAR_base_domain: ${{ secrets.BASE_DOMAIN }}
       TF_VAR_access_emails: ${{ secrets.ACCESS_EMAILS }}
       TF_VAR_infisical_token: ${{ secrets.INFISICAL_TOKEN }}
       TF_VAR_dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1010,6 +1011,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
           SUBDOMAIN_SEPARATOR: ${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}
           ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
           USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
@@ -1054,6 +1056,17 @@ jobs:
             if ! echo "$DOMAIN" | npx wrangler@4 pages secret put DOMAIN \
               --project-name="$PROJECT_NAME" 2>&1; then
               echo "⚠️  Failed to set DOMAIN"
+            fi
+          fi
+
+          # BASE_DOMAIN is the Resend-verified parent used as the email
+          # sender. On single-stack installs BASE_DOMAIN is typically empty
+          # and the Functions code falls back to DOMAIN at runtime.
+          if [ -n "$BASE_DOMAIN" ]; then
+            echo "  Setting BASE_DOMAIN secret..."
+            if ! echo "$BASE_DOMAIN" | npx wrangler@4 pages secret put BASE_DOMAIN \
+              --project-name="$PROJECT_NAME" 2>&1; then
+              echo "⚠️  Failed to set BASE_DOMAIN"
             fi
           fi
 

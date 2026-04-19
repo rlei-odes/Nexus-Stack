@@ -513,8 +513,14 @@ async function sendNotification(env, config) {
       </div>
     `;
 
+    // Resend requires the sender domain to be verified. On multi-tenant
+    // deployments (e.g. Nexus-Stack-for-Education) DOMAIN is a per-user
+    // subdomain that isn't registered with Resend, but BASE_DOMAIN is the
+    // shared parent that IS verified. Fall back to DOMAIN for single-stack
+    // installs where BASE_DOMAIN isn't set.
+    const fromDomain = env.BASE_DOMAIN || env.DOMAIN;
     const emailPayload = {
-      from: `Nexus-Stack <nexus@${env.DOMAIN}>`,
+      from: `Nexus-Stack <nexus@${fromDomain}>`,
       to: userEmail ? [userEmail] : [env.ADMIN_EMAIL],
       subject: '⚠️ Scheduled Teardown in 15 Minutes',
       html: emailHtml,
