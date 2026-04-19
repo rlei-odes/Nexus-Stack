@@ -465,14 +465,17 @@ async function sendNotification(env, config) {
   // Email recipients: User as primary, Admin + extra users in CC.
   // USER_EMAIL may be comma-separated (e.g. admin panel sets multiple emails);
   // Resend rejects a to[] entry that contains commas, so split + validate.
-  // Regex accepts both Resend formats: `email@example.com` and
-  // `Name <email@example.com>`; requires at least one dot in the domain so
-  // malformed entries like `foo@` or `foo@bar` are skipped.
-  const RESEND_EMAIL_RE = /^(?:[^<]*<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/;
+  // Two explicit alternatives cover Resend's accepted formats; half-bracketed
+  // / no-display-name variants are excluded.
+  //   plain:     `email@example.com`
+  //   bracketed: `Name <email@example.com>` (non-empty display name required)
+  const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+  const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
+  const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
   const userEmails = (env.USER_EMAIL || '')
     .split(',')
     .map((e) => e.trim())
-    .filter((e) => RESEND_EMAIL_RE.test(e));
+    .filter(isValidResendEmail);
   const userEmail = userEmails[0] || null;
   const extraUserEmails = userEmails.slice(1);
 

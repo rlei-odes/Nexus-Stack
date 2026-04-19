@@ -49,15 +49,17 @@ export async function onRequestPost(context) {
     // USER_EMAIL may be a single address or a comma-separated list
     // (e.g. when multiple admin emails are piped through from the admin panel).
     // Resend rejects a to[] entry that contains commas, so split + trim +
-    // validate. The regex accepts both Resend-supported forms:
-    //   - plain:   email@example.com
-    //   - with display name: Name <email@example.com>
-    // and requires at least one dot in the domain (rejects `foo@`, `foo@bar`).
-    const RESEND_EMAIL_RE = /^(?:[^<]*<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/;
+    // validate. Two explicit alternatives cover Resend's accepted formats;
+    // half-bracketed / no-display-name variants are excluded.
+    //   plain:     `email@example.com`
+    //   bracketed: `Name <email@example.com>` (non-empty display name required)
+    const PLAIN_EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+    const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
+    const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
     const userEmails = (env.USER_EMAIL || '')
       .split(',')
       .map((e) => e.trim())
-      .filter((e) => RESEND_EMAIL_RE.test(e));
+      .filter(isValidResendEmail);
     const primaryUserEmail = userEmails[0] || null;
     const extraUserEmails = userEmails.slice(1);
     // Back-compat: keep `userEmail` as the primary for downstream logic.
