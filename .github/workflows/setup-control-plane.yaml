@@ -1062,12 +1062,23 @@ jobs:
           # BASE_DOMAIN is the Resend-verified parent used as the email
           # sender. On single-stack installs BASE_DOMAIN is typically empty
           # and the Functions code falls back to DOMAIN at runtime.
+          #
+          # Reconcile in BOTH directions: when non-empty, upsert; when empty,
+          # delete any previously-set Pages secret so a lingering value
+          # can't keep overriding DOMAIN after the operator unset it.
           if [ -n "$BASE_DOMAIN" ]; then
             echo "  Setting BASE_DOMAIN secret..."
             if ! echo "$BASE_DOMAIN" | npx wrangler@4 pages secret put BASE_DOMAIN \
               --project-name="$PROJECT_NAME" 2>&1; then
               echo "⚠️  Failed to set BASE_DOMAIN"
             fi
+          else
+            echo "  BASE_DOMAIN is empty; removing any stale Pages secret so runtime falls back to DOMAIN..."
+            # `secret delete` is interactive by default and fails loudly if the
+            # secret doesn't exist. Pipe 'y' to auto-confirm, swallow output,
+            # and don't fail the step when the secret wasn't there to begin with.
+            echo y | npx wrangler@4 pages secret delete BASE_DOMAIN \
+              --project-name="$PROJECT_NAME" >/dev/null 2>&1 || true
           fi
 
           # SUBDOMAIN_SEPARATOR + derived URLs. These MUST be secrets (not Terraform

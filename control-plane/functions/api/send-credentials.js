@@ -57,7 +57,7 @@ export async function onRequestPost(context) {
     // subdomain that isn't registered with Resend, but BASE_DOMAIN is the
     // shared parent that IS verified. Fall back to DOMAIN for single-stack
     // installs where BASE_DOMAIN isn't set.
-    const fromDomain = env.BASE_DOMAIN || env.DOMAIN;
+    const fromDomain = env.BASE_DOMAIN || domain;
     const adminEmail = env.ADMIN_EMAIL;
 
     // USER_EMAIL may be a single address or a comma-separated list
