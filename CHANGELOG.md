@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.3...v0.51.0) (2026-04-19)
+
+
+### 🚀 Features
+
+* **control-plane:** Email Credentials on Secrets page + tofu init retry ([aca456c](https://github.com/stefanko-ch/Nexus-Stack/commit/aca456c6ca01324a86bd21ca4275899dc320925e))
+* **control-plane:** Move Email Credentials button from Dashboard to Secrets ([dcbb96b](https://github.com/stefanko-ch/Nexus-Stack/commit/dcbb96b9b7b62c6024172fda1b199f004287cd31))
+
+
+### 🐛 Bug Fixes
+
+* **secrets:** Address Copilot review on PR [#444](https://github.com/stefanko-ch/Nexus-Stack/issues/444) ([1d143a8](https://github.com/stefanko-ch/Nexus-Stack/commit/1d143a828f1775c2100dbaa814d85cdc26353276))
+* **setup-control-plane:** Retry tofu init on OpenTofu registry flap ([90b53f7](https://github.com/stefanko-ch/Nexus-Stack/commit/90b53f788a41cc3badbf3ca2b48f508003fbe046))
+
 ## [0.50.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.2...v0.50.3) (2026-04-19)
 
 
