@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.2...v0.50.3) (2026-04-19)
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Build log recipient message from actual CC list ([9c4b99d](https://github.com/stefanko-ch/Nexus-Stack/commit/9c4b99dc3a60798d28e4d628bb1c77598de7292c))
+* **control-plane:** Parse comma-separated USER_EMAIL for Resend ([afc5f27](https://github.com/stefanko-ch/Nexus-Stack/commit/afc5f2770e5d837e95c9f5b01ee8830410794a7f))
+* **control-plane:** Parse comma-separated USER_EMAIL for Resend ([c47bd63](https://github.com/stefanko-ch/Nexus-Stack/commit/c47bd635c65c376a19f5f0d8258362e2e8e4cbb6))
+* **control-plane:** Stricter Resend email validation ([73c9391](https://github.com/stefanko-ch/Nexus-Stack/commit/73c939158ab377d7dcb9943080bf91824bb8419e))
+* **control-plane:** Tighten Resend email validation ([131bb65](https://github.com/stefanko-ch/Nexus-Stack/commit/131bb65ffb3384b898bca97e8d9d71d7f0394773))
+
+
+### ♻️ Refactoring
+
+* **control-plane:** Hoist Resend email regexes to module scope ([a90e440](https://github.com/stefanko-ch/Nexus-Stack/commit/a90e4402bf3a732dfb172e185ca505842c8a54bc))
+
 ## [0.50.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.1...v0.50.2) (2026-04-18)
 
 
