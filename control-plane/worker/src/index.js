@@ -464,11 +464,15 @@ async function sendNotification(env, config) {
 
   // Email recipients: User as primary, Admin + extra users in CC.
   // USER_EMAIL may be comma-separated (e.g. admin panel sets multiple emails);
-  // Resend rejects a to[] entry that contains commas, so split + sanitize.
+  // Resend rejects a to[] entry that contains commas, so split + validate.
+  // Regex accepts both Resend formats: `email@example.com` and
+  // `Name <email@example.com>`; requires at least one dot in the domain so
+  // malformed entries like `foo@` or `foo@bar` are skipped.
+  const RESEND_EMAIL_RE = /^(?:[^<]*<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/;
   const userEmails = (env.USER_EMAIL || '')
     .split(',')
     .map((e) => e.trim())
-    .filter((e) => e.length > 0 && e.includes('@'));
+    .filter((e) => RESEND_EMAIL_RE.test(e));
   const userEmail = userEmails[0] || null;
   const extraUserEmails = userEmails.slice(1);
 

@@ -48,11 +48,16 @@ export async function onRequestPost(context) {
 
     // USER_EMAIL may be a single address or a comma-separated list
     // (e.g. when multiple admin emails are piped through from the admin panel).
-    // Resend rejects a to[] entry that contains commas, so split + trim + filter.
+    // Resend rejects a to[] entry that contains commas, so split + trim +
+    // validate. The regex accepts both Resend-supported forms:
+    //   - plain:   email@example.com
+    //   - with display name: Name <email@example.com>
+    // and requires at least one dot in the domain (rejects `foo@`, `foo@bar`).
+    const RESEND_EMAIL_RE = /^(?:[^<]*<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/;
     const userEmails = (env.USER_EMAIL || '')
       .split(',')
       .map((e) => e.trim())
-      .filter((e) => e.length > 0 && e.includes('@'));
+      .filter((e) => RESEND_EMAIL_RE.test(e));
     const primaryUserEmail = userEmails[0] || null;
     const extraUserEmails = userEmails.slice(1);
     // Back-compat: keep `userEmail` as the primary for downstream logic.
