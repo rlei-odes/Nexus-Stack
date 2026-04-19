@@ -462,8 +462,15 @@ async function sendNotification(env, config) {
     return;
   }
 
-  // Email recipients: User as primary, Admin in CC
-  const userEmail = env.USER_EMAIL && env.USER_EMAIL.trim() !== '' ? env.USER_EMAIL : null;
+  // Email recipients: User as primary, Admin + extra users in CC.
+  // USER_EMAIL may be comma-separated (e.g. admin panel sets multiple emails);
+  // Resend rejects a to[] entry that contains commas, so split + sanitize.
+  const userEmails = (env.USER_EMAIL || '')
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0 && e.includes('@'));
+  const userEmail = userEmails[0] || null;
+  const extraUserEmails = userEmails.slice(1);
 
   try {
     const teardownTime = `${config.teardownTime} ${getTimezoneAbbr(config.timezone)}`;
@@ -504,7 +511,7 @@ async function sendNotification(env, config) {
       html: emailHtml,
     };
     if (userEmail) {
-      emailPayload.cc = [env.ADMIN_EMAIL];
+      emailPayload.cc = [env.ADMIN_EMAIL, ...extraUserEmails];
     }
 
     const response = await fetchWithTimeout('https://api.resend.com/emails', {

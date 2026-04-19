@@ -45,7 +45,18 @@ export async function onRequestPost(context) {
     const credentials = JSON.parse(credentialsJson);
     const domain = env.DOMAIN;
     const adminEmail = env.ADMIN_EMAIL;
-    const userEmail = env.USER_EMAIL && env.USER_EMAIL.trim() !== '' ? env.USER_EMAIL : null;
+
+    // USER_EMAIL may be a single address or a comma-separated list
+    // (e.g. when multiple admin emails are piped through from the admin panel).
+    // Resend rejects a to[] entry that contains commas, so split + trim + filter.
+    const userEmails = (env.USER_EMAIL || '')
+      .split(',')
+      .map((e) => e.trim())
+      .filter((e) => e.length > 0 && e.includes('@'));
+    const primaryUserEmail = userEmails[0] || null;
+    const extraUserEmails = userEmails.slice(1);
+    // Back-compat: keep `userEmail` as the primary for downstream logic.
+    const userEmail = primaryUserEmail;
     const infisicalUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
     const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${domain}`);
 
@@ -103,7 +114,7 @@ export async function onRequestPost(context) {
 </div>
     `;
 
-    // Send email via Resend (User as primary, Admin in CC)
+    // Send email via Resend (User as primary, Admin + extra users in CC)
     const emailPayload = {
       from: `Nexus-Stack <nexus@${domain}>`,
       to: userEmail ? [userEmail] : [adminEmail],
@@ -111,7 +122,7 @@ export async function onRequestPost(context) {
       html: emailHTML
     };
     if (userEmail) {
-      emailPayload.cc = [adminEmail];
+      emailPayload.cc = [adminEmail, ...extraUserEmails];
     }
 
     const resendResponse = await fetchWithTimeout('https://api.resend.com/emails', {
