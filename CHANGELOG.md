@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.0...v0.51.1) (2026-04-19)
+
+
+### 🐛 Bug Fixes
+
+* Address Copilot review on PR [#446](https://github.com/stefanko-ch/Nexus-Stack/issues/446) ([e3cc1bd](https://github.com/stefanko-ch/Nexus-Stack/commit/e3cc1bd569f6d8b58d302a97b7005c01d214b38b))
+* Address second Copilot review on PR [#446](https://github.com/stefanko-ch/Nexus-Stack/issues/446) ([689f791](https://github.com/stefanko-ch/Nexus-Stack/commit/689f791ec35611ecf5723dd3ad5bbf38de11cc89))
+* **control-plane:** Use BASE_DOMAIN as Resend sender domain ([36d4052](https://github.com/stefanko-ch/Nexus-Stack/commit/36d4052cc8914e706b6c867b177449afcbcd42a6))
+* **control-plane:** Use BASE_DOMAIN as Resend sender domain ([a4185d1](https://github.com/stefanko-ch/Nexus-Stack/commit/a4185d14e705a44cb8030643673a7c881209b105))
+
 ## [0.51.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.50.3...v0.51.0) (2026-04-19)
 
 
