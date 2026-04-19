@@ -524,7 +524,10 @@ async function sendNotification(env, config) {
     }, 15000);
 
     if (response.ok) {
-      const recipientMsg = userEmail ? `${userEmail} (cc: ${env.ADMIN_EMAIL})` : env.ADMIN_EMAIL;
+      const ccList = emailPayload.cc || [];
+      const recipientMsg = userEmail
+        ? (ccList.length > 0 ? `${userEmail} (cc: ${ccList.join(', ')})` : userEmail)
+        : env.ADMIN_EMAIL;
       const message = `Notification email sent to ${recipientMsg}`;
       console.log(`✅ ${message}`);
       await logToD1(env.NEXUS_DB, 'info', message);

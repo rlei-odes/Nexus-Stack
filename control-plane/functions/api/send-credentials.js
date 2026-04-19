@@ -141,7 +141,10 @@ export async function onRequestPost(context) {
 
     const emailResult = await resendResponse.json();
 
-    const recipientMsg = userEmail ? `${userEmail} (cc: ${adminEmail})` : adminEmail;
+    const ccList = emailPayload.cc || [];
+    const recipientMsg = userEmail
+      ? (ccList.length > 0 ? `${userEmail} (cc: ${ccList.join(', ')})` : userEmail)
+      : adminEmail;
     await logApiCall(env.NEXUS_DB, '/api/send-credentials', 'POST', {
       action: 'credentials_sent',
       recipient: recipientMsg,
