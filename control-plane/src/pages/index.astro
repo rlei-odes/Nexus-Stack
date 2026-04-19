@@ -14,10 +14,6 @@ import Layout from '../layouts/Layout.astro';
 
   <!-- Action Buttons -->
   <div class="actions">
-    <button class="action-btn email-credentials" id="btn-email-credentials" disabled>
-      <span class="icon">&#x1F4E7;</span>
-      Email Credentials
-    </button>
     <button class="action-btn spin-up" id="btn-spin-up" disabled>
       <span class="icon">&#x26A1;</span>
       Spin Up
@@ -202,11 +198,6 @@ import Layout from '../layouts/Layout.astro';
     display: block;
     font-size: 2rem;
     margin-bottom: 0.5rem;
-  }
-
-  .action-btn.email-credentials {
-    border-color: rgba(168, 85, 247, 0.6);
-    color: #a855f7;
   }
 
   .action-btn.spin-up {
@@ -519,12 +510,10 @@ import Layout from '../layouts/Layout.astro';
   }
 
   function updateButtons(data) {
-    const btnEmail = document.getElementById('btn-email-credentials');
     const btnSpinUp = document.getElementById('btn-spin-up');
     const btnTeardown = document.getElementById('btn-teardown');
 
     if (data.inProgress) {
-      btnEmail.disabled = true;
       btnSpinUp.disabled = true;
       btnTeardown.disabled = true;
       btnSpinUp.innerHTML = '<span class="spinner"></span>Working...';
@@ -532,7 +521,6 @@ import Layout from '../layouts/Layout.astro';
       return;
     }
 
-    btnEmail.innerHTML = '<span class="icon">&#x1F4E7;</span>Email Credentials';
     if (pendingChangesCount > 0) {
       btnSpinUp.innerHTML = '<span class="icon">&#x26A1;</span>Deploy Changes (' + pendingChangesCount + ')';
     } else {
@@ -542,45 +530,20 @@ import Layout from '../layouts/Layout.astro';
 
     switch (data.infraState) {
       case 'deployed':
-        btnEmail.disabled = false;
         btnSpinUp.disabled = pendingChangesCount === 0;
         btnTeardown.disabled = false;
         break;
       case 'torn-down':
-        btnEmail.disabled = true;
         btnSpinUp.disabled = false;
         btnTeardown.disabled = true;
         break;
       case 'destroyed':
-        btnEmail.disabled = true;
         btnSpinUp.disabled = false;
         btnTeardown.disabled = true;
         break;
       default:
-        btnEmail.disabled = true;
         btnSpinUp.disabled = false;
         btnTeardown.disabled = false;
-    }
-  }
-
-  // Email Credentials
-  async function emailCredentials() {
-    const btn = document.getElementById('btn-email-credentials');
-    const originalHTML = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Sending...';
-    try {
-      const response = await fetch(`${API_URL}/api/send-credentials`, {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      const data = await response.json();
-      showToast(data.success ? 'Credentials email sent!' : (data.error || 'Failed to send email'), data.success ? 'success' : 'error');
-    } catch {
-      showToast('Failed to send email', 'error');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = originalHTML;
     }
   }
 
@@ -668,7 +631,7 @@ import Layout from '../layouts/Layout.astro';
       }
       const data = await response.json();
       if (data.success) {
-        const labels = { 'spin-up': 'Spin Up', 'teardown': 'Teardown', 'email-credentials': 'Email Credentials' };
+        const labels = { 'spin-up': 'Spin Up', 'teardown': 'Teardown' };
         showToast((labels[action] || action) + ' triggered!');
         setTimeout(fetchStatus, 2000);
       } else {
@@ -697,7 +660,6 @@ import Layout from '../layouts/Layout.astro';
   }
 
   // Event listeners
-  document.getElementById('btn-email-credentials').addEventListener('click', () => emailCredentials());
   document.getElementById('btn-spin-up').addEventListener('click', () => triggerAction('spin-up'));
   document.getElementById('btn-teardown').addEventListener('click', () => showConfirmModal('teardown'));
   document.getElementById('modal-cancel').addEventListener('click', hideModal);
