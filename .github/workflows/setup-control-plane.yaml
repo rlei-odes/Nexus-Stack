@@ -436,7 +436,23 @@ jobs:
           EOF
           sed -i 's/^          //' backend.hcl
 
-          tofu init -backend-config=backend.hcl
+          # Retry tofu init a few times: the OpenTofu provider registry
+          # occasionally returns a transient failure fetching authentication
+          # checksums ("could not query provider registry ... failed to retrieve
+          # authentication checksums"), and a single retry after a short pause
+          # almost always succeeds.
+          for ATTEMPT in 1 2 3; do
+            if tofu init -backend-config=backend.hcl; then
+              break
+            fi
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "⚠️  tofu init failed on attempt $ATTEMPT — retrying in 15s..."
+              sleep 15
+            else
+              echo "❌ tofu init failed after 3 attempts"
+              exit 1
+            fi
+          done
 
       - name: Clean up orphaned Hetzner Object Storage buckets
         run: |
