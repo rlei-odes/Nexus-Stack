@@ -52,6 +52,7 @@ jobs:
       TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
       TF_VAR_domain: ${{ secrets.DOMAIN }}
+      TF_VAR_base_domain: ${{ secrets.BASE_DOMAIN }}
       TF_VAR_access_emails: ${{ secrets.ACCESS_EMAILS }}
       TF_VAR_infisical_token: ${{ secrets.INFISICAL_TOKEN }}
       TF_VAR_dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1010,6 +1011,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
           SUBDOMAIN_SEPARATOR: ${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}
           ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
           USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
@@ -1055,6 +1057,28 @@ jobs:
               --project-name="$PROJECT_NAME" 2>&1; then
               echo "⚠️  Failed to set DOMAIN"
             fi
+          fi
+
+          # BASE_DOMAIN is the Resend-verified parent used as the email
+          # sender. On single-stack installs BASE_DOMAIN is typically empty
+          # and the Functions code falls back to DOMAIN at runtime.
+          #
+          # Reconcile in BOTH directions: when non-empty, upsert; when empty,
+          # delete any previously-set Pages secret so a lingering value
+          # can't keep overriding DOMAIN after the operator unset it.
+          if [ -n "$BASE_DOMAIN" ]; then
+            echo "  Setting BASE_DOMAIN secret..."
+            if ! echo "$BASE_DOMAIN" | npx wrangler@4 pages secret put BASE_DOMAIN \
+              --project-name="$PROJECT_NAME" 2>&1; then
+              echo "⚠️  Failed to set BASE_DOMAIN"
+            fi
+          else
+            echo "  BASE_DOMAIN is empty; removing any stale Pages secret so runtime falls back to DOMAIN..."
+            # `secret delete` is interactive by default and fails loudly if the
+            # secret doesn't exist. Pipe 'y' to auto-confirm, swallow output,
+            # and don't fail the step when the secret wasn't there to begin with.
+            echo y | npx wrangler@4 pages secret delete BASE_DOMAIN \
+              --project-name="$PROJECT_NAME" >/dev/null 2>&1 || true
           fi
 
           # SUBDOMAIN_SEPARATOR + derived URLs. These MUST be secrets (not Terraform

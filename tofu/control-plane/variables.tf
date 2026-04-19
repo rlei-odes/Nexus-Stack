@@ -25,6 +25,20 @@ variable "domain" {
   type        = string
 }
 
+variable "base_domain" {
+  description = "Parent domain used as the Resend sender domain. For single-stack installs this is the same as `domain`. For multi-tenant deployments where `domain` is a per-user subdomain (e.g. `user.base.com`), set this to the verified parent (`base.com`) so outgoing emails don't fail with 'domain not verified'. Defaults to an empty string, which falls back to `domain`."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.base_domain == "" ||
+      can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.base_domain))
+    )
+    error_message = "base_domain must be empty or a valid domain name (e.g., example.com)."
+  }
+}
+
 variable "subdomain_separator" {
   description = "Separator between service subdomain and base domain. '.' for standard dot-subdomains (default, requires wildcard cert at 3rd level), '-' for flat subdomains used when provisioning tenants under a shared base domain."
   type        = string
