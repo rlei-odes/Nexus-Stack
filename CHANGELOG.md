@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.2...v0.51.3) (2026-04-20)
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Make stack-row CSS global so JS-rendered links are legible ([c318f77](https://github.com/stefanko-ch/Nexus-Stack/commit/c318f773f994ee20db5c78eb4c04bd5d101a0aa0))
+* **control-plane:** Skip BASE_DOMAIN worker binding when empty ([2adcb6e](https://github.com/stefanko-ch/Nexus-Stack/commit/2adcb6e0885b6defd15e727d585b4f927c7ab9b7))
+* **docs:** Address PR [#450](https://github.com/stefanko-ch/Nexus-Stack/issues/450) review comments ([d96e117](https://github.com/stefanko-ch/Nexus-Stack/commit/d96e1172c997d76f98afe5a26e468d58c44d5f3a))
+
+
+### ♻️ Refactoring
+
+* **docs:** Rename docs/images to docs/assets, fix screenshot paths ([cc2d440](https://github.com/stefanko-ch/Nexus-Stack/commit/cc2d440774f89404435859bb8bab9ad78b45b601))
+
+
+### 📚 Documentation
+
+* Control Plane user guides + docs/assets rename + StackTable CSS fix ([5e5251d](https://github.com/stefanko-ch/Nexus-Stack/commit/5e5251dfc00667bd1a89951c73b889c9fe9562b2))
+* **user-guides:** Add per-page Control Plane guides (skeleton) ([5325006](https://github.com/stefanko-ch/Nexus-Stack/commit/53250062af4fe9696bf9066056aebdb6272fa215))
+* **user-guides:** Add screenshots and update all Control Plane user guides ([d24cc18](https://github.com/stefanko-ch/Nexus-Stack/commit/d24cc1873c4f500928368cb59568f26df847117c))
+* **user-guides:** Remove unreferenced images ([fc98df9](https://github.com/stefanko-ch/Nexus-Stack/commit/fc98df9ee28f8e93d67f0981d6e6259f01ae7ced))
+
 ## [0.51.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.1...v0.51.2) (2026-04-20)
 
 
