@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.1...v0.51.2) (2026-04-20)
+
+
+### 🐛 Bug Fixes
+
+* **version:** Show per-fork deployed template version ([19d5770](https://github.com/stefanko-ch/Nexus-Stack/commit/19d5770ece3b7e9a9c5b843925c7458992d92ec6))
+* **version:** Show per-fork deployed template version (no more 'DEV' on forks) ([1099ffe](https://github.com/stefanko-ch/Nexus-Stack/commit/1099ffeb1ecc749f28631e8699e383f914698c5c))
+* **workflow:** Don't log TEMPLATE_VERSION value ([81e85c0](https://github.com/stefanko-ch/Nexus-Stack/commit/81e85c075691b79f3e4ee68aac8433e07a965080))
+* **workflow:** Log wording covers empty-file case too ([aab74cf](https://github.com/stefanko-ch/Nexus-Stack/commit/aab74cfa8b8d455da5939d9a4e89a9c0ac1132ca))
+
 ## [0.51.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.0...v0.51.1) (2026-04-19)
 
 
