@@ -36,12 +36,12 @@ The top nav has seven sections:
 
 | Page | What you do there |
 |------|-------------------|
-| [Dashboard](./dashboard) | See infrastructure status, spin up / tear down the stack |
-| [Stacks](./stacks) | Enable, disable, and open individual Docker services |
-| [Monitoring](./monitoring) | Inspect workflow logs, config, and runtime state |
-| [Secrets](./secrets) | Read-only view of Infisical secrets |
-| [Firewall](./firewall) | Open TCP ports for services that need direct access |
-| [Settings](./settings) | Server info, teardown schedule, notifications |
-| [Integrations](./integrations) | Databricks sync and other third-party hookups |
+| [Dashboard](./dashboard.md) | See infrastructure status, spin up / tear down the stack |
+| [Stacks](./stacks.md) | Enable, disable, and open individual Docker services |
+| [Monitoring](./monitoring.md) | Inspect workflow logs, config, and runtime state |
+| [Secrets](./secrets.md) | Read-only view of Infisical secrets |
+| [Firewall](./firewall.md) | Open TCP ports for services that need direct access |
+| [Settings](./settings.md) | Server info, teardown schedule, notifications |
+| [Integrations](./integrations.md) | Databricks sync and other third-party hookups |
 
-Each page is covered in its own short guide — linked above. Start with the [Dashboard](./dashboard) guide if you're brand new.
+Each page is covered in its own short guide — linked above. Start with the [Dashboard](./dashboard.md) guide if you're brand new.
