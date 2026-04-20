@@ -38,7 +38,7 @@ The Cron worker can auto-teardown your stack on a schedule so you don't burn mon
 
 ### Disabling auto-teardown
 
-Set **Allow disable** in your repo's `config.tfvars` to `true` and a toggle appears here to switch auto-teardown off entirely. By default this is locked so a cost-conscious admin can't forget to re-enable it.
+The OpenTofu variable `allow_disable_auto_shutdown` (in `tofu/control-plane/variables.tf`) gates this. When your admin sets it to `true` during `setup-control-plane.yaml`, a toggle appears here to switch auto-teardown off entirely. By default it's `false` so a cost-conscious admin can't accidentally leave the server running.
 
 ### Max delay hours
 

@@ -35,7 +35,7 @@ A red status here is usually the first sign something broke during a Spin Up or 
 
 ## Config view
 
-Shows the current `services.yaml` and `config.tfvars` that Terraform is using. Read-only — to change values, edit the repo and re-run Spin Up.
+Shows the current `services.yaml` and `config.tfvars` that OpenTofu is using. Read-only — to change values, edit the repo and re-run Spin Up.
 
 ![Monitoring config panel](./assets/monitoring-config.png)
 

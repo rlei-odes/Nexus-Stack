@@ -21,7 +21,7 @@ https://control.<your-domain>
 For flat-subdomain deployments it's the dashed form:
 
 ```
-https://control-<user>.<base-domain>
+https://control-<your-domain>
 ```
 
 On first visit Cloudflare Access redirects you to an email-OTP challenge.
