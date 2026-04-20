@@ -1098,7 +1098,7 @@ jobs:
               echo "⚠️  Failed to set TEMPLATE_VERSION"
             fi
           else
-            echo "  No .template-version file found; removing any stale Pages secret so runtime falls back to the GitHub API / 'dev'..."
+            echo "  .template-version missing or empty; removing any stale Pages secret so runtime falls back to the GitHub API / 'dev'..."
             echo y | npx wrangler@4 pages secret delete TEMPLATE_VERSION \
               --project-name="$PROJECT_NAME" >/dev/null 2>&1 || true
           fi
