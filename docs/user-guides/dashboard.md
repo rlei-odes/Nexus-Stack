@@ -26,7 +26,7 @@ The coloured indicator at the top reflects the current state of your Hetzner inf
 | Green — **Deployed** | Server is running, Docker services are up, domain resolves |
 | Amber — **Pending** | A workflow is in progress (spin-up, teardown, or initial setup) |
 | Orange — **Torn down** | No server exists; nothing is running, nothing is being billed |
-| Grey — **Unknown** | Status check failed; see [Monitoring](./monitoring) for details |
+| Grey — **Unknown** | Status check failed; see [Monitoring](./monitoring.md) for details |
 
 The panel re-polls automatically every few seconds, so you can keep it open while a workflow runs.
 
@@ -67,4 +67,4 @@ Below the action buttons the Dashboard lists which services are currently active
 
 ![Active Stacks list below the action buttons, showing the currently enabled and running services with a total count](./assets/dashboard-active-stacks.png)
 
-The count ("3 stacks active") reflects services enabled in [Stacks](./stacks). Click a service row to open the service directly in a new tab.
+The count ("3 stacks active") reflects services enabled in [Stacks](./stacks.md). Click a service row to open the service directly in a new tab.

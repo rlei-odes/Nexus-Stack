@@ -807,6 +807,20 @@ Why this matters — there is a concrete failure mode, not a style preference:
 3. **Do not use `style="width: N%"` or similar inline styles.** Starlight applies responsive image styling automatically. If you genuinely need a narrow image (icon, button), keep the source image itself small — do not rely on CSS width constraints.
 4. **Assets go in the guide's own `assets/` folder** (e.g. `docs/user-guides/assets/`, `docs/admin-guides/assets/`). The website's `fetch-docs.mjs` syncs these into the matching subfolder next to the markdown so relative `./assets/…` paths resolve at build time.
 
+## Documentation Internal Links
+
+**For relative links between markdown files in `docs/**/*.md`, always include the `.md` extension.** Use `[Monitoring](./monitoring.md)`, not `[Monitoring](./monitoring)`.
+
+Why this matters — same editor-vs-site mismatch as the image-syntax rule, different symptom:
+
+- Starlight renders each `.md` file as a directory with a trailing slash: `docs/user-guides/control-plane.md` → `/docs/guides/user-guides/control-plane/`.
+- A browser-side relative link `./monitoring` from that URL resolves to `/docs/guides/user-guides/control-plane/monitoring` — a child path that **does not exist**. The actual sibling page is at `/docs/guides/user-guides/monitoring/`.
+- Result: every extension-less `./foo` link between guides returns 404 on the website, while looking fine in the GitHub viewer (which resolves file-relative, not URL-relative). This is a silent drift — the broken links only show up when a user actually clicks through on the live site. Happened in [PR #454](https://github.com/stefanko-ch/Nexus-Stack/pull/454).
+
+**Rule:** Write `[text](./sibling.md)`. Astro/Starlight strips the `.md` at build time and resolves against the source location, producing the correct URL. GitHub's markdown viewer also follows `.md` links correctly. Both renderers happy, one source of truth.
+
+This applies to **every** relative markdown-to-markdown link in `docs/`, not just user-guides.
+
 ## Closing Issues via PRs
 
 **When creating a Pull Request, always check if there is a corresponding Issue that should be closed by the PR.**
