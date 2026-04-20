@@ -8,7 +8,7 @@ order: 6
 
 Most traffic reaches your stack through the **Cloudflare Tunnel**, which means zero open ports on the server itself. A few services — think a database client tunnel, a Spark worker, an agent connecting over raw TCP — need direct port access. The Firewall page is where you allow that, carefully.
 
-![Firewall rules page](/docs-images/user-guides/firewall-rules.png)
+![Firewall rules page](./assets/firewall-rules.png)
 
 ## Big red warning first
 

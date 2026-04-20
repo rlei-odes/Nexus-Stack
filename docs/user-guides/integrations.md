@@ -8,7 +8,7 @@ order: 8
 
 Integrations let your Nexus-Stack talk to platforms outside Hetzner. Today there's one first-class integration — **Databricks** — with more on the roadmap.
 
-![Integrations page](/docs-images/user-guides/integrations-overview.png)
+![Integrations page](./assets/integrations-overview.png)
 
 ## Databricks
 

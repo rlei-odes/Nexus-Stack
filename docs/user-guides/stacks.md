@@ -8,7 +8,7 @@ order: 3
 
 Your Nexus-Stack ships with 60+ Docker services grouped into categories (Data Engineering, ML/AI, Dev Tools, …). The **Stacks** page is where you turn them on, turn them off, and click through to their web UIs.
 
-![Stacks grid view](/docs-images/user-guides/stacks-grid.png)
+![Stacks grid view](./assets/stacks-grid.png)
 
 ## Grid vs List
 
@@ -30,7 +30,7 @@ Toggling a stack takes 10–60 seconds depending on image size. The tile spins d
 
 Press `/` (or click the search box) and type. Matches on stack name, description, and image tag. Press `Enter` to switch to the List view with the same filter applied.
 
-![Stacks search filter](/docs-images/user-guides/stacks-search.png)
+![Stacks search filter](./assets/stacks-search.png)
 
 ## Core stacks
 

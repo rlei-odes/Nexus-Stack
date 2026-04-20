@@ -8,7 +8,7 @@ order: 1
 
 The **Control Plane** is your web dashboard for managing a Nexus-Stack deployment: spin the stack up, tear it down, manage services, view secrets, and configure integrations — all behind Cloudflare Access authentication so only you (and anyone you've explicitly allow-listed) can reach it.
 
-![Control Plane dashboard](/docs-images/user-guides/dashboard-overview.png)
+![Control Plane dashboard](./assets/dashboard-overview.png)
 
 ## Accessing the Control Plane
 
@@ -24,11 +24,17 @@ For flat-subdomain deployments it's the dashed form:
 https://control-<user>.<base-domain>
 ```
 
-On first visit Cloudflare Access redirects you to an email-OTP challenge. Enter the email address the stack was deployed for, check your inbox, click the one-time code — and you're in. The session lasts 24 hours.
+On first visit Cloudflare Access redirects you to an email-OTP challenge.
+
+![Cloudflare Access login](./assets/cloudflare-access-login.png)
+
+ Enter the email address the stack was deployed for, check your inbox, click the one-time code — and you're in. The session lasts 24 hours.
 
 ## Navigation
 
 The top nav has seven sections:
+
+![Control Plane navigation](./assets/navigation-bar.png)
 
 | Page | What you do there |
 |------|-------------------|

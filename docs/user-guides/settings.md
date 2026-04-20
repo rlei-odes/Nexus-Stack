@@ -8,7 +8,7 @@ order: 7
 
 The Settings page is split into two blocks: **Infrastructure Information** (read-only, tells you what's deployed) and **Scheduled Teardown** (read-write, controls the auto-shutdown worker).
 
-![Settings page](/docs-images/user-guides/settings-overview.png)
+![Settings page](./assets/settings-overview.png)
 
 ## Infrastructure Information
 
@@ -28,7 +28,7 @@ To change any of these you edit the repo and re-deploy — the Control Plane can
 
 The Cron worker can auto-teardown your stack on a schedule so you don't burn money on an idle server overnight.
 
-![Scheduled teardown panel](/docs-images/user-guides/settings-teardown.png)
+![Scheduled teardown panel](./assets/settings-teardown.png)
 
 ### Schedule fields
 

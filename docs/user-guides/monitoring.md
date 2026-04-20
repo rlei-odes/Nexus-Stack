@@ -8,7 +8,7 @@ order: 4
 
 The Monitoring page aggregates everything you'd look at when something isn't behaving: workflow logs from GitHub Actions, the current template configuration, and live workflow state.
 
-![Monitoring overview](/docs-images/user-guides/monitoring-overview.png)
+![Monitoring overview](./assets/monitoring-overview.png)
 
 ## Quick stats
 
@@ -37,7 +37,7 @@ A red status here is usually the first sign something broke during a Spin Up or 
 
 Shows the current `services.yaml` and `config.tfvars` that Terraform is using. Read-only — to change values, edit the repo and re-run Spin Up.
 
-![Monitoring config panel](/docs-images/user-guides/monitoring-config.png)
+![Monitoring config panel](./assets/monitoring-config.png)
 
 ## Typical workflows
 

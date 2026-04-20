@@ -1,6 +1,6 @@
 # Nexus-Stack
 
-![Nexus-Stack](docs/images/Nexus-Logo-BlackWhite.png)
+![Nexus-Stack](docs/assets/Nexus-Logo-BlackWhite.png)
 
 ![GitHub License](https://img.shields.io/github/license/stefanko-ch/Nexus-Stack)
 ![GitHub issues](https://img.shields.io/github/issues/stefanko-ch/Nexus-Stack)
@@ -64,7 +64,7 @@ After deployment you'll have:
 
 ### Quick Start Flow
 
-![Quick Start Flow](docs/images/architecture-quickstart.svg)
+![Quick Start Flow](docs/assets/architecture-quickstart.svg)
 
 ## Available Stacks (62)
 
@@ -227,7 +227,7 @@ gh workflow run initial-setup.yaml -f enabled_services="grafana,n8n,portainer"
 
 ## Architecture
 
-![Architecture Overview](docs/images/architecture-overview.svg)
+![Architecture Overview](docs/assets/architecture-overview.svg)
 
 ## Security
 
@@ -242,7 +242,7 @@ This setup achieves **zero open ports** after deployment:
 
 > **Firewall Management:** For TCP-based services (Kafka, PostgreSQL, MinIO S3 API), the Control Plane provides a Firewall Management page to selectively open ports. DNS A records are created pointing directly to the server IP (`proxied = false`). All firewall rules are automatically reset on every Teardown for security.
 
-![Security Flow](docs/images/architecture-security.svg)
+![Security Flow](docs/assets/architecture-security.svg)
 
 - Services are protected by Cloudflare Access (email OTP)
 - Set `public = true` in config if you want a service publicly accessible (bypasses Zero Trust)

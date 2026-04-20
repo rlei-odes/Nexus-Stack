@@ -11,7 +11,7 @@ The Dashboard is the landing page of the Control Plane. It answers two questions
 1. **Is my stack up right now?**
 2. **What can I do about it?**
 
-![Dashboard main view](/docs-images/user-guides/dashboard-main.png)
+![Dashboard main view](./assets/dashboard-main.png)
 
 ## Status panel
 
