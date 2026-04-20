@@ -69,12 +69,20 @@
 
   .stack-table td.col-status { text-align: center; font-size: 1rem; line-height: 1; }
 
-  .stack-row-name {
+  /* stack-row-* classes live on JS-rendered <a> elements (see the
+     tr.innerHTML block in the script). Astro's default CSS scoping
+     adds a [data-astro-cid-*] attribute to statically rendered
+     elements but not to JS-generated ones, so scoped selectors never
+     match these links and they fall back to the browser default
+     (dark blue, unreadable on our dark background). Wrapping in
+     :global() keeps them legible. Same pattern as the toggle-switch
+     and badge-* classes in global.css. */
+  :global(.stack-row-name) {
     color: var(--accent);
     font-weight: 700;
   }
 
-  .stack-row-url {
+  :global(.stack-row-url) {
     color: var(--text-muted);
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.75rem;
@@ -86,16 +94,16 @@
     max-width: 100%;
   }
 
-  .stack-row-url:hover { color: var(--accent); }
+  :global(.stack-row-url:hover) { color: var(--accent); }
 
-  .stack-row-url.no-url { color: var(--text-muted); opacity: 0.5; }
+  :global(.stack-row-url.no-url) { color: var(--text-muted); opacity: 0.5; }
 
-  .stack-row-category {
+  :global(.stack-row-category) {
     color: var(--text-secondary);
     font-size: 0.78rem;
   }
 
-  .stack-row-badges {
+  :global(.stack-row-badges) {
     display: inline-flex;
     gap: 0.3rem;
     margin-left: 0.4rem;

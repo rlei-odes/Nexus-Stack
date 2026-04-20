@@ -62,24 +62,22 @@ resource "cloudflare_workers_script" "scheduled_teardown" {
   }
 
   # BASE_DOMAIN is the Resend-verified parent domain used as the email
-  # sender. Empty default falls back to `domain` at runtime in the worker
-  # code, so single-stack installs (where `domain` IS the verified
-  # Resend domain) don't need to set anything.
+  # sender. Only emit the binding when it's actually set — Cloudflare's
+  # Workers API rejects `plain_text_binding` with empty text, and the
+  # worker code at control-plane/worker/src/index.js falls back to
+  # `env.DOMAIN` when `env.BASE_DOMAIN` is absent (same contract as the
+  # Pages-side send-credentials.js handler).
   #
-  # Note: the Cloudflare Pages project (Functions side) reads BASE_DOMAIN
-  # as a Pages SECRET, not as a Terraform env var. Same pattern as DOMAIN
-  # / SUBDOMAIN_SEPARATOR / INFISICAL_URL / CONTROL_PLANE_URL — `wrangler
-  # pages deploy` later in the setup-control-plane workflow wipes any
-  # Terraform-managed environment_variables that aren't in wrangler.toml,
-  # but it preserves secrets. That's why these values are kept out of the
-  # Pages `environment_variables` map below and pushed via
-  # `wrangler pages secret put BASE_DOMAIN` in the workflow instead.
-  # Terraform and the Pages secret step must therefore run together — a
-  # bare `tofu apply` without the workflow will leave the Pages Function
-  # without BASE_DOMAIN; the Function falls back to DOMAIN in that case.
-  plain_text_binding {
-    name = "BASE_DOMAIN"
-    text = var.base_domain
+  # Pages-side note: Functions read BASE_DOMAIN as a Pages SECRET (see
+  # setup-control-plane.yaml), not a Terraform env var, because
+  # `wrangler pages deploy` wipes Terraform-managed environment_variables
+  # that aren't in wrangler.toml but preserves secrets.
+  dynamic "plain_text_binding" {
+    for_each = var.base_domain != "" ? [1] : []
+    content {
+      name = "BASE_DOMAIN"
+      text = var.base_domain
+    }
   }
 
   plain_text_binding {
