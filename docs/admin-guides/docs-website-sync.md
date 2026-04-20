@@ -11,17 +11,18 @@ Documentation in this repo is the **single source of truth** for [nexus-stack.ch
 ## How It Works
 
 ```
-Nexus-Stack repo                    Cloudflare Workers Builds
-┌──────────────────┐                ┌──────────────────┐
-│ docs/stacks/*.md  │                │ fetch-docs.mjs   │
-│ docs/*.md         │  ──push to──>  │ fetches docs     │
-│ docs/tutorials/*  │  ──main────>   │ from GitHub,     │
-│ services.yaml     │                │ then astro build │
-└──────────────────┘                └──────────────────┘
-         │                                   │
-         │ sync-docs-site.yml                │
-         │ (Cloudflare Deploy Hook)          │
-         └──────────────────────────────────>┘
+Nexus-Stack repo                          Cloudflare Workers Builds
+┌─────────────────────────┐               ┌──────────────────┐
+│ docs/stacks/*.md        │               │ fetch-docs.mjs   │
+│ docs/user-guides/*.md   │ ──push to───> │ fetches docs     │
+│ docs/admin-guides/*.md  │ ──main─────>  │ from GitHub,     │
+│ docs/tutorials/*.md     │               │ then astro build │
+│ services.yaml           │               └──────────────────┘
+└─────────────────────────┘                        │
+         │                                         │
+         │ sync-docs-site.yml                      │
+         │ (Cloudflare Deploy Hook)                │
+         └────────────────────────────────────────>┘
               curl POST triggers rebuild
 ```
 
@@ -68,9 +69,9 @@ title: "Service Name"
 
 The `description`, `category`, `port`, and other metadata come from `services.yaml` — don't duplicate them in frontmatter.
 
-### General Docs (`docs/`)
+### Guides (`docs/user-guides/`, `docs/admin-guides/`)
 
-General docs have `title`, `description`, and `order` fields:
+User guides and admin guides use the same frontmatter — `title`, `description`, and `order`:
 
 ```markdown
 ---
@@ -82,7 +83,7 @@ order: 1
 (content)
 ```
 
-The `order` field controls the navigation order on the website.
+The `order` field controls the navigation order within the guide's section on the website.
 
 ### Tutorials (`docs/tutorials/`)
 

@@ -27,7 +27,7 @@ Currently only secrets are synced:
 
 Open your Databricks workspace in the browser. The URL in the address bar is your **Workspace URL** — copy everything up to `.cloud.databricks.com`.
 
-![Databricks Workspace Url](./assets/databricks-workspace-url.png)
+![Databricks workspace browser address bar showing the Workspace URL](./assets/databricks-workspace-url.png)
 
 ### Creating a Personal Access Token (PAT)
 

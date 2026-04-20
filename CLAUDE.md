@@ -798,7 +798,7 @@ Why this matters — there is a concrete failure mode, not a style preference:
 - Nexus-Stack documentation is synced to [nexus-stack.ch](https://nexus-stack.ch) by `scripts/fetch-docs.mjs` in the `stefanko-ch/nexus-stack.ch` repo. The website is built with Astro + Starlight.
 - Astro only resolves, optimizes, and copies images referenced via markdown `![]()` syntax (it runs them through its content-collection image pipeline → `/_astro/*.webp`).
 - HTML `<img src="./assets/foo.png">` tags are passed through unchanged. The `./assets/` relative path then resolves in the browser against the rendered page URL (e.g. `/docs/guides/user-guides/dashboard/assets/foo.png`) — a path that does not exist in the built site.
-- Result: pages with HTML `<img>` tags either break the build (if the referenced image also isn't findable by Astro's content pipeline) or render with broken image icons at runtime. This happened in [PR #450](https://github.com/stefanko-ch/Nexus-Stack/pull/450) — the fix is `fix/user-guide-image-syntax`.
+- Result: pages with HTML `<img>` tags either break the build (if the referenced image also isn't findable by Astro's content pipeline) or render with broken image icons at runtime. This happened in [PR #450](https://github.com/stefanko-ch/Nexus-Stack/pull/450).
 
 **Rules:**
 
