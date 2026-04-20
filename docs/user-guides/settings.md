@@ -6,49 +6,47 @@ order: 7
 
 # Settings
 
-The Settings page is split into two blocks: **Infrastructure Information** (read-only, tells you what's deployed) and **Scheduled Teardown** (read-write, controls the auto-shutdown worker).
+<img src="./assets/settings-header.png" style="width: 100%; height: auto;" />
 
-![Settings page](./assets/settings-overview.png)
+The Settings page is split into three blocks: **Infrastructure Information** (read-only), **Scheduled Teardown**, and **Email Notifications**.
 
 ## Infrastructure Information
 
-Read-only facts about the current deployment:
+Read-only facts about the current deployment.
 
-| Field | Where it comes from |
-|-------|---------------------|
-| **Server Type** | `config.tfvars` — e.g. `cax11`, `cax21`, `cax31` |
+<img src="./assets/settings-infrastructure-info.png" style="width: 100%; height: auto;" />
+
+| Field | Description |
+|-------|-------------|
+| **Server Type** | Hetzner server model (e.g. `cax31`) |
 | **Location** | Hetzner datacenter code (`fsn1`, `nbg1`, `hel1`) |
-| **Base Domain** | Your root domain |
-| **Template Version** | Currently deployed Nexus-Stack release |
-| **Subdomain Separator** | `.` (dotted) or `-` (flat) — determines whether stacks live at `grafana.you.example.com` or `grafana-you.example.com` |
+| **Domain** | Your root domain |
+| **Last Spin Up** | Timestamp of the most recent spin-up |
+| **Last Teardown** | Timestamp of the most recent teardown |
+| **Uptime** | Time elapsed since last spin-up |
 
-To change any of these you edit the repo and re-deploy — the Control Plane can't change server type on the fly.
+To change server type or location, edit `config.tfvars` and re-deploy — the Control Plane can't change these on the fly.
 
 ## Scheduled Teardown
 
-The Cron worker can auto-teardown your stack on a schedule so you don't burn money on an idle server overnight.
+The cron worker can auto-teardown your stack on a daily schedule so you don't pay for an idle server overnight.
 
-![Scheduled teardown panel](./assets/settings-teardown.png)
+<img src="./assets/settings-scheduled-teardown.png" style="width: 100%; height: auto;" />
 
-### Schedule fields
+- **Toggle** — Enable or disable the automatic daily teardown.
+- **Next teardown** — Shows the scheduled time and how much time is remaining.
+- **Extensions remaining** — How many times you can still delay teardown today (resets at UTC midnight).
+- **Delay Teardown by 4 Hours** — Pushes the next teardown back by 4 hours. Useful when you're mid-session. Limited to 3 extensions per UTC day by default.
 
-- **Teardown cron** — standard 5-field cron in server-local time. Default `0 23 * * *` (23:00 every day).
-- **Notification cron** — when to email you a heads-up that teardown is approaching. Default is 30 minutes before teardown.
-- **Delay / Skip button** — one-click "not tonight" that pushes the next scheduled teardown back. Useful if you're mid-session.
+> If your admin has set `allow_disable_auto_shutdown = false`, the toggle is visible but locked — you can still use the delay button.
 
-### Disabling auto-teardown
+## Email Notifications
 
-The OpenTofu variable `allow_disable_auto_shutdown` (in `tofu/control-plane/variables.tf`) gates this. When your admin sets it to `true` during `setup-control-plane.yaml`, a toggle appears here to switch auto-teardown off entirely. By default it's `false` so a cost-conscious admin can't accidentally leave the server running.
+<img src="./assets/settings-email-notifications.png" style="width: 100%; height: auto;" />
 
-### Max delay hours
+Two email notifications can be toggled independently:
 
-If you keep delaying teardown every evening, eventually the worker will force a teardown no matter what. That cap is `max_delay_hours` in config. The Settings page shows how many delays you have left.
+- **Shutdown Warning Email** — Sent before the scheduled daily teardown as a heads-up.
+- **Stack Online Email** — Sent when the stack is back online after a spin-up.
 
-## Notifications
-
-You receive two types of email from the Control Plane:
-
-- **Teardown imminent** (sent by the Notification cron)
-- **Credentials** (on demand — the **Email Credentials** button on the Dashboard)
-
-Both are sent via Resend using the API key configured during Setup. If emails aren't arriving, check the Secrets page — `RESEND_API_KEY` should be under the global folder.
+Both are sent via Resend using the API key configured during setup. If emails aren't arriving, check the Secrets page — `RESEND_API_KEY` should be under the global folder.

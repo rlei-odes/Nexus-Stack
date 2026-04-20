@@ -8,8 +8,6 @@ order: 1
 
 The **Control Plane** is your web dashboard for managing a Nexus-Stack deployment: spin the stack up, tear it down, manage services, view secrets, and configure integrations — all behind Cloudflare Access authentication so only you (and anyone you've explicitly allow-listed) can reach it.
 
-![Control Plane dashboard](./assets/dashboard-overview.png)
-
 ## Accessing the Control Plane
 
 Your Control Plane lives at:

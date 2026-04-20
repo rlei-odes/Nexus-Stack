@@ -6,41 +6,61 @@ order: 4
 
 # Monitoring
 
-The Monitoring page aggregates everything you'd look at when something isn't behaving: workflow logs from GitHub Actions, the current template configuration, and live workflow state.
+The Monitoring page aggregates everything you'd look at when something isn't behaving: API logs, current configuration, and a full list of registered services with their state.
 
-![Monitoring overview](./assets/monitoring-overview.png)
+<img src="./assets/monitoring-header.png" style="width: 100%; height: auto;" />
 
 ## Quick stats
 
-Four cards at the top:
+Three cards at the top give you a count at a glance:
 
 | Card | What it counts |
 |------|----------------|
-| **Logs** | Archived workflow and system log bundles |
-| **Config** | Template config files currently applied (services.yaml, config.tfvars) |
-| **Workflows** | Past GitHub Actions runs for this stack |
-| **Health** | Latest health check results |
+| **Logs** | API and system log entries |
+| **Config** | Configuration entries currently applied |
+| **Services** | Total registered services |
 
-Click any card to drill into the full list.
+<img src="./assets/monitoring-stats.png" style="width: 100%; height: auto;" />
 
-## Workflow logs
+## Logs
 
-Per-workflow rows showing the last run's status, duration, and a link to the GitHub Actions page. The three you'll look at most:
+A filterable table of all API calls and system events recorded by the Control Plane.
 
-- **initial-setup.yaml** — ran once at first deploy; should show `success`
-- **spin-up.yml** — runs every time you click Spin Up
-- **teardown.yml** — runs every time you click Teardown
+<img src="./assets/monitoring-logs.png" style="width: 100%; height: auto;" />
 
-A red status here is usually the first sign something broke during a Spin Up or Teardown.
+- **Source** — Filter by log source (e.g. `api`, `worker`)
+- **Level** — Filter by severity (`info`, `warn`, `error`)
+- **Limit** — How many entries to load (default 100)
+- **Refresh** — Reload the log table
+- **Clear Old (30d)** — Delete log entries older than 30 days
 
-## Config view
+Each row shows the timestamp, source, level, message, run ID (for workflow-triggered events), and full metadata as JSON.
 
-Shows the current `services.yaml` and `config.tfvars` that OpenTofu is using. Read-only — to change values, edit the repo and re-run Spin Up.
+## Config
 
-![Monitoring config panel](./assets/monitoring-config.png)
+A read-only view of the current deployment configuration stored in D1.
+
+<img src="./assets/monitoring-config-table.png" style="width: 100%; height: auto;" />
+
+| Key | Description |
+|-----|-------------|
+| `type` | Hetzner server model |
+| `location` | Hetzner datacenter |
+| `domain` | Root domain |
+| `subdomainSeparator` | `.` or `-` |
+| `lastSpinUp` | Timestamp of last spin-up |
+| `lastTeardown` | Timestamp of last teardown |
+
+## Services
+
+A full table of every service registered in the stack, including its subdomain, port, enabled/deployed state, and category.
+
+<img src="./assets/monitoring-services-table.png" style="width: 100%; height: auto;" />
+
+Useful for a quick overview of what's registered vs. what's actually running (**Enabled** = toggled on in D1, **Deployed** = currently running on the server).
 
 ## Typical workflows
 
-- **A stack won't start** — check its docker-compose in Config, then look at the latest spin-up log
-- **Domain not resolving** — check the latest spin-up log for the Cloudflare Tunnel ingress step
-- **Credentials missing** — check that `initial-setup.yaml` completed successfully (Infisical is seeded there)
+- **A stack won't start** — check the Logs table for errors around the spin-up time
+- **Domain not resolving** — check `subdomainSeparator` in Config and the service's subdomain in Services
+- **Credentials missing** — verify the service shows `Deployed: Yes` in the Services table

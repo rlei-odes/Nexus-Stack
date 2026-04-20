@@ -1,6 +1,6 @@
 ---
 title: "Dashboard"
-description: "Infrastructure status and the three big actions: spin up, tear down, email credentials"
+description: "Infrastructure status and the two big actions: spin up and tear down"
 order: 2
 ---
 
@@ -11,7 +11,11 @@ The Dashboard is the landing page of the Control Plane. It answers two questions
 1. **Is my stack up right now?**
 2. **What can I do about it?**
 
-![Dashboard main view](./assets/dashboard-main.png)
+## Version tag
+
+The header shows the currently-deployed Nexus-Stack template version (e.g. `v0.51.1`). If a newer release exists upstream you can upgrade from the admin panel (not from the Control Plane itself).
+
+<img src="./assets/dashboard-version-tag.png" style="width: 100%; height: auto;" />
 
 ## Status panel
 
@@ -21,14 +25,18 @@ The coloured indicator at the top reflects the current state of your Hetzner inf
 |--------|---------|
 | Green — **Deployed** | Server is running, Docker services are up, domain resolves |
 | Amber — **Pending** | A workflow is in progress (spin-up, teardown, or initial setup) |
-| Red — **Torn down** | No server exists; nothing is running, nothing is being billed |
+| Orange — **Torn down** | No server exists; nothing is running, nothing is being billed |
 | Grey — **Unknown** | Status check failed; see [Monitoring](./monitoring) for details |
 
 The panel re-polls automatically every few seconds, so you can keep it open while a workflow runs.
 
+<img src="./assets/dashboard-status-torn-down.png" style="width: 100%; height: auto;" />
+
 ## Action buttons
 
-Three buttons, each tied to a GitHub Actions workflow:
+Two buttons, each tied to a GitHub Actions workflow:
+
+<img src="./assets/dashboard-action-buttons.png" style="width: 100%; height: auto;" />
 
 ### ⚡ Spin Up
 
@@ -49,14 +57,14 @@ Starts `teardown.yml`, which:
 
 Cheap state: you pay only for the persistent volume (~€1/month).
 
-### 📧 Email Credentials
-
-Sends a one-shot email with the generated admin passwords for the core services. Useful after a fresh deploy if you didn't get the initial credentials email or lost it. Available only when the stack is deployed and Resend is configured.
-
 ## When buttons are disabled
 
 The Control Plane will grey out actions that don't apply right now — e.g. **Spin Up** is disabled while the stack is already running or while a teardown is in flight. Hover the disabled button to see the reason.
 
-## Version tag
+## Active Stacks
 
-The header shows the currently-deployed Nexus-Stack template version (e.g. `v0.50.2`). If a newer release exists upstream you can upgrade from the admin panel (not from the Control Plane itself).
+Below the action buttons the Dashboard lists which services are currently active. Each row shows a service name that is enabled and running on the stack.
+
+<img src="./assets/dashboard-active-stacks.png" style="width: 100%; height: auto;" />
+
+The count ("3 stacks active") reflects services enabled in [Stacks](./stacks). Click a service row to open the service directly in a new tab.
