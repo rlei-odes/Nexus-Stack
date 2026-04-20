@@ -8,7 +8,7 @@ order: 4
 
 The Monitoring page aggregates everything you'd look at when something isn't behaving: API logs, current configuration, and a full list of registered services with their state.
 
-<img src="./assets/monitoring-header.png" style="width: 100%; height: auto;" />
+![Monitoring page header introducing the Logs, Config, and Services diagnostic sections](./assets/monitoring-header.png)
 
 ## Quick stats
 
@@ -20,13 +20,13 @@ Three cards at the top give you a count at a glance:
 | **Config** | Configuration entries currently applied |
 | **Services** | Total registered services |
 
-<img src="./assets/monitoring-stats.png" style="width: 100%; height: auto;" />
+![Three stat cards at the top of the Monitoring page summarising Logs, Config entries, and registered Services with at-a-glance counts](./assets/monitoring-stats.png)
 
 ## Logs
 
 A filterable table of all API calls and system events recorded by the Control Plane.
 
-<img src="./assets/monitoring-logs.png" style="width: 100%; height: auto;" />
+![Filterable Logs table with Source, Level, and Limit filters above a list of timestamped API and system log entries](./assets/monitoring-logs.png)
 
 - **Source** — Filter by log source (e.g. `api`, `worker`)
 - **Level** — Filter by severity (`info`, `warn`, `error`)
@@ -40,7 +40,7 @@ Each row shows the timestamp, source, level, message, run ID (for workflow-trigg
 
 A read-only view of the current deployment configuration stored in D1.
 
-<img src="./assets/monitoring-config-table.png" style="width: 100%; height: auto;" />
+![Read-only Config table listing deployment keys such as type, location, domain, subdomainSeparator, and last spin-up/teardown timestamps](./assets/monitoring-config-table.png)
 
 | Key | Description |
 |-----|-------------|
@@ -55,7 +55,7 @@ A read-only view of the current deployment configuration stored in D1.
 
 A full table of every service registered in the stack, including its subdomain, port, enabled/deployed state, and category.
 
-<img src="./assets/monitoring-services-table.png" style="width: 100%; height: auto;" />
+![Services table listing every registered service with columns for subdomain, port, Enabled, Deployed, and category](./assets/monitoring-services-table.png)
 
 Useful for a quick overview of what's registered vs. what's actually running (**Enabled** = toggled on in D1, **Deployed** = currently running on the server).
 

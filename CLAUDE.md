@@ -789,6 +789,24 @@ Use prefixes that match commit types:
 
 3. **Stack count:** If stacks were added or removed, update the count in `README.md` heading `## Available Stacks (N)` and verify badges match the table.
 
+## Documentation Image Syntax
+
+**Never use HTML `<img>` tags in `docs/**/*.md`. Always use markdown `![alt](./assets/foo.png)` syntax.**
+
+Why this matters — there is a concrete failure mode, not a style preference:
+
+- Nexus-Stack documentation is synced to [nexus-stack.ch](https://nexus-stack.ch) by `scripts/fetch-docs.mjs` in the `stefanko-ch/nexus-stack.ch` repo. The website is built with Astro + Starlight.
+- Astro only resolves, optimizes, and copies images referenced via markdown `![]()` syntax (it runs them through its content-collection image pipeline → `/_astro/*.webp`).
+- HTML `<img src="./assets/foo.png">` tags are passed through unchanged. The `./assets/` relative path then resolves in the browser against the rendered page URL (e.g. `/docs/guides/user-guides/dashboard/assets/foo.png`) — a path that does not exist in the built site.
+- Result: pages with HTML `<img>` tags either break the build (if the referenced image also isn't findable by Astro's content pipeline) or render with broken image icons at runtime. This happened in [PR #450](https://github.com/stefanko-ch/Nexus-Stack/pull/450).
+
+**Rules:**
+
+1. **Markdown-only for all `./assets/…` images.** Use `![Descriptive alt text](./assets/filename.png)`. Do not use `<img src="./assets/...">`.
+2. **Descriptive alt text, not just the filename.** For accessibility and for the fallback when the image fails to load. `![Scheduled teardown toggle](./assets/settings-scheduled-teardown.png)` — not `![settings-scheduled-teardown](…)`.
+3. **Do not use `style="width: N%"` or similar inline styles.** Starlight applies responsive image styling automatically. If you genuinely need a narrow image (icon, button), keep the source image itself small — do not rely on CSS width constraints.
+4. **Assets go in the guide's own `assets/` folder** (e.g. `docs/user-guides/assets/`, `docs/admin-guides/assets/`). The website's `fetch-docs.mjs` syncs these into the matching subfolder next to the markdown so relative `./assets/…` paths resolve at build time.
+
 ## Closing Issues via PRs
 
 **When creating a Pull Request, always check if there is a corresponding Issue that should be closed by the PR.**

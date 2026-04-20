@@ -8,7 +8,7 @@ order: 8
 
 Integrations let your Nexus-Stack talk to platforms outside Hetzner. Today there's one first-class integration — **Databricks** — with more on the roadmap.
 
-<img src="./assets/integrations-header.png" style="width: 100%; height: auto;" />
+![Integrations page header with tiles for connecting the stack to third-party platforms such as Databricks](./assets/integrations-header.png)
 
 
 ## Databricks
@@ -27,23 +27,23 @@ Currently only secrets are synced:
 
 Open your Databricks workspace in the browser. The URL in the address bar is your **Workspace URL** — copy everything up to `.cloud.databricks.com`.
 
-<img src="./assets/databricks-workspace-url.png" style="width: 100%; height: auto;" />
+![Databricks workspace browser address bar showing the Workspace URL](./assets/databricks-workspace-url.png)
 
 ### Creating a Personal Access Token (PAT)
 
 Click your avatar (top right), then **Settings**.
 
-<img src="./assets/databricks-user-menu.png" style="width: 60%; height: auto;" />
+![Databricks top-right avatar menu expanded, with the Settings option highlighted as the next step](./assets/databricks-user-menu.png)
 
-<img src="./assets/databricks-settings-menu.png" style="width: 40%; height: auto;" />
+![Databricks Settings page sidebar with the Developer section visible as the destination for access tokens](./assets/databricks-settings-menu.png)
 
 In Settings, go to **Developer** → **Access tokens** → click **Manage**.
 
-<img src="./assets/databricks-developer-settings.png" style="width: 100%; height: auto;" />
+![Databricks Developer settings page with the Access tokens section and its Manage button](./assets/databricks-developer-settings.png)
 
 Click **Generate new token**.
 
-<img src="./assets/databricks-access-tokens.png" style="width: 100%; height: auto;" />
+![Databricks Access tokens management page with a Generate new token button](./assets/databricks-access-tokens.png)
 
 Fill in the form:
 - **Comment**: `Nexus-Stack` (or any label you recognise)
@@ -52,11 +52,11 @@ Fill in the form:
 
 Click **Generate**.
 
-<img src="./assets/databricks-generate-token.png" style="width: 60%; height: auto;" />
+![Generate new token form with Comment, Lifetime, and Scope fields filled in ready to submit](./assets/databricks-generate-token.png)
 
 Copy the token immediately. You won't be able to see it again.
 
-<img src="./assets/databricks-token-created.png" style="width: 60%; height: auto;" />
+![Token generated dialog displaying the one-time-visible token string to copy before closing](./assets/databricks-token-created.png)
 
 ### Setup in the Control Plane
 
@@ -67,17 +67,17 @@ Go to **Integrations** in the Control Plane and fill in the two fields:
 | **Workspace URL** | `https://dbc-xxxxx.cloud.databricks.com` |
 | **Personal Access Token** | The token you just generated |
 
-<img src="./assets/databricks-integration-form.png" style="width: 100%; height: auto;" />
+![Control Plane Databricks integration form with Workspace URL and Personal Access Token fields ready to be saved](./assets/databricks-integration-form.png)
 
 Click **Save Configuration**, then **Sync Secrets to Databricks**. A "Last sync: success" confirmation appears when the sync completes.
 
-<img src="./assets/databricks-sync-success.png" style="width: 100%; height: auto;" />
+![Databricks integration tile showing a "Last sync: success" confirmation after mirroring secrets](./assets/databricks-sync-success.png)
 
 ### Accessing Secrets in Databricks
 
 Open a new Notebook in Databricks (**New → Notebook**).
 
-<img src="./assets/databricks-new-notebook.png" style="width: 70%; height: auto;" />
+![Databricks workspace New menu with the Notebook option highlighted to create a new notebook](./assets/databricks-new-notebook.png)
 
 List all available secret scopes — you should see `nexus`:
 
@@ -85,7 +85,7 @@ List all available secret scopes — you should see `nexus`:
 dbutils.secrets.listScopes()
 ```
 
-<img src="./assets/databricks-list-scopes.png" style="width: 100%; height: auto;" />
+![Databricks notebook cell output from dbutils.secrets.listScopes() with the nexus scope visible in the list](./assets/databricks-list-scopes.png)
 
 List all secrets in the `nexus` scope:
 
@@ -93,7 +93,7 @@ List all secrets in the `nexus` scope:
 dbutils.secrets.list("nexus")
 ```
 
-<img src="./assets/databricks-list-secrets.png" style="width: 100%; height: auto;" />
+![Databricks notebook cell output from dbutils.secrets.list("nexus") listing every key inside the nexus scope](./assets/databricks-list-secrets.png)
 
 Read a specific secret:
 
@@ -102,7 +102,7 @@ admin_email = dbutils.secrets.get(scope="nexus", key="admin_email")
 print(admin_email)
 ```
 
-<img src="./assets/databricks-get-secret.png" style="width: 100%; height: auto;" />
+![Databricks notebook reading a secret with dbutils.secrets.get() and printing [REDACTED] as the value — the expected successful output](./assets/databricks-get-secret.png)
 
 Secret values are always shown as `[REDACTED]` in Databricks notebook output — this is intentional and means the secret was read successfully.
 

@@ -11,17 +11,18 @@ Documentation in this repo is the **single source of truth** for [nexus-stack.ch
 ## How It Works
 
 ```
-Nexus-Stack repo                    Cloudflare Workers Builds
-┌──────────────────┐                ┌──────────────────┐
-│ docs/stacks/*.md  │                │ fetch-docs.mjs   │
-│ docs/*.md         │  ──push to──>  │ fetches docs     │
-│ docs/tutorials/*  │  ──main────>   │ from GitHub,     │
-│ services.yaml     │                │ then astro build │
-└──────────────────┘                └──────────────────┘
-         │                                   │
-         │ sync-docs-site.yml                │
-         │ (Cloudflare Deploy Hook)          │
-         └──────────────────────────────────>┘
+Nexus-Stack repo                          Cloudflare Workers Builds
+┌─────────────────────────┐               ┌──────────────────┐
+│ docs/stacks/*.md        │               │ fetch-docs.mjs   │
+│ docs/user-guides/*.md   │ ──push to───> │ fetches docs     │
+│ docs/admin-guides/*.md  │ ──main─────>  │ from GitHub,     │
+│ docs/tutorials/*.md     │               │ then astro build │
+│ services.yaml           │               └──────────────────┘
+└─────────────────────────┘                        │
+         │                                         │
+         │ sync-docs-site.yml                      │
+         │ (Cloudflare Deploy Hook)                │
+         └────────────────────────────────────────>┘
               curl POST triggers rebuild
 ```
 
@@ -35,9 +36,22 @@ Nexus-Stack repo                    Cloudflare Workers Builds
 | Content | Source | Website renders as |
 |---------|--------|-------------------|
 | `docs/stacks/*.md` | Stack documentation | `/docs/stacks/[slug]` pages |
-| `docs/*.md` | General guides (setup, debugging, SSH) | `/docs/[slug]` pages |
+| `docs/user-guides/*.md` | End-user Control Plane guides | `/docs/guides/user-guides/[slug]` pages |
+| `docs/admin-guides/*.md` | Operator / self-hoster guides | `/docs/guides/admin-guides/[slug]` pages |
 | `docs/tutorials/*.md` | Tutorials and walkthroughs | `/tutorials/[slug]` pages |
 | `services.yaml` | Service metadata (ports, categories, descriptions) | Stack list, navigation, metadata |
+
+### Images
+
+| Asset folder | Synced to | Referenced from markdown as |
+|--------------|-----------|----------------------------|
+| `docs/assets/` | `public/docs-assets/` on the website | Absolute URL `/docs-assets/foo.png` |
+| `docs/user-guides/assets/` | Next to the rendered `.md` files at `src/content/docs/docs/guides/user-guides/assets/` | Relative path `./assets/foo.png` |
+| `docs/admin-guides/assets/` *(if added later)* | Next to the rendered `.md` files at `src/content/docs/docs/guides/admin-guides/assets/` | Relative path `./assets/foo.png` |
+
+`docs/admin-guides/assets/` does not currently exist — admin guides have no screenshots today. The row above is the contract for when they do: drop images into that folder and `fetch-docs.mjs` picks them up automatically on the next sync.
+
+**Always use markdown `![alt](./assets/foo.png)` — not HTML `<img>`.** Astro only processes images through its content pipeline when they're referenced via markdown syntax. HTML `<img>` tags pass through unchanged and 404 at runtime (the relative `./assets/` path resolves against the rendered page URL, not the source file's directory). See `CLAUDE.md` → "Documentation Image Syntax" for the full rule.
 
 ## Writing Documentation
 
@@ -57,9 +71,9 @@ title: "Service Name"
 
 The `description`, `category`, `port`, and other metadata come from `services.yaml` — don't duplicate them in frontmatter.
 
-### General Docs (`docs/`)
+### Guides (`docs/user-guides/`, `docs/admin-guides/`)
 
-General docs have `title`, `description`, and `order` fields:
+User guides and admin guides use the same frontmatter — `title`, `description`, and `order`:
 
 ```markdown
 ---
@@ -71,7 +85,7 @@ order: 1
 (content)
 ```
 
-The `order` field controls the navigation order on the website.
+The `order` field controls the navigation order within the guide's section on the website.
 
 ### Tutorials (`docs/tutorials/`)
 
