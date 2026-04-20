@@ -1092,7 +1092,7 @@ jobs:
             TEMPLATE_VERSION=$(tr -d '[:space:]' < .template-version)
           fi
           if [ -n "$TEMPLATE_VERSION" ]; then
-            echo "  Setting TEMPLATE_VERSION secret to $TEMPLATE_VERSION..."
+            echo "  Setting TEMPLATE_VERSION secret..."
             if ! echo "$TEMPLATE_VERSION" | npx wrangler@4 pages secret put TEMPLATE_VERSION \
               --project-name="$PROJECT_NAME" 2>&1; then
               echo "⚠️  Failed to set TEMPLATE_VERSION"
