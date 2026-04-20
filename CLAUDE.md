@@ -815,7 +815,7 @@ Why this matters — same editor-vs-site mismatch as the image-syntax rule, diff
 
 - Starlight renders each `.md` file as a directory with a trailing slash: `docs/user-guides/control-plane.md` → `/docs/guides/user-guides/control-plane/`.
 - A browser-side relative link `./monitoring` from that URL resolves to `/docs/guides/user-guides/control-plane/monitoring` — a child path that **does not exist**. The actual sibling page is at `/docs/guides/user-guides/monitoring/`.
-- Result: every extension-less `./foo` link between guides returns 404 on the website, while looking fine in the GitHub viewer (which resolves file-relative, not URL-relative). This is a silent drift — the broken links only show up when a user actually clicks through on the live site. Happened in [PR #452's companion fix](https://github.com/stefanko-ch/Nexus-Stack/pull/453).
+- Result: every extension-less `./foo` link between guides returns 404 on the website, while looking fine in the GitHub viewer (which resolves file-relative, not URL-relative). This is a silent drift — the broken links only show up when a user actually clicks through on the live site. Happened in [PR #454](https://github.com/stefanko-ch/Nexus-Stack/pull/454).
 
 **Rule:** Write `[text](./sibling.md)`. Astro/Starlight strips the `.md` at build time and resolves against the source location, producing the correct URL. GitHub's markdown viewer also follows `.md` links correctly. Both renderers happy, one source of truth.
 
