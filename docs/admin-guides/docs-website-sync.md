@@ -47,7 +47,9 @@ Nexus-Stack repo                          Cloudflare Workers Builds
 |--------------|-----------|----------------------------|
 | `docs/assets/` | `public/docs-assets/` on the website | Absolute URL `/docs-assets/foo.png` |
 | `docs/user-guides/assets/` | Next to the rendered `.md` files at `src/content/docs/docs/guides/user-guides/assets/` | Relative path `./assets/foo.png` |
-| `docs/admin-guides/assets/` | Next to the rendered `.md` files at `src/content/docs/docs/guides/admin-guides/assets/` | Relative path `./assets/foo.png` |
+| `docs/admin-guides/assets/` *(if added later)* | Next to the rendered `.md` files at `src/content/docs/docs/guides/admin-guides/assets/` | Relative path `./assets/foo.png` |
+
+`docs/admin-guides/assets/` does not currently exist — admin guides have no screenshots today. The row above is the contract for when they do: drop images into that folder and `fetch-docs.mjs` picks them up automatically on the next sync.
 
 **Always use markdown `![alt](./assets/foo.png)` — not HTML `<img>`.** Astro only processes images through its content pipeline when they're referenced via markdown syntax. HTML `<img>` tags pass through unchanged and 404 at runtime (the relative `./assets/` path resolves against the rendered page URL, not the source file's directory). See `CLAUDE.md` → "Documentation Image Syntax" for the full rule.
 

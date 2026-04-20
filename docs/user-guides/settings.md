@@ -6,7 +6,7 @@ order: 7
 
 # Settings
 
-![Settings Header](./assets/settings-header.png)
+![Settings page header introducing the Infrastructure Information, Scheduled Teardown, and Email Notifications blocks](./assets/settings-header.png)
 
 The Settings page is split into three blocks: **Infrastructure Information** (read-only), **Scheduled Teardown**, and **Email Notifications**.
 
@@ -14,7 +14,7 @@ The Settings page is split into three blocks: **Infrastructure Information** (re
 
 Read-only facts about the current deployment.
 
-![Settings Infrastructure Info](./assets/settings-infrastructure-info.png)
+![Infrastructure Information block listing read-only deployment facts: server type, location, domain, last spin-up and teardown timestamps, and uptime](./assets/settings-infrastructure-info.png)
 
 | Field | Description |
 |-------|-------------|
@@ -31,7 +31,7 @@ To change server type or location, edit `config.tfvars` and re-deploy — the Co
 
 The cron worker can auto-teardown your stack on a daily schedule so you don't pay for an idle server overnight.
 
-![Settings Scheduled Teardown](./assets/settings-scheduled-teardown.png)
+![Scheduled Teardown block with the enable toggle, next teardown countdown, remaining daily extensions, and a Delay Teardown by 4 Hours button](./assets/settings-scheduled-teardown.png)
 
 - **Toggle** — Enable or disable the automatic daily teardown.
 - **Next teardown** — Shows the scheduled time and how much time is remaining.
@@ -42,7 +42,7 @@ The cron worker can auto-teardown your stack on a daily schedule so you don't pa
 
 ## Email Notifications
 
-![Settings Email Notifications](./assets/settings-email-notifications.png)
+![Email Notifications block with independent toggles for the Shutdown Warning Email and the Stack Online Email](./assets/settings-email-notifications.png)
 
 Two email notifications can be toggled independently:
 
