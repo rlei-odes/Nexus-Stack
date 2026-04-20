@@ -35,9 +35,20 @@ Nexus-Stack repo                    Cloudflare Workers Builds
 | Content | Source | Website renders as |
 |---------|--------|-------------------|
 | `docs/stacks/*.md` | Stack documentation | `/docs/stacks/[slug]` pages |
-| `docs/*.md` | General guides (setup, debugging, SSH) | `/docs/[slug]` pages |
+| `docs/user-guides/*.md` | End-user Control Plane guides | `/docs/guides/user-guides/[slug]` pages |
+| `docs/admin-guides/*.md` | Operator / self-hoster guides | `/docs/guides/admin-guides/[slug]` pages |
 | `docs/tutorials/*.md` | Tutorials and walkthroughs | `/tutorials/[slug]` pages |
 | `services.yaml` | Service metadata (ports, categories, descriptions) | Stack list, navigation, metadata |
+
+### Images
+
+| Asset folder | Synced to | Referenced from markdown as |
+|--------------|-----------|----------------------------|
+| `docs/assets/` | `public/docs-assets/` on the website | Absolute URL `/docs-assets/foo.png` |
+| `docs/user-guides/assets/` | Next to the rendered `.md` files at `src/content/docs/docs/guides/user-guides/assets/` | Relative path `./assets/foo.png` |
+| `docs/admin-guides/assets/` | Next to the rendered `.md` files at `src/content/docs/docs/guides/admin-guides/assets/` | Relative path `./assets/foo.png` |
+
+**Always use markdown `![alt](./assets/foo.png)` — not HTML `<img>`.** Astro only processes images through its content pipeline when they're referenced via markdown syntax. HTML `<img>` tags pass through unchanged and 404 at runtime (the relative `./assets/` path resolves against the rendered page URL, not the source file's directory). See `CLAUDE.md` → "Documentation Image Syntax" for the full rule.
 
 ## Writing Documentation
 

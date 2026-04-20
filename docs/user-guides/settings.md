@@ -6,7 +6,7 @@ order: 7
 
 # Settings
 
-<img src="./assets/settings-header.png" style="width: 100%; height: auto;" />
+![Settings Header](./assets/settings-header.png)
 
 The Settings page is split into three blocks: **Infrastructure Information** (read-only), **Scheduled Teardown**, and **Email Notifications**.
 
@@ -14,7 +14,7 @@ The Settings page is split into three blocks: **Infrastructure Information** (re
 
 Read-only facts about the current deployment.
 
-<img src="./assets/settings-infrastructure-info.png" style="width: 100%; height: auto;" />
+![Settings Infrastructure Info](./assets/settings-infrastructure-info.png)
 
 | Field | Description |
 |-------|-------------|
@@ -31,7 +31,7 @@ To change server type or location, edit `config.tfvars` and re-deploy — the Co
 
 The cron worker can auto-teardown your stack on a daily schedule so you don't pay for an idle server overnight.
 
-<img src="./assets/settings-scheduled-teardown.png" style="width: 100%; height: auto;" />
+![Settings Scheduled Teardown](./assets/settings-scheduled-teardown.png)
 
 - **Toggle** — Enable or disable the automatic daily teardown.
 - **Next teardown** — Shows the scheduled time and how much time is remaining.
@@ -42,7 +42,7 @@ The cron worker can auto-teardown your stack on a daily schedule so you don't pa
 
 ## Email Notifications
 
-<img src="./assets/settings-email-notifications.png" style="width: 100%; height: auto;" />
+![Settings Email Notifications](./assets/settings-email-notifications.png)
 
 Two email notifications can be toggled independently:
 

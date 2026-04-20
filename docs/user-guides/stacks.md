@@ -8,17 +8,17 @@ order: 3
 
 Your Nexus-Stack ships with 60+ Docker services grouped into categories (Data Engineering, ML/AI, Dev Tools, …). The **Stacks** page is where you turn them on, turn them off, and click through to their web UIs.
 
-<img src="./assets/stacks-header.png" style="width: 100%; height: auto;" />
+![Stacks Header](./assets/stacks-header.png)
 
 ## Grid vs List
 
 The **Grid** view (default) groups services by category with a count of running and disabled stacks per group.
 
-<img src="./assets/stacks-grid-view.png" style="width: 100%; height: auto;" />
+![Stacks Grid View](./assets/stacks-grid-view.png)
 
 The **List** view is a flat sortable table — better for searching by name or browsing all stacks at once.
 
-<img src="./assets/stacks-list-view.png" style="width: 100%; height: auto;" />
+![Stacks List View](./assets/stacks-list-view.png)
 
 Toggle between the two with the **Grid / List** buttons in the top right.
 
@@ -36,7 +36,7 @@ Toggling a stack takes 10–60 seconds depending on image size. The tile spins d
 
 Press `/` (or click the search box) and type. Matches on stack name, description, and image tag. Press `Enter` to switch to the List view with the same filter applied.
 
-<img src="./assets/stacks-search.png" style="width: 100%; height: auto;" />
+![Stacks Search](./assets/stacks-search.png)
 
 ## Core stacks
 
@@ -48,7 +48,7 @@ A small set of services are marked **core** and cannot be disabled:
 
 Core stacks are shown with a **CORE** badge and their toggle is locked.
 
-<img src="./assets/stacks-core-badge.png" style="width: 100%; height: auto;" />
+![Stacks Core Badge](./assets/stacks-core-badge.png)
 
 ## What happens when you disable a stack
 

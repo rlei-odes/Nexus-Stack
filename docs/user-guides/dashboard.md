@@ -15,7 +15,7 @@ The Dashboard is the landing page of the Control Plane. It answers two questions
 
 The header shows the currently-deployed Nexus-Stack template version (e.g. `v0.51.1`). If a newer release exists upstream you can upgrade from the admin panel (not from the Control Plane itself).
 
-<img src="./assets/dashboard-version-tag.png" style="width: 100%; height: auto;" />
+![Dashboard Version Tag](./assets/dashboard-version-tag.png)
 
 ## Status panel
 
@@ -30,13 +30,13 @@ The coloured indicator at the top reflects the current state of your Hetzner inf
 
 The panel re-polls automatically every few seconds, so you can keep it open while a workflow runs.
 
-<img src="./assets/dashboard-status-torn-down.png" style="width: 100%; height: auto;" />
+![Dashboard Status Torn Down](./assets/dashboard-status-torn-down.png)
 
 ## Action buttons
 
 Two buttons, each tied to a GitHub Actions workflow:
 
-<img src="./assets/dashboard-action-buttons.png" style="width: 100%; height: auto;" />
+![Dashboard Action Buttons](./assets/dashboard-action-buttons.png)
 
 ### ⚡ Spin Up
 
@@ -65,6 +65,6 @@ The Control Plane will grey out actions that don't apply right now — e.g. **Sp
 
 Below the action buttons the Dashboard lists which services are currently active. Each row shows a service name that is enabled and running on the stack.
 
-<img src="./assets/dashboard-active-stacks.png" style="width: 100%; height: auto;" />
+![Dashboard Active Stacks](./assets/dashboard-active-stacks.png)
 
 The count ("3 stacks active") reflects services enabled in [Stacks](./stacks). Click a service row to open the service directly in a new tab.

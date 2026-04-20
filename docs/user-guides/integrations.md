@@ -8,7 +8,7 @@ order: 8
 
 Integrations let your Nexus-Stack talk to platforms outside Hetzner. Today there's one first-class integration — **Databricks** — with more on the roadmap.
 
-<img src="./assets/integrations-header.png" style="width: 100%; height: auto;" />
+![Integrations Header](./assets/integrations-header.png)
 
 
 ## Databricks
@@ -27,23 +27,23 @@ Currently only secrets are synced:
 
 Open your Databricks workspace in the browser. The URL in the address bar is your **Workspace URL** — copy everything up to `.cloud.databricks.com`.
 
-<img src="./assets/databricks-workspace-url.png" style="width: 100%; height: auto;" />
+![Databricks Workspace Url](./assets/databricks-workspace-url.png)
 
 ### Creating a Personal Access Token (PAT)
 
 Click your avatar (top right), then **Settings**.
 
-<img src="./assets/databricks-user-menu.png" style="width: 60%; height: auto;" />
+![Databricks User Menu](./assets/databricks-user-menu.png)
 
-<img src="./assets/databricks-settings-menu.png" style="width: 40%; height: auto;" />
+![Databricks Settings Menu](./assets/databricks-settings-menu.png)
 
 In Settings, go to **Developer** → **Access tokens** → click **Manage**.
 
-<img src="./assets/databricks-developer-settings.png" style="width: 100%; height: auto;" />
+![Databricks Developer Settings](./assets/databricks-developer-settings.png)
 
 Click **Generate new token**.
 
-<img src="./assets/databricks-access-tokens.png" style="width: 100%; height: auto;" />
+![Databricks Access Tokens](./assets/databricks-access-tokens.png)
 
 Fill in the form:
 - **Comment**: `Nexus-Stack` (or any label you recognise)
@@ -52,11 +52,11 @@ Fill in the form:
 
 Click **Generate**.
 
-<img src="./assets/databricks-generate-token.png" style="width: 60%; height: auto;" />
+![Databricks Generate Token](./assets/databricks-generate-token.png)
 
 Copy the token immediately. You won't be able to see it again.
 
-<img src="./assets/databricks-token-created.png" style="width: 60%; height: auto;" />
+![Databricks Token Created](./assets/databricks-token-created.png)
 
 ### Setup in the Control Plane
 
@@ -67,17 +67,17 @@ Go to **Integrations** in the Control Plane and fill in the two fields:
 | **Workspace URL** | `https://dbc-xxxxx.cloud.databricks.com` |
 | **Personal Access Token** | The token you just generated |
 
-<img src="./assets/databricks-integration-form.png" style="width: 100%; height: auto;" />
+![Databricks Integration Form](./assets/databricks-integration-form.png)
 
 Click **Save Configuration**, then **Sync Secrets to Databricks**. A "Last sync: success" confirmation appears when the sync completes.
 
-<img src="./assets/databricks-sync-success.png" style="width: 100%; height: auto;" />
+![Databricks Sync Success](./assets/databricks-sync-success.png)
 
 ### Accessing Secrets in Databricks
 
 Open a new Notebook in Databricks (**New → Notebook**).
 
-<img src="./assets/databricks-new-notebook.png" style="width: 70%; height: auto;" />
+![Databricks New Notebook](./assets/databricks-new-notebook.png)
 
 List all available secret scopes — you should see `nexus`:
 
@@ -85,7 +85,7 @@ List all available secret scopes — you should see `nexus`:
 dbutils.secrets.listScopes()
 ```
 
-<img src="./assets/databricks-list-scopes.png" style="width: 100%; height: auto;" />
+![Databricks List Scopes](./assets/databricks-list-scopes.png)
 
 List all secrets in the `nexus` scope:
 
@@ -93,7 +93,7 @@ List all secrets in the `nexus` scope:
 dbutils.secrets.list("nexus")
 ```
 
-<img src="./assets/databricks-list-secrets.png" style="width: 100%; height: auto;" />
+![Databricks List Secrets](./assets/databricks-list-secrets.png)
 
 Read a specific secret:
 
@@ -102,7 +102,7 @@ admin_email = dbutils.secrets.get(scope="nexus", key="admin_email")
 print(admin_email)
 ```
 
-<img src="./assets/databricks-get-secret.png" style="width: 100%; height: auto;" />
+![Databricks Get Secret](./assets/databricks-get-secret.png)
 
 Secret values are always shown as `[REDACTED]` in Databricks notebook output — this is intentional and means the secret was read successfully.
 
