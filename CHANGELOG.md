@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.4](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.3...v0.51.4) (2026-04-20)
+
+
+### 🐛 Bug Fixes
+
+* **docs:** Address PR review comments ([f23e438](https://github.com/stefanko-ch/Nexus-Stack/commit/f23e438aaf5bff472a234273cc9db1ddb0cf2233))
+* **docs:** Address PR review comments ([9065107](https://github.com/stefanko-ch/Nexus-Stack/commit/906510742a3858860e807c5f7311bc9853867548))
+* **docs:** Convert HTML img tags to markdown in user-guides ([f6e080d](https://github.com/stefanko-ch/Nexus-Stack/commit/f6e080daf88397ea7cde7374475e03fce996fb33))
+* **docs:** Convert HTML img tags to markdown syntax in user-guides ([cb5a337](https://github.com/stefanko-ch/Nexus-Stack/commit/cb5a337a24bdf89853762aff89e7499df3e4b2ee))
+
 ## [0.51.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.2...v0.51.3) (2026-04-20)
 
 
