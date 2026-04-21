@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.5](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.4...v0.51.5) (2026-04-21)
+
+
+### 🐛 Bug Fixes
+
+* **docs:** Address PR review comment — renumber duplicate list item ([aad55df](https://github.com/stefanko-ch/Nexus-Stack/commit/aad55df585fc8c1864b2ff0b912c0b35a49a329a))
+* **docs:** Make user-guide internal links resolve on the website ([032f8ac](https://github.com/stefanko-ch/Nexus-Stack/commit/032f8ac262254734e00e989aaf8c901a23f84d86))
+* **docs:** Make user-guide internal links resolve on the website ([41d6da1](https://github.com/stefanko-ch/Nexus-Stack/commit/41d6da1bd54ba980784737385c31400959e1d01e))
+* **tutorials:** Address PR review comment — normalize Bluesky capitalization ([ea3db6b](https://github.com/stefanko-ch/Nexus-Stack/commit/ea3db6b5b6b221ec7d2b602883cee6c9ec44ebe7))
+* **tutorials:** Address PR review comments ([f22a7fa](https://github.com/stefanko-ch/Nexus-Stack/commit/f22a7fa6f4603ca17a30187170e1afc9b8d23da3))
+* **tutorials:** Address PR review comments ([d54357e](https://github.com/stefanko-ch/Nexus-Stack/commit/d54357ef99c2bae269199a88e92411e6383d62c1))
+* **tutorials:** Address PR review comments ([5e03aa0](https://github.com/stefanko-ch/Nexus-Stack/commit/5e03aa04a4d91efb124a5892895f0513987d1826))
+* **tutorials:** Address PR review comments ([9677567](https://github.com/stefanko-ch/Nexus-Stack/commit/96775672d8b435df9095d4aa94500d85c45992d6))
+* **tutorials:** Address PR review comments ([5fcc300](https://github.com/stefanko-ch/Nexus-Stack/commit/5fcc300b2877a13a950ff1639e91cc14096714c6))
+* **tutorials:** Address PR review comments ([cd7966c](https://github.com/stefanko-ch/Nexus-Stack/commit/cd7966c73856080849843e4d7d58824dbb0b957c))
+* **tutorials:** Address PR review comments ([bcec169](https://github.com/stefanko-ch/Nexus-Stack/commit/bcec169e959fd1e37fec130972c80371f0438ab8))
+* **tutorials:** Address second-round PR review comments ([f9a756d](https://github.com/stefanko-ch/Nexus-Stack/commit/f9a756de9c2d4e0c2c48fbb9c4ca723e1d6edd82))
+
+
+### 📚 Documentation
+
+* **claude:** Add guardrail for internal markdown link extensions ([43e28fd](https://github.com/stefanko-ch/Nexus-Stack/commit/43e28fd4544f098fd28996511a1d122a1e3f6ede))
+* **claude:** Fix PR reference in internal-links guardrail ([934cec1](https://github.com/stefanko-ch/Nexus-Stack/commit/934cec1440597a37f45ea707f4f8d37d5ac6d05e))
+* **tutorials:** Add 14 bite-sized tutorials for Kafka, Flink, and Spark workflows ([105ed02](https://github.com/stefanko-ch/Nexus-Stack/commit/105ed0275a577908457a70e75fb62f38ee19d231))
+* **tutorials:** Add 18 bite-sized tutorials for Kafka, Flink, and Spark workflows ([a5771cd](https://github.com/stefanko-ch/Nexus-Stack/commit/a5771cdf581d07cb9ce8f2b16be76017608f816f))
+* **tutorials:** Add four bite-sized Redpanda / Redpanda Connect tutorials ([ac0871a](https://github.com/stefanko-ch/Nexus-Stack/commit/ac0871ae15c0c3a58682e82cda95e6a25cc1ea09))
+* **tutorials:** Reorganise 18 tutorials into 5 category subfolders with landing pages ([e5a5b13](https://github.com/stefanko-ch/Nexus-Stack/commit/e5a5b13a2b4db8f17ba8c9c297863b6d345695d0))
+* **tutorials:** Reorganise 18 tutorials into category subfolders with landing pages ([88c5e4d](https://github.com/stefanko-ch/Nexus-Stack/commit/88c5e4d9a37b316ac5f9c6031a9b8649772bc988))
+
+
+### 🔧 Maintenance
+
+* **copilot:** Add repo-scoped PR review instructions + CLAUDE.md sync note ([2fe4eab](https://github.com/stefanko-ch/Nexus-Stack/commit/2fe4eab1c044bc1ad9634c8278dd2e53e3750473))
+
 ## [0.51.4](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.3...v0.51.4) (2026-04-20)
 
 
