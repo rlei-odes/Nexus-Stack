@@ -106,11 +106,11 @@ for i in range(12):
 Output (typical):
 
 ```
--> partition 0 offset 0
--> partition 1 offset 12
--> partition 2 offset 6
--> partition 3 offset 6
--> partition 0 offset 1
+key=<none>     -> partition 0 offset 0
+key=<none>     -> partition 1 offset 12
+key=<none>     -> partition 2 offset 6
+key=<none>     -> partition 3 offset 6
+key=<none>     -> partition 0 offset 1
 ...
 ```
 
