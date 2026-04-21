@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.6](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.5...v0.51.6) (2026-04-21)
+
+
+### 🐛 Bug Fixes
+
+* **scripts:** Address PR review comments — reduce escape to single backslash ([9377c1a](https://github.com/stefanko-ch/Nexus-Stack/commit/9377c1aacc600cad379336268282e063f22be1d4))
+* **scripts:** Correct shell escape in Redpanda SASL user creation ([178b9c2](https://github.com/stefanko-ch/Nexus-Stack/commit/178b9c2ce20e088725bdb6123c8cedb0a9025c47))
+* **scripts:** Correct shell escape in Redpanda SASL user creation ([3492514](https://github.com/stefanko-ch/Nexus-Stack/commit/3492514d8c76e176cf74b2b40050c83a8e173a2e))
+* **tutorials:** Put each category's landing page first in its sidebar group ([2c84be9](https://github.com/stefanko-ch/Nexus-Stack/commit/2c84be983434985da27ee9510f233e8a28ff2062))
+* **tutorials:** Put each category's landing page first in its sidebar group ([cd0b4ae](https://github.com/stefanko-ch/Nexus-Stack/commit/cd0b4ae8dac6b4fb6500de776313495cbe0d5451))
+
+
+### 📚 Documentation
+
+* **scripts:** Correct overclaimed 'process list exposure' comment ([75cb57a](https://github.com/stefanko-ch/Nexus-Stack/commit/75cb57ae0473a0cc6edfb9f88698c551757778fb))
+
 ## [0.51.5](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.4...v0.51.5) (2026-04-21)
 
 
