@@ -50,7 +50,7 @@ Execute the cell — it should return instantly with "success" in the console. T
 
 ### What each `WITH` option does
 
-- **`connector = 'kafka'`** — use the Kafka connector (built into Flink 1.x, works with Redpanda since wire-compatible)
+- **`connector = 'kafka'`** — Nexus-Stack's Flink image ships with the Kafka SQL connector JAR baked in (added via `stacks/flink/Dockerfile` — vanilla `flink:1.x` doesn't include it and would need the JAR added separately). Works against Redpanda since it's Kafka wire-compatible.
 - **`topic`** — which Kafka topic to read from
 - **`properties.bootstrap.servers`** — same hostname as your Python clients (`redpanda:9092` inside the Docker network)
 - **`properties.group.id`** — Kafka consumer group. If you have multiple Flink jobs reading the same topic, give each a different group ID so they each see all messages independently.

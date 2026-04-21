@@ -175,8 +175,8 @@ A streaming query has a **trigger** that controls how often a new micro-batch st
 
 - **Default** — start a new micro-batch as soon as the previous one finishes. Effectively continuous.
 - **`.trigger(processingTime="5 seconds")`** — start a new micro-batch every 5 seconds (wait if previous isn't done).
-- **`.trigger(once=True)`** — deprecated but still works. Run exactly one micro-batch, then stop. Useful for scheduled ETL.
-- **`.trigger(availableNow=True)`** — process everything currently available, then stop. The modern replacement for `trigger(once)`.
+- **`.trigger(once=True)`** — older single-batch option, still supported. Runs exactly one micro-batch then stops. Superseded by `availableNow`.
+- **`.trigger(availableNow=True)`** — recommended modern choice for bounded catch-up runs: process everything currently available, then stop. Unlike `once`, it can span multiple internal batches if the backlog is large.
 
 For real-time dashboards, default or `processingTime="2 seconds"`. For batchy pipelines that run on a cron, `availableNow`.
 
