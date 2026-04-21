@@ -93,7 +93,7 @@ Old pipeline is drained, new pipeline takes over. If the new YAML has a syntax e
 
 ## Update a specific field without re-sending the whole YAML
 
-Use **PATCH** with a JSON patch:
+Use **PATCH** with a JSON merge patch ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396) — a partial document that gets merged into the existing one, *not* the RFC 6902 `[{op, path, value}]` array format):
 
 ```bash
 curl -s -X PATCH http://redpanda-connect:4195/streams/bluesky \

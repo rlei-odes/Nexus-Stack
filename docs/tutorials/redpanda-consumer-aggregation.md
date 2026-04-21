@@ -55,7 +55,7 @@ python producer.py &
 In the same `~/agg-demo` directory, create `aggregator.py`:
 
 ```python
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, KafkaError
 import json, time
 from collections import defaultdict
 
@@ -93,7 +93,16 @@ try:
             window_start = now
 
         msg = consumer.poll(timeout=0.5)
-        if msg is None or msg.error():
+        if msg is None:
+            continue
+        if msg.error():
+            # _PARTITION_EOF is benign (reached the end of a partition,
+            # just waiting for more). Everything else — auth failures,
+            # broker unreachable, topic gone — should be visible so the
+            # reader isn't stuck in a silent infinite loop.
+            if msg.error().code() == KafkaError._PARTITION_EOF:
+                continue
+            print(f'Consumer error: {msg.error()}')
             continue
 
         data = json.loads(msg.value())
