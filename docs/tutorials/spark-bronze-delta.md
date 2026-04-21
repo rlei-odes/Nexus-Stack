@@ -49,7 +49,7 @@ Two things worth noting:
 Starting from the parsed stream from the previous tutorial:
 
 ```python
-from pyspark.sql.functions import col, from_json, to_timestamp
+from pyspark.sql.functions import col, from_json
 
 # ... kafka_options, sensor_schema as before ...
 

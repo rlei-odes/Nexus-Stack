@@ -34,7 +34,8 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, L
 sensor_schema = StructType([
     StructField("sensor",    StringType()),
     StructField("reading",   DoubleType()),
-    StructField("timestamp", LongType()),     # epoch ms or s, as stored
+    StructField("timestamp", LongType()),     # epoch seconds — producer emits `int(time.time())`
+                                              # (a float from `time.time()` would parse to NULL under PERMISSIVE mode)
 ])
 ```
 
@@ -140,12 +141,12 @@ high_readings = (
 Now you have a real event-time column (`event_ts`). Use it for correct windowing that tolerates late arrivals:
 
 ```python
-from pyspark.sql.functions import col, window, avg, count, to_timestamp
+from pyspark.sql.functions import col, window, avg, count, timestamp_seconds
 
 windowed = (
     parsed
-      .withColumn("event_time", to_timestamp(col("event_ts")))    # long → timestamp
-      .withWatermark("event_time", "30 seconds")                  # accept events up to 30s late
+      .withColumn("event_time", timestamp_seconds(col("event_ts")))  # epoch-seconds long → timestamp
+      .withWatermark("event_time", "30 seconds")                     # accept events up to 30s late
       .groupBy(
           window("event_time", "1 minute"),
           col("sensor"),

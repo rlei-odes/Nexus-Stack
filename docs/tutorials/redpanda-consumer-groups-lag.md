@@ -68,7 +68,8 @@ The most important view. Columns:
 | 1250 | 1250 | 0 | Consumer is caught up in real time |
 | 1150 | 1250 | 100 | Consumer is 100 messages behind — probably catching up |
 | 500 | 50000 | 49500 | Consumer is way behind — either just started with `earliest`, or it can't keep up |
-| 800 | 800 | 0 | (then refresh) 900 | 1000 | 100 | Producer is writing faster than consumer is reading |
+| 800 | 800 | 0 | Caught up this instant |
+| 900 | 1000 | 100 | A moment later, producer is writing faster than consumer is reading |
 
 ### Offsets per partition
 

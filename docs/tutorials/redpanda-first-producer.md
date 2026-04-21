@@ -57,7 +57,8 @@ value = json.dumps({                     # the payload, as bytes on the wire
     'sensor':    'sensor-01',
     'reading':   42.5,
     'unit':      'celsius',
-    'timestamp': time.time()
+    'timestamp': int(time.time()),       # epoch seconds as integer — Spark/Flink schemas further down
+                                         # expect BIGINT here; a float would produce NULL on strict parse
 })
 
 # 3. Send and wait for the broker to acknowledge.
@@ -117,6 +118,6 @@ If you re-run the script, you'll see the offset tick up: `1`, `2`, `3`…
 
 ## Next steps
 
-- **Read your events back** with a Python consumer (tutorial coming)
+- **Read your events back** with a [Python consumer](/docs/tutorials/redpanda-python-consumer/)
 - **Send batches** and observe partition distribution with different keys
 - **Stream continuously** from an external source — see [Stream Bluesky firehose into Redpanda](/docs/tutorials/bluesky-to-redpanda-connect/) for an example that doesn't require writing Python at all

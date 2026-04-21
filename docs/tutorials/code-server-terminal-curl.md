@@ -22,9 +22,9 @@ You land in a familiar VS Code interface — same shortcuts, same extensions, sa
 
 Three equivalent ways:
 
-- **Keyboard:** `` Ctrl+` `` (backtick) on Windows/Linux, `` Cmd+` `` on macOS
+- **Keyboard:** `` Ctrl+` `` (backtick) — same on Windows, Linux, and macOS
 - **Menu:** **Terminal → New Terminal**
-- **Command palette:** `Ctrl+Shift+P` → type "terminal: create"
+- **Command palette:** `Ctrl+Shift+P` (Windows/Linux) or `Cmd+Shift+P` (macOS) → type "terminal: create"
 
 The terminal opens at the bottom of the window. Default shell is `bash`, default working directory is your home (`/home/coder` or similar).
 

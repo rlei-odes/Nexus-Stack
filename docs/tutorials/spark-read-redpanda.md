@@ -182,7 +182,7 @@ Spark's Kafka source commits offsets to a Kafka consumer group named `spark-kafk
 ## The config keys that matter
 
 - **`kafka.bootstrap.servers`** — public Redpanda URL (with port)
-- **`kafka.security.protocol = SASL_PLAINTEXT`** — SASL over plain TCP. Nexus-Stack doesn't terminate TLS here; the wire is plain but auth is SASL-encrypted. For production-grade you'd want `SASL_SSL`, but that requires additional cert setup.
+- **`kafka.security.protocol = SASL_PLAINTEXT`** — SASL authentication over plain TCP. **No transport encryption**: all Kafka traffic, including message payloads, goes over the network in plaintext. SCRAM-SHA-256 protects the password itself (the password never crosses the wire — only a salted hash challenge does), but not the messages you send afterward. For encryption in transit use `SASL_SSL`, which requires additional certificate setup on the broker and the client.
 - **`kafka.sasl.mechanism = SCRAM-SHA-256`** — matches how Nexus-Stack provisions the user. Don't change this.
 - **`kafka.sasl.jaas.config`** — Java-style config string embedding username and password. The exact form is important; copy the template above.
 - **`subscribe`** — topic name(s). Comma-separated for multiple topics. Use `subscribePattern` for regex.

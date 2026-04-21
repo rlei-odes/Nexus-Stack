@@ -40,7 +40,7 @@ def ack(err, msg):
 # Send 6 messages per house = 18 total
 for i in range(6):
     for house in houses:
-        value = json.dumps({'house': house, 'reading': i, 'timestamp': time.time()})
+        value = json.dumps({'house': house, 'reading': i, 'timestamp': int(time.time())})
         producer.produce(
             'keys-demo',
             key=house.encode(),

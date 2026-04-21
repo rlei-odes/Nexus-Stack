@@ -55,8 +55,13 @@ try:
             continue
 
         # 3. Process the message.
+        #    key can be None (producers can omit it), value can be None
+        #    for "tombstone" records used in log-compacted topics. Guard
+        #    both before decoding so the loop doesn't crash on real topics.
+        key   = msg.key().decode()   if msg.key()   is not None else '<null>'
+        value = msg.value().decode() if msg.value() is not None else '<null>'
         print(f'[{msg.topic()} p{msg.partition()} o{msg.offset()}] '
-              f'key={msg.key().decode()} value={msg.value().decode()}')
+              f'key={key} value={value}')
 finally:
     consumer.close()
 ```
