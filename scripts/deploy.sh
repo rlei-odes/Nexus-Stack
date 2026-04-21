@@ -2849,8 +2849,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     done
 
     if [ "$GITEA_READY" = "true" ]; then
-        # Check if admin user already exists
-        ADMIN_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null | grep -c '$ADMIN_USERNAME'" || echo "0")
+        # Check if admin user already exists.
+        # awk-column-exact on the Username column (\$2), NOT grep-substring on
+        # the whole line. grep -c '$NAME' falsely matches when the name appears
+        # anywhere in the output — e.g. as a substring of another user's email
+        # address. For the admin block this is only latent (the admin almost
+        # always exists, so a true or false positive both route to the SYNC
+        # branch which was going to run anyway), but the same pattern on the
+        # USER_EXISTS check below is a confirmed bug (see v0.51.7 stderr: on
+        # stacks where the admin email contains the user's username substring,
+        # USER_EXISTS=1 wrongly, CREATE is skipped, the user never exists,
+        # SYNC then fails). Fix the detection in both places for consistency.
+        ADMIN_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null | awk -v name='$ADMIN_USERNAME' 'NR>1 && \$2==name {c++} END{print c+0}'" || echo "0")
 
         if [ "$ADMIN_EXISTS" -gt 0 ]; then
             # Sync password to match current OpenTofu state (persistent volume may have old password).
@@ -2889,7 +2899,15 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # Extract username from user_email (part before @)
         GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
         if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
-            USER_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null | grep -c '$GITEA_USER_USERNAME'" || echo "0")
+            # Same column-exact awk pattern as the admin block above. This is
+            # the block where the grep-substring form actively broke things:
+            # GITEA_USER_USERNAME is derived from USER_EMAIL prefix (e.g.
+            # stefan.koch from stefan.koch@hslu.ch). If ADMIN_EMAIL also ends
+            # in @hslu.ch (or otherwise contains the user's username as a
+            # substring), `grep -c 'stefan.koch'` matches the admin's email
+            # column — USER_EXISTS=1, CREATE never runs, user is never
+            # created, subsequent SYNC fails because the target doesn't exist.
+            USER_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null | awk -v name='$GITEA_USER_USERNAME' 'NR>1 && \$2==name {c++} END{print c+0}'" || echo "0")
 
             if [ "$USER_EXISTS" -gt 0 ]; then
                 # Sync password to match current OpenTofu state (persistent volume may have old password).
