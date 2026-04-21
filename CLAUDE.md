@@ -789,7 +789,7 @@ Use prefixes that match commit types:
 
 3. **Keep `.github/copilot-instructions.md` in sync with larger changes.** That file is what GitHub's Copilot PR reviewer uses to check every incoming PR. It describes project-specific conventions, security rules, and "do not flag this" trade-offs. If a change in this PR would invalidate any statement in `.github/copilot-instructions.md` — new naming convention, new stack-addition step, new security rule, an issue getting closed that's referenced there, a convention flipping (e.g. the tutorial-link format change tracked in #456 eventually landing) — update the Copilot instructions in the same PR. Stale instructions turn the reviewer into a noise generator.
 
-3. **Stack count:** If stacks were added or removed, update the count in `README.md` heading `## Available Stacks (N)` and verify badges match the table.
+4. **Stack count:** If stacks were added or removed, update the count in `README.md` heading `## Available Stacks (N)` and verify badges match the table.
 
 ## Documentation Image Syntax
 
