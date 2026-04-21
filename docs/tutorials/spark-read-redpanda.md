@@ -53,10 +53,16 @@ For anything you'd run unattended, use a secret scope instead. Create it once fr
 
 ```bash
 databricks secrets create-scope nexus
-databricks secrets put-secret nexus REDPANDA_BOOTSTRAP --string-value 'host:port'
-databricks secrets put-secret nexus REDPANDA_USERNAME  --string-value 'user'
-databricks secrets put-secret nexus REDPANDA_PASSWORD  --string-value 'pass'
+
+# Run each put-secret call without --string-value. The CLI opens your
+# $EDITOR for secret entry — the value is never on the command line,
+# never in your shell history, and never in /proc/<pid>/cmdline.
+databricks secrets put-secret nexus REDPANDA_BOOTSTRAP
+databricks secrets put-secret nexus REDPANDA_USERNAME
+databricks secrets put-secret nexus REDPANDA_PASSWORD
 ```
+
+> **Why not `--string-value`?** That flag puts the secret value on the command line, which ends up in shell history (`~/.bash_history`, `~/.zsh_history`) and in `ps`/process-listing output. Fine for throwaway test values, not for real credentials. The editor-based flow above is the safest option; alternatives are `--string-value-file path/to/file` if you've already written the secret to a file.
 
 Then in the notebook:
 
