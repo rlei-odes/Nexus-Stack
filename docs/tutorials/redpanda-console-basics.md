@@ -1,7 +1,7 @@
 ---
 title: "Redpanda Console basics"
 description: "Open the Redpanda Console web UI and navigate topics, messages, partitions, and consumer groups"
-order: 1
+order: 3
 ---
 
 # Redpanda Console basics

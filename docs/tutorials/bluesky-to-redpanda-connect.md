@@ -1,7 +1,7 @@
 ---
 title: "Stream Bluesky firehose into Redpanda"
 description: "Use Redpanda Connect to pipe the public Bluesky Jetstream WebSocket into a Kafka topic — zero code"
-order: 4
+order: 12
 ---
 
 # Stream Bluesky firehose into Redpanda

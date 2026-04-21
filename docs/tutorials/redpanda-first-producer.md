@@ -1,7 +1,7 @@
 ---
 title: "Send your first event with a Python producer"
 description: "Write a minimal Python producer that sends a single JSON event to a Redpanda topic"
-order: 3
+order: 6
 ---
 
 # Send your first event with a Python producer

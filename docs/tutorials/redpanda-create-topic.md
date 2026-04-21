@@ -1,7 +1,7 @@
 ---
 title: "Create a topic in Redpanda Console"
 description: "Create a Kafka topic through the Redpanda Console UI and understand partitions and replication factor"
-order: 2
+order: 4
 ---
 
 # Create a topic in Redpanda Console
