@@ -2856,15 +2856,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             # Sync password to match current OpenTofu state (persistent volume may have old password).
             # Capture stderr so when the sync fails we see WHY. Previously this block
             # used `>/dev/null 2>&1` and silently discarded the error, making diagnosis
-            # impossible (see the dotted-username failure class, issue #NNN). Matches
+            # impossible for the dotted-username and similar failure classes. Matches
             # the 2>&1 → RESULT var pattern the CREATE path below already uses.
+            # The failure branch uses printf so CHANGE_OUTPUT is printed verbatim —
+            # echo -e would interpret backslash sequences in the captured stderr
+            # (e.g. Gitea errors mentioning `\w+` or embedded escape codes).
             echo "  Syncing Gitea admin password..."
             CHANGE_OUTPUT=$(ssh nexus "docker exec -u git gitea gitea admin user change-password \
                 --username '$ADMIN_USERNAME' \
                 --password '$GITEA_ADMIN_PASS' \
                 --must-change-password=false" 2>&1) \
                 && echo -e "${GREEN}  ✓ Gitea admin password synced${NC}" \
-                || echo -e "${YELLOW}  ⚠ Could not sync Gitea admin password: ${CHANGE_OUTPUT}${NC}"
+                || printf "${YELLOW}  ⚠ Could not sync Gitea admin password: %s${NC}\n" "$CHANGE_OUTPUT"
         else
             # Create admin user via CLI
             GITEA_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
@@ -2896,13 +2899,15 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 # sync on every second-or-later Spin Up. Template stack (sk@…) works.
                 # Without the output here we can't tell whether it's a CLI limitation,
                 # a sanitized-name mismatch, or something else — so make it vocal.
+                # Failure branch uses printf (not echo -e) so CHANGE_OUTPUT is printed
+                # verbatim — see admin block above.
                 echo "  Syncing Gitea user password..."
                 CHANGE_OUTPUT=$(ssh nexus "docker exec -u git gitea gitea admin user change-password \
                     --username '$GITEA_USER_USERNAME' \
                     --password '$GITEA_USER_PASS' \
                     --must-change-password=false" 2>&1) \
                     && echo -e "${GREEN}  ✓ Gitea user password synced${NC}" \
-                    || echo -e "${YELLOW}  ⚠ Could not sync Gitea user password: ${CHANGE_OUTPUT}${NC}"
+                    || printf "${YELLOW}  ⚠ Could not sync Gitea user password: %s${NC}\n" "$CHANGE_OUTPUT"
             else
                 GITEA_USER_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
                     --username '$GITEA_USER_USERNAME' \
