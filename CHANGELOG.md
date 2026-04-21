@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.7](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.6...v0.51.7) (2026-04-21)
+
+
+### 🐛 Bug Fixes
+
+* **scripts:** Address PR review comments — printf for captured stderr + drop placeholder ([534a961](https://github.com/stefanko-ch/Nexus-Stack/commit/534a961103736e57d1c77dafc1ad0d2ef89fc86c))
+* **scripts:** Surface Gitea change-password stderr for diagnosis ([70dc3d9](https://github.com/stefanko-ch/Nexus-Stack/commit/70dc3d98384f6a027c4768384d3f12468dd6cab6))
+* **scripts:** Surface Gitea change-password stderr for diagnosis (Stage 1) ([7c33aaf](https://github.com/stefanko-ch/Nexus-Stack/commit/7c33aafcb0a157487c71c09e928c2f7a59f82be2))
+
 ## [0.51.6](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.5...v0.51.6) (2026-04-21)
 
 
