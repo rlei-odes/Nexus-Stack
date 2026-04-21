@@ -2291,9 +2291,32 @@ if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS"
             exit 0
         fi
 
-        # Create SASL user (password via env var to avoid process list exposure)
+        # Create SASL user. The password is passed to the container via
+        # `docker exec -e RPK_PASS=…` and the `sh -c` payload references it
+        # as $RPK_PASS.
+        #
+        # Note on process-list exposure: this is NOT a hiding mechanism.
+        # The password still appears in the `ssh` command line on the
+        # runner, in `docker exec`'s args on the nexus server, and after
+        # `sh -c` expansion in rpk's argv inside the container. Proper
+        # stdin-based handling was tried in 7c3c530 (`--password-stdin`)
+        # and reverted. Env-var form is kept as the least-bad option
+        # short of a full secret-handling refactor — same *visibility* as
+        # the pre-env-var version, not better.
+        #
+        # The escape on RPK_PASS is subtle. Inside the outer double-quoted
+        # string on the runner, bash treats \$ as a literal $ (no
+        # expansion) — this is what we want, because RPK_PASS is unset on
+        # the runner and `set -u` would crash otherwise. What reaches ssh
+        # is `…"$RPK_PASS"…`. The remote bash passes that verbatim to
+        # `sh -c` (single-quoted payload), and the *container* sh expands
+        # $RPK_PASS from the docker -e env. Do NOT add a second backslash
+        # (\\\$RPK_PASS): that would reach the container as "\$RPK_PASS",
+        # which POSIX sh treats as a literal dollar inside double quotes —
+        # the user would get created with the string `$RPK_PASS` as their
+        # password. Verified empirically both ways.
         USER_RESULT=$(ssh nexus "docker exec -e RPK_PASS='$REDPANDA_ADMIN_PASS' redpanda \
-            sh -c 'rpk acl user create nexus-redpanda --password \"\\$RPK_PASS\" --mechanism SCRAM-SHA-256' 2>&1" || echo "")
+            sh -c 'rpk acl user create nexus-redpanda --password \"\$RPK_PASS\" --mechanism SCRAM-SHA-256' 2>&1" || echo "")
         echo "  rpk user create result: $USER_RESULT"
 
         # Configure superuser (grants full permissions without ACLs)
