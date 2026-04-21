@@ -15,7 +15,7 @@ The sweet spot for Flink SQL: when you'd otherwise write hundreds of lines of Py
 
 1. **[Dinky first-time setup: register your Flink cluster](./dinky-setup)** — the one-time config step that makes Dinky talk to the JobManager. Credentials from Infisical.
 2. **[Query a Redpanda topic with Flink SQL](./flink-sql-on-redpanda)** — `CREATE TABLE` with the Kafka connector, continuous `SELECT`, windowed aggregation, filter-and-write-back.
-3. **[BlueSky end-to-end: Redpanda Connect → Flink SQL](./bluesky-end-to-end)** — a guided full-stack walkthrough that chains the Bluesky ingest and the Flink query into one exercise.
+3. **[Bluesky end-to-end: Redpanda Connect → Flink SQL](./bluesky-end-to-end)** — a guided full-stack walkthrough that chains the Bluesky ingest and the Flink query into one exercise.
 
 ## Task slots, the thing that trips everyone up
 
