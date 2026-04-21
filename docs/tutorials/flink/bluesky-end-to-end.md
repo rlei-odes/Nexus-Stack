@@ -1,5 +1,7 @@
 ---
-title: "BlueSky Real-Time Streaming with Flink SQL"
+title: "BlueSky end-to-end: Redpanda Connect → Flink SQL"
+description: "End-to-end walkthrough that chains the Bluesky-to-Redpanda ingest and the Flink-SQL-on-Redpanda query into one guided run"
+order: 3
 ---
 
 # BlueSky Real-Time Streaming with Flink SQL

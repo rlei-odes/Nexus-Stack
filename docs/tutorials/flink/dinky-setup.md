@@ -1,7 +1,7 @@
 ---
 title: "Dinky first-time setup: register your Flink cluster"
 description: "The one-time config step that makes Dinky talk to the Flink JobManager — where everyone gets stuck on first login"
-order: 13
+order: 1
 ---
 
 # Dinky first-time setup: register your Flink cluster
@@ -117,4 +117,4 @@ If someone changed the admin password from inside Dinky (possible but unusual) a
 
 ## What's next in Dinky
 
-Now that the cluster is registered, you can query any Flink SQL source. The most common starting point on Nexus-Stack is reading from a Redpanda topic — see [Query a Redpanda topic with Flink SQL](/docs/tutorials/dinky-flink-sql-redpanda/).
+Now that the cluster is registered, you can query any Flink SQL source. The most common starting point on Nexus-Stack is reading from a Redpanda topic — see [Query a Redpanda topic with Flink SQL](/docs/tutorials/flink/flink-sql-on-redpanda/).

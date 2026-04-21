@@ -1,7 +1,7 @@
 ---
 title: "Write a Kafka stream to a Bronze Delta table"
 description: "Persist a Redpanda stream to a Delta table in Unity Catalog, with a checkpoint so restarts resume where they left off"
-order: 18
+order: 4
 ---
 
 # Write a Kafka stream to a Bronze Delta table
@@ -12,7 +12,7 @@ The new concepts compared to the previous tutorials: **Delta as a streaming sink
 
 ## Prerequisites
 
-- Spark reading Redpanda with parsed columns — see [Parse JSON from a Kafka topic](/docs/tutorials/spark-parse-json-schema/)
+- Spark reading Redpanda with parsed columns — see [Parse JSON from a Kafka topic](/docs/tutorials/spark/parse-json-schema/)
 - Databricks workspace with **Unity Catalog** enabled. Free Edition works.
 - A catalog and schema you can write to. Default Free Edition setup: `workspace.default`. Examples below use `workspace.default`.
 - A **UC volume** for checkpoint storage. If you don't have one, create it:
@@ -163,7 +163,7 @@ Every row = one committed streaming micro-batch. Columns show operation type (`S
 
 **Query fails with `CheckpointLocation already in use`** — another streaming query is using the same checkpoint. This is a safety check. Stop the other query or use a different checkpoint.
 
-**Query runs but Delta table is empty** — check for silent JSON parse failures (all columns from the payload are NULL). See [Parse JSON with a schema](/docs/tutorials/spark-parse-json-schema/) for the `bad_rows` pattern.
+**Query runs but Delta table is empty** — check for silent JSON parse failures (all columns from the payload are NULL). See [Parse JSON with a schema](/docs/tutorials/spark/parse-json-schema/) for the `bad_rows` pattern.
 
 **Streaming metrics look stuck** — click the "Metrics" tab of the streaming query in the notebook's Query Progress view. If `numInputRows = 0` batch after batch, the source isn't producing. If it's high but output is slow, Delta writes might be the bottleneck (check disk I/O on the cluster).
 

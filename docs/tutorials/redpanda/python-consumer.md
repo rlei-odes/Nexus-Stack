@@ -1,18 +1,18 @@
 ---
 title: "Read events with a Python consumer"
 description: "Write a minimal Python consumer that reads events from a Redpanda topic, the companion to the producer tutorial"
-order: 7
+order: 5
 ---
 
 # Read events with a Python consumer
 
-The companion to [Send your first event with a Python producer](/docs/tutorials/redpanda-first-producer/). Once you have events in a topic, a **consumer** is the program that reads them back. This tutorial covers the minimal consumer loop, consumer groups, and the offset semantics that trip up most people on day one.
+The companion to [Send your first event with a Python producer](/docs/tutorials/redpanda/first-producer/). Once you have events in a topic, a **consumer** is the program that reads them back. This tutorial covers the minimal consumer loop, consumer groups, and the offset semantics that trip up most people on day one.
 
 ## Prerequisites
 
 - Nexus-Stack with `redpanda` and `code-server` enabled
-- A topic with some messages in it — produce a few with [the producer tutorial](/docs/tutorials/redpanda-first-producer/) first
-- Python environment set up — see [Python venv with uv](/docs/tutorials/code-server-python-uv/)
+- A topic with some messages in it — produce a few with [the producer tutorial](/docs/tutorials/redpanda/first-producer/) first
+- Python environment set up — see [Python venv with uv](/docs/tutorials/code-server/python-uv/)
 
 ## Set up the environment
 
@@ -132,6 +132,6 @@ rpk group seek demo-consumer --to start --topic sensors
 
 ## Next steps
 
-- [Inspect consumer groups and lag in the Console](/docs/tutorials/redpanda-consumer-groups-lag/) — how to tell if a consumer is keeping up
-- [Partitions & keys hands-on](/docs/tutorials/redpanda-partitions-keys/) — what determines which partition a message lands on
-- [Aggregate events in a consumer](/docs/tutorials/redpanda-consumer-aggregation/) — a tumbling-window aggregation in Python
+- [Inspect consumer groups and lag in the Console](/docs/tutorials/redpanda/consumer-groups-lag/) — how to tell if a consumer is keeping up
+- [Partitions & keys hands-on](/docs/tutorials/redpanda/partitions-keys/) — what determines which partition a message lands on
+- [Aggregate events in a consumer](/docs/tutorials/redpanda/consumer-aggregation/) — a tumbling-window aggregation in Python

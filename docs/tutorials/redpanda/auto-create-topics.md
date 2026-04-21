@@ -1,7 +1,7 @@
 ---
 title: "Toggle auto-create topics in Redpanda"
 description: "Flip cluster.auto_create_topics_enabled on or off via the admin API — one curl call"
-order: 5
+order: 3
 ---
 
 # Toggle auto-create topics in Redpanda
@@ -11,7 +11,7 @@ Redpanda has a cluster-wide setting that decides what happens when a producer wr
 ## Prerequisites
 
 - Nexus-Stack with `redpanda` and `code-server` enabled
-- Familiar with the code-server terminal — see [Run curl in the code-server terminal](/docs/tutorials/code-server-terminal-curl/)
+- Familiar with the code-server terminal — see [Run curl in the code-server terminal](/docs/tutorials/code-server/terminal-curl/)
 
 ## Check the current state
 
@@ -43,7 +43,7 @@ Expected response:
 
 (`N` is some number — the config revision increments every time you change cluster config.)
 
-From now on, producers writing to a non-existent topic get rejected instead of silently creating a new one. You have to create topics explicitly — see [Create a topic in Redpanda Console](/docs/tutorials/redpanda-create-topic/).
+From now on, producers writing to a non-existent topic get rejected instead of silently creating a new one. You have to create topics explicitly — see [Create a topic in Redpanda Console](/docs/tutorials/redpanda/create-topic/).
 
 ## Flip it on (permissive mode — the Nexus-Stack default)
 
@@ -87,5 +87,5 @@ This is persistent across Redpanda restarts. It survives `docker restart redpand
 
 ## Next steps
 
-- [Stream Bluesky firehose into Redpanda](/docs/tutorials/bluesky-to-redpanda-connect/) — a streaming pipeline that relies on auto-create
-- [Create a topic in Redpanda Console](/docs/tutorials/redpanda-create-topic/) — the explicit-creation path
+- [Stream Bluesky firehose into Redpanda](/docs/tutorials/redpanda-connect/bluesky-stream/) — a streaming pipeline that relies on auto-create
+- [Create a topic in Redpanda Console](/docs/tutorials/redpanda/create-topic/) — the explicit-creation path

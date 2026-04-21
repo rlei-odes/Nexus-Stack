@@ -1,7 +1,7 @@
 ---
 title: "Spark Structured Streaming 101"
 description: "First streaming query in Databricks with the rate source and memory sink — no Kafka required"
-order: 15
+order: 1
 ---
 
 # Spark Structured Streaming 101
@@ -164,7 +164,7 @@ Where to put it depends on your workspace:
 .option("checkpointLocation", "dbfs:/tmp/spark-checkpoints/my_query")
 ```
 
-- **UC Volumes** (`/Volumes/...`) — the right answer for persistent production pipelines; the volume is governed, tracked, and survives cluster restarts. The [Bronze Delta tutorial](/docs/tutorials/spark-bronze-delta/) uses this path.
+- **UC Volumes** (`/Volumes/...`) — the right answer for persistent production pipelines; the volume is governed, tracked, and survives cluster restarts. The [Bronze Delta tutorial](/docs/tutorials/spark/bronze-delta/) uses this path.
 - **DBFS** (`dbfs:/...`) — the pre-UC Databricks filesystem. Fine for development and throwaway queries. Write access is governed by workspace ACLs rather than UC.
 
 Checkpoint location is per-query. Give each query its own directory. Never share a checkpoint across queries — results are undefined.
@@ -201,5 +201,5 @@ Now you can read anything Spark knows about — including Redpanda.
 
 ## Next steps
 
-- [Read a Redpanda topic from Spark](/docs/tutorials/spark-read-redpanda/) — same pattern, real source
-- [Parse JSON with a schema](/docs/tutorials/spark-parse-json-schema/) — turn Kafka's raw bytes into typed columns
+- [Read a Redpanda topic from Spark](/docs/tutorials/spark/read-redpanda/) — same pattern, real source
+- [Parse JSON with a schema](/docs/tutorials/spark/parse-json-schema/) — turn Kafka's raw bytes into typed columns

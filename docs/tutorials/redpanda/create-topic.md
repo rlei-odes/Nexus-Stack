@@ -1,7 +1,7 @@
 ---
 title: "Create a topic in Redpanda Console"
 description: "Create a Kafka topic through the Redpanda Console UI and understand partitions and replication factor"
-order: 4
+order: 2
 ---
 
 # Create a topic in Redpanda Console
@@ -11,7 +11,7 @@ A **topic** is a named stream of events — think of it as a table that's append
 ## Prerequisites
 
 - Nexus-Stack deployment running with `redpanda` and `redpanda-console` enabled
-- Familiar with the Console layout — see [Redpanda Console basics](/docs/tutorials/redpanda-console-basics/)
+- Familiar with the Console layout — see [Redpanda Console basics](/docs/tutorials/redpanda/console-basics/)
 
 ## Create the topic
 
@@ -63,7 +63,7 @@ Click the new topic in the Topics list:
 - **Configuration** tab: `cleanup.policy=delete`, `retention.ms=604800000` (one week in ms)
 - **Messages** tab: empty, with a note about "No messages found in the selected time range"
 
-Next: [send your first event into it](/docs/tutorials/redpanda-first-producer/).
+Next: [send your first event into it](/docs/tutorials/redpanda/first-producer/).
 
 ## Common mistakes
 
@@ -75,4 +75,4 @@ Next: [send your first event into it](/docs/tutorials/redpanda-first-producer/).
 
 Topics auto-create on first `producer.produce()` when the cluster has `auto_create_topics_enabled=true`. On Nexus-Stack's default Redpanda config, this is **on** (see `stacks/redpanda/config/redpanda.yaml`), so a producer writing to a non-existent topic will quietly create it with default settings (1 partition, replication factor 1, 1-week retention).
 
-Useful for prototyping, risky for production — typos silently create stray topics instead of failing loudly. If you want explicit topic creation only, see [Toggle auto-create topics in Redpanda](/docs/tutorials/redpanda-auto-create-topics/) for the admin-API call to flip it off.
+Useful for prototyping, risky for production — typos silently create stray topics instead of failing loudly. If you want explicit topic creation only, see [Toggle auto-create topics in Redpanda](/docs/tutorials/redpanda/auto-create-topics/) for the admin-API call to flip it off.

@@ -1,7 +1,7 @@
 ---
 title: "Inspect consumer groups and lag in the Console"
 description: "Read the Consumer Groups view in Redpanda Console — what Stable, Rebalancing, and Lag actually mean"
-order: 8
+order: 6
 ---
 
 # Inspect consumer groups and lag in the Console
@@ -11,7 +11,7 @@ order: 8
 ## Prerequisites
 
 - Nexus-Stack with `redpanda` and `redpanda-console` enabled
-- At least one consumer group currently exists — run the [Python consumer tutorial](/docs/tutorials/redpanda-python-consumer/) first to create one
+- At least one consumer group currently exists — run the [Python consumer tutorial](/docs/tutorials/redpanda/python-consumer/) first to create one
 
 ## Open the view
 
@@ -129,5 +129,5 @@ Output includes all members, lag, offsets, and state — same as the UI, in one 
 
 ## Next steps
 
-- [Partitions & keys hands-on](/docs/tutorials/redpanda-partitions-keys/) — understand which partition a message lands on
-- [Aggregate events in a consumer](/docs/tutorials/redpanda-consumer-aggregation/) — a Python consumer that processes windowed aggregates
+- [Partitions & keys hands-on](/docs/tutorials/redpanda/partitions-keys/) — understand which partition a message lands on
+- [Aggregate events in a consumer](/docs/tutorials/redpanda/consumer-aggregation/) — a Python consumer that processes windowed aggregates
