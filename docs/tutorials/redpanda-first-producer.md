@@ -110,7 +110,7 @@ If you re-run the script, you'll see the offset tick up: `1`, `2`, `3`…
 
 ## Common errors
 
-**`_MSGTIMEDOUT`** — the broker didn't acknowledge within the timeout. Usually means: topic doesn't exist and auto-creation is off. Create the topic first (see [Create a topic](/docs/tutorials/redpanda-create-topic/)).
+**`_MSGTIMEDOUT`** — the broker didn't acknowledge within the timeout. Usually means the broker is reachable but unhealthy (out of disk, paused, mid-restart). Check broker status: `curl -s http://redpanda:9644/v1/status/ready`. If someone has flipped auto-create topics off (not the default — see [Toggle auto-create topics](/docs/tutorials/redpanda-auto-create-topics/)) and the topic doesn't exist, writes time out too — create the topic first or flip auto-create back on.
 
 **`Connection refused`** or **`Failed to resolve 'redpanda:9092'`** — you're running outside the Nexus-Stack Docker network. `redpanda` is a Docker service name that only resolves inside the network. Solution: run in code-server, not on your laptop.
 

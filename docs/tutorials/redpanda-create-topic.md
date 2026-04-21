@@ -73,14 +73,6 @@ Next: [send your first event into it](/docs/tutorials/redpanda-first-producer/).
 
 ## Creating topics from code
 
-Topics auto-create on first `producer.produce()` **only** if the cluster has `auto_create_topics_enabled=true`. On Nexus-Stack's default Redpanda config, this is **off** for safety — you must create topics explicitly (through the Console, or via the admin API).
+Topics auto-create on first `producer.produce()` when the cluster has `auto_create_topics_enabled=true`. On Nexus-Stack's default Redpanda config, this is **on** (see `stacks/redpanda/config/redpanda.yaml`), so a producer writing to a non-existent topic will quietly create it with default settings (1 partition, replication factor 1, 1-week retention).
 
-To enable auto-creation temporarily (useful for streaming pipelines that generate many topics):
-
-```bash
-curl -s -X PUT http://redpanda:9644/v1/cluster_config \
-  -H "Content-Type: application/json" \
-  -d '{"upsert": {"auto_create_topics_enabled": true}, "remove": []}'
-```
-
-That only works from inside a container on the Nexus-Stack server (e.g. the code-server terminal) since `redpanda:9644` isn't exposed externally.
+Useful for prototyping, risky for production — typos silently create stray topics instead of failing loudly. If you want explicit topic creation only, see [Toggle auto-create topics in Redpanda](/docs/tutorials/redpanda-auto-create-topics/) for the admin-API call to flip it off.
