@@ -154,11 +154,18 @@ query.stop()
 
 The memory sink doesn't need one. Every other sink does. A **checkpoint location** is a directory where Spark persists streaming state: offsets of what's been read, per-key aggregation state, committed batches. When a streaming query restarts, it reads the checkpoint and resumes exactly where it left off.
 
-For a Delta sink (next tutorial), you'll add:
+Where to put it depends on your workspace:
 
 ```python
+# Unity Catalog workspace (Free Edition, Premium with UC)
 .option("checkpointLocation", "/Volumes/workspace/default/checkpoints/my_query")
+
+# Non-UC workspace or throwaway demos
+.option("checkpointLocation", "dbfs:/tmp/spark-checkpoints/my_query")
 ```
+
+- **UC Volumes** (`/Volumes/...`) — the right answer for persistent production pipelines; the volume is governed, tracked, and survives cluster restarts. The [Bronze Delta tutorial](/docs/tutorials/spark-bronze-delta/) uses this path.
+- **DBFS** (`dbfs:/...`) — the pre-UC Databricks filesystem. Fine for development and throwaway queries. Write access is governed by workspace ACLs rather than UC.
 
 Checkpoint location is per-query. Give each query its own directory. Never share a checkpoint across queries — results are undefined.
 

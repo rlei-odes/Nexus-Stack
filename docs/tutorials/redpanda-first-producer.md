@@ -21,7 +21,7 @@ Open `https://code.<your-domain>` in the browser. If it's your first visit, Clou
 
 ## Set up a Python environment
 
-In code-server, open a terminal (`Ctrl+` `` or **Terminal → New Terminal**):
+In code-server, open a terminal (``Ctrl+` `` or **Terminal → New Terminal**):
 
 ```bash
 # Create a fresh working directory
