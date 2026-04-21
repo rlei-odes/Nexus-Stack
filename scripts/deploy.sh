@@ -2292,13 +2292,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS"
         fi
 
         # Create SASL user (password via env var to avoid process list exposure).
-        # \\\$RPK_PASS (not \\$RPK_PASS) is critical: on the runner bash parses \\ as
-        # one literal backslash and $RPK_PASS as a local variable — which is unset
-        # here, tripping `set -u` before ssh even runs. The triple-backslash form
-        # sends the literal string \$RPK_PASS over the wire, and the inner sh -c
-        # inside the container expands it from the docker -e env instead.
+        # The escape on RPK_PASS is subtle. Inside the outer double-quoted string
+        # on the runner, bash treats \$ as a literal $ (no expansion) — this is
+        # what we want, because RPK_PASS is unset on the runner and `set -u`
+        # would crash otherwise. What reaches ssh is `…"$RPK_PASS"…`. The
+        # remote bash passes that verbatim to `sh -c` (single-quoted payload),
+        # and the *container* sh expands $RPK_PASS from the docker -e env.
+        # Do NOT add a second backslash (\\\$RPK_PASS): that would reach the
+        # container as "\$RPK_PASS", which POSIX sh treats as a literal dollar
+        # inside double quotes — the user would get created with the string
+        # `$RPK_PASS` as their password. Verified empirically both ways.
         USER_RESULT=$(ssh nexus "docker exec -e RPK_PASS='$REDPANDA_ADMIN_PASS' redpanda \
-            sh -c 'rpk acl user create nexus-redpanda --password \"\\\$RPK_PASS\" --mechanism SCRAM-SHA-256' 2>&1" || echo "")
+            sh -c 'rpk acl user create nexus-redpanda --password \"\$RPK_PASS\" --mechanism SCRAM-SHA-256' 2>&1" || echo "")
         echo "  rpk user create result: $USER_RESULT"
 
         # Configure superuser (grants full permissions without ACLs)
