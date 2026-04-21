@@ -2853,14 +2853,21 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         ADMIN_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null | grep -c '$ADMIN_USERNAME'" || echo "0")
 
         if [ "$ADMIN_EXISTS" -gt 0 ]; then
-            # Sync password to match current OpenTofu state (persistent volume may have old password)
+            # Sync password to match current OpenTofu state (persistent volume may have old password).
+            # Capture stderr so when the sync fails we see WHY. Previously this block
+            # used `>/dev/null 2>&1` and silently discarded the error, making diagnosis
+            # impossible for the dotted-username and similar failure classes. Matches
+            # the 2>&1 → RESULT var pattern the CREATE path below already uses.
+            # The failure branch uses printf so CHANGE_OUTPUT is printed verbatim —
+            # echo -e would interpret backslash sequences in the captured stderr
+            # (e.g. Gitea errors mentioning `\w+` or embedded escape codes).
             echo "  Syncing Gitea admin password..."
-            ssh nexus "docker exec -u git gitea gitea admin user change-password \
+            CHANGE_OUTPUT=$(ssh nexus "docker exec -u git gitea gitea admin user change-password \
                 --username '$ADMIN_USERNAME' \
                 --password '$GITEA_ADMIN_PASS' \
-                --must-change-password=false" >/dev/null 2>&1 \
+                --must-change-password=false" 2>&1) \
                 && echo -e "${GREEN}  ✓ Gitea admin password synced${NC}" \
-                || echo -e "${YELLOW}  ⚠ Could not sync Gitea admin password${NC}"
+                || printf "${YELLOW}  ⚠ Could not sync Gitea admin password: %s${NC}\n" "$CHANGE_OUTPUT"
         else
             # Create admin user via CLI
             GITEA_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
@@ -2885,14 +2892,22 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             USER_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null | grep -c '$GITEA_USER_USERNAME'" || echo "0")
 
             if [ "$USER_EXISTS" -gt 0 ]; then
-                # Sync password to match current OpenTofu state (persistent volume may have old password)
+                # Sync password to match current OpenTofu state (persistent volume may have old password).
+                # Capture stderr — see admin block above for rationale. Currently chasing
+                # a failure class where user stacks whose email prefix contains a dot
+                # (e.g. stefan.koch@hslu.ch → username stefan.koch) silently fail this
+                # sync on every second-or-later Spin Up. Template stack (sk@…) works.
+                # Without the output here we can't tell whether it's a CLI limitation,
+                # a sanitized-name mismatch, or something else — so make it vocal.
+                # Failure branch uses printf (not echo -e) so CHANGE_OUTPUT is printed
+                # verbatim — see admin block above.
                 echo "  Syncing Gitea user password..."
-                ssh nexus "docker exec -u git gitea gitea admin user change-password \
+                CHANGE_OUTPUT=$(ssh nexus "docker exec -u git gitea gitea admin user change-password \
                     --username '$GITEA_USER_USERNAME' \
                     --password '$GITEA_USER_PASS' \
-                    --must-change-password=false" >/dev/null 2>&1 \
+                    --must-change-password=false" 2>&1) \
                     && echo -e "${GREEN}  ✓ Gitea user password synced${NC}" \
-                    || echo -e "${YELLOW}  ⚠ Could not sync Gitea user password${NC}"
+                    || printf "${YELLOW}  ⚠ Could not sync Gitea user password: %s${NC}\n" "$CHANGE_OUTPUT"
             else
                 GITEA_USER_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
                     --username '$GITEA_USER_USERNAME' \
