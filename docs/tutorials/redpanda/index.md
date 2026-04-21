@@ -1,8 +1,7 @@
 ---
 title: "Redpanda"
 description: "Kafka-compatible event streaming — topics, producers, consumers, partitions, consumer groups"
-sidebar:
-  order: 2
+order: 0
 ---
 
 # Redpanda tutorials

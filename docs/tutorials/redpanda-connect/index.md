@@ -1,8 +1,7 @@
 ---
 title: "Redpanda Connect"
 description: "YAML-driven data pipelines — ingest external streams into Redpanda with zero code"
-sidebar:
-  order: 3
+order: 0
 ---
 
 # Redpanda Connect tutorials
