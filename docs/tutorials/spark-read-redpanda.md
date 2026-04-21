@@ -76,12 +76,16 @@ Values are never printed in output, never in run history. Use this for anything 
 
 ## Verify connectivity first
 
-Before the full streaming read, confirm Spark can even reach Redpanda. Smallest possible test:
+Before the full streaming read, confirm Spark can even reach Redpanda. Smallest possible test.
+
+**Install `confluent-kafka` as the very first cell in the notebook — before anything else.** `dbutils.library.restartPython()` wipes every Python variable in the notebook state, so it must run before you set `BOOTSTRAP` / `USERNAME` / `PASSWORD`:
 
 ```python
 %pip install -q confluent-kafka
 dbutils.library.restartPython()
 ```
+
+After the restart, go back and re-run the credentials cells (widgets or `dbutils.secrets.get` — whichever Option you picked) so the three variables exist again. Then run the connectivity test:
 
 ```python
 from confluent_kafka.admin import AdminClient
@@ -99,6 +103,8 @@ print(f"Topics:       {sorted(md.topics.keys())}")
 ```
 
 If this lists your topics, Spark will too. If it times out or auth-fails, debug here (easier error messages) before touching Spark.
+
+> **Ordering tip:** the cleanest notebook layout is (1) `%pip install + restartPython`, (2) credentials cell, (3) connectivity test, (4) streaming read. After the restart in step 1 you never need to worry about variable loss again. The Kafka connector for Spark itself is built into Databricks Runtime and needs no pip install.
 
 ## First readStream
 

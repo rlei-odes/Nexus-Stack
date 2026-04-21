@@ -35,7 +35,10 @@ def ack(err, msg):
     if err:
         print(f'FAILED: {err}')
     else:
-        print(f'key={msg.key().decode():10} -> partition {msg.partition()} offset {msg.offset()}')
+        # Key is optional — guard for the "What happens without a key" experiment
+        # further down where we'd otherwise dereference None.
+        key = msg.key().decode() if msg.key() is not None else '<none>'
+        print(f'key={key:10} -> partition {msg.partition()} offset {msg.offset()}')
 
 # Send 6 messages per house = 18 total
 for i in range(6):
