@@ -1,8 +1,7 @@
 ---
 title: "Spark Structured Streaming"
 description: "Read Redpanda from Databricks Spark, parse JSON, land a Bronze Delta table"
-sidebar:
-  order: 5
+order: 0
 ---
 
 # Spark Structured Streaming tutorials

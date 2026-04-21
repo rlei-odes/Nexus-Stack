@@ -1,8 +1,7 @@
 ---
 title: "Flink"
 description: "Stream processing with Flink SQL via the Dinky web IDE"
-sidebar:
-  order: 4
+order: 0
 ---
 
 # Flink tutorials

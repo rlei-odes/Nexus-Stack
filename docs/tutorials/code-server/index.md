@@ -1,8 +1,7 @@
 ---
 title: "Code-Server"
 description: "Terminal and Python setup inside the browser-based VS Code that ships with Nexus-Stack"
-sidebar:
-  order: 1
+order: 0
 ---
 
 # Code-Server tutorials
