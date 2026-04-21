@@ -94,5 +94,5 @@ Code-server is the escape hatch: you're inside the network, with a terminal, aut
 
 ## Next steps
 
-- [Set up an isolated Python environment](/docs/tutorials/code-server-python-uv/) — when you need to run Python scripts
-- [Enable auto-create topics via Redpanda's admin API](/docs/tutorials/redpanda-auto-create-topics/) — common operation, single curl call
+- [Set up an isolated Python environment](/docs/tutorials/code-server/python-uv/) — when you need to run Python scripts
+- [Enable auto-create topics via Redpanda's admin API](/docs/tutorials/redpanda/auto-create-topics/) — common operation, single curl call

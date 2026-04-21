@@ -1,7 +1,7 @@
 ---
 title: "Parse JSON from a Kafka topic with a schema"
 description: "Turn raw Kafka bytes into typed Spark columns — the step everyone needs but no one teaches clearly"
-order: 17
+order: 3
 ---
 
 # Parse JSON from a Kafka topic with a schema
@@ -12,7 +12,7 @@ About 10 minutes. After this, your Spark streaming DataFrames have real columns 
 
 ## Prerequisites
 
-- A Spark streaming read from a Kafka topic — see [Read a Redpanda topic from Spark](/docs/tutorials/spark-read-redpanda/)
+- A Spark streaming read from a Kafka topic — see [Read a Redpanda topic from Spark](/docs/tutorials/spark/read-redpanda/)
 - Events in the topic have a known JSON shape. Example used below: `{"sensor": "sensor-a", "reading": 42.5, "timestamp": 1713456789}`
 
 ## Why a schema is required
@@ -211,5 +211,5 @@ For the kind of prototyping you do on Nexus-Stack, **"make new fields nullable"*
 
 ## Next steps
 
-- [Write a Kafka stream to a Bronze Delta table](/docs/tutorials/spark-bronze-delta/) — persist the parsed rows
-- [Spark Streaming 101](/docs/tutorials/spark-streaming-101/) — review the fundamentals
+- [Write a Kafka stream to a Bronze Delta table](/docs/tutorials/spark/bronze-delta/) — persist the parsed rows
+- [Spark Streaming 101](/docs/tutorials/spark/streaming-101/) — review the fundamentals

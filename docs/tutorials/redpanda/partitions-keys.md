@@ -1,7 +1,7 @@
 ---
 title: "Partitions and keys, hands-on"
 description: "See how message keys determine partition assignment — and what happens when you leave the key empty"
-order: 9
+order: 7
 ---
 
 # Partitions and keys, hands-on
@@ -11,7 +11,7 @@ The single most important rule of Kafka/Redpanda: **messages with the same key a
 ## Prerequisites
 
 - Nexus-Stack with `redpanda`, `redpanda-console`, and `code-server` enabled
-- Python environment set up — see [Python venv with uv](/docs/tutorials/code-server-python-uv/)
+- Python environment set up — see [Python venv with uv](/docs/tutorials/code-server/python-uv/)
 - A topic with **at least 2 partitions** — create one named `keys-demo` with 4 partitions to see the distribution clearly. Via the Console, or:
 
 ```bash
@@ -151,5 +151,5 @@ Shows message count per partition. Wide variance = skew.
 
 ## Next steps
 
-- [Aggregate events in a consumer](/docs/tutorials/redpanda-consumer-aggregation/) — uses keys to group aggregates per entity
-- [Inspect consumer groups and lag](/docs/tutorials/redpanda-consumer-groups-lag/) — lag is per-partition, so skew shows up there too
+- [Aggregate events in a consumer](/docs/tutorials/redpanda/consumer-aggregation/) — uses keys to group aggregates per entity
+- [Inspect consumer groups and lag](/docs/tutorials/redpanda/consumer-groups-lag/) — lag is per-partition, so skew shows up there too

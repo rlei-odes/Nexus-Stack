@@ -1,10 +1,12 @@
 ---
-title: "BlueSky Real-Time Streaming with Flink SQL"
+title: "Bluesky end-to-end: Redpanda Connect → Flink SQL"
+description: "End-to-end walkthrough that chains the Bluesky-to-Redpanda ingest and the Flink-SQL-on-Redpanda query into one guided run"
+order: 3
 ---
 
-# BlueSky Real-Time Streaming with Flink SQL
+# Bluesky Real-Time Streaming with Flink SQL
 
-This tutorial walks through streaming live BlueSky posts into Redpanda and querying them with Flink SQL via Dinky.
+This tutorial walks through streaming live Bluesky posts into Redpanda and querying them with Flink SQL via Dinky.
 
 ## Prerequisites
 
@@ -16,7 +18,7 @@ Enable the following services in the Control Panel:
 - **Dinky** (Flink SQL IDE)
 - **code-server** (VS Code in the browser)
 
-## Step 1: Start the BlueSky Stream (Code Server)
+## Step 1: Start the Bluesky Stream (Code Server)
 
 Open **code-server** (`https://code.YOUR_DOMAIN`) and open a terminal.
 
@@ -131,7 +133,7 @@ CREATE TABLE IF NOT EXISTS bluesky_posts (
 
 > This only needs to be done **once** — the DefaultCatalog persists table definitions across tasks.
 
-## Step 5: Query BlueSky Posts
+## Step 5: Query Bluesky Posts
 
 Create a new task and run:
 
@@ -192,7 +194,7 @@ These `INSERT INTO` statements start **continuous streaming jobs** that filter a
 ## Architecture Overview
 
 ```
-BlueSky Jetstream (WebSocket)
+Bluesky Jetstream (WebSocket)
         │
         ▼
 ┌─────────────────┐      ┌─────────────────┐
@@ -220,5 +222,5 @@ BlueSky Jetstream (WebSocket)
 | `Object 'bluesky_posts' not found` | Run the CREATE TABLE first, or set catalog to **DefaultCatalog** |
 | `Table already exists` | Use `CREATE TABLE IF NOT EXISTS` or `DROP TABLE` first |
 | `Property group.id is required` | Add `'properties.group.id'` to the WITH clause |
-| No data in Result tab | Check that the BlueSky stream is running in Redpanda Connect |
+| No data in Result tab | Check that the Bluesky stream is running in Redpanda Connect |
 | Flink cluster not reachable | Go to Registration Center → verify cluster status is **Normal** |

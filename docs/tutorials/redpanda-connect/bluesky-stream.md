@@ -1,7 +1,7 @@
 ---
 title: "Stream Bluesky firehose into Redpanda"
 description: "Use Redpanda Connect to pipe the public Bluesky Jetstream WebSocket into a Kafka topic — zero code"
-order: 12
+order: 2
 ---
 
 # Stream Bluesky firehose into Redpanda
@@ -13,7 +13,7 @@ This tutorial covers the full lifecycle: deploy the stream, verify it's running,
 ## Prerequisites
 
 - Nexus-Stack deployment with `redpanda`, `redpanda-connect`, `redpanda-console`, and `code-server` enabled
-- Familiar with the Console — see [Redpanda Console basics](/docs/tutorials/redpanda-console-basics/)
+- Familiar with the Console — see [Redpanda Console basics](/docs/tutorials/redpanda/console-basics/)
 
 ## The pipeline, in YAML
 
@@ -54,7 +54,7 @@ What it does:
 
 ## Step 1: Save the YAML
 
-Redpanda Connect will write to a `bluesky-posts` topic that doesn't exist yet. On Nexus-Stack's default config, `auto_create_topics_enabled` is on, so the topic is created automatically on first write — no setup needed. If you've previously flipped that off (see [Toggle auto-create topics](/docs/tutorials/redpanda-auto-create-topics/)), either flip it back on or create the topic manually first via [Create a topic in Redpanda Console](/docs/tutorials/redpanda-create-topic/).
+Redpanda Connect will write to a `bluesky-posts` topic that doesn't exist yet. On Nexus-Stack's default config, `auto_create_topics_enabled` is on, so the topic is created automatically on first write — no setup needed. If you've previously flipped that off (see [Toggle auto-create topics](/docs/tutorials/redpanda/auto-create-topics/)), either flip it back on or create the topic manually first via [Create a topic in Redpanda Console](/docs/tutorials/redpanda/create-topic/).
 
 In code-server (`https://code.<your-domain>`), open a terminal:
 

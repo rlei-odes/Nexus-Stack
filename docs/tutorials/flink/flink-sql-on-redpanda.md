@@ -1,17 +1,17 @@
 ---
 title: "Query a Redpanda topic with Flink SQL in Dinky"
 description: "CREATE TABLE with the Kafka connector, first streaming SELECT, and a windowed aggregation"
-order: 14
+order: 2
 ---
 
 # Query a Redpanda topic with Flink SQL in Dinky
 
-Now that [Dinky is set up](/docs/tutorials/dinky-first-time-setup/) and talking to Flink, the natural next step is reading from Redpanda. This tutorial walks through creating a Flink SQL **source table** pointed at a Kafka topic, running a continuous `SELECT`, and a windowed aggregation — all in Dinky's Data Studio.
+Now that [Dinky is set up](/docs/tutorials/flink/dinky-setup/) and talking to Flink, the natural next step is reading from Redpanda. This tutorial walks through creating a Flink SQL **source table** pointed at a Kafka topic, running a continuous `SELECT`, and a windowed aggregation — all in Dinky's Data Studio.
 
 ## Prerequisites
 
-- Dinky registered against Flink — see [Dinky first-time setup](/docs/tutorials/dinky-first-time-setup/)
-- A topic with messages — either produce your own via the [Python producer tutorial](/docs/tutorials/redpanda-first-producer/), or stream [Bluesky into Redpanda](/docs/tutorials/bluesky-to-redpanda-connect/). Examples below assume a topic called `sensors` with JSON messages of shape `{"sensor": "...", "reading": 42.5, "timestamp": 1713...}`
+- Dinky registered against Flink — see [Dinky first-time setup](/docs/tutorials/flink/dinky-setup/)
+- A topic with messages — either produce your own via the [Python producer tutorial](/docs/tutorials/redpanda/first-producer/), or stream [Bluesky into Redpanda](/docs/tutorials/redpanda-connect/bluesky-stream/). Examples below assume a topic called `sensors` with JSON messages of shape `{"sensor": "...", "reading": 42.5, "timestamp": 1713...}`
 
 ## Create the task
 
@@ -153,5 +153,5 @@ If you try to start a 3rd job, it queues or fails. Symptoms:
 
 ## Next steps
 
-- [Spark Structured Streaming 101](/docs/tutorials/spark-streaming-101/) — the Databricks-side equivalent of this
-- [Manage Redpanda Connect streams](/docs/tutorials/redpanda-connect-manage-streams/) — for pipelines without SQL
+- [Spark Structured Streaming 101](/docs/tutorials/spark/streaming-101/) — the Databricks-side equivalent of this
+- [Manage Redpanda Connect streams](/docs/tutorials/redpanda-connect/manage-streams/) — for pipelines without SQL

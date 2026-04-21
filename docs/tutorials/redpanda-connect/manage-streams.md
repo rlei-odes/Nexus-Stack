@@ -1,18 +1,18 @@
 ---
 title: "Manage Redpanda Connect streams via REST API"
 description: "Full lifecycle management of Redpanda Connect streams — list, inspect, hot-swap, delete — without the UI"
-order: 11
+order: 1
 ---
 
 # Manage Redpanda Connect streams via REST API
 
-Redpanda Connect runs as a long-lived service on Nexus-Stack with a REST API for managing streams (the YAML-defined pipelines). If you've done the [Bluesky tutorial](/docs/tutorials/bluesky-to-redpanda-connect/) you've already used one endpoint. This tutorial covers the full lifecycle — useful when you have several streams running, want to update one without downtime, or you're scripting deployments.
+Redpanda Connect runs as a long-lived service on Nexus-Stack with a REST API for managing streams (the YAML-defined pipelines). If you've done the [Bluesky tutorial](/docs/tutorials/redpanda-connect/bluesky-stream/) you've already used one endpoint. This tutorial covers the full lifecycle — useful when you have several streams running, want to update one without downtime, or you're scripting deployments.
 
 ## Prerequisites
 
 - Nexus-Stack with `redpanda-connect` and `code-server` enabled
-- Familiar with the code-server terminal — see [Run curl in code-server](/docs/tutorials/code-server-terminal-curl/)
-- Ideally, you've deployed at least one stream — follow [Stream Bluesky firehose into Redpanda](/docs/tutorials/bluesky-to-redpanda-connect/) first so the examples below have something to operate on
+- Familiar with the code-server terminal — see [Run curl in code-server](/docs/tutorials/code-server/terminal-curl/)
+- Ideally, you've deployed at least one stream — follow [Stream Bluesky firehose into Redpanda](/docs/tutorials/redpanda-connect/bluesky-stream/) first so the examples below have something to operate on
 
 ## The endpoint
 
@@ -179,5 +179,5 @@ Snapshots what's running right now — good for audit / before making a change.
 
 ## Next steps
 
-- [Enable auto-create topics in Redpanda](/docs/tutorials/redpanda-auto-create-topics/) — needed before Redpanda Connect can write to a new topic
-- [Stream Bluesky firehose into Redpanda](/docs/tutorials/bluesky-to-redpanda-connect/) — concrete pipeline to practice these commands on
+- [Enable auto-create topics in Redpanda](/docs/tutorials/redpanda/auto-create-topics/) — needed before Redpanda Connect can write to a new topic
+- [Stream Bluesky firehose into Redpanda](/docs/tutorials/redpanda-connect/bluesky-stream/) — concrete pipeline to practice these commands on

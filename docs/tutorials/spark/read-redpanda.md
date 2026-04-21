@@ -1,12 +1,12 @@
 ---
 title: "Read a Redpanda topic from Spark Structured Streaming"
 description: "Connect Databricks Spark to Redpanda running on Nexus-Stack — SASL auth, public bootstrap URL, and the first readStream"
-order: 16
+order: 2
 ---
 
 # Read a Redpanda topic from Spark Structured Streaming
 
-Your Nexus-Stack runs Redpanda. Your Spark runs in Databricks. This tutorial connects them — Spark reads events from a Redpanda topic the same way it would from any Kafka cluster. The new piece compared to [Spark Streaming 101](/docs/tutorials/spark-streaming-101/) is **authentication**: Nexus-Stack exposes Redpanda publicly with SASL, so Spark needs credentials to connect.
+Your Nexus-Stack runs Redpanda. Your Spark runs in Databricks. This tutorial connects them — Spark reads events from a Redpanda topic the same way it would from any Kafka cluster. The new piece compared to [Spark Streaming 101](/docs/tutorials/spark/streaming-101/) is **authentication**: Nexus-Stack exposes Redpanda publicly with SASL, so Spark needs credentials to connect.
 
 ## Prerequisites
 
@@ -145,7 +145,7 @@ root
  |-- timestampType: integer (nullable = true)
 ```
 
-**Everything is binary at this stage.** `key` and `value` are the raw bytes Kafka stored. To see them as text or parsed JSON, you transform — covered in [Parse JSON from a Kafka topic with a schema](/docs/tutorials/spark-parse-json-schema/).
+**Everything is binary at this stage.** `key` and `value` are the raw bytes Kafka stored. To see them as text or parsed JSON, you transform — covered in [Parse JSON from a Kafka topic with a schema](/docs/tutorials/spark/parse-json-schema/).
 
 ## See some data
 
@@ -171,7 +171,7 @@ query = (
 )
 ```
 
-Produce some events into `sensors` (from code-server — see [Send your first event with a Python producer](/docs/tutorials/redpanda-first-producer/) — or any other source). Then:
+Produce some events into `sensors` (from code-server — see [Send your first event with a Python producer](/docs/tutorials/redpanda/first-producer/) — or any other source). Then:
 
 ```sql
 %sql
@@ -212,5 +212,5 @@ Spark's Kafka source commits offsets to a Kafka consumer group named `spark-kafk
 
 ## Next steps
 
-- [Parse JSON from a Kafka topic with a schema](/docs/tutorials/spark-parse-json-schema/) — turn `value` bytes into typed columns
-- [Write a Kafka stream to a Bronze Delta table](/docs/tutorials/spark-bronze-delta/) — persist what you're reading
+- [Parse JSON from a Kafka topic with a schema](/docs/tutorials/spark/parse-json-schema/) — turn `value` bytes into typed columns
+- [Write a Kafka stream to a Bronze Delta table](/docs/tutorials/spark/bronze-delta/) — persist what you're reading

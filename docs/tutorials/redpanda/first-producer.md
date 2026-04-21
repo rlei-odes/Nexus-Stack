@@ -1,7 +1,7 @@
 ---
 title: "Send your first event with a Python producer"
 description: "Write a minimal Python producer that sends a single JSON event to a Redpanda topic"
-order: 6
+order: 4
 ---
 
 # Send your first event with a Python producer
@@ -11,7 +11,7 @@ This tutorial is the shortest possible path from "empty topic" to "my event is i
 ## Prerequisites
 
 - Nexus-Stack deployment with `redpanda`, `redpanda-console`, and `code-server` enabled
-- A topic to send to — if you don't have one yet, see [Create a topic in Redpanda Console](/docs/tutorials/redpanda-create-topic/). This tutorial assumes a topic named `sensors` exists.
+- A topic to send to — if you don't have one yet, see [Create a topic in Redpanda Console](/docs/tutorials/redpanda/create-topic/). This tutorial assumes a topic named `sensors` exists.
 
 ## Why code-server
 
@@ -110,7 +110,7 @@ If you re-run the script, you'll see the offset tick up: `1`, `2`, `3`…
 
 ## Common errors
 
-**`_MSGTIMEDOUT`** — the broker didn't acknowledge within the timeout. Usually means the broker is reachable but unhealthy (out of disk, paused, mid-restart). Check broker status: `curl -s http://redpanda:9644/v1/status/ready`. If someone has flipped auto-create topics off (not the default — see [Toggle auto-create topics](/docs/tutorials/redpanda-auto-create-topics/)) and the topic doesn't exist, writes time out too — create the topic first or flip auto-create back on.
+**`_MSGTIMEDOUT`** — the broker didn't acknowledge within the timeout. Usually means the broker is reachable but unhealthy (out of disk, paused, mid-restart). Check broker status: `curl -s http://redpanda:9644/v1/status/ready`. If someone has flipped auto-create topics off (not the default — see [Toggle auto-create topics](/docs/tutorials/redpanda/auto-create-topics/)) and the topic doesn't exist, writes time out too — create the topic first or flip auto-create back on.
 
 **`Connection refused`** or **`Failed to resolve 'redpanda:9092'`** — you're running outside the Nexus-Stack Docker network. `redpanda` is a Docker service name that only resolves inside the network. Solution: run in code-server, not on your laptop.
 
@@ -118,6 +118,6 @@ If you re-run the script, you'll see the offset tick up: `1`, `2`, `3`…
 
 ## Next steps
 
-- **Read your events back** with a [Python consumer](/docs/tutorials/redpanda-python-consumer/)
+- **Read your events back** with a [Python consumer](/docs/tutorials/redpanda/python-consumer/)
 - **Send batches** and observe partition distribution with different keys
-- **Stream continuously** from an external source — see [Stream Bluesky firehose into Redpanda](/docs/tutorials/bluesky-to-redpanda-connect/) for an example that doesn't require writing Python at all
+- **Stream continuously** from an external source — see [Stream Bluesky firehose into Redpanda](/docs/tutorials/redpanda-connect/bluesky-stream/) for an example that doesn't require writing Python at all

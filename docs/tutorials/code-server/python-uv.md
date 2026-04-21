@@ -11,7 +11,7 @@ Every Python project should have its own virtual environment — separate depend
 ## Prerequisites
 
 - Nexus-Stack with `code-server` enabled
-- Familiar with opening a terminal — see [Run curl in the code-server terminal](/docs/tutorials/code-server-terminal-curl/)
+- Familiar with opening a terminal — see [Run curl in the code-server terminal](/docs/tutorials/code-server/terminal-curl/)
 
 ## Create a project folder
 
@@ -121,5 +121,5 @@ You can still `python -m venv` if you prefer; both produce compatible `.venv/` d
 
 ## Next steps
 
-- [Send your first event with a Python producer](/docs/tutorials/redpanda-first-producer/) — uses exactly this setup pattern
-- [Read events with a Python consumer](/docs/tutorials/redpanda-python-consumer/) — the companion
+- [Send your first event with a Python producer](/docs/tutorials/redpanda/first-producer/) — uses exactly this setup pattern
+- [Read events with a Python consumer](/docs/tutorials/redpanda/python-consumer/) — the companion

@@ -1,7 +1,7 @@
 ---
 title: "Aggregate events in a Python consumer"
 description: "Build a tumbling-window aggregator in plain Python — a gentle intro to stream aggregation without Flink or Spark"
-order: 10
+order: 8
 ---
 
 # Aggregate events in a Python consumer
@@ -13,8 +13,8 @@ The scenario: events arrive on a topic `sensors` with a key (the sensor ID) and 
 ## Prerequisites
 
 - Nexus-Stack with `redpanda`, `redpanda-console`, `code-server` enabled
-- A topic `sensors` exists — see [Create a topic](/docs/tutorials/redpanda-create-topic/)
-- Familiar with consumer basics — see [Read events with a Python consumer](/docs/tutorials/redpanda-python-consumer/)
+- A topic `sensors` exists — see [Create a topic](/docs/tutorials/redpanda/create-topic/)
+- Familiar with consumer basics — see [Read events with a Python consumer](/docs/tutorials/redpanda/python-consumer/)
 
 ## Set up a steady event source
 
@@ -189,5 +189,5 @@ kill %1
 
 ## Next steps
 
-- [Flink SQL on a Redpanda topic](/docs/tutorials/dinky-flink-sql-redpanda/) — the framework version of this exact pattern
-- [Spark Structured Streaming 101](/docs/tutorials/spark-streaming-101/) — another framework with windowing support
+- [Flink SQL on a Redpanda topic](/docs/tutorials/flink/flink-sql-on-redpanda/) — the framework version of this exact pattern
+- [Spark Structured Streaming 101](/docs/tutorials/spark/streaming-101/) — another framework with windowing support

@@ -1,7 +1,7 @@
 ---
 title: "Redpanda Console basics"
 description: "Open the Redpanda Console web UI and navigate topics, messages, partitions, and consumer groups"
-order: 3
+order: 1
 ---
 
 # Redpanda Console basics
@@ -59,5 +59,5 @@ Lag is the single most useful number in the whole UI — it tells you instantly 
 
 ## Next steps
 
-- [Create a topic in Redpanda Console](/docs/tutorials/redpanda-create-topic/) — the next-most-common action
-- [Send your first event with a Python producer](/docs/tutorials/redpanda-first-producer/) — minimal code to put data into a topic
+- [Create a topic in Redpanda Console](/docs/tutorials/redpanda/create-topic/) — the next-most-common action
+- [Send your first event with a Python producer](/docs/tutorials/redpanda/first-producer/) — minimal code to put data into a topic
