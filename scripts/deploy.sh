@@ -2849,8 +2849,37 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     done
 
     if [ "$GITEA_READY" = "true" ]; then
-        # Check if admin user already exists
-        ADMIN_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null | grep -c '$ADMIN_USERNAME'" || echo "0")
+        # Check if admin user already exists.
+        # awk-column-exact on the Username column ($2), NOT grep-substring on
+        # the whole line. grep -c '$NAME' falsely matches when the name appears
+        # anywhere in the output — e.g. as a substring of another user's email
+        # address. For the admin block this is only latent (the admin almost
+        # always exists, so a true or false positive both route to the SYNC
+        # branch which was going to run anyway), but the same pattern on the
+        # USER_EXISTS check below is a confirmed bug (see v0.51.7 stderr: on
+        # stacks where the admin email contains the user's username substring,
+        # USER_EXISTS=1 wrongly, CREATE is skipped, the user never exists,
+        # SYNC then fails). Fix the detection in both places for consistency.
+        #
+        # Two-step form (fetch → parse) instead of a one-line remote pipeline
+        # so the remote fetch isn't coupled to a downstream parser whose exit
+        # status could mask an upstream failure. The local code path here is
+        # a single command with an `||` fallback (not a pipeline), so
+        # set -o pipefail doesn't apply — ssh/docker failures are explicitly
+        # folded into an empty list via `|| echo ""` and the downstream awk
+        # then prints 0, routing to the CREATE branch (where PR #464's
+        # stderr capture surfaces any genuine connectivity problem). Same
+        # soft-fallback pattern this section uses elsewhere for transient-
+        # Gitea resilience during deploy — not a crash-on-error design.
+        # If stricter failure handling is wanted later, capture ssh's exit
+        # status in a separate variable and warn explicitly.
+        #
+        # printf '%s\n' instead of echo because bash's echo treats a leading
+        # '-n'/'-e'/'-E' in $ADMIN_LIST as options (not data). Gitea's list
+        # starts with "ID  Username  Email ..." in practice so the collision
+        # doesn't happen today, but printf is the idiomatic safe form.
+        ADMIN_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null" || echo "")
+        ADMIN_EXISTS=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
 
         if [ "$ADMIN_EXISTS" -gt 0 ]; then
             # Sync password to match current OpenTofu state (persistent volume may have old password).
@@ -2889,7 +2918,22 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # Extract username from user_email (part before @)
         GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
         if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
-            USER_EXISTS=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null | grep -c '$GITEA_USER_USERNAME'" || echo "0")
+            # Same column-exact awk pattern as the admin block above, with the
+            # same two-step fetch-then-parse structure. Note that the current
+            # `|| echo ""` fallback collapses ssh/list failures into an empty
+            # result, so failures are treated the same as the "no match" case
+            # (awk prints 0 → CREATE path fires, where PR #464's stderr capture
+            # surfaces the genuine error). This is the block where the
+            # grep-substring form actively broke things: GITEA_USER_USERNAME
+            # is derived from USER_EMAIL prefix (e.g. stefan.koch from
+            # stefan.koch@hslu.ch). If ADMIN_EMAIL also ends in @hslu.ch (or
+            # otherwise contains the user's username as a substring),
+            # `grep -c 'stefan.koch'` matches the admin's email column —
+            # USER_EXISTS=1, CREATE never runs, user is never created,
+            # subsequent SYNC fails because the target doesn't exist.
+            # printf '%s\n' instead of echo — see admin block above for rationale.
+            USER_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null" || echo "")
+            USER_EXISTS=$(printf '%s\n' "$USER_LIST" | awk -v name="$GITEA_USER_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
 
             if [ "$USER_EXISTS" -gt 0 ]; then
                 # Sync password to match current OpenTofu state (persistent volume may have old password).
