@@ -69,7 +69,11 @@ USER_EMAIL=$(grep -E '^user_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | s
 # fall back to a synthetic admin@${DOMAIN} that's guaranteed distinct from
 # any normal human USER_EMAIL.
 if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$USER_EMAIL" ]; then
-    ADMIN_EMAIL="admin@$DOMAIN"
+    # Use a local-part that no human-email scheme would produce. `admin@${DOMAIN}`
+    # is also safe for the stack-scoped student domains (e.g. <user>.nona.company),
+    # but `gitea-admin` narrows the probability of collision with a real USER_EMAIL
+    # even further (no university / corporate mail provider uses this local-part).
+    ADMIN_EMAIL="gitea-admin@$DOMAIN"
 fi
 OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
 
@@ -1177,10 +1181,22 @@ fi
 # Security: Credentials are passed via GITEA_USERNAME/GITEA_PASSWORD env vars and
 # injected into containers via .netrc at startup (not embedded in the repo URL).
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
-    # Use user credentials for service Git integration (not admin)
-    GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
-    # Determine workspace repo: fork of first GH_MIRROR_REPOS entry, or default empty repo
-    if [ -n "${GH_MIRROR_REPOS:-}" ]; then
+    # Workspace-config identity: when no separate USER_EMAIL is configured,
+    # fall back to the admin identity for repo URLs and service .env values.
+    # Downstream service containers need a non-empty username + email for
+    # git operations (empty values would produce invalid URLs like
+    # http://gitea:3000//repo.git). This fallback is config-only and does
+    # NOT reintroduce the email-uniqueness collision the parent PR fixed:
+    # the Gitea user-create block below stays gated on `[ -n "$USER_EMAIL" ]`
+    # and skips cleanly when USER_EMAIL is unset.
+    if [ -n "$USER_EMAIL" ]; then
+        GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+    else
+        GITEA_USER_USERNAME="$ADMIN_USERNAME"
+    fi
+    # Determine workspace repo: fork of first GH_MIRROR_REPOS entry (requires
+    # a real user to fork into), or default empty repo under admin.
+    if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "$USER_EMAIL" ]; then
         # Derive repo name from first mirror URL (e.g. https://github.com/user/Bsc_EDS_GIS_FS2026)
         FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
         WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
@@ -1195,13 +1211,15 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         GITEA_REPO_OWNER="${ADMIN_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     fi
-    if [ -n "$GITEA_USER_PASS" ]; then
+    # Require BOTH a user email and a user password to use user credentials
+    # for service Git integration. Either one missing → fall back to admin.
+    if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
         GITEA_GIT_USER="${GITEA_USER_USERNAME}"
         GITEA_GIT_PASS="${GITEA_USER_PASS}"
         GIT_AUTHOR="${GITEA_USER_USERNAME}"
         GIT_EMAIL="${USER_EMAIL}"
     else
-        # Fallback to admin if no user password available
+        # Fallback to admin if no user identity/password available
         GITEA_GIT_USER="${ADMIN_USERNAME}"
         GITEA_GIT_PASS="${GITEA_ADMIN_PASS}"
         GIT_AUTHOR="${ADMIN_USERNAME}"
@@ -2913,7 +2931,10 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             CURRENT_ADMIN_EMAIL=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {print $3; exit}')
             if [ "$CURRENT_ADMIN_EMAIL" = "$USER_EMAIL" ]; then
                 echo "  Admin has legacy email conflicting with user — remapping to $ADMIN_EMAIL..."
-                PATCH_OUTPUT=$(ssh nexus "curl -sS -X PATCH 'http://localhost:3200/api/v1/admin/users/$ADMIN_USERNAME' \
+                # --fail-with-body so curl exits non-zero on HTTP 4xx/5xx while
+                # still printing the response body — without it, a Gitea
+                # validation error would be reported as "✓ remapped".
+                PATCH_OUTPUT=$(ssh nexus "curl -sS --fail-with-body -X PATCH 'http://localhost:3200/api/v1/admin/users/$ADMIN_USERNAME' \
                     -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
                     -H 'Content-Type: application/json' \
                     -d '{\"email\":\"$ADMIN_EMAIL\",\"source_id\":0,\"login_name\":\"$ADMIN_USERNAME\"}'" 2>&1) \
