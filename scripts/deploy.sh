@@ -61,14 +61,29 @@ DOMAIN=$(grep -E '^domain\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*
 ADMIN_EMAIL=$(grep -E '^admin_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
 USER_EMAIL=$(grep -E '^user_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
 
-# ADMIN_EMAIL must be distinct from USER_EMAIL: Gitea enforces uniqueness on
-# user.email, so if both rows are created with the same address the second
+# Gitea needs a single address for the user.email column; USER_EMAIL may
+# be a comma-separated list (student + teacher admins, so tofu/stack can
+# build the Cloudflare Access allow-list from every entry). Strip to the
+# first entry here — Gitea's validator rejects commas with "e-mail address
+# contains unsupported character" and the raw list would otherwise reach
+# `gitea admin user create --email`. Downstream derivations in this script
+# (workspace-config block ~line 1193, user-create block ~line 3000,
+# workspace-repo block ~line 3071) all reuse GITEA_USER_EMAIL for the same
+# single-value semantics. Derived BEFORE the ADMIN_EMAIL collision check
+# below so that check compares single-vs-single (not admin-single-vs-
+# user-list, which would never match and silently skip the remap).
+GITEA_USER_EMAIL="${USER_EMAIL%%,*}"
+GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
+
+# ADMIN_EMAIL must be distinct from GITEA_USER_EMAIL: Gitea enforces uniqueness
+# on user.email, so if both rows are created with the same address the second
 # create fails with "e-mail already in use". The admin-panel caller
-# (Nexus-Stack-for-Education) passes both values from the same field today,
-# and self-provisioned tfvars can omit admin_email entirely. In either case
-# fall back to a synthetic gitea-admin@${DOMAIN} that's guaranteed distinct
-# from any normal human USER_EMAIL.
-if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$USER_EMAIL" ]; then
+# (Nexus-Stack-for-Education) passes both values from the same source field
+# today (admin_email = first entry of user_email list), and self-provisioned
+# tfvars can omit admin_email entirely. In either case fall back to a
+# synthetic gitea-admin@${DOMAIN} that's guaranteed distinct from any real
+# human email.
+if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$GITEA_USER_EMAIL" ]; then
     # Use a local-part that no human-email scheme would produce. `admin@${DOMAIN}`
     # is also safe for the stack-scoped student domains (e.g. <user>.nona.company),
     # but `gitea-admin` narrows the probability of collision with a real USER_EMAIL
@@ -81,17 +96,6 @@ OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
 # uniqueness collision. The Gitea user-create block below is already gated
 # by `[ -n "$USER_EMAIL" ]`, so an unset USER_EMAIL skips user creation
 # cleanly instead of colliding with the admin row.
-# Gitea needs a single address for the user.email column; USER_EMAIL may
-# be a comma-separated list (student + teacher admins, so tofu/stack can
-# build the Cloudflare Access allow-list from every entry). Strip to the
-# first entry here — Gitea's validator rejects commas with "e-mail address
-# contains unsupported character" and the raw list would otherwise reach
-# `gitea admin user create --email`. Downstream derivations in this script
-# (workspace-config block ~line 1193, user-create block ~line 3000,
-# workspace-repo block ~line 3071) all reuse GITEA_USER_EMAIL for the same
-# single-value semantics.
-GITEA_USER_EMAIL="${USER_EMAIL%%,*}"
-GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
 SSH_HOST="ssh.${DOMAIN}"
 
 if [ -z "$DOMAIN" ]; then
@@ -1242,7 +1246,10 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         GITEA_GIT_USER="${GITEA_USER_USERNAME}"
         GITEA_GIT_PASS="${GITEA_USER_PASS}"
         GIT_AUTHOR="${GITEA_USER_USERNAME}"
-        GIT_EMAIL="${USER_EMAIL}"
+        # Single-address: GIT_EMAIL is written to service .env files and used
+        # as git author/committer email. USER_EMAIL may be a comma-list;
+        # use GITEA_USER_EMAIL so commit metadata is well-formed.
+        GIT_EMAIL="${GITEA_USER_EMAIL}"
     else
         # Fallback to admin if no user identity/password available
         GITEA_GIT_USER="${ADMIN_USERNAME}"
@@ -1978,7 +1985,7 @@ EOF
             "CLOUDBEAVER_PASSWORD" "$CLOUDBEAVER_PASS"
 
         build_folder "mage" \
-            "MAGE_USERNAME" "${USER_EMAIL:-$ADMIN_EMAIL}" \
+            "MAGE_USERNAME" "${GITEA_USER_EMAIL:-$ADMIN_EMAIL}" \
             "MAGE_PASSWORD" "$MAGE_PASS"
 
         build_folder "minio" \
@@ -2082,7 +2089,7 @@ EOF
             "CLICKHOUSE_PASSWORD" "$CLICKHOUSE_ADMIN_PASS"
 
         build_folder "wikijs" \
-            "WIKIJS_USERNAME" "${USER_EMAIL:-$ADMIN_EMAIL}" \
+            "WIKIJS_USERNAME" "${GITEA_USER_EMAIL:-$ADMIN_EMAIL}" \
             "WIKIJS_PASSWORD" "$WIKIJS_ADMIN_PASS" \
             "WIKIJS_DB_PASSWORD" "$WIKIJS_DB_PASS"
 
@@ -2748,9 +2755,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "windmill" && [ -n "$WINDMILL_ADMIN_PASS"
             echo -e "${YELLOW}  ⚠ Windmill admin creation: ${WINDMILL_CREATE_RESULT:-no response}${NC}"
         fi
 
-        # --- Step 2: Create regular user for USER_EMAIL (if different from ADMIN_EMAIL) ---
-        if [ -n "$USER_EMAIL" ] && [ "$USER_EMAIL" != "$ADMIN_EMAIL" ]; then
-            WINDMILL_USER_JSON=$(jq -n --arg email "$USER_EMAIL" --arg password "$WINDMILL_ADMIN_PASS" \
+        # --- Step 2: Create regular user for GITEA_USER_EMAIL (if different from ADMIN_EMAIL) ---
+        # Use GITEA_USER_EMAIL (single address) not USER_EMAIL (may be comma list).
+        # Windmill's email field has the same single-value semantics as Gitea's.
+        if [ -n "$GITEA_USER_EMAIL" ] && [ "$GITEA_USER_EMAIL" != "$ADMIN_EMAIL" ]; then
+            WINDMILL_USER_JSON=$(jq -n --arg email "$GITEA_USER_EMAIL" --arg password "$WINDMILL_ADMIN_PASS" \
                 '{email: $email, password: $password, super_admin: false, name: "User"}')
             WINDMILL_USER_RESULT=$(printf '%s' "$WINDMILL_USER_JSON" | ssh nexus "curl -s -X POST '$WM_URL/users/create' \
                 -H '$WM_AUTH' \
@@ -2758,7 +2767,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "windmill" && [ -n "$WINDMILL_ADMIN_PASS"
                 -d @-" 2>/dev/null || echo "")
 
             if echo "$WINDMILL_USER_RESULT" | grep -q '"email"' 2>/dev/null; then
-                echo -e "${GREEN}  ✓ Windmill user created (user: $USER_EMAIL)${NC}"
+                echo -e "${GREEN}  ✓ Windmill user created (user: $GITEA_USER_EMAIL)${NC}"
             elif echo "$WINDMILL_USER_RESULT" | grep -qi 'already exists' 2>/dev/null; then
                 echo -e "${YELLOW}  ⚠ Windmill user already exists${NC}"
             fi
@@ -2952,9 +2961,14 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # The PATCH body requires source_id and login_name even for an
         # email-only update — Gitea's admin-users schema rejects partial
         # bodies without them. source_id:0 = local auth provider.
-        if [ "$ADMIN_EXISTS" -gt 0 ] && [ -n "$USER_EMAIL" ]; then
+        if [ "$ADMIN_EXISTS" -gt 0 ] && [ -n "$GITEA_USER_EMAIL" ]; then
             CURRENT_ADMIN_EMAIL=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {print $3; exit}')
-            if [ "$CURRENT_ADMIN_EMAIL" = "$USER_EMAIL" ]; then
+            # Compare against GITEA_USER_EMAIL (single address). The admin
+            # row's email column is always a single address; if USER_EMAIL
+            # is a comma-list, a raw equality check would never match and
+            # this remap (Stage 3, v0.51.9) would silently not fire for
+            # upgraded stacks, leaving the legacy collision in place.
+            if [ "$CURRENT_ADMIN_EMAIL" = "$GITEA_USER_EMAIL" ]; then
                 echo "  Admin has legacy email conflicting with user — remapping to $ADMIN_EMAIL..."
                 # --fail-with-body so curl exits non-zero on HTTP 4xx/5xx while
                 # still printing the response body — without it, a Gitea
@@ -3440,7 +3454,7 @@ fi
 if echo "$ENABLED_SERVICES" | grep -qw "wikijs" && [ -n "$WIKIJS_ADMIN_PASS" ]; then
     (
         echo "  Configuring Wiki.js admin..."
-        WIKIJS_EMAIL="${USER_EMAIL:-$ADMIN_EMAIL}"
+        WIKIJS_EMAIL="${GITEA_USER_EMAIL:-$ADMIN_EMAIL}"
         for i in $(seq 1 30); do
             if ssh nexus "curl -fsS --connect-timeout 2 'http://localhost:3005/healthz'" 2>/dev/null | grep -qi 'ok'; then
                 break
