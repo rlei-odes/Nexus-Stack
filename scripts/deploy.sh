@@ -2861,15 +2861,23 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # USER_EXISTS=1 wrongly, CREATE is skipped, the user never exists,
         # SYNC then fails). Fix the detection in both places for consistency.
         #
-        # Two-step form (fetch → parse) instead of one-line remote pipeline so
-        # an ssh/docker failure is distinguishable from "no match": the ssh
-        # call's || echo "" gives an empty list on failure → awk prints 0
-        # → CREATE path. Bundling awk into the remote pipeline would make the
-        # awk's END{print 0} exit 0 mask an upstream docker failure (the
-        # pipeline would look "successful" with count 0, which is misleading
-        # even if the downstream branch decision is the same).
+        # Two-step form (fetch → parse) instead of one-line remote pipeline
+        # so bash's local set -o pipefail governs the ssh call independently
+        # of awk's always-zero exit. ssh/docker failures are folded into an
+        # empty list via || echo "" and the downstream awk then prints 0,
+        # routing to the CREATE branch (where PR #464's stderr capture will
+        # surface any genuine connectivity problem). That's the same soft
+        # fallback this section uses elsewhere for transient-Gitea resilience
+        # during deploy — not a crash-on-error design. If stricter failure
+        # handling is wanted later, upgrade here to capture ssh's exit status
+        # in a separate variable and warn explicitly.
+        #
+        # printf '%s\n' instead of echo because bash's echo treats a leading
+        # '-n'/'-e'/'-E' in $ADMIN_LIST as options (not data). Gitea's list
+        # starts with "ID  Username  Email ..." in practice so the collision
+        # doesn't happen today, but printf is the idiomatic safe form.
         ADMIN_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null" || echo "")
-        ADMIN_EXISTS=$(echo "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
+        ADMIN_EXISTS=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
 
         if [ "$ADMIN_EXISTS" -gt 0 ]; then
             # Sync password to match current OpenTofu state (persistent volume may have old password).
@@ -2918,8 +2926,9 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             # `grep -c 'stefan.koch'` matches the admin's email column —
             # USER_EXISTS=1, CREATE never runs, user is never created,
             # subsequent SYNC fails because the target doesn't exist.
+            # printf '%s\n' instead of echo — see admin block above for rationale.
             USER_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null" || echo "")
-            USER_EXISTS=$(echo "$USER_LIST" | awk -v name="$GITEA_USER_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
+            USER_EXISTS=$(printf '%s\n' "$USER_LIST" | awk -v name="$GITEA_USER_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
 
             if [ "$USER_EXISTS" -gt 0 ]; then
                 # Sync password to match current OpenTofu state (persistent volume may have old password).
