@@ -61,14 +61,35 @@ DOMAIN=$(grep -E '^domain\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*
 ADMIN_EMAIL=$(grep -E '^admin_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
 USER_EMAIL=$(grep -E '^user_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
 
-# ADMIN_EMAIL must be distinct from USER_EMAIL: Gitea enforces uniqueness on
-# user.email, so if both rows are created with the same address the second
+# Gitea needs a single address for the user.email column; USER_EMAIL may
+# be a comma-separated list (student + teacher admins, so tofu/stack can
+# build the Cloudflare Access allow-list from every entry). Strip to the
+# first entry here — Gitea's validator rejects commas with "e-mail address
+# contains unsupported character" and the raw list would otherwise reach
+# `gitea admin user create --email`. Downstream derivations in this script
+# (workspace-config block ~line 1193, user-create block ~line 3000,
+# workspace-repo block ~line 3071) all reuse GITEA_USER_EMAIL for the same
+# single-value semantics. Derived BEFORE the ADMIN_EMAIL collision check
+# below so that check compares single-vs-single (not admin-single-vs-
+# user-list, which would never match and silently skip the remap).
+# Trim whitespace: upstream joins commonly emit ", " between entries
+# (`a@b.com, c@d.com`), and self-provisioned tfvars can have leading
+# spaces inside the quoted value. Gitea/Windmill/Wiki.js validators all
+# reject space-prefixed emails. ADMIN_EMAIL gets the same treatment so
+# the equality check below compares normalized single addresses.
+ADMIN_EMAIL=$(printf '%s' "$ADMIN_EMAIL" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+GITEA_USER_EMAIL=$(printf '%s' "${USER_EMAIL%%,*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
+
+# ADMIN_EMAIL must be distinct from GITEA_USER_EMAIL: Gitea enforces uniqueness
+# on user.email, so if both rows are created with the same address the second
 # create fails with "e-mail already in use". The admin-panel caller
-# (Nexus-Stack-for-Education) passes both values from the same field today,
-# and self-provisioned tfvars can omit admin_email entirely. In either case
-# fall back to a synthetic gitea-admin@${DOMAIN} that's guaranteed distinct
-# from any normal human USER_EMAIL.
-if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$USER_EMAIL" ]; then
+# (Nexus-Stack-for-Education) passes both values from the same source field
+# today (admin_email = first entry of user_email list), and self-provisioned
+# tfvars can omit admin_email entirely. In either case fall back to a
+# synthetic gitea-admin@${DOMAIN} that's guaranteed distinct from any real
+# human email.
+if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$GITEA_USER_EMAIL" ]; then
     # Use a local-part that no human-email scheme would produce. `admin@${DOMAIN}`
     # is also safe for the stack-scoped student domains (e.g. <user>.nona.company),
     # but `gitea-admin` narrows the probability of collision with a real USER_EMAIL
@@ -78,11 +99,10 @@ fi
 OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
 
 # No USER_EMAIL fallback to ADMIN_EMAIL — that was the root of the Gitea
-# uniqueness collision. The Gitea user-create block below is already gated
-# by `[ -n "$USER_EMAIL" ]`, so an unset USER_EMAIL skips user creation
-# cleanly instead of colliding with the admin row.
-# Gitea user username derived from user_email (part before @)
-GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+# uniqueness collision. The Gitea user-create block below is gated on
+# `[ -n "$GITEA_USER_EMAIL" ]`, so an empty-after-trim GITEA_USER_EMAIL
+# (no USER_EMAIL set, or its first entry was whitespace-only) skips user
+# creation cleanly instead of colliding with the admin row.
 SSH_HOST="ssh.${DOMAIN}"
 
 if [ -z "$DOMAIN" ]; then
@@ -1181,16 +1201,22 @@ fi
 # Security: Credentials are passed via GITEA_USERNAME/GITEA_PASSWORD env vars and
 # injected into containers via .netrc at startup (not embedded in the repo URL).
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
-    # Workspace-config identity: when no separate USER_EMAIL is configured,
-    # fall back to the admin identity for repo URLs and service .env values.
+    # Workspace-config identity: when no separate single-address user is
+    # configured (GITEA_USER_EMAIL empty after trim+comma-split), fall back
+    # to the admin identity for repo URLs and service .env values.
     # Downstream service containers need a non-empty username + email for
     # git operations (empty values would produce invalid URLs like
     # http://gitea:3000//repo.git). This fallback is config-only and does
     # NOT reintroduce the email-uniqueness collision the parent PR fixed:
-    # the Gitea user-create block below stays gated on `[ -n "$USER_EMAIL" ]`
-    # and skips cleanly when USER_EMAIL is unset.
-    if [ -n "$USER_EMAIL" ]; then
-        GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+    # the Gitea user-create block below also gates on
+    # `[ -n "$GITEA_USER_EMAIL" ]` and skips cleanly when empty.
+    #
+    # Gate uses GITEA_USER_EMAIL (not raw USER_EMAIL) so a USER_EMAIL whose
+    # first entry is empty/whitespace (e.g. a leading `,` in the joined
+    # list) correctly routes to the admin fallback.
+    if [ -n "$GITEA_USER_EMAIL" ]; then
+        # See top-of-script comment (~line 85) on GITEA_USER_EMAIL vs USER_EMAIL.
+        GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
     else
         GITEA_USER_USERNAME="$ADMIN_USERNAME"
     fi
@@ -1200,7 +1226,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     #   later in the mirror block regardless of USER_EMAIL)
     # - no mirror → admin's default empty repo (created further below only when
     #   GH_MIRROR_REPOS is unset)
-    if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "$USER_EMAIL" ]; then
+    if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "$GITEA_USER_EMAIL" ]; then
         # Derive repo name from first mirror URL (e.g. https://github.com/user/Bsc_EDS_GIS_FS2026)
         FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
         WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
@@ -1226,13 +1252,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         GITEA_REPO_OWNER="${ADMIN_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     fi
-    # Require BOTH a user email and a user password to use user credentials
-    # for service Git integration. Either one missing → fall back to admin.
-    if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
+    # Require BOTH a valid single user email and a user password to use user
+    # credentials for service Git integration. Either one missing → fall
+    # back to admin. Gate on GITEA_USER_EMAIL (not USER_EMAIL) so a list
+    # with empty first entry routes to the admin branch.
+    if [ -n "$GITEA_USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
         GITEA_GIT_USER="${GITEA_USER_USERNAME}"
         GITEA_GIT_PASS="${GITEA_USER_PASS}"
         GIT_AUTHOR="${GITEA_USER_USERNAME}"
-        GIT_EMAIL="${USER_EMAIL}"
+        # Single-address: GIT_EMAIL is written to service .env files and used
+        # as git author/committer email. USER_EMAIL may be a comma-list;
+        # use GITEA_USER_EMAIL so commit metadata is well-formed.
+        GIT_EMAIL="${GITEA_USER_EMAIL}"
     else
         # Fallback to admin if no user identity/password available
         GITEA_GIT_USER="${ADMIN_USERNAME}"
@@ -1968,7 +1999,7 @@ EOF
             "CLOUDBEAVER_PASSWORD" "$CLOUDBEAVER_PASS"
 
         build_folder "mage" \
-            "MAGE_USERNAME" "${USER_EMAIL:-$ADMIN_EMAIL}" \
+            "MAGE_USERNAME" "${GITEA_USER_EMAIL:-$ADMIN_EMAIL}" \
             "MAGE_PASSWORD" "$MAGE_PASS"
 
         build_folder "minio" \
@@ -2072,7 +2103,7 @@ EOF
             "CLICKHOUSE_PASSWORD" "$CLICKHOUSE_ADMIN_PASS"
 
         build_folder "wikijs" \
-            "WIKIJS_USERNAME" "${USER_EMAIL:-$ADMIN_EMAIL}" \
+            "WIKIJS_USERNAME" "${GITEA_USER_EMAIL:-$ADMIN_EMAIL}" \
             "WIKIJS_PASSWORD" "$WIKIJS_ADMIN_PASS" \
             "WIKIJS_DB_PASSWORD" "$WIKIJS_DB_PASS"
 
@@ -2738,9 +2769,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "windmill" && [ -n "$WINDMILL_ADMIN_PASS"
             echo -e "${YELLOW}  ⚠ Windmill admin creation: ${WINDMILL_CREATE_RESULT:-no response}${NC}"
         fi
 
-        # --- Step 2: Create regular user for USER_EMAIL (if different from ADMIN_EMAIL) ---
-        if [ -n "$USER_EMAIL" ] && [ "$USER_EMAIL" != "$ADMIN_EMAIL" ]; then
-            WINDMILL_USER_JSON=$(jq -n --arg email "$USER_EMAIL" --arg password "$WINDMILL_ADMIN_PASS" \
+        # --- Step 2: Create regular user for GITEA_USER_EMAIL (if different from ADMIN_EMAIL) ---
+        # Use GITEA_USER_EMAIL (single address) not USER_EMAIL (may be comma list).
+        # Windmill's email field has the same single-value semantics as Gitea's.
+        if [ -n "$GITEA_USER_EMAIL" ] && [ "$GITEA_USER_EMAIL" != "$ADMIN_EMAIL" ]; then
+            WINDMILL_USER_JSON=$(jq -n --arg email "$GITEA_USER_EMAIL" --arg password "$WINDMILL_ADMIN_PASS" \
                 '{email: $email, password: $password, super_admin: false, name: "User"}')
             WINDMILL_USER_RESULT=$(printf '%s' "$WINDMILL_USER_JSON" | ssh nexus "curl -s -X POST '$WM_URL/users/create' \
                 -H '$WM_AUTH' \
@@ -2748,7 +2781,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "windmill" && [ -n "$WINDMILL_ADMIN_PASS"
                 -d @-" 2>/dev/null || echo "")
 
             if echo "$WINDMILL_USER_RESULT" | grep -q '"email"' 2>/dev/null; then
-                echo -e "${GREEN}  ✓ Windmill user created (user: $USER_EMAIL)${NC}"
+                echo -e "${GREEN}  ✓ Windmill user created (user: $GITEA_USER_EMAIL)${NC}"
             elif echo "$WINDMILL_USER_RESULT" | grep -qi 'already exists' 2>/dev/null; then
                 echo -e "${YELLOW}  ⚠ Windmill user already exists${NC}"
             fi
@@ -2942,9 +2975,14 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # The PATCH body requires source_id and login_name even for an
         # email-only update — Gitea's admin-users schema rejects partial
         # bodies without them. source_id:0 = local auth provider.
-        if [ "$ADMIN_EXISTS" -gt 0 ] && [ -n "$USER_EMAIL" ]; then
+        if [ "$ADMIN_EXISTS" -gt 0 ] && [ -n "$GITEA_USER_EMAIL" ]; then
             CURRENT_ADMIN_EMAIL=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {print $3; exit}')
-            if [ "$CURRENT_ADMIN_EMAIL" = "$USER_EMAIL" ]; then
+            # Compare against GITEA_USER_EMAIL (single address). The admin
+            # row's email column is always a single address; if USER_EMAIL
+            # is a comma-list, a raw equality check would never match and
+            # this remap (Stage 3, v0.51.9) would silently not fire for
+            # upgraded stacks, leaving the legacy collision in place.
+            if [ "$CURRENT_ADMIN_EMAIL" = "$GITEA_USER_EMAIL" ]; then
                 echo "  Admin has legacy email conflicting with user — remapping to $ADMIN_EMAIL..."
                 # --fail-with-body so curl exits non-zero on HTTP 4xx/5xx while
                 # still printing the response body — without it, a Gitea
@@ -2996,9 +3034,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
 
         # --- Create regular user account (for students/user_email) ---
-        # Extract username from user_email (part before @)
-        GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
-        if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
+        # Extract username from the single-address GITEA_USER_EMAIL (see ~line 85).
+        # Gate on GITEA_USER_EMAIL (not raw USER_EMAIL) — empty-after-trim
+        # means no valid single address, so CREATE/SYNC both skip cleanly.
+        GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
+        if [ -n "$GITEA_USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
             # Same column-exact awk pattern as the admin block above, with the
             # same two-step fetch-then-parse structure. Note that the current
             # `|| echo ""` fallback collapses ssh/list failures into an empty
@@ -3037,7 +3077,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 GITEA_USER_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
                     --username '$GITEA_USER_USERNAME' \
                     --password '$GITEA_USER_PASS' \
-                    --email '$USER_EMAIL' \
+                    --email '$GITEA_USER_EMAIL' \
                     --must-change-password=false" 2>&1 || echo "")
 
                 if echo "$GITEA_USER_RESULT" | grep -qi "created\|success\|New user"; then
@@ -3068,7 +3108,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
 
         if [ -n "$GITEA_TOKEN" ]; then
-            GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+            GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
 
             if [ -z "${GH_MIRROR_REPOS:-}" ]; then
                 # --- Create default empty workspace repo ---
@@ -3430,7 +3470,7 @@ fi
 if echo "$ENABLED_SERVICES" | grep -qw "wikijs" && [ -n "$WIKIJS_ADMIN_PASS" ]; then
     (
         echo "  Configuring Wiki.js admin..."
-        WIKIJS_EMAIL="${USER_EMAIL:-$ADMIN_EMAIL}"
+        WIKIJS_EMAIL="${GITEA_USER_EMAIL:-$ADMIN_EMAIL}"
         for i in $(seq 1 30); do
             if ssh nexus "curl -fsS --connect-timeout 2 'http://localhost:3005/healthz'" 2>/dev/null | grep -qi 'ok'; then
                 break
