@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.9](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.8...v0.51.9) (2026-04-22)
+
+
+### 🐛 Bug Fixes
+
+* **scripts:** Address PR review comments ([18bcd29](https://github.com/stefanko-ch/Nexus-Stack/commit/18bcd29b78077707e0d13cae68676114b72fafba))
+* **scripts:** Address PR review comments (round 2) ([71ca9fb](https://github.com/stefanko-ch/Nexus-Stack/commit/71ca9fb0bd7da5200330924fa2c8c6ba9c80f88a))
+* **scripts:** Prevent Gitea admin/user email collision ([83ca867](https://github.com/stefanko-ch/Nexus-Stack/commit/83ca8672b649c50fd373b21292030a88b5cdf664))
+* **scripts:** Prevent Gitea admin/user email collision ([c245d89](https://github.com/stefanko-ch/Nexus-Stack/commit/c245d89426ae8c5dfd0feed476ecde476b08d099))
+
 ## [0.51.8](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.7...v0.51.8) (2026-04-22)
 
 
