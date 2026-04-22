@@ -58,11 +58,25 @@ cd "$PROJECT_ROOT"
 
 # Get domain and admin email from config
 DOMAIN=$(grep -E '^domain\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
-ADMIN_EMAIL=$(grep -E '^admin_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "admin@$DOMAIN")
-OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
+ADMIN_EMAIL=$(grep -E '^admin_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
 USER_EMAIL=$(grep -E '^user_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo "")
-# Fallback to ADMIN_EMAIL if USER_EMAIL is not set
-USER_EMAIL=${USER_EMAIL:-$ADMIN_EMAIL}
+
+# ADMIN_EMAIL must be distinct from USER_EMAIL: Gitea enforces uniqueness on
+# user.email, so if both rows are created with the same address the second
+# create fails with "e-mail already in use". The admin-panel caller
+# (Nexus-Stack-for-Education) passes both values from the same field today,
+# and self-provisioned tfvars can omit admin_email entirely. In either case
+# fall back to a synthetic admin@${DOMAIN} that's guaranteed distinct from
+# any normal human USER_EMAIL.
+if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$USER_EMAIL" ]; then
+    ADMIN_EMAIL="admin@$DOMAIN"
+fi
+OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
+
+# No USER_EMAIL fallback to ADMIN_EMAIL — that was the root of the Gitea
+# uniqueness collision. The Gitea user-create block below is already gated
+# by `[ -n "$USER_EMAIL" ]`, so an unset USER_EMAIL skips user creation
+# cleanly instead of colliding with the admin row.
 # Gitea user username derived from user_email (part before @)
 GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
 SSH_HOST="ssh.${DOMAIN}"
@@ -2881,6 +2895,33 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         ADMIN_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null" || echo "")
         ADMIN_EXISTS=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
 
+        # Legacy-volume remediation: if admin was previously created with
+        # email == USER_EMAIL (every stack deployed with a pre-v0.51.9
+        # deploy.sh where the caller set both emails equal), the user-create
+        # below will fail with "e-mail already in use". Patch admin's email
+        # to the now-synthesised ADMIN_EMAIL via the Gitea admin API before
+        # the user-create runs. Idempotent: on subsequent spin-ups
+        # CURRENT_ADMIN_EMAIL no longer equals USER_EMAIL and this block
+        # short-circuits. No-op on fresh stacks (admin row doesn't exist
+        # yet) and on stacks where ADMIN_EMAIL and USER_EMAIL were already
+        # distinct (the normal template case).
+        #
+        # The PATCH body requires source_id and login_name even for an
+        # email-only update — Gitea's admin-users schema rejects partial
+        # bodies without them. source_id:0 = local auth provider.
+        if [ "$ADMIN_EXISTS" -gt 0 ] && [ -n "$USER_EMAIL" ]; then
+            CURRENT_ADMIN_EMAIL=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {print $3; exit}')
+            if [ "$CURRENT_ADMIN_EMAIL" = "$USER_EMAIL" ]; then
+                echo "  Admin has legacy email conflicting with user — remapping to $ADMIN_EMAIL..."
+                PATCH_OUTPUT=$(ssh nexus "curl -sS -X PATCH 'http://localhost:3200/api/v1/admin/users/$ADMIN_USERNAME' \
+                    -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
+                    -H 'Content-Type: application/json' \
+                    -d '{\"email\":\"$ADMIN_EMAIL\",\"source_id\":0,\"login_name\":\"$ADMIN_USERNAME\"}'" 2>&1) \
+                    && echo -e "${GREEN}  ✓ Admin email remapped${NC}" \
+                    || printf "${YELLOW}  ⚠ Could not remap admin email: %s${NC}\n" "$PATCH_OUTPUT"
+            fi
+        fi
+
         if [ "$ADMIN_EXISTS" -gt 0 ]; then
             # Sync password to match current OpenTofu state (persistent volume may have old password).
             # Capture stderr so when the sync fails we see WHY. Previously this block
@@ -2909,7 +2950,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             if echo "$GITEA_RESULT" | grep -qi "created\|success\|New user"; then
                 echo -e "${GREEN}  ✓ Gitea admin created (user: $ADMIN_USERNAME)${NC}"
             else
-                echo -e "${YELLOW}  ⚠ Gitea admin setup needs manual configuration${NC}"
+                # Print the captured result so the Gitea error is visible, not
+                # swallowed. printf (not echo -e) so any backslash sequences in
+                # the captured output are rendered verbatim — same rationale
+                # as the change-password failure branches above.
+                printf "${YELLOW}  ⚠ Gitea admin setup needs manual configuration: %s${NC}\n" "$GITEA_RESULT"
                 echo -e "${YELLOW}    Credentials available in Infisical${NC}"
             fi
         fi
@@ -2962,7 +3007,8 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 if echo "$GITEA_USER_RESULT" | grep -qi "created\|success\|New user"; then
                     echo -e "${GREEN}  ✓ Gitea user created (user: $GITEA_USER_USERNAME)${NC}"
                 else
-                    echo -e "${YELLOW}  ⚠ Gitea user setup needs manual configuration${NC}"
+                    # Print the captured result — see admin CREATE branch above.
+                    printf "${YELLOW}  ⚠ Gitea user setup needs manual configuration: %s${NC}\n" "$GITEA_USER_RESULT"
                 fi
             fi
         fi
