@@ -2861,16 +2861,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # USER_EXISTS=1 wrongly, CREATE is skipped, the user never exists,
         # SYNC then fails). Fix the detection in both places for consistency.
         #
-        # Two-step form (fetch → parse) instead of one-line remote pipeline
-        # so bash's local set -o pipefail governs the ssh call independently
-        # of awk's always-zero exit. ssh/docker failures are folded into an
-        # empty list via || echo "" and the downstream awk then prints 0,
-        # routing to the CREATE branch (where PR #464's stderr capture will
-        # surface any genuine connectivity problem). That's the same soft
-        # fallback this section uses elsewhere for transient-Gitea resilience
-        # during deploy — not a crash-on-error design. If stricter failure
-        # handling is wanted later, upgrade here to capture ssh's exit status
-        # in a separate variable and warn explicitly.
+        # Two-step form (fetch → parse) instead of a one-line remote pipeline
+        # so the remote fetch isn't coupled to a downstream parser whose exit
+        # status could mask an upstream failure. The local code path here is
+        # a single command with an `||` fallback (not a pipeline), so
+        # set -o pipefail doesn't apply — ssh/docker failures are explicitly
+        # folded into an empty list via `|| echo ""` and the downstream awk
+        # then prints 0, routing to the CREATE branch (where PR #464's
+        # stderr capture surfaces any genuine connectivity problem). Same
+        # soft-fallback pattern this section uses elsewhere for transient-
+        # Gitea resilience during deploy — not a crash-on-error design.
+        # If stricter failure handling is wanted later, capture ssh's exit
+        # status in a separate variable and warn explicitly.
         #
         # printf '%s\n' instead of echo because bash's echo treats a leading
         # '-n'/'-e'/'-E' in $ADMIN_LIST as options (not data). Gitea's list
@@ -2916,9 +2918,12 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         # Extract username from user_email (part before @)
         GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
         if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
-            # Same column-exact awk pattern as the admin block above, same
-            # two-step fetch-then-parse to keep ssh failures distinguishable
-            # from the "no match" case. This is the block where the
+            # Same column-exact awk pattern as the admin block above, with the
+            # same two-step fetch-then-parse structure. Note that the current
+            # `|| echo ""` fallback collapses ssh/list failures into an empty
+            # result, so failures are treated the same as the "no match" case
+            # (awk prints 0 → CREATE path fires, where PR #464's stderr capture
+            # surfaces the genuine error). This is the block where the
             # grep-substring form actively broke things: GITEA_USER_USERNAME
             # is derived from USER_EMAIL prefix (e.g. stefan.koch from
             # stefan.koch@hslu.ch). If ADMIN_EMAIL also ends in @hslu.ch (or
