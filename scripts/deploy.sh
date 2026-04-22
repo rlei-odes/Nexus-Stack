@@ -81,8 +81,17 @@ OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
 # uniqueness collision. The Gitea user-create block below is already gated
 # by `[ -n "$USER_EMAIL" ]`, so an unset USER_EMAIL skips user creation
 # cleanly instead of colliding with the admin row.
-# Gitea user username derived from user_email (part before @)
-GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+# Gitea needs a single address for the user.email column; USER_EMAIL may
+# be a comma-separated list (student + teacher admins, so tofu/stack can
+# build the Cloudflare Access allow-list from every entry). Strip to the
+# first entry here — Gitea's validator rejects commas with "e-mail address
+# contains unsupported character" and the raw list would otherwise reach
+# `gitea admin user create --email`. Downstream derivations in this script
+# (workspace-config block ~line 1193, user-create block ~line 3000,
+# workspace-repo block ~line 3071) all reuse GITEA_USER_EMAIL for the same
+# single-value semantics.
+GITEA_USER_EMAIL="${USER_EMAIL%%,*}"
+GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
 SSH_HOST="ssh.${DOMAIN}"
 
 if [ -z "$DOMAIN" ]; then
@@ -1190,7 +1199,8 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     # the Gitea user-create block below stays gated on `[ -n "$USER_EMAIL" ]`
     # and skips cleanly when USER_EMAIL is unset.
     if [ -n "$USER_EMAIL" ]; then
-        GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+        # See top-of-script comment (~line 85) on GITEA_USER_EMAIL vs USER_EMAIL.
+        GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
     else
         GITEA_USER_USERNAME="$ADMIN_USERNAME"
     fi
@@ -2996,8 +3006,8 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
 
         # --- Create regular user account (for students/user_email) ---
-        # Extract username from user_email (part before @)
-        GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+        # Extract username from the single-address GITEA_USER_EMAIL (see ~line 85).
+        GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
         if [ -n "$USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
             # Same column-exact awk pattern as the admin block above, with the
             # same two-step fetch-then-parse structure. Note that the current
@@ -3037,7 +3047,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 GITEA_USER_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
                     --username '$GITEA_USER_USERNAME' \
                     --password '$GITEA_USER_PASS' \
-                    --email '$USER_EMAIL' \
+                    --email '$GITEA_USER_EMAIL' \
                     --must-change-password=false" 2>&1 || echo "")
 
                 if echo "$GITEA_USER_RESULT" | grep -qi "created\|success\|New user"; then
@@ -3068,7 +3078,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
 
         if [ -n "$GITEA_TOKEN" ]; then
-            GITEA_USER_USERNAME="${USER_EMAIL%%@*}"
+            GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
 
             if [ -z "${GH_MIRROR_REPOS:-}" ]; then
                 # --- Create default empty workspace repo ---
