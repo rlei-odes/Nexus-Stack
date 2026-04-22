@@ -66,8 +66,8 @@ USER_EMAIL=$(grep -E '^user_email\s*=' "$TOFU_DIR/config.tfvars" 2>/dev/null | s
 # create fails with "e-mail already in use". The admin-panel caller
 # (Nexus-Stack-for-Education) passes both values from the same field today,
 # and self-provisioned tfvars can omit admin_email entirely. In either case
-# fall back to a synthetic admin@${DOMAIN} that's guaranteed distinct from
-# any normal human USER_EMAIL.
+# fall back to a synthetic gitea-admin@${DOMAIN} that's guaranteed distinct
+# from any normal human USER_EMAIL.
 if [ -z "$ADMIN_EMAIL" ] || [ "$ADMIN_EMAIL" = "$USER_EMAIL" ]; then
     # Use a local-part that no human-email scheme would produce. `admin@${DOMAIN}`
     # is also safe for the stack-scoped student domains (e.g. <user>.nona.company),
@@ -1194,8 +1194,12 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     else
         GITEA_USER_USERNAME="$ADMIN_USERNAME"
     fi
-    # Determine workspace repo: fork of first GH_MIRROR_REPOS entry (requires
-    # a real user to fork into), or default empty repo under admin.
+    # Determine workspace repo. Three cases:
+    # - mirror + user → fork of first mirror into user's namespace
+    # - mirror + no user → admin's mirror-readonly repo directly (still created
+    #   later in the mirror block regardless of USER_EMAIL)
+    # - no mirror → admin's default empty repo (created further below only when
+    #   GH_MIRROR_REPOS is unset)
     if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "$USER_EMAIL" ]; then
         # Derive repo name from first mirror URL (e.g. https://github.com/user/Bsc_EDS_GIS_FS2026)
         FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
@@ -1205,6 +1209,17 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
         REPO_NAME="${WORKSPACE_REPO_NAME}_${GITEA_USER_SANITIZED}"
         GITEA_REPO_OWNER="${GITEA_USER_USERNAME}"
+        GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
+    elif [ -n "${GH_MIRROR_REPOS:-}" ]; then
+        # Mirror configured but no user to fork into: point services at the
+        # admin's mirror-readonly-<name> repo that the mirror block creates
+        # (line ~3261). Without this branch we'd previously fall through to
+        # the default empty-repo name below, which is NOT created when
+        # GH_MIRROR_REPOS is set — service .env values would reference a
+        # non-existent repo.
+        FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
+        REPO_NAME="mirror-readonly-$(basename "$FIRST_MIRROR" .git)"
+        GITEA_REPO_OWNER="${ADMIN_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     else
         REPO_NAME="nexus-${DOMAIN//./-}-gitea"
