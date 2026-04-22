@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.8](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.7...v0.51.8) (2026-04-22)
+
+
+### 🐛 Bug Fixes
+
+* **scripts:** Address PR review comments — honest comment + printf over echo ([9d39b11](https://github.com/stefanko-ch/Nexus-Stack/commit/9d39b116a6340f118d1cd54a99ece088af937b7d))
+* **scripts:** Address PR review comments — split ssh fetch from local awk parse ([95b67e7](https://github.com/stefanko-ch/Nexus-Stack/commit/95b67e7da54b235ec526bf57e80c88136be18865))
+* **scripts:** Match Gitea username by exact column, not line substring ([55a25d2](https://github.com/stefanko-ch/Nexus-Stack/commit/55a25d2ce84b80038704d71425720815a417ee5d))
+* **scripts:** Match Gitea username by exact column, not line substring (Stage 2) ([1ec839b](https://github.com/stefanko-ch/Nexus-Stack/commit/1ec839b7aefbffede19856387135427f2258aa9d))
+
+
+### 📚 Documentation
+
+* **scripts:** Correct pipefail and distinguishability claims in Gitea user-detect comments ([53b027d](https://github.com/stefanko-ch/Nexus-Stack/commit/53b027df500856153837ed81fac48b9f25a621c8))
+
 ## [0.51.7](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.6...v0.51.7) (2026-04-21)
 
 
