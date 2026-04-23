@@ -52,4 +52,6 @@ Click **Sync Now** in the Databricks panel to mirror every secret on this page i
 
 The sync also removes any scope keys that are no longer in Infisical — that way the scope stays a clean mirror rather than accumulating stale entries.
 
+> **The `nexus` scope is a strict mirror.** Keys you add manually in Databricks under this scope that are not also in Infisical will be deleted on the next sync. Keep unrelated Databricks-only secrets in a different scope.
+
 The button is disabled until you've saved a Databricks workspace URL and token on the [Integrations page](./integrations.md). See [Integrations → Databricks](./integrations.md) for the full walkthrough.

@@ -37,7 +37,11 @@ This matches the folder view on the Control Plane's Secrets page exactly, so wha
 
 ### Drift cleanup
 
-Each sync run computes the diff between Infisical and the `nexus` scope and **deletes** any scope keys that are no longer present in Infisical. That keeps the scope tidy over time and — on first run after upgrading from 0.51.x or earlier — removes the legacy flat keys (`grafana_admin_password`, `admin_email`, …) that older versions wrote. Notebooks referencing those flat names need to switch to the new `<folder>/<KEY>` convention.
+Each sync run computes the diff between Infisical and the `nexus` scope and **deletes** any scope keys that are no longer present in Infisical. That keeps the scope tidy and — on first run after upgrading from 0.51.x or earlier — removes the legacy flat keys (`grafana_admin_password`, `admin_email`, …) that older versions wrote.
+
+> **The `nexus` scope is a strict mirror.** Any key you add manually in Databricks under this scope that is not also in Infisical will be deleted on the next sync. Store unrelated Databricks-only secrets in a different scope; keep `nexus` reserved for the Infisical mirror.
+
+Notebooks referencing the legacy flat names need to switch to the new `<folder>/<KEY>` convention.
 
 ### Finding your Workspace URL
 
@@ -88,8 +92,6 @@ Go to **Integrations** in the Control Plane and fill in the two fields:
 Click **Save Configuration**. The host and token are stored in Cloudflare KV; the token is never visible after saving.
 
 To trigger the first sync, open the [Secrets page](./secrets.md) and click **Sync Now** in the Databricks panel. A toast reports how many secrets were upserted, how many stale keys were removed, and whether anything failed.
-
-![Databricks integration tile showing a "Last sync: success" confirmation after mirroring secrets](./assets/databricks-sync-success.png)
 
 ### Accessing Secrets in Databricks
 
