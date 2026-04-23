@@ -193,13 +193,15 @@ export async function onRequestPost(context) {
 
   // 3. Diff against current scope contents → list of stale keys to delete
   let existingKeys = [];
+  let driftCleanupSkipped = false;
   try {
     existingKeys = await listScopeKeys(host, token);
   } catch (err) {
-    // Non-fatal: if the list call fails we still proceed with upserts, just
-    // no drift-cleanup this round.
+    // Non-fatal: continue with upserts, but flag the run as partial — the
+    // "strict mirror" guarantee doesn't hold if we didn't check for drift.
+    driftCleanupSkipped = true;
     inventory.warnings = inventory.warnings || [];
-    inventory.warnings.push(`Scope list failed, skipping drift cleanup: ${err.message}`);
+    inventory.warnings.push(`Scope list failed; stale keys were not checked or removed this run: ${err.message}`);
   }
   const stale = existingKeys.filter(k => !desiredKeys.has(k));
 
@@ -241,11 +243,18 @@ export async function onRequestPost(context) {
 
   const upserted = upsertResults.filter(r => r.ok).length;
   const deleted = deleteResults.filter(r => r.ok).length;
-  const status = failed.length === 0 ? 'success' : 'partial';
+  // A skipped drift cleanup means the scope isn't a guaranteed mirror this
+  // run — surface that as `partial` alongside per-key failures.
+  const status = (failed.length === 0 && !driftCleanupSkipped) ? 'success' : 'partial';
   const timestamp = new Date().toISOString();
-  const message = failed.length === 0
-    ? `Synced ${upserted} secrets, removed ${deleted} stale entries.`
-    : `Synced ${upserted} secrets, removed ${deleted} stale entries, ${failed.length} failed.`;
+  const parts = [`Synced ${upserted} secrets`];
+  if (driftCleanupSkipped) {
+    parts.push('drift cleanup skipped');
+  } else {
+    parts.push(`removed ${deleted} stale entries`);
+  }
+  if (failed.length > 0) parts.push(`${failed.length} failed`);
+  const message = parts.join(', ') + '.';
 
   const result = {
     status,
