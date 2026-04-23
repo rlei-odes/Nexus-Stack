@@ -18,6 +18,7 @@ The goal: give you one focused skill per page, so you can stitch the ones you ne
 | Pipe an external stream into Redpanda without writing code | [Redpanda Connect → Stream Bluesky firehose](./redpanda-connect/bluesky-stream) |
 | Write SQL against a live event stream | [Flink → Query a Redpanda topic with Flink SQL](./flink/flink-sql-on-redpanda) |
 | Land streaming data in a Delta table on Databricks | [Spark → Write a Kafka stream to a Bronze Delta table](./spark/bronze-delta) |
+| Read the Nexus data lake from a Databricks notebook | [Databricks → Read and write R2](./databricks/r2-datalake) |
 | Just get a terminal and Python working inside Nexus-Stack | [Code-Server → Run curl in the terminal](./code-server/terminal-curl) |
 
 ## Categories
@@ -29,6 +30,7 @@ The goal: give you one focused skill per page, so you can stitch the ones you ne
 | **[Redpanda Connect](./redpanda-connect/)** | YAML-driven pipelines — deploy, manage, real-world Bluesky example | 2 |
 | **[Flink](./flink/)** | Dinky setup, Flink SQL against Redpanda, end-to-end Bluesky walkthrough | 3 |
 | **[Spark Structured Streaming](./spark/)** | Databricks streaming from rate source → Redpanda read → JSON parsing → Bronze Delta | 4 |
+| **[Databricks](./databricks/)** | External Databricks ↔ Nexus workflows — R2 data lake from notebooks | 1 |
 
 ## How to use these
 

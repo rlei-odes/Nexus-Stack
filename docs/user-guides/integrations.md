@@ -32,6 +32,7 @@ Inside the `nexus` scope, every key is prefixed with its Infisical folder: `<fol
 | folder `postgres`, key `POSTGRES_USERNAME` | `postgres/POSTGRES_USERNAME` |
 | folder `redpanda`, key `REDPANDA_KAFKA_PUBLIC_URL` | `redpanda/REDPANDA_KAFKA_PUBLIC_URL` |
 | folder `gitea`, key `GITEA_REPO_URL` | `gitea/GITEA_REPO_URL` |
+| folder `r2-datalake`, keys `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | `r2-datalake/R2_ENDPOINT` etc. — see the [R2 data-lake tutorial](/docs/tutorials/databricks/r2-datalake/) |
 
 This matches the folder view on the Control Plane's Secrets page exactly, so whatever you can see there is also what the sync pushes.
 
@@ -130,6 +131,12 @@ kafka_url = dbutils.secrets.get(scope="nexus", key="redpanda/REDPANDA_KAFKA_PUBL
 ![Databricks notebook reading a secret with dbutils.secrets.get() and printing [REDACTED] as the value — the expected successful output](./assets/databricks-get-secret.png)
 
 Secret values are always shown as `[REDACTED]` in Databricks notebook output — this is intentional and means the secret was read successfully.
+
+### Reading the Nexus data lake from a notebook
+
+The four keys under the `r2-datalake/` prefix — `R2_ENDPOINT`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_BUCKET` — give a Databricks notebook direct S3-compatible access to your Nexus R2 bucket. Parquet files written from Databricks are visible from Nexus-side tooling (via Infisical-stored credentials), and vice versa.
+
+The full walkthrough lives in [Tutorials → Databricks → Read and write R2 from a notebook](/docs/tutorials/databricks/r2-datalake/) — PySpark `s3a://` configuration, `boto3` recipes, and the R2-specific quirks (`path.style.access=true`, `region=auto`). The bucket survives `destroy-all` on the Nexus side, so student work persists across stack resets.
 
 ## Future integrations
 
