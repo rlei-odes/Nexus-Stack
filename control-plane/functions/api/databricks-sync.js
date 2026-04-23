@@ -243,9 +243,12 @@ export async function onRequestPost(context) {
 
   const upserted = upsertResults.filter(r => r.ok).length;
   const deleted = deleteResults.filter(r => r.ok).length;
-  // A skipped drift cleanup means the scope isn't a guaranteed mirror this
-  // run — surface that as `partial` alongside per-key failures.
-  const status = (failed.length === 0 && !driftCleanupSkipped) ? 'success' : 'partial';
+  // Any warning (drift-skip, Infisical folder fetch failure, …) means the
+  // scope isn't a guaranteed mirror this run — surface that as `partial`
+  // alongside per-key failures, so the UI never shows a green "success"
+  // when some secrets were silently skipped.
+  const hasWarnings = (inventory.warnings || []).length > 0;
+  const status = (failed.length === 0 && !hasWarnings) ? 'success' : 'partial';
   const timestamp = new Date().toISOString();
   const parts = [`Synced ${upserted} secrets`];
   if (driftCleanupSkipped) {
@@ -272,5 +275,8 @@ export async function onRequestPost(context) {
     status, upserted, deleted, failed_count: failed.length,
   });
 
-  return jsonResponse({ success: failed.length === 0, ...result });
+  // `success` tracks the computed `status` — a partial run (drift-skip,
+  // Infisical fetch warnings, or per-key failures) is not a success, even
+  // if every upsert attempt returned 200.
+  return jsonResponse({ success: status === 'success', ...result });
 }
