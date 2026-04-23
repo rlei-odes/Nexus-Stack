@@ -12,7 +12,12 @@ Nexus-Stack's external data-lake lives in Cloudflare R2. This tutorial shows how
 
 R2 is Nexus's **external-facing** S3 bridge. It's the one S3-compatible endpoint that is reachable from the public internet, which makes it the only Nexus storage that SaaS tools like Databricks can plug into directly.
 
-Internal Nexus services (Spark, Jupyter, LakeFS, Filestash, MinIO) do **not** use R2 — they write to Hetzner Object Storage over the Docker network, which is cheaper, faster, and stays inside the tunnel. So:
+Internal Nexus services do **not** use R2 by default. The shipped config splits internal storage in two directions:
+
+- **Spark, Jupyter, LakeFS, Filestash** — S3-compatible writes go to **Hetzner Object Storage** via its public S3 endpoint. The server lives in a Hetzner datacenter, so this traffic stays inside Hetzner's network — low latency, no Cloudflare egress, no tunnel hop.
+- **MinIO, Garage, SeaweedFS** — self-contained object stores that keep their data on local Docker volumes inside the Nexus server. Same `app-network`, no external dependency.
+
+R2 is layered on top of this for the **external** use case only (Databricks, other SaaS tools that need to reach the data lake from the public internet). So:
 
 - **You want Databricks to read Parquet files from your Nexus data lake → R2** (this tutorial).
 - **You want Jupyter-in-Nexus to write Parquet files for a Nexus-internal pipeline → use LakeFS or Hetzner Object Storage, not R2** (see [docs/stacks/lakefs](/docs/stacks/lakefs/)).
