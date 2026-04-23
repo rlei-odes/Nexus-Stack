@@ -61,10 +61,9 @@ ENDPOINT    = dbutils.secrets.get("nexus", "r2-datalake/R2_ENDPOINT")
 ACCESS_KEY  = dbutils.secrets.get("nexus", "r2-datalake/R2_ACCESS_KEY")
 SECRET_KEY  = dbutils.secrets.get("nexus", "r2-datalake/R2_SECRET_KEY")
 BUCKET      = dbutils.secrets.get("nexus", "r2-datalake/R2_BUCKET")
-
-# Values are never printed. Verify the bucket name only if you need to:
-print(f"Target bucket: {BUCKET}")
 ```
+
+Don't `print(...)` any of these values — Databricks redacts secret-scope results to `[REDACTED]` regardless of what's actually stored, so the print isn't a useful verification step and is a bad habit to build. If you need to confirm the bucket name, check the Control Plane Secrets page or the Cloudflare R2 dashboard, or just proceed with the write below and let a successful `list_objects` / `count()` be the confirmation.
 
 ### Configure Hadoop S3A
 
@@ -176,8 +175,8 @@ Just use `s3a://` directly. Everything you can do with a mount, you can do with 
 **`403 SignatureDoesNotMatch`**
 Either the wrong secret key (check you're reading `R2_SECRET_KEY`, not a raw Cloudflare token), or the Hadoop region isn't set — Spark silently fails signing when region is empty. Set `fs.s3a.region = auto`.
 
-**`NoSuchBucket: nexus-<domain>-data`**
-Bucket-name format uses dashes only — dots in the domain get replaced by dashes (`stefanko.ch` → `stefanko-ch`). Confirm the value from `dbutils.secrets.get("nexus", "r2-datalake/R2_BUCKET")` matches what exists in Cloudflare Dashboard → R2 → Buckets.
+**`NoSuchBucket: nexus-<domain-slug>-data`**
+Bucket-name format uses dashes only — dots in the domain get replaced by dashes (`stefanko.ch` → `stefanko-ch`). Confirm the value stored in the `R2_BUCKET` secret matches what exists in Cloudflare Dashboard → R2 → Buckets.
 
 **`SocketTimeoutException` or `connection refused`**
 Databricks Classic compute in some regions has egress restrictions to `*.r2.cloudflarestorage.com`. Switch to Serverless compute (default on Free Edition), or check your workspace's network policy.
