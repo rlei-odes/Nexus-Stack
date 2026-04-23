@@ -184,7 +184,7 @@ You've probably picked up the wrong secret — double-check you're reading from 
 
 The tutorial above is self-contained — `spark.range(100)` is your "data source." For a real workflow, you probably want Nexus-side tools to land data in R2 so Databricks can pick it up. Two light patterns:
 
-- **Python script inside [code-server](/docs/tutorials/code-server/) using `boto3`**, reading the same keys from Infisical (`/r2-datalake` folder), writing Parquet to `s3://nexus-<domain>-data/incoming/…`. Databricks polls that prefix on a schedule.
+- **Python script inside [code-server](/docs/tutorials/code-server/) using `boto3`**, reading the same keys from Infisical (`/r2-datalake` folder), writing Parquet to `s3://<R2_BUCKET>/incoming/…` (substitute the real bucket name from the `R2_BUCKET` secret — same `nexus-<domain-slug>-data` format used throughout the tutorial). Databricks polls that prefix on a schedule.
 - **[Redpanda-Connect](/docs/tutorials/redpanda-connect/)** with an `aws_s3` output pointed at the R2 endpoint. Same credentials, streams Kafka events straight to R2 objects.
 
 Neither is in scope for this tutorial, but both are natural next steps once you've confirmed the Databricks → R2 round-trip works.
