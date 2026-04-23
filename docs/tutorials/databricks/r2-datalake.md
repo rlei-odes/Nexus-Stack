@@ -15,7 +15,7 @@ R2 is Nexus's **external-facing** S3 bridge. It's the one S3-compatible endpoint
 Internal Nexus services (Spark, Jupyter, LakeFS, Filestash, MinIO) do **not** use R2 — they write to Hetzner Object Storage over the Docker network, which is cheaper, faster, and stays inside the tunnel. So:
 
 - **You want Databricks to read Parquet files from your Nexus data lake → R2** (this tutorial).
-- **You want Jupyter-in-Nexus to write Parquet files for a Nexus-internal pipeline → use LakeFS or Hetzner Object Storage, not R2** (see [docs/stacks/lakefs.md](/docs/stacks/lakefs.md)).
+- **You want Jupyter-in-Nexus to write Parquet files for a Nexus-internal pipeline → use LakeFS or Hetzner Object Storage, not R2** (see [docs/stacks/lakefs](/docs/stacks/lakefs/)).
 
 The R2 bucket **persists across `destroy-all`** — Cloudflare side lives independently of the Hetzner server, and the teardown workflow explicitly preserves both the bucket and the API token. Your Parquet files survive a stack reset.
 
