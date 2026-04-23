@@ -2,12 +2,12 @@
 
 ![Nexus-Stack](docs/assets/Nexus-Logo-BlackWhite.png)
 
-![GitHub License](https://img.shields.io/github/license/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/blob/main/LICENSE)
-![GitHub Issues](https://img.shields.io/github/issues/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/issues)
-![GitHub Pull Requests](https://img.shields.io/github/issues-pr/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/pulls)
-![GitHub Last Commit](https://img.shields.io/github/last-commit/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/commits/main)
+[![GitHub License](https://img.shields.io/github/license/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/blob/main/LICENSE)](https://github.com/stefanko-ch/Nexus-Stack/blob/main/LICENSE)
+[![GitHub Issues](https://img.shields.io/github/issues/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/issues)](https://github.com/stefanko-ch/Nexus-Stack/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/pulls)](https://github.com/stefanko-ch/Nexus-Stack/pulls)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/commits/main)](https://github.com/stefanko-ch/Nexus-Stack/commits/main)
 
-[![OpenTofu](https://img.shields.io/badge/OpenTofu-FFDA18?logo=opentofu&logoColor=black)](https://opentofu.org/)
+<a href="https://opentofu.org/" target="_blank"><img src="https://img.shields.io/badge/OpenTofu-FFDA18?logo=opentofu&logoColor=black" alt="OpenTofu"></a>
 [![Hetzner](https://img.shields.io/badge/Hetzner-D50C2D?logo=hetzner&logoColor=white)](https://www.hetzner.com/)
 [![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?logo=cloudflare&logoColor=white)](https://www.cloudflare.com/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
