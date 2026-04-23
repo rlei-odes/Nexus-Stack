@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.10](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.9...v0.51.10) (2026-04-23)
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Address PR review comments (round 2) ([f4acfb9](https://github.com/stefanko-ch/Nexus-Stack/commit/f4acfb9050b16c0ab0f9debe87a99230be706de6))
+* **control-plane:** Address PR review comments (round 3) ([d0238f9](https://github.com/stefanko-ch/Nexus-Stack/commit/d0238f911c901a64050425f66fb72cbcd94fde52))
+* **control-plane:** Address PR review comments (round 4) ([d9be30e](https://github.com/stefanko-ch/Nexus-Stack/commit/d9be30e5db0f570ddd48dd7a76ad0ff24220d433))
+* **control-plane:** Address PR review comments + branch-cleanup rule ([f148b62](https://github.com/stefanko-ch/Nexus-Stack/commit/f148b62034c80fb876855195720b9ede4212c41d))
+* **control-plane:** Sync all Infisical secrets to Databricks scope ([97ca3af](https://github.com/stefanko-ch/Nexus-Stack/commit/97ca3af49c84ba367aad0c429d767c76e591c5b5))
+* **control-plane:** Sync all Infisical secrets to Databricks scope ([7ee40ce](https://github.com/stefanko-ch/Nexus-Stack/commit/7ee40cefc26d51b2b81cb028e21aa2b8b985031a)), closes [#471](https://github.com/stefanko-ch/Nexus-Stack/issues/471) [#425](https://github.com/stefanko-ch/Nexus-Stack/issues/425)
+* **kestra:** Pin default image to kestra/kestra:v1.0 (LTS with all plugins bundled) ([5dfcccf](https://github.com/stefanko-ch/Nexus-Stack/commit/5dfcccf4e7a61d604d70d3af36b588795891832a))
+* **kestra:** Pin default image to kestra/kestra:v1.0 (LTS with all plugins bundled) ([d9f2e6c](https://github.com/stefanko-ch/Nexus-Stack/commit/d9f2e6c657bef34e693de254ab9ac38af2328544))
+* **scripts:** Address PR review comments (round 2) ([87f692a](https://github.com/stefanko-ch/Nexus-Stack/commit/87f692aac3674cb6ef5ae6c8bd0ce609b5a4d777))
+* **scripts:** Route all single-value email consumers through GITEA_USER_EMAIL ([5ac27a2](https://github.com/stefanko-ch/Nexus-Stack/commit/5ac27a268165f2b6aa09e99ffa3e101f3b35f30b))
+* **scripts:** Strip comma-suffix from USER_EMAIL for Gitea user create ([3c50005](https://github.com/stefanko-ch/Nexus-Stack/commit/3c50005af0c7bca8abc05721b00fdf9c350180af))
+* **scripts:** Strip comma-suffix from USER_EMAIL for Gitea user create ([7e68925](https://github.com/stefanko-ch/Nexus-Stack/commit/7e68925ff906ab1613035aacab674d977110695b)), closes [#470](https://github.com/stefanko-ch/Nexus-Stack/issues/470)
+* **tofu:** Trim trailing newline from hcloud_ssh_key public_key ([486f259](https://github.com/stefanko-ch/Nexus-Stack/commit/486f259919b814ca4676796e30ffa507ab6970b3))
+
+
+### 📚 Documentation
+
+* **kestra:** Address PR review comment — timestamp the -full abandonment claim ([87254a6](https://github.com/stefanko-ch/Nexus-Stack/commit/87254a6dc31c981afe1fdce6d270be7d2cf56a7e))
+* **tutorials:** Add Databricks ↔ R2 data-lake walkthrough ([99fb0fc](https://github.com/stefanko-ch/Nexus-Stack/commit/99fb0fc51bafdbc40fc38591cc649f42bee93fe1))
+* **tutorials:** Add Databricks ↔ R2 data-lake walkthrough ([92f1b37](https://github.com/stefanko-ch/Nexus-Stack/commit/92f1b372d1050303fa12eabdf095545269370fe2))
+* **tutorials:** Address PR review comment — bucket placeholder consistency ([b8cf1b1](https://github.com/stefanko-ch/Nexus-Stack/commit/b8cf1b1ca7f0b4a56d14e528ea2679d148623540))
+* **tutorials:** Address PR review comment — force path-style addressing in boto3 snippet ([0fd2c40](https://github.com/stefanko-ch/Nexus-Stack/commit/0fd2c40192caa4badbd6768e8108cc8351622280))
+* **tutorials:** Address PR review comment — internal storage accuracy ([4268c33](https://github.com/stefanko-ch/Nexus-Stack/commit/4268c3320859c2738c7d917b5f261a6b5ebeb87c))
+* **tutorials:** Address PR review comments — link format ([700c73a](https://github.com/stefanko-ch/Nexus-Stack/commit/700c73ac48c7d2cf8ab3a7f41e8b0d61f791fbb5))
+* **tutorials:** Address PR review comments — redacted-print + placeholder ([b118dcc](https://github.com/stefanko-ch/Nexus-Stack/commit/b118dcc2c0abbee524461abe3e0f22250b08f429))
+
 ## [0.51.9](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.8...v0.51.9) (2026-04-22)
 
 
