@@ -47,8 +47,10 @@ async function readDatabricksAuth(env) {
   return { host, token };
 }
 
-// The Databricks secret-scope APIs return 200 with { error_code, message }
-// on application errors, so `res.ok` alone is not enough.
+// Databricks application-level failures can arrive either as non-200 status
+// codes with an { error_code, message } body, or — for some endpoints — as
+// 200 with the same error body. Centralise the success gate here so every
+// call site treats both as a failure.
 async function databricksCall(host, token, path, bodyObj) {
   const res = await fetchWithTimeout(`${host}${path}`, {
     method: 'POST',
@@ -60,18 +62,23 @@ async function databricksCall(host, token, path, bodyObj) {
   });
   let payload = null;
   try { payload = await res.json(); } catch { /* non-JSON — payload stays null */ }
-  return { status: res.status, payload };
+  const errorCode = payload && payload.error_code;
+  const ok = res.status === 200 && !errorCode;
+  const error = errorCode
+    ? `${errorCode}${payload.message ? `: ${payload.message}` : ''}`
+    : (payload && payload.message) || null;
+  return { ok, status: res.status, payload, errorCode, error };
 }
 
 async function ensureScope(host, token) {
-  const { status, payload } = await databricksCall(host, token, '/api/2.0/secrets/scopes/create', {
+  const result = await databricksCall(host, token, '/api/2.0/secrets/scopes/create', {
     scope: SCOPE_NAME,
     initial_manage_principal: 'users',
   });
-  if (status === 200) return;
-  // RESOURCE_ALREADY_EXISTS is the expected 400 on re-run
-  if (status === 400 && payload?.error_code === 'RESOURCE_ALREADY_EXISTS') return;
-  throw new Error(`Scope create failed (${status}): ${payload?.message || 'unknown error'}`);
+  if (result.ok) return;
+  // RESOURCE_ALREADY_EXISTS is the expected error on re-run
+  if (result.errorCode === 'RESOURCE_ALREADY_EXISTS') return;
+  throw new Error(`Scope create failed (${result.status}): ${result.error || 'unknown error'}`);
 }
 
 async function listScopeKeys(host, token) {
@@ -201,13 +208,13 @@ export async function onRequestPost(context) {
 
   const upsertResults = await runInBatches(desired, UPSERT_BATCH, async ({ scopeKey, value }) => {
     try {
-      const { status, payload } = await databricksCall(host, token, '/api/2.0/secrets/put', {
+      const result = await databricksCall(host, token, '/api/2.0/secrets/put', {
         scope: SCOPE_NAME,
         key: scopeKey,
         string_value: value,
       });
-      if (status !== 200) {
-        return { ok: false, key: scopeKey, error: `HTTP ${status}: ${payload?.message || 'put failed'}` };
+      if (!result.ok) {
+        return { ok: false, key: scopeKey, error: `HTTP ${result.status}: ${result.error || 'put failed'}` };
       }
       return { ok: true };
     } catch (err) {
@@ -218,12 +225,12 @@ export async function onRequestPost(context) {
 
   const deleteResults = await runInBatches(stale, UPSERT_BATCH, async (scopeKey) => {
     try {
-      const { status, payload } = await databricksCall(host, token, '/api/2.0/secrets/delete', {
+      const result = await databricksCall(host, token, '/api/2.0/secrets/delete', {
         scope: SCOPE_NAME,
         key: scopeKey,
       });
-      if (status !== 200) {
-        return { ok: false, key: scopeKey, error: `HTTP ${status}: ${payload?.message || 'delete failed'}` };
+      if (!result.ok) {
+        return { ok: false, key: scopeKey, error: `HTTP ${result.status}: ${result.error || 'delete failed'}` };
       }
       return { ok: true };
     } catch (err) {

@@ -702,6 +702,20 @@ The `release-please--branches--main` branch is automatically managed by the Rele
 - Documentation branches (`docs/*`)
 - Any other temporary development branches
 
+**Sweep for stale merged branches whenever creating a new branch.** Before running `git checkout -b`, check for branches whose PR has already been merged and delete them (local + remote). Prevents the `git branch -a` listing from filling up with zombie branches that were merged days or weeks ago and never cleaned up.
+
+```bash
+# At the top of any new-branch workflow, before `git checkout -b`:
+git fetch --prune origin
+gh pr list --state merged --limit 20 --json number,headRefName,mergedAt
+# For every local or remote branch that matches a merged PR's headRefName
+# (excluding `main` and `release-please--branches--main`):
+git push origin --delete <branch>   # remote
+git branch -D <branch>              # local, if present
+```
+
+Don't sweep silently — report which branches were deleted in one line so the user sees what happened.
+
 ### Responding to PR Review Comments
 
 **Critically evaluate every Copilot review comment before acting on it.** Copilot suggestions are automated and may be wrong, unnecessary, or counterproductive. Do NOT blindly apply every suggestion. For each comment:

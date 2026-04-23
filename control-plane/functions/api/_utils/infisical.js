@@ -58,6 +58,18 @@ export async function fetchAllInfisicalSecrets(env) {
   }
 
   const baseUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
+  if (!baseUrl) {
+    // safeHttpsUrl returns '' if both candidate and fallback fail to parse as
+    // https URLs. Without this guard, fetches below would resolve as relative
+    // paths against the Control Plane origin and leak the Infisical bearer
+    // token to the wrong host.
+    return {
+      configured: false,
+      groups: [],
+      warnings: [],
+      message: `Infisical misconfigured: INFISICAL_URL is invalid and fallback https://infisical.${domain} did not parse as https.`,
+    };
+  }
   const environment = env.INFISICAL_ENV || 'dev';
   const headers = {
     'Authorization': `Bearer ${token}`,
