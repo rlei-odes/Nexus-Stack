@@ -35,7 +35,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | PostgreSQL (OpenMetadata DB) | `postgres` | `16-alpine` | Major |
 | Kafdrop | `obsidiandynamics/kafdrop` | `4.2.0` | Exact ¹ |
 | Kafka-UI | `provectuslabs/kafka-ui` | `latest` | Latest ² |
-| Kestra | `kestra/kestra` | `v1` | Major |
+| Kestra | `kestra/kestra` | `v1.0` | Minor |
 | Infisical | `infisical/infisical` | `v0.155.5` | Exact ¹ |
 | Metabase | `metabase/metabase` | `v0.58.x` | Minor |
 | Mailpit | `axllent/mailpit` | `v1` | Major |
