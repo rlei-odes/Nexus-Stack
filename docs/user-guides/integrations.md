@@ -21,7 +21,23 @@ Don't have a Databricks account yet? [Register for free](https://login.databrick
 
 Currently only secrets are synced:
 
-- **Secrets → Databricks secret scopes.** Every Infisical secret is mirrored into a scope named `nexus`. Re-synced on every Spin Up, or manually via **Sync Secrets to Databricks**.
+- **Secrets → Databricks secret scope.** Every Infisical secret is mirrored into a scope named `nexus`. The sync is triggered manually from the [Secrets page](./secrets.md) — click **Sync Now** whenever you want the scope to reflect the latest Infisical state.
+
+### Key naming
+
+Inside the `nexus` scope, every key is prefixed with its Infisical folder: `<folder>/<KEY>`. For example:
+
+| Infisical location | Databricks scope key |
+|---|---|
+| folder `postgres`, key `POSTGRES_USERNAME` | `postgres/POSTGRES_USERNAME` |
+| folder `redpanda`, key `REDPANDA_KAFKA_PUBLIC_URL` | `redpanda/REDPANDA_KAFKA_PUBLIC_URL` |
+| folder `gitea`, key `GITEA_REPO_URL` | `gitea/GITEA_REPO_URL` |
+
+This matches the folder view on the Control Plane's Secrets page exactly, so whatever you can see there is also what the sync pushes.
+
+### Drift cleanup
+
+Each sync run computes the diff between Infisical and the `nexus` scope and **deletes** any scope keys that are no longer present in Infisical. That keeps the scope tidy over time and — on first run after upgrading from 0.51.x or earlier — removes the legacy flat keys (`grafana_admin_password`, `admin_email`, …) that older versions wrote. Notebooks referencing those flat names need to switch to the new `<folder>/<KEY>` convention.
 
 ### Finding your Workspace URL
 
@@ -69,7 +85,9 @@ Go to **Integrations** in the Control Plane and fill in the two fields:
 
 ![Control Plane Databricks integration form with Workspace URL and Personal Access Token fields ready to be saved](./assets/databricks-integration-form.png)
 
-Click **Save Configuration**, then **Sync Secrets to Databricks**. A "Last sync: success" confirmation appears when the sync completes.
+Click **Save Configuration**. The host and token are stored in Cloudflare KV; the token is never visible after saving.
+
+To trigger the first sync, open the [Secrets page](./secrets.md) and click **Sync Now** in the Databricks panel. A toast reports how many secrets were upserted, how many stale keys were removed, and whether anything failed.
 
 ![Databricks integration tile showing a "Last sync: success" confirmation after mirroring secrets](./assets/databricks-sync-success.png)
 
@@ -95,11 +113,16 @@ dbutils.secrets.list("nexus")
 
 ![Databricks notebook cell output from dbutils.secrets.list("nexus") listing every key inside the nexus scope](./assets/databricks-list-secrets.png)
 
-Read a specific secret:
+Read a specific secret using the `<folder>/<KEY>` convention:
 
 ```python
-admin_email = dbutils.secrets.get(scope="nexus", key="admin_email")
+admin_email = dbutils.secrets.get(scope="nexus", key="config/ADMIN_EMAIL")
 print(admin_email)
+
+# Service accounts, connection URLs, and everything else in Infisical
+# is reachable the same way:
+pg_user = dbutils.secrets.get(scope="nexus", key="postgres/POSTGRES_USERNAME")
+kafka_url = dbutils.secrets.get(scope="nexus", key="redpanda/REDPANDA_KAFKA_PUBLIC_URL")
 ```
 
 ![Databricks notebook reading a secret with dbutils.secrets.get() and printing [REDACTED] as the value — the expected successful output](./assets/databricks-get-secret.png)

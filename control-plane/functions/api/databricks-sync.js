@@ -1,145 +1,260 @@
 /**
  * Databricks Secret Sync
- * GET  /api/databricks-sync - Get latest sync workflow status
- * POST /api/databricks-sync - Trigger sync workflow
+ *   GET  /api/databricks-sync — last-sync summary (from KV `databricks_last_sync`)
+ *   POST /api/databricks-sync — read every secret from Infisical, upsert into
+ *                               the Databricks `nexus` scope, delete drifted keys,
+ *                               return per-key results.
  *
- * Validates that Databricks credentials exist in KV, then triggers the
- * GitHub Actions databricks-sync.yml workflow. The workflow reads
- * credentials directly from KV via Cloudflare API (no secrets in inputs).
+ * Runs entirely inside the Pages Function — no GitHub Actions dispatch, no runner
+ * cold-start. Auth sources are already wired:
+ *   - Infisical via INFISICAL_TOKEN / INFISICAL_PROJECT_ID / INFISICAL_URL / INFISICAL_ENV
+ *     (Pages env vars, same as /api/secrets)
+ *   - Databricks via env.NEXUS_KV.get('databricks_host' | 'databricks_token')
+ *     (written by /api/databricks-config)
+ *
+ * Scope-key convention: `<folder>/<KEY>` (e.g. `postgres/POSTGRES_USERNAME`).
+ * Notebook references need to switch away from the legacy tofu-era flat keys
+ * (`grafana_admin_password` → `grafana/GRAFANA_PASSWORD`); the first post-fix
+ * sync removes the flat keys as drift so the scope doesn't carry both forever.
  */
 
-import { logApiCall, logError } from './_utils/logger.js';
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+import { safeHttpsUrl } from './_utils/url.js';
+import { logApiCall, logError } from './_utils/logger.js';
+import { fetchAllInfisicalSecrets } from './_utils/infisical.js';
+
+const SCOPE_NAME = 'nexus';
+const UPSERT_BATCH = 10;
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function readDatabricksAuth(env) {
+  if (!env.NEXUS_KV) return { error: 'KV not configured' };
+  const hostRaw = await env.NEXUS_KV.get('databricks_host');
+  const token = await env.NEXUS_KV.get('databricks_token');
+  if (!hostRaw || !token) {
+    return { error: 'Databricks not configured. Save host and token first.' };
+  }
+  const host = safeHttpsUrl(hostRaw, null);
+  if (!host) {
+    return { error: 'Stored databricks_host is not a valid https URL.' };
+  }
+  return { host, token };
+}
+
+// The Databricks secret-scope APIs return 200 with { error_code, message }
+// on application errors, so `res.ok` alone is not enough.
+async function databricksCall(host, token, path, bodyObj) {
+  const res = await fetchWithTimeout(`${host}${path}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(bodyObj),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* non-JSON — payload stays null */ }
+  return { status: res.status, payload };
+}
+
+async function ensureScope(host, token) {
+  const { status, payload } = await databricksCall(host, token, '/api/2.0/secrets/scopes/create', {
+    scope: SCOPE_NAME,
+    initial_manage_principal: 'users',
+  });
+  if (status === 200) return;
+  // RESOURCE_ALREADY_EXISTS is the expected 400 on re-run
+  if (status === 400 && payload?.error_code === 'RESOURCE_ALREADY_EXISTS') return;
+  throw new Error(`Scope create failed (${status}): ${payload?.message || 'unknown error'}`);
+}
+
+async function listScopeKeys(host, token) {
+  // /secrets/list is GET-with-query in the public docs but POST also works and
+  // keeps parity with the other calls; use GET to minimise surface.
+  const res = await fetchWithTimeout(
+    `${host}/api/2.0/secrets/list?scope=${encodeURIComponent(SCOPE_NAME)}`,
+    { headers: { 'Authorization': `Bearer ${token}` } }
+  );
+  if (res.status === 404) return []; // scope exists but empty
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Scope list failed (${res.status}): ${text.substring(0, 200)}`);
+  }
+  const data = await res.json();
+  return (data.secrets || []).map(s => s.key);
+}
+
+async function runInBatches(items, batchSize, worker) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const chunk = items.slice(i, i + batchSize);
+    const chunkResults = await Promise.all(chunk.map(worker));
+    results.push(...chunkResults);
+  }
+  return results;
+}
+
+async function saveLastSync(env, payload) {
+  if (!env.NEXUS_KV) return;
+  try {
+    await env.NEXUS_KV.put('databricks_last_sync', JSON.stringify(payload));
+  } catch (err) {
+    // Best-effort — the sync itself already succeeded/failed and returned.
+    console.error('Failed to persist databricks_last_sync to KV:', err);
+  }
+}
 
 export async function onRequestGet(context) {
   const { env } = context;
-
-  if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
-    return new Response(JSON.stringify({ success: false, error: 'Missing env vars' }), {
-      status: 500, headers: { 'Content-Type': 'application/json' },
-    });
+  if (!env.NEXUS_KV) {
+    return jsonResponse({ success: true, status: 'never', message: 'No sync has been run yet' });
   }
-
   try {
-    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/databricks-sync.yml/runs?per_page=1`;
-    const res = await fetchWithTimeout(url, {
-      headers: {
-        'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Nexus-Stack-Control-Plane',
-      },
-    });
-
-    if (!res.ok) {
-      return new Response(JSON.stringify({ success: false, error: `GitHub API returned ${res.status}` }), {
-        status: 502, headers: { 'Content-Type': 'application/json' },
-      });
+    const raw = await env.NEXUS_KV.get('databricks_last_sync');
+    if (!raw) {
+      return jsonResponse({ success: true, status: 'never', message: 'No sync has been run yet' });
     }
-
-    const data = await res.json();
-    const run = data.workflow_runs?.[0];
-
-    if (!run) {
-      return new Response(JSON.stringify({ success: true, status: 'never', message: 'No sync has been run yet' }), {
-        status: 200, headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    return new Response(JSON.stringify({
-      success: true,
-      status: run.status === 'completed' ? run.conclusion : run.status,
-      updated_at: run.updated_at,
-      message: run.status === 'completed'
-        ? `Last sync: ${run.conclusion} (${run.updated_at.replace('T', ' ').replace('Z', ' UTC')})`
-        : `Sync ${run.status}...`,
-    }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ success: true, status: 'unknown', message: 'Could not fetch status' }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    });
+    const last = JSON.parse(raw);
+    return jsonResponse({ success: true, ...last });
+  } catch {
+    return jsonResponse({ success: true, status: 'unknown', message: 'Could not read last-sync status' });
   }
 }
 
 export async function onRequestPost(context) {
   const { env } = context;
-
-  if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Missing required environment variables',
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+  const auth = await readDatabricksAuth(env);
+  if (auth.error) {
+    return jsonResponse({ success: false, error: auth.error }, 400);
   }
+  const { host, token } = auth;
 
+  await logApiCall(env.NEXUS_DB, '/api/databricks-sync', 'POST', {
+    action: 'databricks_sync_start',
+    host,
+  });
+
+  // 1. Pull every secret from Infisical via the shared helper
+  let inventory;
   try {
-    if (!env.NEXUS_KV) {
-      return new Response(JSON.stringify({ success: false, error: 'KV not configured' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const host = await env.NEXUS_KV.get('databricks_host');
-    const hasToken = !!(await env.NEXUS_KV.get('databricks_token'));
-
-    if (!host || !hasToken) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Databricks not configured. Save host and token first.',
-      }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    await logApiCall(env.NEXUS_DB, '/api/databricks-sync', 'POST', {
-      action: 'trigger_databricks_sync',
-      host,
-    });
-
-    // Trigger workflow without secrets — workflow reads from KV via Cloudflare API
-    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/databricks-sync.yml/dispatches`;
-
-    const response = await fetchWithTimeout(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Nexus-Stack-Control-Plane',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ref: 'main' }),
-    });
-
-    if (response.status === 204) {
-      return new Response(JSON.stringify({
-        success: true,
-        message: 'Databricks sync workflow triggered',
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const errorText = await response.text();
-    await logError(env.NEXUS_DB, '/api/databricks-sync', `GitHub API error: ${response.status}`, new Error(errorText));
-
-    return new Response(JSON.stringify({
-      success: false,
-      error: `GitHub API returned ${response.status}`,
-    }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  } catch (error) {
-    await logError(env.NEXUS_DB, '/api/databricks-sync', 'Failed to trigger sync', error);
-    return new Response(JSON.stringify({ success: false, error: 'Failed to trigger sync' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    inventory = await fetchAllInfisicalSecrets(env);
+  } catch (err) {
+    await logError(env.NEXUS_DB, '/api/databricks-sync', 'Infisical fetch failed', err);
+    const payload = {
+      status: 'failure',
+      timestamp: new Date().toISOString(),
+      message: `Failed to read from Infisical: ${err.message}`,
+      upserted: 0, deleted: 0, failed: [],
+    };
+    await saveLastSync(env, payload);
+    return jsonResponse({ success: false, ...payload }, 502);
   }
+
+  if (!inventory.configured) {
+    return jsonResponse({ success: false, error: inventory.message }, 400);
+  }
+
+  // Flatten groups → [{ scopeKey, value }]
+  const desired = [];
+  for (const group of inventory.groups) {
+    for (const secret of group.secrets) {
+      desired.push({ scopeKey: `${group.name}/${secret.key}`, value: secret.value });
+    }
+  }
+  const desiredKeys = new Set(desired.map(d => d.scopeKey));
+
+  // 2. Make sure the scope exists
+  try {
+    await ensureScope(host, token);
+  } catch (err) {
+    await logError(env.NEXUS_DB, '/api/databricks-sync', 'Scope create failed', err);
+    const payload = {
+      status: 'failure',
+      timestamp: new Date().toISOString(),
+      message: err.message,
+      upserted: 0, deleted: 0, failed: [],
+    };
+    await saveLastSync(env, payload);
+    return jsonResponse({ success: false, ...payload }, 502);
+  }
+
+  // 3. Diff against current scope contents → list of stale keys to delete
+  let existingKeys = [];
+  try {
+    existingKeys = await listScopeKeys(host, token);
+  } catch (err) {
+    // Non-fatal: if the list call fails we still proceed with upserts, just
+    // no drift-cleanup this round.
+    inventory.warnings = inventory.warnings || [];
+    inventory.warnings.push(`Scope list failed, skipping drift cleanup: ${err.message}`);
+  }
+  const stale = existingKeys.filter(k => !desiredKeys.has(k));
+
+  // 4. Upsert desired keys + delete stale keys in parallel batches
+  const failed = [];
+
+  const upsertResults = await runInBatches(desired, UPSERT_BATCH, async ({ scopeKey, value }) => {
+    try {
+      const { status, payload } = await databricksCall(host, token, '/api/2.0/secrets/put', {
+        scope: SCOPE_NAME,
+        key: scopeKey,
+        string_value: value,
+      });
+      if (status !== 200) {
+        return { ok: false, key: scopeKey, error: `HTTP ${status}: ${payload?.message || 'put failed'}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, key: scopeKey, error: err.message };
+    }
+  });
+  upsertResults.filter(r => !r.ok).forEach(r => failed.push({ key: r.key, error: r.error }));
+
+  const deleteResults = await runInBatches(stale, UPSERT_BATCH, async (scopeKey) => {
+    try {
+      const { status, payload } = await databricksCall(host, token, '/api/2.0/secrets/delete', {
+        scope: SCOPE_NAME,
+        key: scopeKey,
+      });
+      if (status !== 200) {
+        return { ok: false, key: scopeKey, error: `HTTP ${status}: ${payload?.message || 'delete failed'}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, key: scopeKey, error: err.message };
+    }
+  });
+  deleteResults.filter(r => !r.ok).forEach(r => failed.push({ key: r.key, error: `delete: ${r.error}` }));
+
+  const upserted = upsertResults.filter(r => r.ok).length;
+  const deleted = deleteResults.filter(r => r.ok).length;
+  const status = failed.length === 0 ? 'success' : 'partial';
+  const timestamp = new Date().toISOString();
+  const message = failed.length === 0
+    ? `Synced ${upserted} secrets, removed ${deleted} stale entries.`
+    : `Synced ${upserted} secrets, removed ${deleted} stale entries, ${failed.length} failed.`;
+
+  const result = {
+    status,
+    timestamp,
+    message,
+    upserted,
+    deleted,
+    failed,
+    warnings: inventory.warnings || [],
+  };
+
+  await saveLastSync(env, result);
+  await logApiCall(env.NEXUS_DB, '/api/databricks-sync', 'POST', {
+    action: 'databricks_sync_complete',
+    status, upserted, deleted, failed_count: failed.length,
+  });
+
+  return jsonResponse({ success: failed.length === 0, ...result });
 }
