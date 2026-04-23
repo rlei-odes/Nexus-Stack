@@ -67,7 +67,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
+          # The v1.0 default image bundles ~98 plugin JARs (see note on the
+          # image line above). Plugin metadata alone sits at ~700–900 MB in
+          # the JVM heap, before any flow executions start. With the old
+          # 1 GB cap the JVM spent its time in GC-thrashing (observed 97 %
+          # memory utilisation and 200 %+ CPU on an idle container). 4 GB
+          # matches Kestra's own "many plugins" recommendation and leaves
+          # breathing room for parallel classroom flow executions.
+          memory: 4g
     volumes:
       - kestra-data:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
