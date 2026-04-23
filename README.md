@@ -7,7 +7,7 @@
 [![GitHub Pull Requests](https://img.shields.io/github/issues-pr/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/pulls)](https://github.com/stefanko-ch/Nexus-Stack/pulls)
 [![GitHub Last Commit](https://img.shields.io/github/last-commit/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/commits/main)](https://github.com/stefanko-ch/Nexus-Stack/commits/main)
 
-<a href="https://opentofu.org/" target="_blank"><img src="https://img.shields.io/badge/OpenTofu-FFDA18?logo=opentofu&logoColor=black" alt="OpenTofu"></a>
+[![OpenTofu](https://img.shields.io/badge/OpenTofu-FFDA18?logo=opentofu&logoColor=black)](https://opentofu.org/)
 [![Hetzner](https://img.shields.io/badge/Hetzner-D50C2D?logo=hetzner&logoColor=white)](https://www.hetzner.com/)
 [![Cloudflare](https://img.shields.io/badge/Cloudflare-F38020?logo=cloudflare&logoColor=white)](https://www.cloudflare.com/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
