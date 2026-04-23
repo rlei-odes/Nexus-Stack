@@ -124,13 +124,20 @@ Good for quick uploads, bucket listings, or one-off object inspection. Uses the 
 
 ```python
 import boto3
+from botocore.config import Config
 
+# Force path-style addressing — botocore picks virtual-host-style by default
+# on some versions, which on R2 can fail or produce the wrong URL shape
+# (`<bucket>.<account>.r2.cloudflarestorage.com`). The path-style form
+# (`<account>.r2.cloudflarestorage.com/<bucket>/…`) is what R2 prefers and
+# is required for consistent behaviour across botocore releases.
 s3 = boto3.client(
     "s3",
     endpoint_url          = dbutils.secrets.get("nexus", "r2-datalake/R2_ENDPOINT"),
     aws_access_key_id     = dbutils.secrets.get("nexus", "r2-datalake/R2_ACCESS_KEY"),
     aws_secret_access_key = dbutils.secrets.get("nexus", "r2-datalake/R2_SECRET_KEY"),
     region_name           = "auto",
+    config                = Config(s3={"addressing_style": "path"}),
 )
 BUCKET = dbutils.secrets.get("nexus", "r2-datalake/R2_BUCKET")
 
