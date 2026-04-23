@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.11](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.10...v0.51.11) (2026-04-23)
+
+
+### 🐛 Bug Fixes
+
+* **kestra:** Raise container memory limit from 1g to 4g ([2cd9910](https://github.com/stefanko-ch/Nexus-Stack/commit/2cd99103889495eb82a8c8db4fcb330b3ea22f55))
+* **kestra:** Raise container memory limit from 1g to 4g ([4e01e86](https://github.com/stefanko-ch/Nexus-Stack/commit/4e01e865e0c1b7f89ea944d5ad1f68b07418fc4e))
+
 ## [0.51.10](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.9...v0.51.10) (2026-04-23)
 
 
