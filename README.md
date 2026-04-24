@@ -2,10 +2,10 @@
 
 ![Nexus-Stack](docs/assets/Nexus-Logo-BlackWhite.png)
 
-[![GitHub License](https://img.shields.io/github/license/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/blob/main/LICENSE)](https://github.com/stefanko-ch/Nexus-Stack/blob/main/LICENSE)
-[![GitHub Issues](https://img.shields.io/github/issues/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/issues)](https://github.com/stefanko-ch/Nexus-Stack/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/pulls)](https://github.com/stefanko-ch/Nexus-Stack/pulls)
-[![GitHub Last Commit](https://img.shields.io/github/last-commit/stefanko-ch/Nexus-Stack?link=https://github.com/stefanko-ch/Nexus-Stack/commits/main)](https://github.com/stefanko-ch/Nexus-Stack/commits/main)
+[![GitHub License](https://img.shields.io/github/license/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/blob/main/LICENSE)
+[![GitHub Issues](https://img.shields.io/github/issues/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/pulls)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/commits/main)
 
 [![OpenTofu](https://img.shields.io/badge/OpenTofu-FFDA18?logo=opentofu&logoColor=black)](https://opentofu.org/)
 [![Hetzner](https://img.shields.io/badge/Hetzner-D50C2D?logo=hetzner&logoColor=white)](https://www.hetzner.com/)
@@ -84,7 +84,7 @@ After deployment you'll have:
 [![Filestash](https://img.shields.io/badge/Filestash-2B3A67?logo=files&logoColor=white)](https://www.filestash.app)
 [![Flink](https://img.shields.io/badge/Apache_Flink-E6526F?logo=apacheflink&logoColor=white)](https://flink.apache.org)
 [![Garage](https://img.shields.io/badge/Garage-59C6A6?logo=amazons3&logoColor=white)](https://garagehq.deuxfleurs.fr)
-[![Git Proxy](https://img.shields.io/badge/Git_Proxy-009639?logo=nginx&logoColor=white)](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/git-proxy.md)
+[![Git Proxy](https://img.shields.io/badge/Git_Proxy-009639?logo=nginx&logoColor=white)](docs/stacks/git-proxy.md)
 [![Gitea](https://img.shields.io/badge/Gitea-609926?logo=gitea&logoColor=white)](https://about.gitea.com)
 [![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white)](https://grafana.com)
 [![Hoppscotch](https://img.shields.io/badge/Hoppscotch-201718?logo=hoppscotch&logoColor=white)](https://hoppscotch.io)
@@ -103,7 +103,7 @@ After deployment you'll have:
 [![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white)](https://min.io)
 [![n8n](https://img.shields.io/badge/n8n-EA4B71?logo=n8n&logoColor=white)](https://n8n.io)
 [![NocoDB](https://img.shields.io/badge/NocoDB-1F2937?logo=nocodb&logoColor=white)](https://nocodb.com)
-[![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white)](https://openwebui.com)
+[![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white)](https://ollama.com)
 [![OpenMetadata](https://img.shields.io/badge/OpenMetadata-7147E8?logoColor=white)](https://open-metadata.org)
 [![pg_ducklake](https://img.shields.io/badge/pg__ducklake-336791?logo=postgresql&logoColor=white)](https://pgducklake.select)
 [![pgAdmin](https://img.shields.io/badge/pgAdmin-336791?logo=postgresql&logoColor=white)](https://www.pgadmin.org)
@@ -149,7 +149,7 @@ After deployment you'll have:
 | **Filestash** | Web-based file manager with S3/FTP/SFTP/WebDAV backend support | [filestash.app](https://www.filestash.app) |
 | **Flink** | Distributed stream and batch processing engine (JobManager + TaskManager cluster) | [flink.apache.org](https://flink.apache.org) |
 | **Garage** | Lightweight S3-compatible object storage for self-hosting | [garagehq.deuxfleurs.fr](https://garagehq.deuxfleurs.fr) |
-| **Git Proxy** | Public Git HTTPS proxy for external tools (Databricks, Git Desktop) | [Documentation](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/git-proxy.md) |
+| **Git Proxy** | Public Git HTTPS proxy for external tools (Databricks, Git Desktop) | [Documentation](docs/stacks/git-proxy.md) |
 | **Gitea** | Self-hosted Git service with pull requests, code review, and CI/CD | [gitea.com](https://about.gitea.com) |
 | **Grafana** | Full observability stack with Prometheus, Loki & dashboards | [grafana.com](https://grafana.com) |
 | **Hoppscotch** | Open-source API testing platform (Postman alternative) | [hoppscotch.io](https://hoppscotch.io) |
