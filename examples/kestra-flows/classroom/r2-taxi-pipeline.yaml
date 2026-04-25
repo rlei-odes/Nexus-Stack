@@ -1,0 +1,102 @@
+id: r2-taxi-pipeline
+namespace: classroom
+description: |
+  Bootstrap + analyse the NYC Taxi 2025 dataset on R2.
+
+  This flow demonstrates a full Data-Engineering loop:
+    1. For each month 01-12: download the public Yellow-Taxi parquet
+       from NYC TLC's CloudFront and upload it into the R2 datalake
+       bucket — so every student starts with the same shared data.
+    2. Query the full year via DuckDB through the S3-compatible R2
+       endpoint — no compute cluster, no Spark, no warehouse needed.
+    3. Log aggregate stats from the result.
+
+  This file was seeded into your Gitea workspace repo from
+  `nexus-stack/examples/kestra-flows/classroom/r2-taxi-pipeline.yaml`
+  during Initial Setup. Edit the file in Gitea — Kestra picks up the
+  change within 15 minutes via `system.flow-sync`. Subsequent
+  spin-ups will leave your edits untouched (seeding only adds new
+  files, it never overwrites).
+
+  Manual trigger only: the bootstrap pulls ~720 MB total. Don't put
+  this on a daily cron unless you want to burn through the source's
+  CloudFront budget.
+
+labels:
+  owner: data-engineering
+  source: nexus-stack-seed
+  data: nyc-taxi-2025
+
+# No `triggers:` block on purpose — bootstrap is expensive, run manually
+# from the UI when you want to (re)load the dataset. To re-run after
+# tweaking, hit the "Execute" button in Kestra.
+
+tasks:
+  # ---------------------------------------------------------------------
+  # 1. Bootstrap: download 12 monthly parquets from CloudFront,
+  #    upload each into R2 under the original filename.
+  #
+  #    Sequential (concurrencyLimit: 1) on purpose — each parquet is
+  #    ~60 MB and Kestra's container has 4 GB RAM total. Parallel-12
+  #    would risk OOM. Worst-case wall time on a fresh run: ~3 minutes.
+  # ---------------------------------------------------------------------
+  - id: bootstrap
+    type: io.kestra.plugin.core.flow.ForEach
+    values: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
+    concurrencyLimit: 1
+    tasks:
+      - id: download
+        type: io.kestra.plugin.core.http.Download
+        uri: "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-{{ taskrun.value }}.parquet"
+      - id: upload
+        type: io.kestra.plugin.aws.s3.Upload
+        endpointOverride: "{{ secret('R2_ENDPOINT') }}"
+        region: auto
+        accessKeyId: "{{ secret('R2_ACCESS_KEY') }}"
+        secretKeyId: "{{ secret('R2_SECRET_KEY') }}"
+        bucket: "{{ secret('R2_BUCKET') }}"
+        key: "yellow_tripdata_2025-{{ taskrun.value }}.parquet"
+        from: "{{ outputs.download.uri }}"
+
+  # ---------------------------------------------------------------------
+  # 2. Aggregate stats over all 12 monthly files at once.
+  #    DuckDB + httpfs reads the Parquet files directly via S3, no
+  #    intermediate copy. Wildcard `yellow_tripdata_2025-*.parquet`
+  #    pulls all 12 in one query.
+  # ---------------------------------------------------------------------
+  - id: stats
+    type: io.kestra.plugin.jdbc.duckdb.Query
+    sql: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      SET s3_endpoint          = '{{ secret('R2_ENDPOINT') | replace({'https://': ''}) }}';
+      SET s3_access_key_id     = '{{ secret('R2_ACCESS_KEY') }}';
+      SET s3_secret_access_key = '{{ secret('R2_SECRET_KEY') }}';
+      SET s3_url_style         = 'path';
+      SET s3_use_ssl           = true;
+
+      SELECT
+        COUNT(*)                         AS total_trips,
+        ROUND(AVG(trip_distance), 2)     AS avg_distance_mi,
+        ROUND(AVG(total_amount), 2)      AS avg_fare_usd,
+        ROUND(AVG(passenger_count), 2)   AS avg_passengers,
+        MIN(tpep_pickup_datetime)        AS earliest_pickup,
+        MAX(tpep_pickup_datetime)        AS latest_pickup
+      FROM read_parquet(
+        's3://{{ secret('R2_BUCKET') }}/yellow_tripdata_2025-*.parquet'
+      );
+    fetchType: FETCH_ONE
+
+  # ---------------------------------------------------------------------
+  # 3. Pretty-print the aggregated result to the flow execution log.
+  # ---------------------------------------------------------------------
+  - id: log_summary
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ─── NYC Taxi 2025 — Full-Year Quick-Stats ──────────────
+        Trips:           {{ outputs.stats.row.total_trips }}
+        Avg distance:    {{ outputs.stats.row.avg_distance_mi }} mi
+        Avg fare:        $ {{ outputs.stats.row.avg_fare_usd }}
+        Avg passengers:  {{ outputs.stats.row.avg_passengers }}
+        Date range:      {{ outputs.stats.row.earliest_pickup }} → {{ outputs.stats.row.latest_pickup }}
+      ────────────────────────────────────────────────────────

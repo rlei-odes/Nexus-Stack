@@ -3150,6 +3150,51 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                         -d '{\"permission\": \"write\"}'" >/dev/null 2>&1 || true
                     echo -e "${GREEN}  ✓ User '$GITEA_USER_USERNAME' added as collaborator${NC}"
                 fi
+
+                # --- Seed example Kestra flows from examples/kestra-flows/ ---
+                # Every YAML under examples/kestra-flows/<path>.yaml is committed
+                # to flows/<path>.yaml in the workspace repo, so every spin-up
+                # gives students the same baseline starter flows. Existing files
+                # in Gitea are NOT overwritten (POST returns 422 for already-
+                # existing files) — student edits persist across re-deploys.
+                # New flows added in a later Nexus-Stack release land
+                # automatically on the next spin-up.
+                SEED_DIR="$PROJECT_ROOT/examples/kestra-flows"
+                if [ -d "$SEED_DIR" ] && [ -n "$GITEA_TOKEN" ]; then
+                    SEED_COUNT=0
+                    SEED_SKIPPED=0
+                    SEED_FAILED=0
+
+                    while IFS= read -r -d '' YAML_FILE; do
+                        REL_PATH="${YAML_FILE#$SEED_DIR/}"
+                        REPO_PATH="flows/$REL_PATH"
+                        # base64 -w0 = no line wraps; required because Gitea API
+                        # expects one continuous base64 string in the JSON body.
+                        CONTENT_B64=$(base64 -w0 < "$YAML_FILE")
+
+                        SEED_STATUS=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                            -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH' \
+                            -H 'Authorization: token $GITEA_TOKEN' \
+                            -H 'Content-Type: application/json' \
+                            -d '{\"content\":\"$CONTENT_B64\",\"message\":\"chore(flows): seed $REPO_PATH from Nexus-Stack examples/\",\"branch\":\"main\"}'" 2>/dev/null || echo "000")
+
+                        case "$SEED_STATUS" in
+                            201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
+                            422)     SEED_SKIPPED=$((SEED_SKIPPED+1)) ;;  # already exists, leave alone
+                            *)       SEED_FAILED=$((SEED_FAILED+1)) ;;
+                        esac
+                    done < <(find "$SEED_DIR" -type f -name "*.yaml" -print0 2>/dev/null)
+
+                    if [ "$SEED_COUNT" -gt 0 ]; then
+                        echo -e "${GREEN}  ✓ Seeded $SEED_COUNT example Kestra flow(s) into Gitea${NC}"
+                    fi
+                    if [ "$SEED_SKIPPED" -gt 0 ]; then
+                        echo -e "${YELLOW}    ($SEED_SKIPPED already existed in Gitea, left untouched)${NC}"
+                    fi
+                    if [ "$SEED_FAILED" -gt 0 ]; then
+                        echo -e "${YELLOW}  ⚠ $SEED_FAILED example flow(s) failed to seed (check Gitea logs)${NC}"
+                    fi
+                fi
             fi
 
             # --- Restart services that have Git integration (to pick up .env vars) ---
