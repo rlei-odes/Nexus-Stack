@@ -3203,6 +3203,33 @@ CFG
                         # 1:1 mapping: relative path inside workspace-seeds/
                         # is the same as the path in the workspace repo.
                         REPO_PATH="${SEED_FILE#$SEED_DIR/}"
+
+                        # Defense in depth — the seed tree is under our
+                        # control in the repo, but the path is interpolated
+                        # into a remote shell command (the ssh argument
+                        # below) AND into a URL. A `'` would break shell
+                        # quoting; a space, `;`, backtick or non-ASCII byte
+                        # could either inject shell metacharacters or
+                        # produce an invalid URL. Restrict to the safe
+                        # filesystem subset used by everything we ship:
+                        # ASCII alphanumerics, dot, dash, underscore, slash.
+                        if ! [[ "$REPO_PATH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+                            echo -e "${YELLOW}    ⚠ Skipping seed with unsafe path: $REPO_PATH${NC}"
+                            SEED_FAILED=$((SEED_FAILED+1))
+                            continue
+                        fi
+
+                        # URL-encode each path segment (Gitea's contents
+                        # API expects the raw path component, not the
+                        # query-string-style encoding, so we encode each
+                        # segment and re-join with `/`). After the regex
+                        # check above this is mostly belt-and-braces —
+                        # but the regex allows e.g. `.` which is fine in
+                        # URLs, and any future loosening of the regex
+                        # stays safe by going through this encoder.
+                        REPO_PATH_ENC=$(jq -rn --arg p "$REPO_PATH" \
+                            '$p | split("/") | map(@uri) | join("/")')
+
                         # `base64 | tr -d '\n'` instead of `base64 -w0` so the
                         # script also runs locally on macOS (BSD `base64`
                         # doesn't support `-w`). Single line is required by
@@ -3225,7 +3252,7 @@ CFG
                             }')
 
                         SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                            -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH' \
+                            -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH_ENC' \
                             --config '$GITEA_CURL_CFG' \
                             -H 'Content-Type: application/json' \
                             --data-binary @-" 2>/dev/null || echo "000")
@@ -3294,11 +3321,29 @@ CFG
                 done
 
                 if [ "$KESTRA_READY" = "true" ]; then
-                    # Store GITEA_TOKEN as Kestra secret
-                    ssh nexus "curl -sf -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \
-                        -u '${ADMIN_EMAIL}:${KESTRA_PASS}' \
-                        -H 'Content-Type: text/plain' \
-                        -d '$GITEA_TOKEN'" >/dev/null 2>&1 || true
+                    # Store GITEA_TOKEN as a Kestra secret. Same argv-safe
+                    # pattern as the bulk Infisical sync below: KESTRA creds
+                    # and the token itself transit base64 over ssh stdin into
+                    # a `bash -s` heredoc, the creds land in a mode-600 curl
+                    # `--config` file, and the token body POSTs via stdin
+                    # (`--data-binary @-`). Nothing leaks into argv on
+                    # either side.
+                    GTOKEN_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                    GTOKEN_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
+                    GTOKEN_VAL_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+                    ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF >/dev/null 2>&1 || true
+KESTRA_USER=\$(printf '%s' '$GTOKEN_USER_B64' | base64 -d)
+KESTRA_PW=\$(printf '%s' '$GTOKEN_PW_B64' | base64 -d)
+GITEA_TOKEN=\$(printf '%s' '$GTOKEN_VAL_B64' | base64 -d)
+KCFG=\$(mktemp)
+chmod 600 "\$KCFG"
+trap 'rm -f "\$KCFG"' EXIT
+printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
+printf '%s' "\$GITEA_TOKEN" | curl -sf -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \\
+    --config "\$KCFG" \\
+    -H 'Content-Type: text/plain' \\
+    --data-binary @-
+REMOTE_GTOKEN_EOF
 
                     # ----------------------------------------------------------
                     # Push every Infisical secret into Kestra's secret store so
@@ -3377,14 +3422,20 @@ trap 'rm -f "\$SEEN_KEYS_FILE" "\$INFISICAL_CFG" "\$KESTRA_CURL_CFG"' EXIT
 printf 'header = "Authorization: Bearer %s"\n' "\$INFISICAL_TOKEN" > "\$INFISICAL_CFG"
 printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KESTRA_CURL_CFG"
 
-# Discover folders. \`folders\` returns the children of \`path=/\`; we add
-# the literal "root" sentinel after to also fetch the secrets that live
-# directly under the root path. Newline-delimited so the iterator below
-# survives folder names with whitespace (Infisical allows them).
+# Discover folders. \`folders\` returns the children of \`path=/\`.
+# Newline-delimited so the iterator below survives folder names with
+# whitespace (Infisical allows them). Root-path secrets are fetched in
+# a separate step (after the loop) using an empty SECRET_PATH that no
+# folder name can collide with — a real folder named "root" would
+# otherwise be confused with the path-sentinel.
 FOLDERS_BODY=\$(mktemp)
 FOLDERS_STATUS=\$(curl -s -o "\$FOLDERS_BODY" -w '%{http_code}' \\
     --config "\$INFISICAL_CFG" \\
-    "http://localhost:8070/api/v1/folders?workspaceId=\$PROJECT_ID&environment=\$INFISICAL_ENV&path=/" \\
+    --get \\
+    --data-urlencode "workspaceId=\$PROJECT_ID" \\
+    --data-urlencode "environment=\$INFISICAL_ENV" \\
+    --data-urlencode "path=/" \\
+    "http://localhost:8070/api/v1/folders" \\
     2>/dev/null || echo "000")
 if [ "\$FOLDERS_STATUS" = "200" ]; then
     FOLDER_LIST=\$(jq -r '.folders[]?.name' "\$FOLDERS_BODY" 2>/dev/null || echo "")
@@ -3395,31 +3446,31 @@ else
 fi
 rm -f "\$FOLDERS_BODY"
 
-# Iterate folder list newline-by-newline (whitespace-safe), then root.
-# Process substitution feeds the list as if it were a file, while the
-# while-loop body runs in the parent shell so counters update visibly.
-while IFS= read -r FOLDER; do
-    [ -z "\$FOLDER" ] && continue
-    if [ "\$FOLDER" = "root" ]; then
-        SECRET_PATH='/'
-    else
-        SECRET_PATH="/\$FOLDER"
-    fi
-
-    # Capture HTTP status separately so we can distinguish "no secrets in
-    # this folder" (200, empty array) from "auth broken" (401/403/network).
-    # Without -f, curl always returns 0; we read the status code instead.
+# fetch_secrets_at "<infisical-path>" "<display-label>"
+#   Fetches and PUT-syncs every secret at the given Infisical secretPath
+#   into Kestra's /secrets/system/ namespace. URL-encodes the path via
+#   --data-urlencode (folders may contain whitespace or other reserved
+#   characters; raw interpolation would produce malformed URLs and
+#   spurious FETCH_FAILED bumps).
+fetch_secrets_at() {
+    local SECRET_PATH="\$1"
+    local FOLDER_LABEL="\$2"
+    local HTTP_BODY HTTP_STATUS SECRETS_JSON KEY VALUE_B64 VALUE
     HTTP_BODY=\$(mktemp)
     HTTP_STATUS=\$(curl -s -o "\$HTTP_BODY" -w '%{http_code}' \\
         --config "\$INFISICAL_CFG" \\
-        "http://localhost:8070/api/v3/secrets/raw?workspaceId=\$PROJECT_ID&environment=\$INFISICAL_ENV&secretPath=\$SECRET_PATH" \\
+        --get \\
+        --data-urlencode "workspaceId=\$PROJECT_ID" \\
+        --data-urlencode "environment=\$INFISICAL_ENV" \\
+        --data-urlencode "secretPath=\$SECRET_PATH" \\
+        "http://localhost:8070/api/v3/secrets/raw" \\
         2>/dev/null || echo "000")
 
     if [ "\$HTTP_STATUS" != "200" ]; then
         FETCH_FAILED=\$((FETCH_FAILED+1))
         echo "    ⚠ Infisical fetch \$SECRET_PATH returned HTTP \$HTTP_STATUS" >&2
         rm -f "\$HTTP_BODY"
-        continue
+        return
     fi
 
     SECRETS_JSON=\$(cat "\$HTTP_BODY")
@@ -3442,7 +3493,7 @@ while IFS= read -r FOLDER; do
         # but warn explicitly so the operator can rename one of them.
         if grep -qx "\$KEY" "\$SEEN_KEYS_FILE" 2>/dev/null; then
             COLLISIONS=\$((COLLISIONS+1))
-            echo "    ⚠ Key collision: '\$KEY' appears in multiple Infisical folders (last-write wins, current folder='\$FOLDER')" >&2
+            echo "    ⚠ Key collision: '\$KEY' appears in multiple Infisical folders (last-write wins, current folder='\$FOLDER_LABEL')" >&2
         else
             echo "\$KEY" >> "\$SEEN_KEYS_FILE"
         fi
@@ -3456,7 +3507,20 @@ while IFS= read -r FOLDER; do
             FAILED=\$((FAILED+1))
         fi
     done < <(echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' 2>/dev/null)
-done < <(printf '%s\nroot\n' "\$FOLDER_LIST")
+}
+
+# Root path first — explicit fetch outside the folder loop so a real
+# Infisical folder literally named "root" can't collide with the path-/
+# sentinel.
+fetch_secrets_at "/" "<root>"
+
+# Then every discovered folder. Newline-by-newline iteration via process
+# substitution keeps counters in the parent shell and survives folder
+# names with whitespace.
+while IFS= read -r FOLDER; do
+    [ -z "\$FOLDER" ] && continue
+    fetch_secrets_at "/\$FOLDER" "\$FOLDER"
+done < <(printf '%s\n' "\$FOLDER_LIST")
 
 # Summary to stderr so it appears in the workflow logs even with -o /dev/null.
 echo "  Pushed=\$PUSHED  Failed=\$FAILED  Skipped(invalid-key)=\$SKIPPED  FetchFailed=\$FETCH_FAILED  Collisions=\$COLLISIONS" >&2
