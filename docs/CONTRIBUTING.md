@@ -114,3 +114,9 @@ git push origin feat/add-airflow
 # Open PR, get review, merge
 # → v0.X.0 release created automatically
 ```
+
+---
+
+## Adding code examples
+
+Sample Kestra flows, notebooks, dbt models, and other starter material that ships with Nexus-Stack lives under [`examples/workspace-seeds/`](../examples/) and gets auto-seeded into every student's Gitea workspace repo on spin-up. Conventions, the path-mapping rules, and the **no-schedule-triggers in seeded flows** rule are documented in [`examples/README.md`](../examples/README.md). Read that before adding a new sample.

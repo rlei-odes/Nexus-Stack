@@ -60,6 +60,24 @@ PR titles are extracted by release-please to build the changelog — every PR ti
 
 Do not add AI-tool advertising or "Generated with …" footers to commit messages, PR descriptions, or documentation. Do not add `Co-Authored-By: Claude …` trailers. Flag these if present.
 
+## 9. Seeded code examples — no schedule / cron triggers
+
+Files under `examples/workspace-seeds/` are auto-seeded into every student's Gitea workspace repo on spin-up. **Flows in `examples/workspace-seeds/flows/` (and any other Kestra YAML elsewhere under `workspace-seeds/`) must not declare schedule / cron triggers.**
+
+A `triggers:` block of type `io.kestra.plugin.core.trigger.Schedule` (or the legacy `io.kestra.core.models.triggers.types.Schedule`) inside a seeded flow file is a hard issue — flag it. Reason: a seed file lands on every student stack, so a cron trigger fires N times in parallel for an N-student cohort, multiplying load on external APIs (CloudFront, Databricks Free-Edition quota), R2 egress, and Kestra container CPU. Examples are teaching artifacts to be triggered manually; cron belongs to platform-internal flows registered directly by `scripts/deploy.sh` via the Kestra API (e.g. `system.flow-sync`), which live outside `workspace-seeds/`.
+
+What's allowed in seeded flows:
+- No `triggers:` block at all (run via the **Execute** button in the Kestra UI). Preferred.
+- A `Webhook` trigger that requires explicit invocation. Acceptable.
+
+What's not allowed:
+- `Schedule` / cron triggers — flag and request removal, regardless of cron interval.
+- `Flow`, `RealtimeKafka`, or other auto-firing trigger types in seeded examples — flag.
+
+Spotting it: scan the diff for any new or modified `*.yaml` under `examples/workspace-seeds/` and look for `type: io.kestra.plugin.core.trigger.Schedule` in a `triggers:` block. Same applies if a contributor adds a new file under that tree without explicit scheduling but later edits it to introduce one.
+
+Convention background: [examples/README.md](../examples/README.md) carries the full rationale and the rules for the rest of the seed-tree (path-mapping, idempotency, secret references via `{{ secret('NAME') }}`, etc.).
+
 ## What NOT to flag
 
 - Absolute URLs for tutorial cross-links (see §6)

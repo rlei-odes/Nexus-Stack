@@ -27,9 +27,19 @@ labels:
   source: nexus-stack-seed
   data: nyc-taxi-2025
 
-# No `triggers:` block on purpose — bootstrap is expensive, run manually
-# from the UI when you want to (re)load the dataset. To re-run after
-# tweaking, hit the "Execute" button in Kestra.
+# ──────────────────────────────────────────────────────────────────────
+# NO `triggers:` BLOCK — INTENTIONAL.
+#
+# Per Nexus-Stack convention (see `examples/README.md`), seeded example
+# flows MUST NEVER ship with schedule / cron triggers. Reason: a seeded
+# flow lands on EVERY student stack via the deploy.sh seed loop. A cron
+# trigger would then fire on N student stacks, multiplying load on
+# external APIs (CloudFront, Databricks Free Edition quota), R2 egress
+# costs, and Kestra container CPU by the cohort size.
+#
+# Examples demonstrate *how* something works. Students execute manually
+# via the Kestra UI ("Execute" button on the flow page) to learn.
+# ──────────────────────────────────────────────────────────────────────
 
 tasks:
   # ---------------------------------------------------------------------
