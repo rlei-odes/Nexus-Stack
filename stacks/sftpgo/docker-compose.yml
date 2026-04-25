@@ -29,8 +29,17 @@ services:
     container_name: sftpgo
     restart: unless-stopped
     ports:
-      - "8090:8080"   # Web admin UI (HTTPS through Cloudflare Tunnel)
-      - "2022:2022"   # SFTP (TCP, opt-in firewall via Control Plane)
+      # Web admin UI: bound to the host so Cloudflare Tunnel can reach
+      # it at http://localhost:8090 (Tunnel routes sftpgo.<domain> here).
+      - "8090:8080"
+      #
+      # SFTP port (2022) is intentionally NOT published to the host in
+      # the base compose. When the user opts the port in via the
+      # Control Plane firewall page, scripts/deploy.sh writes a
+      # docker-compose.firewall.yml that adds the `2022:2022` mapping
+      # there, so the port is published exactly once. Same pattern as
+      # Redpanda. Keeping the mapping in the base file too would yield
+      # duplicated `ports:` entries when the override layers on top.
     environment:
       # Bootstrap admin on first start; idempotent on re-deploy.
       - SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=1

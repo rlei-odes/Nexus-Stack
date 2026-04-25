@@ -35,7 +35,7 @@ https://sftpgo.<your-domain>
 ```
 Log in with `nexus-sftpgo` and the password from Infisical (folder `sftpgo`, key `SFTPGO_ADMIN_PASSWORD`).
 
-**SFTP** (after opening port `2022` for your source IP via the Control Plane firewall):
+**SFTP**: the SFTP port (`2022`) is closed by default — SFTPGo is reachable only from inside the Docker network until you opt in. Open it via **Firewall** in the Control Plane (toggle `sftpgo` → `sftp`, restrict to your source IP or range, hit **Spin Up**). Then:
 ```
 sftp -P 2022 nexus-default@<your-server-ip>
 ```
