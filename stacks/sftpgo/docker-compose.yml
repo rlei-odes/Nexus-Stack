@@ -18,8 +18,9 @@
 #
 # Persistent state (SFTPGo's internal SQLite DB tracking users and
 # virtual folders) lives on the persistent Hetzner volume at
-# /mnt/nexus-data/sftpgo/ — survives teardown and destroy-all. User
-# files themselves live in R2, not on the volume.
+# /mnt/nexus-data/sftpgo/data (mounted into the container at
+# /var/lib/sftpgo) — survives teardown and destroy-all. User files
+# themselves live in R2, not on the volume.
 # =============================================================================
 
 services:

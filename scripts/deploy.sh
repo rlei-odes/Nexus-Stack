@@ -2566,50 +2566,58 @@ REMOTE_SFTPGO_TOKEN_EOF
             # Step 2: create nexus-default with R2 vfs config. provider=1
             # is SFTPGo's S3 backend (works for any S3-compatible endpoint
             # including R2). home_dir is virtual, scoped to the user; it
-            # maps onto the bucket prefix configured below via key_prefix.
-            SFTPGO_USER_PAYLOAD=$(jq -n \
-                --arg username "nexus-default" \
-                --arg password "$SFTPGO_USER_PASS" \
-                --arg bucket "$R2_DATA_BUCKET" \
-                --arg endpoint "$R2_DATA_ENDPOINT" \
-                --arg ak "$R2_DATA_ACCESS_KEY" \
-                --arg sk "$R2_DATA_SECRET_KEY" \
-                '{
-                    username: $username,
-                    password: $password,
-                    home_dir: "/sftp/nexus-default",
-                    permissions: { "/": ["*"] },
-                    status: 1,
-                    filesystem: {
-                        provider: 1,
-                        s3config: {
-                            bucket: $bucket,
-                            endpoint: $endpoint,
-                            region: "auto",
-                            access_key: $ak,
-                            access_secret: $sk,
-                            key_prefix: "sftp/nexus-default/",
-                            force_path_style: true
-                        }
-                    }
-                }')
-
-            # Pass BOTH the bearer token AND the JSON body via base64-
-            # stdin substitution into the heredoc body — `bash -s` is
-            # already consuming the heredoc as its script, so there's
-            # no second stdin we could use to pipe the payload. base64
-            # encoding stays cheap (payload is ~600 bytes) and keeps
-            # the body intact through any quoting.
+            # maps onto the bucket prefix below via key_prefix.
+            #
+            # Each input transits as base64 over the heredoc body — none
+            # of the secrets enter argv on either side. The runner uses
+            # only the `printf` builtin to encode (no fork-exec), and the
+            # remote shell decodes via the same builtin before passing
+            # values to `jq -n` via env vars (`env.VAR`) — jq reads them
+            # from its environment, never from argv. The constructed JSON
+            # then transits to remote curl via stdin (`--data-binary @-`),
+            # while bearer-token + content-type sit in a mode-600 curl
+            # `--config` file written by `printf` builtin.
             SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\n')
-            SFTPGO_PAYLOAD_B64=$(printf '%s' "$SFTPGO_USER_PAYLOAD" | base64 | tr -d '\n')
+            SFTPGO_USER_PASS_B64=$(printf '%s' "$SFTPGO_USER_PASS" | base64 | tr -d '\n')
+            SFTPGO_BUCKET_B64=$(printf '%s' "$R2_DATA_BUCKET" | base64 | tr -d '\n')
+            SFTPGO_ENDPOINT_B64=$(printf '%s' "$R2_DATA_ENDPOINT" | base64 | tr -d '\n')
+            SFTPGO_AK_B64=$(printf '%s' "$R2_DATA_ACCESS_KEY" | base64 | tr -d '\n')
+            SFTPGO_SK_B64=$(printf '%s' "$R2_DATA_SECRET_KEY" | base64 | tr -d '\n')
             SFTPGO_USER_STATUS=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_USER_EOF 2>/dev/null
 TOKEN=\$(printf '%s' '$SFTPGO_TOKEN_B64' | base64 -d)
-PAYLOAD=\$(printf '%s' '$SFTPGO_PAYLOAD_B64' | base64 -d)
+SFTP_USER_PASS=\$(printf '%s' '$SFTPGO_USER_PASS_B64' | base64 -d)
+R2_BUCKET=\$(printf '%s' '$SFTPGO_BUCKET_B64' | base64 -d)
+R2_ENDPOINT=\$(printf '%s' '$SFTPGO_ENDPOINT_B64' | base64 -d)
+R2_AK=\$(printf '%s' '$SFTPGO_AK_B64' | base64 -d)
+R2_SK=\$(printf '%s' '$SFTPGO_SK_B64' | base64 -d)
 CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "\$TOKEN" > "\$CFG"
-printf '%s' "\$PAYLOAD" | curl -s -o /dev/null -w '%{http_code}' \\
+PASSWORD="\$SFTP_USER_PASS" \\
+BUCKET="\$R2_BUCKET" \\
+ENDPOINT="\$R2_ENDPOINT" \\
+ACCESS_KEY="\$R2_AK" \\
+SECRET_KEY="\$R2_SK" \\
+jq -n '{
+    username: "nexus-default",
+    password: env.PASSWORD,
+    home_dir: "/sftp/nexus-default",
+    permissions: { "/": ["*"] },
+    status: 1,
+    filesystem: {
+        provider: 1,
+        s3config: {
+            bucket: env.BUCKET,
+            endpoint: env.ENDPOINT,
+            region: "auto",
+            access_key: env.ACCESS_KEY,
+            access_secret: env.SECRET_KEY,
+            key_prefix: "sftp/nexus-default/",
+            force_path_style: true
+        }
+    }
+}' | curl -s -o /dev/null -w '%{http_code}' \\
     -X POST 'http://localhost:8090/api/v2/users' \\
     --config "\$CFG" \\
     --data-binary @-
