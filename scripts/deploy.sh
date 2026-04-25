@@ -3175,6 +3175,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                     SEED_SKIPPED=0
                     SEED_FAILED=0
 
+                    # Write the Gitea Authorization header into a curl
+                    # --config file on the server, instead of passing
+                    # `-H 'Authorization: token <TOKEN>'` on the command
+                    # line per request. Per-iteration -H would expose the
+                    # token in `ps` for every seeded file. Mode-600 +
+                    # explicit cleanup keeps the file unreadable by other
+                    # users for its short lifetime.
+                    GITEA_CURL_CFG=$(ssh nexus 'mktemp')
+                    ssh nexus "umask 077 && cat > '$GITEA_CURL_CFG' && chmod 600 '$GITEA_CURL_CFG'" <<CFG
+header = "Authorization: token $GITEA_TOKEN"
+CFG
+
                     while IFS= read -r -d '' SEED_FILE; do
                         # 1:1 mapping: relative path inside workspace-seeds/
                         # is the same as the path in the workspace repo.
@@ -3202,7 +3214,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
 
                         SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                             -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH' \
-                            -H 'Authorization: token $GITEA_TOKEN' \
+                            --config '$GITEA_CURL_CFG' \
                             -H 'Content-Type: application/json' \
                             --data-binary @-" 2>/dev/null || echo "000")
 
@@ -3212,6 +3224,9 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                             *)       SEED_FAILED=$((SEED_FAILED+1)) ;;
                         esac
                     done < <(find "$SEED_DIR" -type f -print0 2>/dev/null)
+
+                    # Cleanup: shred the cred file so it can't be read post-deploy
+                    ssh nexus "rm -f '$GITEA_CURL_CFG'" 2>/dev/null || true
 
                     if [ "$SEED_COUNT" -gt 0 ]; then
                         echo -e "${GREEN}  ✓ Seeded $SEED_COUNT workspace file(s) into Gitea${NC}"
@@ -3325,7 +3340,16 @@ COLLISIONS=0
 # Same secretKey in two Infisical folders would otherwise overwrite
 # silently in Kestra's flat /secrets/system/ namespace, last-folder-wins.
 SEEN_KEYS_FILE=\$(mktemp)
-trap 'rm -f "\$SEEN_KEYS_FILE"' EXIT
+
+# Write Kestra basic-auth creds into a curl --config file instead of
+# passing them via -u on the command line. ~150 PUTs in a row would
+# otherwise repeatedly expose KESTRA_PW in the remote ps listing.
+# Mode 600 + cleanup-on-exit keeps the file unreadable by other users.
+KESTRA_CURL_CFG=\$(mktemp)
+chmod 600 "\$KESTRA_CURL_CFG"
+printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KESTRA_CURL_CFG"
+
+trap 'rm -f "\$SEEN_KEYS_FILE" "\$KESTRA_CURL_CFG"' EXIT
 
 for FOLDER in \$FOLDERS root; do
     if [ "\$FOLDER" = "root" ]; then
@@ -3375,7 +3399,7 @@ for FOLDER in \$FOLDERS root; do
         fi
         VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
         if printf '%s' "\$VALUE" | curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
-            -u "\$KESTRA_USER:\$KESTRA_PW" \\
+            --config "\$KESTRA_CURL_CFG" \\
             -H "Content-Type: text/plain" \\
             --data-binary @-; then
             PUSHED=\$((PUSHED+1))
@@ -3445,11 +3469,21 @@ triggers:
                     # cleaned up on every sync. This is the persistence layer
                     # that survives destroy-all (Gitea repos live on the
                     # persistent Hetzner volume `/mnt/nexus-data/gitea/`).
+                    #
+                    # Kestra basic-auth creds go through a curl --config file
+                    # written inline on the remote, instead of -u "user:pw"
+                    # which would expose KESTRA_PASS in the remote ps listing.
+                    # File is mode-600 + cleaned via trap on the remote shell.
                     # ----------------------------------------------------------
-                    ssh nexus "curl -sf -X POST 'http://localhost:8085/api/v1/flows' \
-                        -u '${ADMIN_EMAIL}:${KESTRA_PASS}' \
-                        -H 'Content-Type: application/x-yaml' \
-                        -d 'id: flow-sync
+                    ssh nexus "
+                        KCFG=\$(mktemp)
+                        chmod 600 \"\$KCFG\"
+                        printf 'user = \"%s:%s\"\n' '$ADMIN_EMAIL' '$KESTRA_PASS' > \"\$KCFG\"
+                        trap 'rm -f \"\$KCFG\"' EXIT
+                        curl -sf -X POST 'http://localhost:8085/api/v1/flows' \
+                            --config \"\$KCFG\" \
+                            -H 'Content-Type: application/x-yaml' \
+                            -d 'id: flow-sync
 namespace: system
 description: Pull flow definitions from internal Gitea, register them in Kestra. Git is source of truth.
 tasks:

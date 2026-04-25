@@ -46,7 +46,7 @@ If a new consumer needs its own folder later, list it here in the same shape.
 
 ## How seeding works
 
-`scripts/deploy.sh`, after the workspace repo exists, walks every file under `examples/workspace-seeds/`, base64-encodes it, and POSTs it to `gitea-internal/api/v1/repos/<admin>/<repo>/contents/<path>` with the relative path.
+`scripts/deploy.sh`, after the workspace repo exists, walks every file under `examples/workspace-seeds/`, base64-encodes it, and POSTs it to the internal Gitea API (`http://localhost:3200/api/v1/repos/<admin>/<repo>/contents/<path>`, accessed via SSH from the runner) with the relative path.
 
 - HTTP **201/200** → file created. Counted as `SEEDED`.
 - HTTP **422** → file already exists. Counted as `SKIPPED`. **Existing files are never overwritten** — student edits persist across re-deploys.
