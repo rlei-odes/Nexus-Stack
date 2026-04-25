@@ -3196,7 +3196,69 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                         -H 'Content-Type: text/plain' \
                         -d '$GITEA_TOKEN'" >/dev/null 2>&1 || true
 
+                    # ----------------------------------------------------------
+                    # Push every Infisical secret into Kestra's secret store so
+                    # Kestra flows can read them via {{ secret('NAME') }}.
+                    # Discovers all folders + root path, no whitelist — new
+                    # user-added folders in Infisical surface in Kestra
+                    # without code changes. Uses the existing GITEA_TOKEN
+                    # PUT-pattern, so secrets land in Kestra's `system`
+                    # namespace alongside it. Idempotent on re-run.
+                    # ----------------------------------------------------------
+                    if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+                        echo "  Pushing Infisical secrets to Kestra..."
+                        KESTRA_SYNC_ENV="${INFISICAL_ENV:-dev}"
+
+                        # Discover folders (server-side; Infisical is on localhost there)
+                        KESTRA_SYNC_FOLDERS=$(ssh nexus "curl -sf 'http://localhost:8070/api/v1/folders?workspaceId=$PROJECT_ID&environment=$KESTRA_SYNC_ENV&path=/' \
+                            -H 'Authorization: Bearer $INFISICAL_TOKEN'" 2>/dev/null \
+                            | jq -r '.folders[]?.name' 2>/dev/null || echo "")
+
+                        # For every folder + root, fetch all secrets and PUT them
+                        # individually into Kestra. The whole loop runs in a single
+                        # remote bash invocation to avoid 150 separate ssh handshakes.
+                        ssh nexus "bash -s" <<REMOTE_SYNC_EOF || true
+INFISICAL_TOKEN='$INFISICAL_TOKEN'
+PROJECT_ID='$PROJECT_ID'
+INFISICAL_ENV='$KESTRA_SYNC_ENV'
+KESTRA_USER='$ADMIN_EMAIL'
+KESTRA_PW='$KESTRA_PASS'
+FOLDERS='$KESTRA_SYNC_FOLDERS'
+
+PUSHED=0
+FAILED=0
+for FOLDER in \$FOLDERS root; do
+    if [ "\$FOLDER" = "root" ]; then
+        SECRET_PATH='/'
+    else
+        SECRET_PATH="/\$FOLDER"
+    fi
+
+    SECRETS_JSON=\$(curl -sf "http://localhost:8070/api/v3/secrets/raw?workspaceId=\$PROJECT_ID&environment=\$INFISICAL_ENV&secretPath=\$SECRET_PATH" \\
+        -H "Authorization: Bearer \$INFISICAL_TOKEN" 2>/dev/null || echo '{}')
+
+    echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, .secretValue] | @tsv' 2>/dev/null \\
+    | while IFS=\$'\t' read -r KEY VALUE; do
+        [ -z "\$KEY" ] && continue
+        if curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
+            -u "\$KESTRA_USER:\$KESTRA_PW" \\
+            -H "Content-Type: text/plain" \\
+            --data-raw "\$VALUE"; then
+            PUSHED=\$((PUSHED+1))
+        else
+            FAILED=\$((FAILED+1))
+        fi
+    done
+done
+REMOTE_SYNC_EOF
+                        echo -e "${GREEN}  ✓ Infisical → Kestra secret sync complete${NC}"
+                    fi
+
                     # Create git-sync flow (SyncNamespaceFiles from Gitea)
+                    # Pulls helper files (Python scripts, configs, SQL templates)
+                    # from the repo's `workflows/` directory into the namespace's
+                    # files area — these are NOT flow definitions, they're
+                    # supporting files referenced from flows.
                     ssh nexus "curl -sf -X POST 'http://localhost:8085/api/v1/flows' \
                         -u '${ADMIN_EMAIL}:${KESTRA_PASS}' \
                         -H 'Content-Type: application/x-yaml' \
@@ -3216,7 +3278,39 @@ triggers:
     type: io.kestra.core.models.triggers.types.Schedule
     cron: \"*/15 * * * *\"'" >/dev/null 2>&1 || true
 
-                    echo -e "${GREEN}  ✓ Kestra Git sync flow created${NC}"
+                    # ----------------------------------------------------------
+                    # Create flow-sync flow (SyncFlows from Gitea)
+                    # Pulls actual flow YAML definitions from the repo's
+                    # `flows/` directory and registers them as Kestra flows.
+                    # Target namespace is derived from the subdir layout —
+                    # `flows/classroom/x.yaml` lands in namespace `classroom`.
+                    # `delete: true` makes Git the single source of truth:
+                    # locally-created flows in the UI that aren't in Git get
+                    # cleaned up on every sync. This is the persistence layer
+                    # that survives destroy-all (Gitea repos live on the
+                    # persistent Hetzner volume `/mnt/nexus-data/gitea/`).
+                    # ----------------------------------------------------------
+                    ssh nexus "curl -sf -X POST 'http://localhost:8085/api/v1/flows' \
+                        -u '${ADMIN_EMAIL}:${KESTRA_PASS}' \
+                        -H 'Content-Type: application/x-yaml' \
+                        -d 'id: flow-sync
+namespace: system
+description: Pull flow definitions from internal Gitea, register them in Kestra. Git is source of truth.
+tasks:
+  - id: sync
+    type: io.kestra.plugin.git.SyncFlows
+    url: http://gitea:3000/${ADMIN_USERNAME}/${REPO_NAME}.git
+    branch: main
+    username: ${ADMIN_USERNAME}
+    password: \"{{ secret('\''GITEA_TOKEN'\'') }}\"
+    gitDirectory: flows
+    delete: true
+triggers:
+  - id: schedule
+    type: io.kestra.core.models.triggers.types.Schedule
+    cron: \"*/15 * * * *\"'" >/dev/null 2>&1 || true
+
+                    echo -e "${GREEN}  ✓ Kestra Git sync flows created (workflows + flows)${NC}"
                 else
                     echo -e "${YELLOW}  ⚠ Kestra not ready - skipping Git sync flow${NC}"
                 fi
