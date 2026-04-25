@@ -165,6 +165,10 @@ output "secrets" {
     # MinIO
     minio_root_password = random_password.minio_root.result
 
+    # SFTPGo
+    sftpgo_admin_password = random_password.sftpgo_admin.result
+    sftpgo_user_password  = random_password.sftpgo_user.result
+
     # Hoppscotch
     hoppscotch_db_password    = random_password.hoppscotch_db.result
     hoppscotch_jwt_secret     = random_password.hoppscotch_jwt.result

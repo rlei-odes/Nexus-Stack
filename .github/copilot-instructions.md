@@ -62,9 +62,9 @@ Do not add AI-tool advertising or "Generated with …" footers to commit message
 
 ## 9. Seeded code examples — no schedule / cron triggers
 
-Files under `examples/workspace-seeds/` are auto-seeded into every student's Gitea workspace repo on spin-up. **Flows in `examples/workspace-seeds/flows/` (and any other Kestra YAML elsewhere under `workspace-seeds/`) must not declare schedule / cron triggers.**
+Files under `examples/workspace-seeds/` are auto-seeded into every user's Gitea workspace repo on spin-up. **Flows in `examples/workspace-seeds/kestra/flows/` (and any other Kestra YAML elsewhere under `workspace-seeds/kestra/`) must not declare schedule / cron triggers.**
 
-A `triggers:` block of type `io.kestra.plugin.core.trigger.Schedule` (or the legacy `io.kestra.core.models.triggers.types.Schedule`) inside a seeded flow file is a hard issue — flag it. Reason: a seed file lands on every student stack, so a cron trigger fires N times in parallel for an N-student cohort, multiplying load on external APIs (CloudFront, Databricks Free-Edition quota), R2 egress, and Kestra container CPU. Examples are teaching artifacts to be triggered manually; cron belongs to platform-internal flows registered directly by `scripts/deploy.sh` via the Kestra API (e.g. `system.flow-sync`), which live outside `workspace-seeds/`.
+A `triggers:` block of type `io.kestra.plugin.core.trigger.Schedule` (or the legacy `io.kestra.core.models.triggers.types.Schedule`) inside a seeded flow file is a hard issue — flag it. Reason: a seed file lands on every user stack, so a cron trigger fires N times in parallel for an N-user cohort, multiplying load on external APIs (CloudFront, Databricks Free-Edition quota), R2 egress, and Kestra container CPU. Examples are teaching artifacts to be triggered manually; cron belongs to platform-internal flows registered directly by `scripts/deploy.sh` via the Kestra API (e.g. `system.flow-sync`), which live outside `workspace-seeds/`.
 
 What's allowed in seeded flows:
 - No `triggers:` block at all (run via the **Execute** button in the Kestra UI). Preferred.
@@ -74,7 +74,7 @@ What's not allowed:
 - `Schedule` / cron triggers — flag and request removal, regardless of cron interval.
 - `Flow`, `RealtimeKafka`, or other auto-firing trigger types in seeded examples — flag.
 
-Spotting it: scan the diff for any new or modified `*.yaml` under `examples/workspace-seeds/` and look for either `type: io.kestra.plugin.core.trigger.Schedule` (modern form) or `type: io.kestra.core.models.triggers.types.Schedule` (legacy form — what `scripts/deploy.sh` itself registers for `system.git-sync` and `system.flow-sync`) in a `triggers:` block. Both type strings are accepted by Kestra, so the rule must catch both. Same applies if a contributor adds a new file under that tree without explicit scheduling but later edits it to introduce one.
+Spotting it: scan the diff for any new or modified `*.yaml` under `examples/workspace-seeds/kestra/` and look for either `type: io.kestra.plugin.core.trigger.Schedule` (modern form) or `type: io.kestra.core.models.triggers.types.Schedule` (legacy form — what `scripts/deploy.sh` itself registers for `system.git-sync` and `system.flow-sync`) in a `triggers:` block. Both type strings are accepted by Kestra, so the rule must catch both. Same applies if a contributor adds a new file under that tree without explicit scheduling but later edits it to introduce one.
 
 Convention background: [examples/README.md](../examples/README.md) carries the full rationale and the rules for the rest of the seed-tree (path-mapping, idempotency, secret references via `{{ secret('NAME') }}`, etc.).
 

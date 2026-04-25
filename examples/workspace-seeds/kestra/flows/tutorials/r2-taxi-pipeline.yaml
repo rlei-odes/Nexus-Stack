@@ -1,18 +1,18 @@
 id: r2-taxi-pipeline
-namespace: classroom
+namespace: tutorials
 description: |
   Bootstrap + analyse the NYC Taxi 2025 dataset on R2.
 
   This flow demonstrates a full Data-Engineering loop:
     1. For each month 01-12: download the public Yellow-Taxi parquet
        from NYC TLC's CloudFront and upload it into the R2 datalake
-       bucket — so every student starts with the same shared data.
+       bucket — so every user starts with the same shared data.
     2. Query the full year via DuckDB through the S3-compatible R2
        endpoint — no compute cluster, no Spark, no warehouse needed.
     3. Log aggregate stats from the result.
 
   This file was seeded into your Gitea workspace repo from
-  `nexus-stack/examples/workspace-seeds/flows/classroom/r2-taxi-pipeline.yaml`
+  `nexus-stack/examples/workspace-seeds/kestra/flows/tutorials/r2-taxi-pipeline.yaml`
   during Initial Setup. Edit the file in Gitea — Kestra picks up the
   change within 15 minutes via `system.flow-sync`. Subsequent
   spin-ups will leave your edits untouched (seeding only adds new

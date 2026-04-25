@@ -569,18 +569,20 @@ networks:
 
 ### Code Examples (`examples/workspace-seeds/`)
 
-Sample code that ships with Nexus-Stack and gets auto-seeded into every student's Gitea workspace repo on spin-up. **`scripts/deploy.sh` walks `examples/workspace-seeds/` recursively and POSTs each file to the matching path in the workspace repo via Gitea's contents API**, so the on-disk layout under `workspace-seeds/` mirrors the workspace repo 1:1 (`workspace-seeds/flows/x.yaml` → repo root `flows/x.yaml`).
+Sample code that ships with Nexus-Stack and gets auto-seeded into every user's Gitea workspace repo on spin-up. **`scripts/deploy.sh` walks `examples/workspace-seeds/` recursively and POSTs each file to the matching path in the workspace repo via Gitea's contents API**, so the on-disk layout under `workspace-seeds/` mirrors the workspace repo 1:1 (`workspace-seeds/kestra/flows/tutorials/x.yaml` → repo root `kestra/flows/tutorials/x.yaml`).
 
 When adding or editing seeded examples:
 
 1. **Stay inside `examples/workspace-seeds/`.** Reference material that is *not* meant to land in the workspace repo goes in a sibling directory (e.g. `examples/contributing/`), explicitly labelled "not auto-seeded" in `examples/README.md`.
-2. **Stick to the known subdirs** — `flows/`, `workflows/`, `notebooks/`, `scripts/`, `dbt/`, `sql/`. Each is consumed by a specific Nexus service (Kestra SyncFlows, Jupyter clone, etc.). New top-level subdirs need a corresponding consumer wired up.
-3. **No schedule triggers in seeded Kestra flows.** Seeded flows live on every student stack — a cron trigger fires N times when there are N students, multiplying CloudFront downloads, R2 egress, Databricks Free-Edition quota burn, and Kestra container CPU. Examples are teaching artifacts; students hit **Execute** in the Kestra UI to run them. If you genuinely need a scheduled flow, register it directly in `deploy.sh` via the Kestra API (the `system.flow-sync` flow does this) — that's infrastructure, not a learning sample, and lives outside `workspace-seeds/`.
+2. **Two folder conventions, pick the right one:**
+   - **Per-stack folder** (e.g. `kestra/flows/`, `kestra/workflows/`) — when the seed is unambiguously tied to one Nexus-Stack and that stack expects to find it at a stack-specific path. Today only `kestra/` qualifies.
+   - **Per-consumer-type folder** (e.g. `notebooks/`, `scripts/`, `dbt/`, `sql/`) — when the same files are consumed by *several* stacks (notebooks → Jupyter + Marimo + code-server; SQL → DuckDB + Trino + ClickHouse). New top-level subdirs need a corresponding consumer wired up.
+3. **No schedule triggers in seeded Kestra flows.** Seeded flows live on every user stack — a cron trigger fires N times when there are N users, multiplying CloudFront downloads, R2 egress, Databricks Free-Edition quota burn, and Kestra container CPU. Examples are teaching artifacts; users hit **Execute** in the Kestra UI to run them. If you genuinely need a scheduled flow, register it directly in `deploy.sh` via the Kestra API (the `system.flow-sync` flow does this) — that's infrastructure, not a learning sample, and lives outside `workspace-seeds/`.
 4. **Reference Infisical-managed secrets only via `{{ secret('NAME') }}`.** Hardcoding credentials in `examples/` is a public-repo leak. The deploy.sh secret-sync block (search `scripts/deploy.sh` for "Push every Infisical secret into Kestra's secret store") writes every Infisical key into Kestra's `system` secret namespace on every spin-up, so flows can reference them by name without further setup.
-5. **Make seed files idempotent.** A student may execute a seeded flow more than once. Either detect pre-existing state and skip, or design the flow so re-runs are safe (overwriting outputs is fine; accumulating side-effects is not).
-6. **Existing files in Gitea are never overwritten.** The seed loop uses HTTP `POST` (create-only); it returns 422 for files that already exist and counts them as `SKIPPED`. Student edits persist across re-deploys. To ship an updated example, give it a new filename or version-suffix it.
+5. **Make seed files idempotent.** A user may execute a seeded flow more than once. Either detect pre-existing state and skip, or design the flow so re-runs are safe (overwriting outputs is fine; accumulating side-effects is not).
+6. **Existing files in Gitea are never overwritten.** The seed loop uses HTTP `POST` (create-only); it returns 422 for files that already exist and counts them as `SKIPPED`. User edits persist across re-deploys. To ship an updated example, give it a new filename or version-suffix it.
 
-Full details — including the `flows/` vs `workflows/` distinction, Kestra namespace derivation from subdirs, and how to add a new consumer subtype — live in [examples/README.md](examples/README.md).
+Full details — including the `kestra/flows/` vs `kestra/workflows/` distinction, Kestra namespace derivation from subdirs, and how to add a new per-stack or per-consumer subtype — live in [examples/README.md](examples/README.md).
 
 ## Commit Convention
 

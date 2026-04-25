@@ -139,6 +139,8 @@ SUPERSET_SECRET=$(echo "$SECRETS_JSON" | jq -r '.superset_secret_key // empty')
 CLOUDBEAVER_PASS=$(echo "$SECRETS_JSON" | jq -r '.cloudbeaver_admin_password // empty')
 MAGE_PASS=$(echo "$SECRETS_JSON" | jq -r '.mage_admin_password // empty')
 MINIO_ROOT_PASS=$(echo "$SECRETS_JSON" | jq -r '.minio_root_password // empty')
+SFTPGO_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.sftpgo_admin_password // empty')
+SFTPGO_USER_PASS=$(echo "$SECRETS_JSON" | jq -r '.sftpgo_user_password // empty')
 HOPPSCOTCH_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_db_password // empty')
 HOPPSCOTCH_JWT=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_jwt_secret // empty')
 HOPPSCOTCH_SESSION=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_session_secret // empty')
@@ -615,6 +617,21 @@ MINIO_ROOT_USER=nexus-minio
 MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASS
 EOF
     echo -e "${GREEN}  ✓ MinIO .env generated${NC}"
+fi
+
+# Generate SFTPGo .env from OpenTofu secrets
+# Only the admin password is consumed by docker-compose env-substitution
+# (SFTPGo bootstraps the admin from SFTPGO_DEFAULT_ADMIN_*). The default
+# user `nexus-default` is created later via the SFTPGo REST API once the
+# container is up.
+if echo "$ENABLED_SERVICES" | grep -qw "sftpgo"; then
+    echo "  Generating SFTPGo config from OpenTofu secrets..."
+    mkdir -p "$STACKS_DIR/sftpgo"
+    cat > "$STACKS_DIR/sftpgo/.env" << EOF
+# Auto-generated from OpenTofu secrets - DO NOT COMMIT
+SFTPGO_ADMIN_PASSWORD=$SFTPGO_ADMIN_PASS
+EOF
+    echo -e "${GREEN}  ✓ SFTPGo .env generated${NC}"
 fi
 
 # Generate RedPanda Console .env from OpenTofu secrets
@@ -2012,6 +2029,15 @@ EOF
             "MINIO_ROOT_USER" "nexus-minio" \
             "MINIO_ROOT_PASSWORD" "$MINIO_ROOT_PASS"
 
+        # SFTPGo: admin (web UI / REST API) + nexus-default (SFTP login).
+        # SFTPGO_USER_PASSWORD is also synced to Kestra's secret store
+        # so flows can reference it via {{ secret('SFTPGO_USER_PASSWORD') }}.
+        build_folder "sftpgo" \
+            "SFTPGO_ADMIN_USERNAME" "nexus-sftpgo" \
+            "SFTPGO_ADMIN_PASSWORD" "$SFTPGO_ADMIN_PASS" \
+            "SFTPGO_USER_USERNAME" "nexus-default" \
+            "SFTPGO_USER_PASSWORD" "$SFTPGO_USER_PASS"
+
         build_folder "nocodb" \
             "NOCODB_USERNAME" "$ADMIN_EMAIL" \
             "NOCODB_PASSWORD" "$NOCODB_ADMIN_PASS" \
@@ -2482,6 +2508,87 @@ if echo "$ENABLED_SERVICES" | grep -qw "n8n" && [ -n "$N8N_PASS" ]; then
                 echo -e "${YELLOW}  ⚠ n8n auto-setup failed - configure manually at first login${NC}"
                 echo -e "${YELLOW}    Credentials available in Infisical${NC}"
             fi
+        fi
+    fi
+fi
+
+# Configure SFTPGo: create the default user `nexus-default` with an
+# R2-backed virtual filesystem. The admin (nexus-sftpgo) is bootstrapped
+# via SFTPGO_DEFAULT_ADMIN_* env vars in docker-compose.yml; here we
+# log in with that admin to mint a JWT and POST /api/v2/users to add
+# the SFTP-facing account.
+if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] && [ -n "$SFTPGO_USER_PASS" ]; then
+    echo "  Configuring SFTPGo..."
+
+    SFTPGO_READY=false
+    for i in $(seq 1 30); do
+        SFTPGO_HEALTH=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
+        SFTPGO_HEALTH="${SFTPGO_HEALTH:-000}"
+        if [ "$SFTPGO_HEALTH" = "200" ]; then
+            SFTPGO_READY=true
+            break
+        fi
+        sleep 2
+    done
+
+    if [ "$SFTPGO_READY" = "false" ]; then
+        echo -e "${YELLOW}  ⚠ SFTPGo not ready after 60s — skipping default-user creation${NC}"
+    elif [ -z "$R2_DATA_BUCKET" ] || [ -z "$R2_DATA_ENDPOINT" ] || [ -z "$R2_DATA_ACCESS_KEY" ] || [ -z "$R2_DATA_SECRET_KEY" ]; then
+        echo -e "${YELLOW}  ⚠ R2 datalake credentials missing — SFTPGo admin is up, but default user not created (configure manually in the UI)${NC}"
+    else
+        # Step 1: get an admin JWT. SFTPGo's /api/v2/token endpoint
+        # accepts basic auth; the response carries an `access_token`.
+        SFTPGO_TOKEN_RESP=$(ssh nexus "curl -s -u 'nexus-sftpgo:${SFTPGO_ADMIN_PASS}' \
+            http://localhost:8090/api/v2/token" 2>/dev/null) || SFTPGO_TOKEN_RESP=""
+        SFTPGO_TOKEN=$(echo "$SFTPGO_TOKEN_RESP" | jq -r '.access_token // empty' 2>/dev/null)
+
+        if [ -z "$SFTPGO_TOKEN" ]; then
+            echo -e "${YELLOW}  ⚠ SFTPGo admin login failed — default user not created${NC}"
+        else
+            # Step 2: create nexus-default with R2 vfs config. provider=1
+            # is SFTPGo's S3 backend (works for any S3-compatible endpoint
+            # including R2). home_dir is virtual, scoped to the user; it
+            # maps onto the bucket prefix configured below via key_prefix.
+            SFTPGO_USER_PAYLOAD=$(jq -n \
+                --arg username "nexus-default" \
+                --arg password "$SFTPGO_USER_PASS" \
+                --arg bucket "$R2_DATA_BUCKET" \
+                --arg endpoint "$R2_DATA_ENDPOINT" \
+                --arg ak "$R2_DATA_ACCESS_KEY" \
+                --arg sk "$R2_DATA_SECRET_KEY" \
+                '{
+                    username: $username,
+                    password: $password,
+                    home_dir: "/sftp/nexus-default",
+                    permissions: { "/": ["*"] },
+                    status: 1,
+                    filesystem: {
+                        provider: 1,
+                        s3config: {
+                            bucket: $bucket,
+                            endpoint: $endpoint,
+                            region: "auto",
+                            access_key: $ak,
+                            access_secret: $sk,
+                            key_prefix: "sftp/nexus-default/",
+                            force_path_style: true
+                        }
+                    }
+                }')
+
+            SFTPGO_USER_STATUS=$(printf '%s' "$SFTPGO_USER_PAYLOAD" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                -X POST 'http://localhost:8090/api/v2/users' \
+                -H 'Authorization: Bearer ${SFTPGO_TOKEN}' \
+                -H 'Content-Type: application/json' \
+                --data-binary @-" 2>/dev/null) || true
+            SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
+
+            case "$SFTPGO_USER_STATUS" in
+                201) echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
+                409) echo -e "${YELLOW}  ⚠ SFTPGo user 'nexus-default' already exists — left untouched${NC}" ;;
+                *)   echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
+                     echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
+            esac
         fi
     fi
 fi
@@ -3175,10 +3282,10 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 # 1:1 to <path> in the workspace Gitea repo, so every spin-up
                 # gives students the same baseline starter material:
                 #
-                #   examples/workspace-seeds/flows/classroom/x.yaml
-                #     → workspace-repo:flows/classroom/x.yaml      (Kestra SyncFlows)
+                #   examples/workspace-seeds/kestra/flows/tutorials/x.yaml
+                #     → workspace-repo:kestra/flows/tutorials/x.yaml  (Kestra SyncFlows)
                 #   examples/workspace-seeds/notebooks/foo.ipynb
-                #     → workspace-repo:notebooks/foo.ipynb         (Jupyter/Marimo)
+                #     → workspace-repo:notebooks/foo.ipynb            (Jupyter/Marimo)
                 #
                 # Existing files in Gitea are NOT overwritten (POST returns 422
                 # for already-existing files) — student edits persist across
@@ -3614,14 +3721,15 @@ REMOTE_SYNC_EOF
                     #
                     #   - `git-sync` (SyncNamespaceFiles): pulls helper files
                     #     (Python scripts, configs, SQL templates) from the
-                    #     repo's `workflows/` directory into the namespace's
-                    #     files area — these are NOT flow definitions.
+                    #     repo's `kestra/workflows/` directory into the
+                    #     namespace's files area — these are NOT flow defs.
                     #
                     #   - `flow-sync` (SyncFlows): pulls actual flow YAML
-                    #     definitions from `flows/` and registers them as
-                    #     Kestra flows. Target namespace is derived from the
-                    #     subdir layout (`flows/classroom/x.yaml` → namespace
-                    #     `classroom`). `delete: true` makes Git the single
+                    #     definitions from `kestra/flows/` and registers
+                    #     them as Kestra flows. Target namespace is derived
+                    #     from the subdir layout
+                    #     (`kestra/flows/tutorials/x.yaml` → namespace
+                    #     `tutorials`). `delete: true` makes Git the single
                     #     source of truth — UI-only flows get cleaned up on
                     #     every sync. This is the persistence layer that
                     #     survives destroy-all (Gitea repos live on the
@@ -3678,7 +3786,7 @@ tasks:
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
     namespace: "{{ flow.namespace }}"
-    gitDirectory: workflows
+    gitDirectory: kestra/workflows
 triggers:
   - id: schedule
     type: io.kestra.core.models.triggers.types.Schedule
@@ -3694,7 +3802,7 @@ tasks:
     branch: main
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
-    gitDirectory: flows
+    gitDirectory: kestra/flows
     delete: true
 triggers:
   - id: schedule

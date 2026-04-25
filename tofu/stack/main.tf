@@ -133,6 +133,17 @@ resource "random_password" "minio_root" {
   special = false
 }
 
+# SFTPGo admin (web UI / REST API) and default user (SFTP login)
+resource "random_password" "sftpgo_admin" {
+  length  = 24
+  special = false
+}
+
+resource "random_password" "sftpgo_user" {
+  length  = 24
+  special = false
+}
+
 # Hoppscotch secrets
 resource "random_password" "hoppscotch_db" {
   length  = 24
