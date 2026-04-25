@@ -383,7 +383,7 @@ SSH_ERR=$(mktemp)
 # Any later block that mktemp's a file on `nexus` should append the
 # resulting path here, so cleanup is centralised in one trap.
 REMOTE_CLEANUP_PATHS=$(mktemp)
-trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"' EXIT
+trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"' EXIT
 while [ $RETRY -lt $MAX_RETRIES ]; do
     if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$TIMEOUT -o BatchMode=yes nexus 'echo ok' 2>"$SSH_ERR"; then
         echo -e "${GREEN}  ✓ SSH connection established${NC}"
@@ -3424,10 +3424,11 @@ printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KESTRA_CURL_CFG"
 
 # Discover folders. \`folders\` returns the children of \`path=/\`.
 # Newline-delimited so the iterator below survives folder names with
-# whitespace (Infisical allows them). Root-path secrets are fetched in
-# a separate step (after the loop) using an empty SECRET_PATH that no
-# folder name can collide with — a real folder named "root" would
-# otherwise be confused with the path-sentinel.
+# whitespace (Infisical allows them). Root-path secrets are fetched
+# explicitly via a single \`fetch_secrets_at "/" "<root>"\` call BEFORE
+# the folder loop runs (see below) — a dedicated invocation rather
+# than a loop-internal sentinel, so a real Infisical folder literally
+# named "root" iterates correctly as \`/root\` instead of being shadowed.
 FOLDERS_BODY=\$(mktemp)
 FOLDERS_STATUS=\$(curl -s -o "\$FOLDERS_BODY" -w '%{http_code}' \\
     --config "\$INFISICAL_CFG" \\
