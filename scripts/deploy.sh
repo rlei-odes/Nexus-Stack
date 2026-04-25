@@ -3327,11 +3327,16 @@ CFG
                     # a `bash -s` heredoc, the creds land in a mode-600 curl
                     # `--config` file, and the token body POSTs via stdin
                     # (`--data-binary @-`). Nothing leaks into argv on
-                    # either side.
+                    # either side. HTTP status is captured: anything other
+                    # than 200/201/204 surfaces a warning, because the
+                    # `system.git-sync` and `system.flow-sync` flows
+                    # registered below reference `{{ secret('GITEA_TOKEN') }}`
+                    # — a silent failure here would only manifest as
+                    # cryptic per-flow runtime errors 15 min later.
                     GTOKEN_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
                     GTOKEN_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
                     GTOKEN_VAL_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
-                    ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF >/dev/null 2>&1 || true
+                    GTOKEN_STATUS=$(ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF 2>/dev/null || echo "000"
 KESTRA_USER=\$(printf '%s' '$GTOKEN_USER_B64' | base64 -d)
 KESTRA_PW=\$(printf '%s' '$GTOKEN_PW_B64' | base64 -d)
 GITEA_TOKEN=\$(printf '%s' '$GTOKEN_VAL_B64' | base64 -d)
@@ -3339,11 +3344,17 @@ KCFG=\$(mktemp)
 chmod 600 "\$KCFG"
 trap 'rm -f "\$KCFG"' EXIT
 printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
-printf '%s' "\$GITEA_TOKEN" | curl -sf -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \\
+printf '%s' "\$GITEA_TOKEN" | curl -s -o /dev/null -w '%{http_code}' \\
+    -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \\
     --config "\$KCFG" \\
     -H 'Content-Type: text/plain' \\
     --data-binary @-
 REMOTE_GTOKEN_EOF
+)
+                    case "$GTOKEN_STATUS" in
+                        200|201|204) ;;  # success, no chatter
+                        *)  echo -e "${YELLOW}  ⚠ GITEA_TOKEN write to Kestra returned HTTP $GTOKEN_STATUS — git-sync / flow-sync will fail at runtime${NC}" ;;
+                    esac
 
                     # ----------------------------------------------------------
                     # Push every Infisical secret into Kestra's secret store so
@@ -3369,6 +3380,7 @@ REMOTE_GTOKEN_EOF
                         SYNC_PROJECT_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
                         SYNC_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
                         SYNC_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
+                        SYNC_ENV_B64=$(printf '%s' "$KESTRA_SYNC_ENV" | base64 | tr -d '\n')
 
                         # Folder discovery + per-folder secret fetch all run inside
                         # a single remote bash invocation. Three reasons this is
@@ -3393,7 +3405,7 @@ REMOTE_GTOKEN_EOF
 set -o pipefail
 INFISICAL_TOKEN=\$(printf '%s' '$SYNC_TOKEN_B64' | base64 -d)
 PROJECT_ID=\$(printf '%s' '$SYNC_PROJECT_B64' | base64 -d)
-INFISICAL_ENV='$KESTRA_SYNC_ENV'
+INFISICAL_ENV=\$(printf '%s' '$SYNC_ENV_B64' | base64 -d)
 KESTRA_USER=\$(printf '%s' '$SYNC_USER_B64' | base64 -d)
 KESTRA_PW=\$(printf '%s' '$SYNC_PW_B64' | base64 -d)
 
