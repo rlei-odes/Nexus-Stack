@@ -3158,6 +3158,19 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 fi
 
                 # --- Seed example workspace files from examples/workspace-seeds/ ---
+                # NOTE: this block intentionally lives only in the
+                # non-mirror branch (i.e. nested under
+                # `if [ -z "${GH_MIRROR_REPOS:-}" ]`). When `GH_MIRROR_REPOS`
+                # is set, the workspace repo is a *fork of an existing
+                # GitHub repo* whose contents are user-supplied — seeding
+                # Nexus-Stack's stock examples on top would clash with
+                # whatever the user is already mirroring (filename
+                # collisions silently hit the 422 "already exists" path,
+                # but conceptually the user has signalled they're bringing
+                # their own workspace content). If we ever want to seed
+                # in mirror mode too, do it after the fork exists and only
+                # for paths the user's repo doesn't already populate.
+                #
                 # Every file under examples/workspace-seeds/<path> is committed
                 # 1:1 to <path> in the workspace Gitea repo, so every spin-up
                 # gives students the same baseline starter material:
@@ -3188,17 +3201,33 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                     # token in `ps` for every seeded file. Mode-600 +
                     # explicit cleanup keeps the file unreadable by other
                     # users for its short lifetime.
-                    GITEA_CURL_CFG=$(ssh nexus 'mktemp')
-                    # Register the remote tmp path with the global EXIT
-                    # trap so an aborted seed loop (Ctrl-C, workflow
-                    # timeout, ssh failure mid-iteration) still removes
-                    # the remote cred file instead of leaving it behind
-                    # on the server until the next reboot.
-                    echo "$GITEA_CURL_CFG" >> "$REMOTE_CLEANUP_PATHS"
-                    ssh nexus "umask 077 && cat > '$GITEA_CURL_CFG' && chmod 600 '$GITEA_CURL_CFG'" <<CFG
+                    # Both ssh setup steps are guarded with `|| true` and a
+                    # success check before the loop runs. The script-wide
+                    # `set -euo pipefail` would otherwise abort the entire
+                    # deploy on a transient ssh blip, even though the seed
+                    # loop is best-effort by design (per-file SEED_FAILED
+                    # counter + warning, no fail-fast). Skip the loop with
+                    # a single visible warning if either step fails.
+                    GITEA_CURL_CFG=$(ssh nexus 'mktemp' 2>/dev/null) || GITEA_CURL_CFG=""
+                    SEED_CFG_READY=false
+                    if [ -n "$GITEA_CURL_CFG" ]; then
+                        # Register the remote tmp path with the global EXIT
+                        # trap so an aborted seed loop (Ctrl-C, workflow
+                        # timeout, ssh failure mid-iteration) still removes
+                        # the remote cred file instead of leaving it behind
+                        # on the server until the next reboot.
+                        echo "$GITEA_CURL_CFG" >> "$REMOTE_CLEANUP_PATHS"
+                        if ssh nexus "umask 077 && cat > '$GITEA_CURL_CFG' && chmod 600 '$GITEA_CURL_CFG'" <<CFG 2>/dev/null
 header = "Authorization: token $GITEA_TOKEN"
 CFG
+                        then
+                            SEED_CFG_READY=true
+                        fi
+                    fi
 
+                    if [ "$SEED_CFG_READY" != "true" ]; then
+                        echo -e "${YELLOW}  ⚠ Skipping workspace seed (ssh setup of remote curl config failed)${NC}"
+                    else
                     while IFS= read -r -d '' SEED_FILE; do
                         # 1:1 mapping: relative path inside workspace-seeds/
                         # is the same as the path in the workspace repo.
@@ -3251,11 +3280,19 @@ CFG
                                 branch: "main"
                             }')
 
+                        # Capture HTTP status without `|| echo "000"` fallback —
+                        # curl's `%{http_code}` already prints `000` when no
+                        # HTTP response is received. Combining both produced
+                        # `"000\n000"` on connection failures (curl exit !=0
+                        # → echo appended), garbling the warning text. If
+                        # ssh itself fails completely, $() captures empty
+                        # and we substitute "000" via `:-`.
                         SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                             -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH_ENC' \
                             --config '$GITEA_CURL_CFG' \
                             -H 'Content-Type: application/json' \
-                            --data-binary @-" 2>/dev/null || echo "000")
+                            --data-binary @-" 2>/dev/null) || true
+                        SEED_STATUS="${SEED_STATUS:-000}"
 
                         case "$SEED_STATUS" in
                             201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
@@ -3280,6 +3317,7 @@ CFG
                     if [ "$SEED_FAILED" -gt 0 ]; then
                         echo -e "${YELLOW}  ⚠ $SEED_FAILED workspace seed(s) failed (check Gitea logs)${NC}"
                     fi
+                    fi  # end SEED_CFG_READY guard
                 fi
             fi
 
@@ -3336,7 +3374,7 @@ CFG
                     GTOKEN_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
                     GTOKEN_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
                     GTOKEN_VAL_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
-                    GTOKEN_STATUS=$(ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF 2>/dev/null || echo "000"
+                    GTOKEN_STATUS=$(ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF 2>/dev/null
 KESTRA_USER=\$(printf '%s' '$GTOKEN_USER_B64' | base64 -d)
 KESTRA_PW=\$(printf '%s' '$GTOKEN_PW_B64' | base64 -d)
 GITEA_TOKEN=\$(printf '%s' '$GTOKEN_VAL_B64' | base64 -d)
@@ -3350,7 +3388,11 @@ printf '%s' "\$GITEA_TOKEN" | curl -s -o /dev/null -w '%{http_code}' \\
     -H 'Content-Type: text/plain' \\
     --data-binary @-
 REMOTE_GTOKEN_EOF
-)
+) || true
+                    # See note above SEED_STATUS — same `|| echo "000"`
+                    # concatenation bug avoided here: substitute only when
+                    # the inner curl produced no output at all (ssh failure).
+                    GTOKEN_STATUS="${GTOKEN_STATUS:-000}"
                     case "$GTOKEN_STATUS" in
                         200|201|204) ;;  # success, no chatter
                         *)  echo -e "${YELLOW}  ⚠ GITEA_TOKEN write to Kestra returned HTTP $GTOKEN_STATUS — git-sync / flow-sync will fail at runtime${NC}" ;;
@@ -3442,6 +3484,10 @@ printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KESTRA_CURL_CFG"
 # than a loop-internal sentinel, so a real Infisical folder literally
 # named "root" iterates correctly as \`/root\` instead of being shadowed.
 FOLDERS_BODY=\$(mktemp)
+# curl -w '%{http_code}' already prints "000" on connection failure;
+# adding `|| echo "000"` would concatenate to "000000" on failure
+# because curl writes its 000 first, then echo runs and appends.
+# Capture without the fallback and substitute only on truly empty.
 FOLDERS_STATUS=\$(curl -s -o "\$FOLDERS_BODY" -w '%{http_code}' \\
     --config "\$INFISICAL_CFG" \\
     --get \\
@@ -3449,7 +3495,8 @@ FOLDERS_STATUS=\$(curl -s -o "\$FOLDERS_BODY" -w '%{http_code}' \\
     --data-urlencode "environment=\$INFISICAL_ENV" \\
     --data-urlencode "path=/" \\
     "http://localhost:8070/api/v1/folders" \\
-    2>/dev/null || echo "000")
+    2>/dev/null) || true
+FOLDERS_STATUS="\${FOLDERS_STATUS:-000}"
 if [ "\$FOLDERS_STATUS" = "200" ]; then
     FOLDER_LIST=\$(jq -r '.folders[]?.name' "\$FOLDERS_BODY" 2>/dev/null || echo "")
 else
@@ -3477,7 +3524,8 @@ fetch_secrets_at() {
         --data-urlencode "environment=\$INFISICAL_ENV" \\
         --data-urlencode "secretPath=\$SECRET_PATH" \\
         "http://localhost:8070/api/v3/secrets/raw" \\
-        2>/dev/null || echo "000")
+        2>/dev/null) || true
+    HTTP_STATUS="\${HTTP_STATUS:-000}"
 
     if [ "\$HTTP_STATUS" != "200" ]; then
         FETCH_FAILED=\$((FETCH_FAILED+1))
@@ -3603,11 +3651,15 @@ register_flow() {
     local FLOW_NAME="\$1"
     local FLOW_BODY="\$2"
     local STATUS
+    # \`|| true\` instead of \`|| echo "000"\` — see SEED_STATUS comment
+    # in the runner-side block; the latter would concatenate a second
+    # "000" onto curl's own "000" when the connection fails.
     STATUS=\$(printf '%s' "\$FLOW_BODY" | curl -s -o /dev/null -w '%{http_code}' \\
         -X POST 'http://localhost:8085/api/v1/flows' \\
         --config "\$KCFG" \\
         -H 'Content-Type: application/x-yaml' \\
-        --data-binary @- 2>/dev/null || echo "000")
+        --data-binary @- 2>/dev/null) || true
+    STATUS="\${STATUS:-000}"
     case "\$STATUS" in
         200|201) echo "    ✓ \$FLOW_NAME registered (HTTP \$STATUS)" >&2 ;;
         409)     echo "    ✓ \$FLOW_NAME already exists (HTTP 409, idempotent)" >&2 ;;

@@ -74,7 +74,7 @@ What's not allowed:
 - `Schedule` / cron triggers — flag and request removal, regardless of cron interval.
 - `Flow`, `RealtimeKafka`, or other auto-firing trigger types in seeded examples — flag.
 
-Spotting it: scan the diff for any new or modified `*.yaml` under `examples/workspace-seeds/` and look for `type: io.kestra.plugin.core.trigger.Schedule` in a `triggers:` block. Same applies if a contributor adds a new file under that tree without explicit scheduling but later edits it to introduce one.
+Spotting it: scan the diff for any new or modified `*.yaml` under `examples/workspace-seeds/` and look for either `type: io.kestra.plugin.core.trigger.Schedule` (modern form) or `type: io.kestra.core.models.triggers.types.Schedule` (legacy form — what `scripts/deploy.sh` itself registers for `system.git-sync` and `system.flow-sync`) in a `triggers:` block. Both type strings are accepted by Kestra, so the rule must catch both. Same applies if a contributor adds a new file under that tree without explicit scheduling but later edits it to introduce one.
 
 Convention background: [examples/README.md](../examples/README.md) carries the full rationale and the rules for the rest of the seed-tree (path-mapping, idempotency, secret references via `{{ secret('NAME') }}`, etc.).
 
