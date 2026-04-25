@@ -73,7 +73,7 @@ If you genuinely need a system-level scheduled flow (e.g. a periodic data refres
 
 ### 2. Reference Infisical-managed secrets only via `{{ secret('NAME') }}`
 
-`deploy.sh` syncs every Infisical secret into Kestra's secret store on each spin-up (see PR #486). Reference them in flows as `{{ secret('R2_ACCESS_KEY') }}`, `{{ secret('GITEA_TOKEN') }}`, etc. Never hardcode credentials in seed files — they're public on GitHub.
+`scripts/deploy.sh` syncs every Infisical secret into Kestra's secret store on each spin-up (the block that does this is the one tagged "Push every Infisical secret into Kestra's secret store" in `deploy.sh`, sitting next to the existing `GITEA_TOKEN` PUT). Reference them in flows as `{{ secret('R2_ACCESS_KEY') }}`, `{{ secret('GITEA_TOKEN') }}`, etc. Never hardcode credentials in seed files — this directory is public on GitHub.
 
 ### 3. Idempotent if executed multiple times
 

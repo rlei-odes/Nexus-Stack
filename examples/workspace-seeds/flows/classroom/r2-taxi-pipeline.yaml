@@ -12,7 +12,7 @@ description: |
     3. Log aggregate stats from the result.
 
   This file was seeded into your Gitea workspace repo from
-  `nexus-stack/examples/kestra-flows/classroom/r2-taxi-pipeline.yaml`
+  `nexus-stack/examples/workspace-seeds/flows/classroom/r2-taxi-pipeline.yaml`
   during Initial Setup. Edit the file in Gitea — Kestra picks up the
   change within 15 minutes via `system.flow-sync`. Subsequent
   spin-ups will leave your edits untouched (seeding only adds new

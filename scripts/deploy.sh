@@ -3179,15 +3179,32 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                         # 1:1 mapping: relative path inside workspace-seeds/
                         # is the same as the path in the workspace repo.
                         REPO_PATH="${SEED_FILE#$SEED_DIR/}"
-                        # base64 -w0 = no line wraps; required because Gitea API
-                        # expects one continuous base64 string in the JSON body.
-                        CONTENT_B64=$(base64 -w0 < "$SEED_FILE")
+                        # `base64 | tr -d '\n'` instead of `base64 -w0` so the
+                        # script also runs locally on macOS (BSD `base64`
+                        # doesn't support `-w`). Single line is required by
+                        # Gitea's contents API.
+                        CONTENT_B64=$(base64 < "$SEED_FILE" | tr -d '\n')
 
-                        SEED_STATUS=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                        # Build the request body via jq (handles all JSON
+                        # escaping correctly for any byte pattern in the
+                        # content). Pipe over ssh stdin to the remote curl
+                        # — putting the full base64 inline as a `-d` arg
+                        # risks ARG_MAX overflow for large files like
+                        # .ipynb notebooks (often >100 KB → ~140 KB base64).
+                        JSON_BODY=$(jq -n \
+                            --arg content "$CONTENT_B64" \
+                            --arg path "$REPO_PATH" \
+                            '{
+                                content: $content,
+                                message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/"),
+                                branch: "main"
+                            }')
+
+                        SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                             -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH' \
                             -H 'Authorization: token $GITEA_TOKEN' \
                             -H 'Content-Type: application/json' \
-                            -d '{\"content\":\"$CONTENT_B64\",\"message\":\"chore(seed): add $REPO_PATH from Nexus-Stack examples/workspace-seeds/\",\"branch\":\"main\"}'" 2>/dev/null || echo "000")
+                            --data-binary @-" 2>/dev/null || echo "000")
 
                         case "$SEED_STATUS" in
                             201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
@@ -3274,10 +3291,13 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                         # substitution can never be broken by special
                         # characters (single quotes, newlines) in any of
                         # the values. The remote shell decodes them again.
-                        SYNC_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 -w0)
-                        SYNC_PROJECT_B64=$(printf '%s' "$PROJECT_ID" | base64 -w0)
-                        SYNC_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 -w0)
-                        SYNC_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 -w0)
+                        # `base64 | tr -d '\n'` is portable across GNU
+                        # (`base64 -w0`) and BSD/macOS (`base64` always
+                        # wraps) — script may be run locally for dev.
+                        SYNC_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
+                        SYNC_PROJECT_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
+                        SYNC_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                        SYNC_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
 
                         # For every folder + root, fetch all secrets and PUT them
                         # individually into Kestra. The whole loop runs in a single
@@ -3299,6 +3319,14 @@ FOLDERS='$KESTRA_SYNC_FOLDERS'
 PUSHED=0
 FAILED=0
 SKIPPED=0
+FETCH_FAILED=0
+COLLISIONS=0
+# Track keys we've already pushed to detect cross-folder collisions.
+# Same secretKey in two Infisical folders would otherwise overwrite
+# silently in Kestra's flat /secrets/system/ namespace, last-folder-wins.
+SEEN_KEYS_FILE=\$(mktemp)
+trap 'rm -f "\$SEEN_KEYS_FILE"' EXIT
+
 for FOLDER in \$FOLDERS root; do
     if [ "\$FOLDER" = "root" ]; then
         SECRET_PATH='/'
@@ -3306,8 +3334,23 @@ for FOLDER in \$FOLDERS root; do
         SECRET_PATH="/\$FOLDER"
     fi
 
-    SECRETS_JSON=\$(curl -sf "http://localhost:8070/api/v3/secrets/raw?workspaceId=\$PROJECT_ID&environment=\$INFISICAL_ENV&secretPath=\$SECRET_PATH" \\
-        -H "Authorization: Bearer \$INFISICAL_TOKEN" 2>/dev/null || echo '{}')
+    # Capture HTTP status separately so we can distinguish "no secrets in
+    # this folder" (200, empty array) from "auth broken" (401/403/network).
+    # Without -f, curl always returns 0; we read the status code instead.
+    HTTP_BODY=\$(mktemp)
+    HTTP_STATUS=\$(curl -s -o "\$HTTP_BODY" -w '%{http_code}' \\
+        "http://localhost:8070/api/v3/secrets/raw?workspaceId=\$PROJECT_ID&environment=\$INFISICAL_ENV&secretPath=\$SECRET_PATH" \\
+        -H "Authorization: Bearer \$INFISICAL_TOKEN" 2>/dev/null || echo "000")
+
+    if [ "\$HTTP_STATUS" != "200" ]; then
+        FETCH_FAILED=\$((FETCH_FAILED+1))
+        echo "    ⚠ Infisical fetch \$SECRET_PATH returned HTTP \$HTTP_STATUS" >&2
+        rm -f "\$HTTP_BODY"
+        continue
+    fi
+
+    SECRETS_JSON=\$(cat "\$HTTP_BODY")
+    rm -f "\$HTTP_BODY"
 
     # Process substitution (\< \<(...)) keeps the loop in the parent shell
     # so the counters increment visibly. jq base64-encodes secretValue so
@@ -3321,6 +3364,15 @@ for FOLDER in \$FOLDERS root; do
             SKIPPED=\$((SKIPPED+1))
             continue
         fi
+        # Cross-folder collision: same secretKey already pushed from a
+        # different folder. Last-write wins (current behaviour preserved),
+        # but warn explicitly so the operator can rename one of them.
+        if grep -qx "\$KEY" "\$SEEN_KEYS_FILE" 2>/dev/null; then
+            COLLISIONS=\$((COLLISIONS+1))
+            echo "    ⚠ Key collision: '\$KEY' appears in multiple Infisical folders (last-write wins, current folder='\$FOLDER')" >&2
+        else
+            echo "\$KEY" >> "\$SEEN_KEYS_FILE"
+        fi
         VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
         if printf '%s' "\$VALUE" | curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
             -u "\$KESTRA_USER:\$KESTRA_PW" \\
@@ -3333,13 +3385,20 @@ for FOLDER in \$FOLDERS root; do
     done < <(echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' 2>/dev/null)
 done
 
-# Print summary to stderr so it appears in the workflow logs even with -o /dev/null.
-echo "  Pushed=\$PUSHED  Failed=\$FAILED  Skipped(invalid-key)=\$SKIPPED" >&2
+# Summary to stderr so it appears in the workflow logs even with -o /dev/null.
+echo "  Pushed=\$PUSHED  Failed=\$FAILED  Skipped(invalid-key)=\$SKIPPED  FetchFailed=\$FETCH_FAILED  Collisions=\$COLLISIONS" >&2
 
-# Catastrophic-failure detection: nothing pushed AND failures occurred → likely
-# auth broken (expired Infisical token, wrong Kestra creds, ...). Surface as
-# non-zero exit so the runner-side echo flips to the warning branch.
-if [ "\$PUSHED" -eq 0 ] && [ "\$FAILED" -gt 0 ]; then
+# Catastrophic-failure detection. Three independent ways the sync silently
+# does nothing useful:
+#   - PUSHED=0 with FAILED>0: PUTs to Kestra all fail (Kestra auth broken)
+#   - FETCH_FAILED>0: Infisical refused our token / project / path (rotated
+#     token, missing folder, network glitch). Even if some folders still
+#     succeeded, an unreachable folder means partial sync — flag it.
+#   - PUSHED=0 with FETCH_FAILED>0: nothing got through — definitive break
+# Any of these triggers a non-zero exit so the runner-side echo flips to
+# the warning branch.
+if { [ "\$PUSHED" -eq 0 ] && [ "\$FAILED" -gt 0 ]; } || \\
+   [ "\$FETCH_FAILED" -gt 0 ]; then
     exit 1
 fi
 exit 0
