@@ -377,7 +377,13 @@ MAX_RETRIES=15
 RETRY=0
 TIMEOUT=5
 SSH_ERR=$(mktemp)
-trap 'rm -f "$SSH_ERR"' EXIT
+# Holds remote tmp paths (one per line) that must be removed on the
+# server when the runner exits — including mid-loop interrupts or
+# workflow timeouts. The EXIT trap walks this list and ssh-rm's each.
+# Any later block that mktemp's a file on `nexus` should append the
+# resulting path here, so cleanup is centralised in one trap.
+REMOTE_CLEANUP_PATHS=$(mktemp)
+trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"' EXIT
 while [ $RETRY -lt $MAX_RETRIES ]; do
     if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$TIMEOUT -o BatchMode=yes nexus 'echo ok' 2>"$SSH_ERR"; then
         echo -e "${GREEN}  ✓ SSH connection established${NC}"
@@ -3150,6 +3156,169 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                         -d '{\"permission\": \"write\"}'" >/dev/null 2>&1 || true
                     echo -e "${GREEN}  ✓ User '$GITEA_USER_USERNAME' added as collaborator${NC}"
                 fi
+
+                # --- Seed example workspace files from examples/workspace-seeds/ ---
+                # NOTE: this block intentionally lives only in the
+                # non-mirror branch (i.e. nested under
+                # `if [ -z "${GH_MIRROR_REPOS:-}" ]`). When `GH_MIRROR_REPOS`
+                # is set, the workspace repo is a *fork of an existing
+                # GitHub repo* whose contents are user-supplied — seeding
+                # Nexus-Stack's stock examples on top would clash with
+                # whatever the user is already mirroring (filename
+                # collisions silently hit the 422 "already exists" path,
+                # but conceptually the user has signalled they're bringing
+                # their own workspace content). If we ever want to seed
+                # in mirror mode too, do it after the fork exists and only
+                # for paths the user's repo doesn't already populate.
+                #
+                # Every file under examples/workspace-seeds/<path> is committed
+                # 1:1 to <path> in the workspace Gitea repo, so every spin-up
+                # gives students the same baseline starter material:
+                #
+                #   examples/workspace-seeds/flows/classroom/x.yaml
+                #     → workspace-repo:flows/classroom/x.yaml      (Kestra SyncFlows)
+                #   examples/workspace-seeds/notebooks/foo.ipynb
+                #     → workspace-repo:notebooks/foo.ipynb         (Jupyter/Marimo)
+                #
+                # Existing files in Gitea are NOT overwritten (POST returns 422
+                # for already-existing files) — student edits persist across
+                # re-deploys. New seed files added in a later Nexus-Stack
+                # release land automatically on the next spin-up.
+                #
+                # Convention rules (see examples/README.md): seeded flows must
+                # not declare schedule triggers. Each one is a teaching artifact
+                # to be triggered manually, not background-cron'd on N stacks.
+                SEED_DIR="$PROJECT_ROOT/examples/workspace-seeds"
+                if [ -d "$SEED_DIR" ] && [ -n "$GITEA_TOKEN" ]; then
+                    SEED_COUNT=0
+                    SEED_SKIPPED=0
+                    SEED_FAILED=0
+
+                    # Write the Gitea Authorization header into a curl
+                    # --config file on the server, instead of passing
+                    # `-H 'Authorization: token <TOKEN>'` on the command
+                    # line per request. Per-iteration -H would expose the
+                    # token in `ps` for every seeded file. Mode-600 +
+                    # explicit cleanup keeps the file unreadable by other
+                    # users for its short lifetime.
+                    # Both ssh setup steps are guarded with `|| true` and a
+                    # success check before the loop runs. The script-wide
+                    # `set -euo pipefail` would otherwise abort the entire
+                    # deploy on a transient ssh blip, even though the seed
+                    # loop is best-effort by design (per-file SEED_FAILED
+                    # counter + warning, no fail-fast). Skip the loop with
+                    # a single visible warning if either step fails.
+                    GITEA_CURL_CFG=$(ssh nexus 'mktemp' 2>/dev/null) || GITEA_CURL_CFG=""
+                    SEED_CFG_READY=false
+                    if [ -n "$GITEA_CURL_CFG" ]; then
+                        # Register the remote tmp path with the global EXIT
+                        # trap so an aborted seed loop (Ctrl-C, workflow
+                        # timeout, ssh failure mid-iteration) still removes
+                        # the remote cred file instead of leaving it behind
+                        # on the server until the next reboot.
+                        echo "$GITEA_CURL_CFG" >> "$REMOTE_CLEANUP_PATHS"
+                        if ssh nexus "umask 077 && cat > '$GITEA_CURL_CFG' && chmod 600 '$GITEA_CURL_CFG'" <<CFG 2>/dev/null
+header = "Authorization: token $GITEA_TOKEN"
+CFG
+                        then
+                            SEED_CFG_READY=true
+                        fi
+                    fi
+
+                    if [ "$SEED_CFG_READY" != "true" ]; then
+                        echo -e "${YELLOW}  ⚠ Skipping workspace seed (ssh setup of remote curl config failed)${NC}"
+                    else
+                    while IFS= read -r -d '' SEED_FILE; do
+                        # 1:1 mapping: relative path inside workspace-seeds/
+                        # is the same as the path in the workspace repo.
+                        REPO_PATH="${SEED_FILE#$SEED_DIR/}"
+
+                        # Defense in depth — the seed tree is under our
+                        # control in the repo, but the path is interpolated
+                        # into a remote shell command (the ssh argument
+                        # below) AND into a URL. A `'` would break shell
+                        # quoting; a space, `;`, backtick or non-ASCII byte
+                        # could either inject shell metacharacters or
+                        # produce an invalid URL. Restrict to the safe
+                        # filesystem subset used by everything we ship:
+                        # ASCII alphanumerics, dot, dash, underscore, slash.
+                        if ! [[ "$REPO_PATH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+                            echo -e "${YELLOW}    ⚠ Skipping seed with unsafe path: $REPO_PATH${NC}"
+                            SEED_FAILED=$((SEED_FAILED+1))
+                            continue
+                        fi
+
+                        # URL-encode each path segment (Gitea's contents
+                        # API expects the raw path component, not the
+                        # query-string-style encoding, so we encode each
+                        # segment and re-join with `/`). After the regex
+                        # check above this is mostly belt-and-braces —
+                        # but the regex allows e.g. `.` which is fine in
+                        # URLs, and any future loosening of the regex
+                        # stays safe by going through this encoder.
+                        REPO_PATH_ENC=$(jq -rn --arg p "$REPO_PATH" \
+                            '$p | split("/") | map(@uri) | join("/")')
+
+                        # `base64 | tr -d '\n'` instead of `base64 -w0` so the
+                        # script also runs locally on macOS (BSD `base64`
+                        # doesn't support `-w`). Single line is required by
+                        # Gitea's contents API.
+                        CONTENT_B64=$(base64 < "$SEED_FILE" | tr -d '\n')
+
+                        # Build the request body via jq (handles all JSON
+                        # escaping correctly for any byte pattern in the
+                        # content). Pipe over ssh stdin to the remote curl
+                        # — putting the full base64 inline as a `-d` arg
+                        # risks ARG_MAX overflow for large files like
+                        # .ipynb notebooks (often >100 KB → ~140 KB base64).
+                        JSON_BODY=$(jq -n \
+                            --arg content "$CONTENT_B64" \
+                            --arg path "$REPO_PATH" \
+                            '{
+                                content: $content,
+                                message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/"),
+                                branch: "main"
+                            }')
+
+                        # Capture HTTP status without `|| echo "000"` fallback —
+                        # curl's `%{http_code}` already prints `000` when no
+                        # HTTP response is received. Combining both produced
+                        # `"000\n000"` on connection failures (curl exit !=0
+                        # → echo appended), garbling the warning text. If
+                        # ssh itself fails completely, $() captures empty
+                        # and we substitute "000" via `:-`.
+                        SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                            -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH_ENC' \
+                            --config '$GITEA_CURL_CFG' \
+                            -H 'Content-Type: application/json' \
+                            --data-binary @-" 2>/dev/null) || true
+                        SEED_STATUS="${SEED_STATUS:-000}"
+
+                        case "$SEED_STATUS" in
+                            201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
+                            422)     SEED_SKIPPED=$((SEED_SKIPPED+1)) ;;  # already exists, leave alone
+                            *)       SEED_FAILED=$((SEED_FAILED+1)) ;;
+                        esac
+                    done < <(find "$SEED_DIR" -type f -print0 2>/dev/null)
+
+                    # Cleanup: remove the cred file. `shred` isn't guaranteed
+                    # available on every Hetzner image, and `rm -f` is
+                    # sufficient here — the file lived on the server's
+                    # local disk under a `mktemp` path with mode 600 for
+                    # the duration of the seed loop only.
+                    ssh nexus "rm -f '$GITEA_CURL_CFG'" 2>/dev/null || true
+
+                    if [ "$SEED_COUNT" -gt 0 ]; then
+                        echo -e "${GREEN}  ✓ Seeded $SEED_COUNT workspace file(s) into Gitea${NC}"
+                    fi
+                    if [ "$SEED_SKIPPED" -gt 0 ]; then
+                        echo -e "${YELLOW}    ($SEED_SKIPPED already existed in Gitea, left untouched)${NC}"
+                    fi
+                    if [ "$SEED_FAILED" -gt 0 ]; then
+                        echo -e "${YELLOW}  ⚠ $SEED_FAILED workspace seed(s) failed (check Gitea logs)${NC}"
+                    fi
+                    fi  # end SEED_CFG_READY guard
+                fi
             fi
 
             # --- Restart services that have Git integration (to pick up .env vars) ---
@@ -3190,17 +3359,316 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 done
 
                 if [ "$KESTRA_READY" = "true" ]; then
-                    # Store GITEA_TOKEN as Kestra secret
-                    ssh nexus "curl -sf -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \
-                        -u '${ADMIN_EMAIL}:${KESTRA_PASS}' \
-                        -H 'Content-Type: text/plain' \
-                        -d '$GITEA_TOKEN'" >/dev/null 2>&1 || true
+                    # Store GITEA_TOKEN as a Kestra secret. Same argv-safe
+                    # pattern as the bulk Infisical sync below: KESTRA creds
+                    # and the token itself transit base64 over ssh stdin into
+                    # a `bash -s` heredoc, the creds land in a mode-600 curl
+                    # `--config` file, and the token body POSTs via stdin
+                    # (`--data-binary @-`). Nothing leaks into argv on
+                    # either side. HTTP status is captured: anything other
+                    # than 200/201/204 surfaces a warning, because the
+                    # `system.git-sync` and `system.flow-sync` flows
+                    # registered below reference `{{ secret('GITEA_TOKEN') }}`
+                    # — a silent failure here would only manifest as
+                    # cryptic per-flow runtime errors 15 min later.
+                    GTOKEN_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                    GTOKEN_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
+                    GTOKEN_VAL_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+                    GTOKEN_STATUS=$(ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF 2>/dev/null
+KESTRA_USER=\$(printf '%s' '$GTOKEN_USER_B64' | base64 -d)
+KESTRA_PW=\$(printf '%s' '$GTOKEN_PW_B64' | base64 -d)
+GITEA_TOKEN=\$(printf '%s' '$GTOKEN_VAL_B64' | base64 -d)
+KCFG=\$(mktemp)
+chmod 600 "\$KCFG"
+trap 'rm -f "\$KCFG"' EXIT
+printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
+printf '%s' "\$GITEA_TOKEN" | curl -s -o /dev/null -w '%{http_code}' \\
+    -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \\
+    --config "\$KCFG" \\
+    -H 'Content-Type: text/plain' \\
+    --data-binary @-
+REMOTE_GTOKEN_EOF
+) || true
+                    # See note above SEED_STATUS — same `|| echo "000"`
+                    # concatenation bug avoided here: substitute only when
+                    # the inner curl produced no output at all (ssh failure).
+                    GTOKEN_STATUS="${GTOKEN_STATUS:-000}"
+                    case "$GTOKEN_STATUS" in
+                        200|201|204) ;;  # success, no chatter
+                        *)  echo -e "${YELLOW}  ⚠ GITEA_TOKEN write to Kestra returned HTTP $GTOKEN_STATUS — git-sync / flow-sync will fail at runtime${NC}" ;;
+                    esac
 
-                    # Create git-sync flow (SyncNamespaceFiles from Gitea)
-                    ssh nexus "curl -sf -X POST 'http://localhost:8085/api/v1/flows' \
-                        -u '${ADMIN_EMAIL}:${KESTRA_PASS}' \
-                        -H 'Content-Type: application/x-yaml' \
-                        -d 'id: git-sync
+                    # ----------------------------------------------------------
+                    # Push every Infisical secret into Kestra's secret store so
+                    # Kestra flows can read them via {{ secret('NAME') }}.
+                    # Discovers all folders + root path, no whitelist — new
+                    # user-added folders in Infisical surface in Kestra
+                    # without code changes. Uses the existing GITEA_TOKEN
+                    # PUT-pattern, so secrets land in Kestra's `system`
+                    # namespace alongside it. Idempotent on re-run.
+                    # ----------------------------------------------------------
+                    if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+                        echo "  Pushing Infisical secrets to Kestra..."
+                        KESTRA_SYNC_ENV="${INFISICAL_ENV:-dev}"
+
+                        # Base64-encode runner-side values so the heredoc
+                        # substitution can never be broken by special
+                        # characters (single quotes, newlines) in any of
+                        # the values. The remote shell decodes them again.
+                        # `base64 | tr -d '\n'` is portable across GNU
+                        # (`base64 -w0`) and BSD/macOS (`base64` always
+                        # wraps) — script may be run locally for dev.
+                        SYNC_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
+                        SYNC_PROJECT_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
+                        SYNC_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                        SYNC_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
+                        SYNC_ENV_B64=$(printf '%s' "$KESTRA_SYNC_ENV" | base64 | tr -d '\n')
+
+                        # Folder discovery + per-folder secret fetch all run inside
+                        # a single remote bash invocation. Three reasons this is
+                        # one block:
+                        #   1) Infisical bearer token never enters argv (would be
+                        #      visible in `ps` on the server). It's decoded once
+                        #      from a base64 stdin payload, written into a curl
+                        #      --config file (mode 600, header = "Authorization:
+                        #      Bearer ..."), and reused for both the folder-list
+                        #      call and the per-folder secret-fetch calls.
+                        #   2) Kestra basic-auth password never enters argv either
+                        #      — same --config-file pattern, ~150 PUTs would
+                        #      otherwise repeatedly leak it via `ps`.
+                        #   3) ~150 PUTs share one ssh handshake instead of one
+                        #      ssh per secret.
+                        # Secret values transit jq base64-encoded so newlines /
+                        # tabs / binary content (multi-line PEMs) round-trip
+                        # losslessly through TSV. Keys are validated against
+                        # Kestra's naming rule; non-conforming names are skipped
+                        # to avoid broken URL paths.
+                        if ssh nexus "bash -s" <<REMOTE_SYNC_EOF
+set -o pipefail
+INFISICAL_TOKEN=\$(printf '%s' '$SYNC_TOKEN_B64' | base64 -d)
+PROJECT_ID=\$(printf '%s' '$SYNC_PROJECT_B64' | base64 -d)
+INFISICAL_ENV=\$(printf '%s' '$SYNC_ENV_B64' | base64 -d)
+KESTRA_USER=\$(printf '%s' '$SYNC_USER_B64' | base64 -d)
+KESTRA_PW=\$(printf '%s' '$SYNC_PW_B64' | base64 -d)
+
+PUSHED=0
+FAILED=0
+SKIPPED=0
+FETCH_FAILED=0
+COLLISIONS=0
+# Track keys we've already pushed to detect cross-folder collisions.
+# Same secretKey in two Infisical folders would otherwise overwrite
+# silently in Kestra's flat /secrets/system/ namespace, last-folder-wins.
+SEEN_KEYS_FILE=\$(mktemp)
+
+# Two curl --config files: one with the Infisical bearer header, one with
+# the Kestra basic-auth user. Both written via cat-from-stdin (so the
+# secrets never appear in argv even within this remote shell), mode 600
+# from creation, removed via the EXIT trap.
+INFISICAL_CFG=\$(mktemp)
+KESTRA_CURL_CFG=\$(mktemp)
+chmod 600 "\$INFISICAL_CFG" "\$KESTRA_CURL_CFG"
+trap 'rm -f "\$SEEN_KEYS_FILE" "\$INFISICAL_CFG" "\$KESTRA_CURL_CFG"' EXIT
+
+# printf is a bash builtin (no fork-exec), so its arguments never appear
+# in any external process's argv — values are written into the cfg file
+# directly from in-shell. mode-600 was set above before any content lands.
+printf 'header = "Authorization: Bearer %s"\n' "\$INFISICAL_TOKEN" > "\$INFISICAL_CFG"
+printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KESTRA_CURL_CFG"
+
+# Discover folders. \`folders\` returns the children of \`path=/\`.
+# Newline-delimited so the iterator below survives folder names with
+# whitespace (Infisical allows them). Root-path secrets are fetched
+# explicitly via a single \`fetch_secrets_at "/" "<root>"\` call BEFORE
+# the folder loop runs (see below) — a dedicated invocation rather
+# than a loop-internal sentinel, so a real Infisical folder literally
+# named "root" iterates correctly as \`/root\` instead of being shadowed.
+FOLDERS_BODY=\$(mktemp)
+# curl -w '%{http_code}' already prints "000" on connection failure;
+# adding `|| echo "000"` would concatenate to "000000" on failure
+# because curl writes its 000 first, then echo runs and appends.
+# Capture without the fallback and substitute only on truly empty.
+FOLDERS_STATUS=\$(curl -s -o "\$FOLDERS_BODY" -w '%{http_code}' \\
+    --config "\$INFISICAL_CFG" \\
+    --get \\
+    --data-urlencode "workspaceId=\$PROJECT_ID" \\
+    --data-urlencode "environment=\$INFISICAL_ENV" \\
+    --data-urlencode "path=/" \\
+    "http://localhost:8070/api/v1/folders" \\
+    2>/dev/null) || true
+FOLDERS_STATUS="\${FOLDERS_STATUS:-000}"
+if [ "\$FOLDERS_STATUS" = "200" ]; then
+    FOLDER_LIST=\$(jq -r '.folders[]?.name' "\$FOLDERS_BODY" 2>/dev/null || echo "")
+else
+    FETCH_FAILED=\$((FETCH_FAILED+1))
+    echo "    ⚠ Infisical folder discovery returned HTTP \$FOLDERS_STATUS" >&2
+    FOLDER_LIST=""
+fi
+rm -f "\$FOLDERS_BODY"
+
+# fetch_secrets_at "<infisical-path>" "<display-label>"
+#   Fetches and PUT-syncs every secret at the given Infisical secretPath
+#   into Kestra's /secrets/system/ namespace. URL-encodes the path via
+#   --data-urlencode (folders may contain whitespace or other reserved
+#   characters; raw interpolation would produce malformed URLs and
+#   spurious FETCH_FAILED bumps).
+fetch_secrets_at() {
+    local SECRET_PATH="\$1"
+    local FOLDER_LABEL="\$2"
+    local HTTP_BODY HTTP_STATUS SECRETS_JSON KEY VALUE_B64 VALUE
+    HTTP_BODY=\$(mktemp)
+    HTTP_STATUS=\$(curl -s -o "\$HTTP_BODY" -w '%{http_code}' \\
+        --config "\$INFISICAL_CFG" \\
+        --get \\
+        --data-urlencode "workspaceId=\$PROJECT_ID" \\
+        --data-urlencode "environment=\$INFISICAL_ENV" \\
+        --data-urlencode "secretPath=\$SECRET_PATH" \\
+        "http://localhost:8070/api/v3/secrets/raw" \\
+        2>/dev/null) || true
+    HTTP_STATUS="\${HTTP_STATUS:-000}"
+
+    if [ "\$HTTP_STATUS" != "200" ]; then
+        FETCH_FAILED=\$((FETCH_FAILED+1))
+        echo "    ⚠ Infisical fetch \$SECRET_PATH returned HTTP \$HTTP_STATUS" >&2
+        rm -f "\$HTTP_BODY"
+        return
+    fi
+
+    SECRETS_JSON=\$(cat "\$HTTP_BODY")
+    rm -f "\$HTTP_BODY"
+
+    # Process substitution (\< \<(...)) keeps the loop in the parent shell
+    # so the counters increment visibly. jq base64-encodes secretValue so
+    # the TSV transport doesn't mangle newlines/tabs/binary content.
+    while IFS=\$'\t' read -r KEY VALUE_B64; do
+        [ -z "\$KEY" ] && continue
+        # Kestra (and Infisical) convention: [A-Za-z][A-Za-z0-9_]*. Anything
+        # else (slashes, dots, hyphens) would either break the URL path or
+        # fail Kestra's own validation. Skip and record.
+        if ! [[ "\$KEY" =~ ^[A-Za-z][A-Za-z0-9_]*\$ ]]; then
+            SKIPPED=\$((SKIPPED+1))
+            continue
+        fi
+        # Cross-folder collision: same secretKey already pushed from a
+        # different folder. Last-write wins (current behaviour preserved),
+        # but warn explicitly so the operator can rename one of them.
+        if grep -qx "\$KEY" "\$SEEN_KEYS_FILE" 2>/dev/null; then
+            COLLISIONS=\$((COLLISIONS+1))
+            echo "    ⚠ Key collision: '\$KEY' appears in multiple Infisical folders (last-write wins, current folder='\$FOLDER_LABEL')" >&2
+        else
+            echo "\$KEY" >> "\$SEEN_KEYS_FILE"
+        fi
+        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
+        if printf '%s' "\$VALUE" | curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
+            --config "\$KESTRA_CURL_CFG" \\
+            -H "Content-Type: text/plain" \\
+            --data-binary @-; then
+            PUSHED=\$((PUSHED+1))
+        else
+            FAILED=\$((FAILED+1))
+        fi
+    done < <(echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' 2>/dev/null)
+}
+
+# Root path first — explicit fetch outside the folder loop so a real
+# Infisical folder literally named "root" can't collide with the path-/
+# sentinel.
+fetch_secrets_at "/" "<root>"
+
+# Then every discovered folder. Newline-by-newline iteration via process
+# substitution keeps counters in the parent shell and survives folder
+# names with whitespace.
+while IFS= read -r FOLDER; do
+    [ -z "\$FOLDER" ] && continue
+    fetch_secrets_at "/\$FOLDER" "\$FOLDER"
+done < <(printf '%s\n' "\$FOLDER_LIST")
+
+# Summary to stderr so it appears in the workflow logs even with -o /dev/null.
+echo "  Pushed=\$PUSHED  Failed=\$FAILED  Skipped(invalid-key)=\$SKIPPED  FetchFailed=\$FETCH_FAILED  Collisions=\$COLLISIONS" >&2
+
+# Catastrophic-failure detection. Three independent ways the sync silently
+# does nothing useful:
+#   - PUSHED=0 with FAILED>0: PUTs to Kestra all fail (Kestra auth broken)
+#   - FETCH_FAILED>0: Infisical refused our token / project / path (rotated
+#     token, missing folder, network glitch). Even if some folders still
+#     succeeded, an unreachable folder means partial sync — flag it.
+#   - PUSHED=0 with FETCH_FAILED>0: nothing got through — definitive break
+# Any of these triggers a non-zero exit so the runner-side echo flips to
+# the warning branch.
+if { [ "\$PUSHED" -eq 0 ] && [ "\$FAILED" -gt 0 ]; } || \\
+   [ "\$FETCH_FAILED" -gt 0 ]; then
+    exit 1
+fi
+exit 0
+REMOTE_SYNC_EOF
+                        then
+                            echo -e "${GREEN}  ✓ Infisical → Kestra secret sync complete${NC}"
+                        else
+                            echo -e "${YELLOW}  ⚠ Infisical → Kestra sync had failures (check Kestra/Infisical auth)${NC}"
+                        fi
+                    fi
+
+                    # ----------------------------------------------------------
+                    # Register both Git-sync flows in a single remote bash
+                    # invocation:
+                    #
+                    #   - `git-sync` (SyncNamespaceFiles): pulls helper files
+                    #     (Python scripts, configs, SQL templates) from the
+                    #     repo's `workflows/` directory into the namespace's
+                    #     files area — these are NOT flow definitions.
+                    #
+                    #   - `flow-sync` (SyncFlows): pulls actual flow YAML
+                    #     definitions from `flows/` and registers them as
+                    #     Kestra flows. Target namespace is derived from the
+                    #     subdir layout (`flows/classroom/x.yaml` → namespace
+                    #     `classroom`). `delete: true` makes Git the single
+                    #     source of truth — UI-only flows get cleaned up on
+                    #     every sync. This is the persistence layer that
+                    #     survives destroy-all (Gitea repos live on the
+                    #     persistent Hetzner volume `/mnt/nexus-data/gitea/`).
+                    #
+                    # Kestra creds go through a curl --config file written
+                    # via cat-from-stdin instead of `-u user:pw` which would
+                    # expose KESTRA_PASS in the remote `ps` listing. HTTP
+                    # status is captured per flow:
+                    #   200/201 → created
+                    #   409     → already exists (idempotent re-run, OK)
+                    #   other   → real failure, surfaced as warning
+                    # ----------------------------------------------------------
+                    REGISTER_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                    REGISTER_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
+                    if ssh nexus "bash -s" <<REMOTE_REGISTER_EOF
+set -o pipefail
+KESTRA_USER=\$(printf '%s' '$REGISTER_USER_B64' | base64 -d)
+KESTRA_PW=\$(printf '%s' '$REGISTER_PW_B64' | base64 -d)
+
+KCFG=\$(mktemp)
+chmod 600 "\$KCFG"
+trap 'rm -f "\$KCFG"' EXIT
+printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
+
+register_flow() {
+    local FLOW_NAME="\$1"
+    local FLOW_BODY="\$2"
+    local STATUS
+    # \`|| true\` instead of \`|| echo "000"\` — see SEED_STATUS comment
+    # in the runner-side block; the latter would concatenate a second
+    # "000" onto curl's own "000" when the connection fails.
+    STATUS=\$(printf '%s' "\$FLOW_BODY" | curl -s -o /dev/null -w '%{http_code}' \\
+        -X POST 'http://localhost:8085/api/v1/flows' \\
+        --config "\$KCFG" \\
+        -H 'Content-Type: application/x-yaml' \\
+        --data-binary @- 2>/dev/null) || true
+    STATUS="\${STATUS:-000}"
+    case "\$STATUS" in
+        200|201) echo "    ✓ \$FLOW_NAME registered (HTTP \$STATUS)" >&2 ;;
+        409)     echo "    ✓ \$FLOW_NAME already exists (HTTP 409, idempotent)" >&2 ;;
+        *)       echo "    ⚠ \$FLOW_NAME registration failed (HTTP \$STATUS)" >&2; return 1 ;;
+    esac
+}
+
+REGISTER_FAILED=0
+register_flow "system.git-sync" 'id: git-sync
 namespace: system
 tasks:
   - id: sync
@@ -3208,15 +3676,39 @@ tasks:
     url: http://gitea:3000/${ADMIN_USERNAME}/${REPO_NAME}.git
     branch: main
     username: ${ADMIN_USERNAME}
-    password: \"{{ secret('\''GITEA_TOKEN'\'') }}\"
-    namespace: \"{{ flow.namespace }}\"
+    password: "{{ secret('\''GITEA_TOKEN'\'') }}"
+    namespace: "{{ flow.namespace }}"
     gitDirectory: workflows
 triggers:
   - id: schedule
     type: io.kestra.core.models.triggers.types.Schedule
-    cron: \"*/15 * * * *\"'" >/dev/null 2>&1 || true
+    cron: "*/15 * * * *"' || REGISTER_FAILED=\$((REGISTER_FAILED+1))
 
-                    echo -e "${GREEN}  ✓ Kestra Git sync flow created${NC}"
+register_flow "system.flow-sync" 'id: flow-sync
+namespace: system
+description: Pull flow definitions from internal Gitea, register them in Kestra. Git is source of truth.
+tasks:
+  - id: sync
+    type: io.kestra.plugin.git.SyncFlows
+    url: http://gitea:3000/${ADMIN_USERNAME}/${REPO_NAME}.git
+    branch: main
+    username: ${ADMIN_USERNAME}
+    password: "{{ secret('\''GITEA_TOKEN'\'') }}"
+    gitDirectory: flows
+    delete: true
+triggers:
+  - id: schedule
+    type: io.kestra.core.models.triggers.types.Schedule
+    cron: "*/15 * * * *"' || REGISTER_FAILED=\$((REGISTER_FAILED+1))
+
+[ "\$REGISTER_FAILED" -eq 0 ] || exit 1
+exit 0
+REMOTE_REGISTER_EOF
+                    then
+                        echo -e "${GREEN}  ✓ Kestra Git sync flows created (workflows + flows)${NC}"
+                    else
+                        echo -e "${YELLOW}  ⚠ Kestra Git sync flow registration had failures (check log above)${NC}"
+                    fi
                 else
                     echo -e "${YELLOW}  ⚠ Kestra not ready - skipping Git sync flow${NC}"
                 fi
