@@ -3214,19 +3214,35 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                             -H 'Authorization: Bearer $INFISICAL_TOKEN'" 2>/dev/null \
                             | jq -r '.folders[]?.name' 2>/dev/null || echo "")
 
+                        # Base64-encode runner-side values so the heredoc
+                        # substitution can never be broken by special
+                        # characters (single quotes, newlines) in any of
+                        # the values. The remote shell decodes them again.
+                        SYNC_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 -w0)
+                        SYNC_PROJECT_B64=$(printf '%s' "$PROJECT_ID" | base64 -w0)
+                        SYNC_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 -w0)
+                        SYNC_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 -w0)
+
                         # For every folder + root, fetch all secrets and PUT them
                         # individually into Kestra. The whole loop runs in a single
-                        # remote bash invocation to avoid 150 separate ssh handshakes.
-                        ssh nexus "bash -s" <<REMOTE_SYNC_EOF || true
-INFISICAL_TOKEN='$INFISICAL_TOKEN'
-PROJECT_ID='$PROJECT_ID'
+                        # remote bash invocation to avoid ~150 separate ssh handshakes.
+                        # Secret values are transported base64-encoded through jq so
+                        # newlines / tabs / binary content (e.g. multi-line PEMs)
+                        # round-trip losslessly. Keys are validated against Kestra's
+                        # naming rules; non-conforming names are skipped to avoid
+                        # broken URL paths.
+                        if ssh nexus "bash -s" <<REMOTE_SYNC_EOF
+set -o pipefail
+INFISICAL_TOKEN=\$(printf '%s' '$SYNC_TOKEN_B64' | base64 -d)
+PROJECT_ID=\$(printf '%s' '$SYNC_PROJECT_B64' | base64 -d)
 INFISICAL_ENV='$KESTRA_SYNC_ENV'
-KESTRA_USER='$ADMIN_EMAIL'
-KESTRA_PW='$KESTRA_PASS'
+KESTRA_USER=\$(printf '%s' '$SYNC_USER_B64' | base64 -d)
+KESTRA_PW=\$(printf '%s' '$SYNC_PW_B64' | base64 -d)
 FOLDERS='$KESTRA_SYNC_FOLDERS'
 
 PUSHED=0
 FAILED=0
+SKIPPED=0
 for FOLDER in \$FOLDERS root; do
     if [ "\$FOLDER" = "root" ]; then
         SECRET_PATH='/'
@@ -3237,21 +3253,46 @@ for FOLDER in \$FOLDERS root; do
     SECRETS_JSON=\$(curl -sf "http://localhost:8070/api/v3/secrets/raw?workspaceId=\$PROJECT_ID&environment=\$INFISICAL_ENV&secretPath=\$SECRET_PATH" \\
         -H "Authorization: Bearer \$INFISICAL_TOKEN" 2>/dev/null || echo '{}')
 
-    echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, .secretValue] | @tsv' 2>/dev/null \\
-    | while IFS=\$'\t' read -r KEY VALUE; do
+    # Process substitution (\< \<(...)) keeps the loop in the parent shell
+    # so the counters increment visibly. jq base64-encodes secretValue so
+    # the TSV transport doesn't mangle newlines/tabs/binary content.
+    while IFS=\$'\t' read -r KEY VALUE_B64; do
         [ -z "\$KEY" ] && continue
-        if curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
+        # Kestra (and Infisical) convention: [A-Za-z][A-Za-z0-9_]*. Anything
+        # else (slashes, dots, hyphens) would either break the URL path or
+        # fail Kestra's own validation. Skip and record.
+        if ! [[ "\$KEY" =~ ^[A-Za-z][A-Za-z0-9_]*\$ ]]; then
+            SKIPPED=\$((SKIPPED+1))
+            continue
+        fi
+        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
+        if printf '%s' "\$VALUE" | curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
             -u "\$KESTRA_USER:\$KESTRA_PW" \\
             -H "Content-Type: text/plain" \\
-            --data-raw "\$VALUE"; then
+            --data-binary @-; then
             PUSHED=\$((PUSHED+1))
         else
             FAILED=\$((FAILED+1))
         fi
-    done
+    done < <(echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' 2>/dev/null)
 done
+
+# Print summary to stderr so it appears in the workflow logs even with -o /dev/null.
+echo "  Pushed=\$PUSHED  Failed=\$FAILED  Skipped(invalid-key)=\$SKIPPED" >&2
+
+# Catastrophic-failure detection: nothing pushed AND failures occurred → likely
+# auth broken (expired Infisical token, wrong Kestra creds, ...). Surface as
+# non-zero exit so the runner-side echo flips to the warning branch.
+if [ "\$PUSHED" -eq 0 ] && [ "\$FAILED" -gt 0 ]; then
+    exit 1
+fi
+exit 0
 REMOTE_SYNC_EOF
-                        echo -e "${GREEN}  ✓ Infisical → Kestra secret sync complete${NC}"
+                        then
+                            echo -e "${GREEN}  ✓ Infisical → Kestra secret sync complete${NC}"
+                        else
+                            echo -e "${YELLOW}  ⚠ Infisical → Kestra sync had failures (check Kestra/Infisical auth)${NC}"
+                        fi
                     fi
 
                     # Create git-sync flow (SyncNamespaceFiles from Gitea)
