@@ -2536,10 +2536,28 @@ if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] &
     elif [ -z "$R2_DATA_BUCKET" ] || [ -z "$R2_DATA_ENDPOINT" ] || [ -z "$R2_DATA_ACCESS_KEY" ] || [ -z "$R2_DATA_SECRET_KEY" ]; then
         echo -e "${YELLOW}  ⚠ R2 datalake credentials missing — SFTPGo admin is up, but default user not created (configure manually in the UI)${NC}"
     else
+        # ----------------------------------------------------------------
         # Step 1: get an admin JWT. SFTPGo's /api/v2/token endpoint
         # accepts basic auth; the response carries an `access_token`.
-        SFTPGO_TOKEN_RESP=$(ssh nexus "curl -s -u 'nexus-sftpgo:${SFTPGO_ADMIN_PASS}' \
-            http://localhost:8090/api/v2/token" 2>/dev/null) || SFTPGO_TOKEN_RESP=""
+        #
+        # Both this call (admin password as basic-auth credential) and
+        # Step 2 (bearer token as Authorization header) run inside
+        # `bash -s` heredocs on the remote so no secret transits via
+        # argv. The runner base64-encodes each value, the remote bash
+        # decodes via the `printf` builtin (no fork-exec, no argv) and
+        # writes a mode-600 curl `--config` file. Same argv-safe pattern
+        # the Kestra-bootstrap block uses for INFISICAL_TOKEN/KESTRA_PASS.
+        # ----------------------------------------------------------------
+        SFTPGO_ADMIN_B64=$(printf '%s' "$SFTPGO_ADMIN_PASS" | base64 | tr -d '\n')
+        SFTPGO_TOKEN_RESP=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_TOKEN_EOF 2>/dev/null
+ADMIN_PW=\$(printf '%s' '$SFTPGO_ADMIN_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'user = "nexus-sftpgo:%s"\n' "\$ADMIN_PW" > "\$CFG"
+curl -s --config "\$CFG" 'http://localhost:8090/api/v2/token'
+REMOTE_SFTPGO_TOKEN_EOF
+) || SFTPGO_TOKEN_RESP=""
         SFTPGO_TOKEN=$(echo "$SFTPGO_TOKEN_RESP" | jq -r '.access_token // empty' 2>/dev/null)
 
         if [ -z "$SFTPGO_TOKEN" ]; then
@@ -2576,11 +2594,27 @@ if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] &
                     }
                 }')
 
-            SFTPGO_USER_STATUS=$(printf '%s' "$SFTPGO_USER_PAYLOAD" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                -X POST 'http://localhost:8090/api/v2/users' \
-                -H 'Authorization: Bearer ${SFTPGO_TOKEN}' \
-                -H 'Content-Type: application/json' \
-                --data-binary @-" 2>/dev/null) || true
+            # Pass BOTH the bearer token AND the JSON body via base64-
+            # stdin substitution into the heredoc body — `bash -s` is
+            # already consuming the heredoc as its script, so there's
+            # no second stdin we could use to pipe the payload. base64
+            # encoding stays cheap (payload is ~600 bytes) and keeps
+            # the body intact through any quoting.
+            SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\n')
+            SFTPGO_PAYLOAD_B64=$(printf '%s' "$SFTPGO_USER_PAYLOAD" | base64 | tr -d '\n')
+            SFTPGO_USER_STATUS=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_USER_EOF 2>/dev/null
+TOKEN=\$(printf '%s' '$SFTPGO_TOKEN_B64' | base64 -d)
+PAYLOAD=\$(printf '%s' '$SFTPGO_PAYLOAD_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "\$TOKEN" > "\$CFG"
+printf '%s' "\$PAYLOAD" | curl -s -o /dev/null -w '%{http_code}' \\
+    -X POST 'http://localhost:8090/api/v2/users' \\
+    --config "\$CFG" \\
+    --data-binary @-
+REMOTE_SFTPGO_USER_EOF
+) || true
             SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
 
             case "$SFTPGO_USER_STATUS" in
@@ -3280,7 +3314,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 #
                 # Every file under examples/workspace-seeds/<path> is committed
                 # 1:1 to <path> in the workspace Gitea repo, so every spin-up
-                # gives students the same baseline starter material:
+                # gives users the same baseline starter material:
                 #
                 #   examples/workspace-seeds/kestra/flows/tutorials/x.yaml
                 #     → workspace-repo:kestra/flows/tutorials/x.yaml  (Kestra SyncFlows)
@@ -3288,7 +3322,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 #     → workspace-repo:notebooks/foo.ipynb            (Jupyter/Marimo)
                 #
                 # Existing files in Gitea are NOT overwritten (POST returns 422
-                # for already-existing files) — student edits persist across
+                # for already-existing files) — user edits persist across
                 # re-deploys. New seed files added in a later Nexus-Stack
                 # release land automatically on the next spin-up.
                 #

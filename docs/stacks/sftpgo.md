@@ -25,7 +25,7 @@ SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-
 | Website | [sftpgo.com](https://sftpgo.com) |
 | Source | [GitHub](https://github.com/drakkan/sftpgo) |
 
-> ✅ **Auto-configured:** Admin account `nexus-sftpgo` and a default SFTP user `nexus-default` (with R2 vfs) are created automatically during deployment. Credentials available in Infisical under `sftpgo_admin_password` and `sftpgo_user_password`.
+> ✅ **Auto-configured:** Admin account `nexus-sftpgo` and a default SFTP user `nexus-default` (with R2 vfs) are created automatically during deployment. Credentials available in Infisical under folder `sftpgo`, keys `SFTPGO_ADMIN_PASSWORD` and `SFTPGO_USER_PASSWORD`.
 
 ### How to access
 
@@ -33,13 +33,13 @@ SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-
 ```
 https://sftpgo.<your-domain>
 ```
-Log in with `nexus-sftpgo` and the password from Infisical (`sftpgo_admin_password`).
+Log in with `nexus-sftpgo` and the password from Infisical (folder `sftpgo`, key `SFTPGO_ADMIN_PASSWORD`).
 
 **SFTP** (after opening port `2022` for your source IP via the Control Plane firewall):
 ```
 sftp -P 2022 nexus-default@<your-server-ip>
 ```
-Password from Infisical (`sftpgo_user_password`).
+Password from Infisical (folder `sftpgo`, key `SFTPGO_USER_PASSWORD`).
 
 ### R2 backend
 
