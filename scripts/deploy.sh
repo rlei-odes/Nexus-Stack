@@ -3497,9 +3497,17 @@ CFG
             if echo "$ENABLED_SERVICES" | grep -qw "kestra"; then
                 echo "  Configuring Kestra Git sync..."
 
-                # Wait for Kestra to be ready
+                # Wait for Kestra to be ready. Budget: 60 × 3 s = 180 s.
+                # Was 20 × 3 s = 60 s and started timing out: Kestra v1.0
+                # is the LTS "all plugins bundled" image (~2 GB pull, ~4 GB
+                # heap), and on a fresh-VM cold start (image-pull + JVM
+                # warmup + plugin load) the API is regularly not ready
+                # within 60 s. Timing out here silently skipped GITEA_TOKEN
+                # PUT, the Infisical→Kestra secret sync, and both
+                # `system.git-sync` / `system.flow-sync` registrations —
+                # so seeded flows never got synced.
                 KESTRA_READY=false
-                for i in $(seq 1 20); do
+                for i in $(seq 1 60); do
                     if ssh nexus "curl -sf http://localhost:8085/api/v1/flows" >/dev/null 2>&1; then
                         KESTRA_READY=true
                         break
