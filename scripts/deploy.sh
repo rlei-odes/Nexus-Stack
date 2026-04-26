@@ -3547,20 +3547,28 @@ CFG
                 # Infisical→Kestra secret sync, and both `system.git-sync`
                 # / `system.flow-sync` registrations — so seeded flows
                 # never got synced.
-                # Liveness: print one line every 10 iterations (~30–80 s
-                # of elapsed time depending on how often curl actually
-                # blocks for its full --max-time) so the workflow log
-                # doesn't look stuck on "Configuring Kestra Git sync..."
-                # for minutes with no follow-up.
+                # Readiness check: accept ANY HTTP response as proof that
+                # Kestra is up. The compose-level `basic-auth` makes
+                # `/api/v1/flows` return 401 to an unauthenticated curl,
+                # so `curl -sf` (fail-on-non-2xx) was treating a perfectly-
+                # ready Kestra as "not ready" and waiting out the entire
+                # loop budget. We don't want to leak the admin password
+                # into argv on the remote (would be visible in `ps`) just
+                # to satisfy the readiness check, so instead we drop `-f`,
+                # capture the HTTP status code, and accept 200/401/403 as
+                # "server is responding". The actual auth'd calls happen
+                # later inside the bash-s heredoc using a curl --config
+                # file. Liveness: print one line every 10 iterations.
                 KESTRA_READY=false
                 KESTRA_WAIT_START=$SECONDS
                 for i in $(seq 1 60); do
-                    if ssh nexus "curl -sf --connect-timeout 3 --max-time 5 http://localhost:8085/api/v1/flows" >/dev/null 2>&1; then
-                        KESTRA_READY=true
-                        break
-                    fi
+                    KSTATUS=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 http://localhost:8085/api/v1/flows" 2>/dev/null) || KSTATUS=""
+                    KSTATUS="${KSTATUS:-000}"
+                    case "$KSTATUS" in
+                        200|401|403) KESTRA_READY=true; break ;;
+                    esac
                     if [ $((i % 10)) -eq 0 ]; then
-                        echo "    ... still waiting for Kestra ($((SECONDS - KESTRA_WAIT_START))s elapsed, up to ~480s budget)"
+                        echo "    ... still waiting for Kestra ($((SECONDS - KESTRA_WAIT_START))s elapsed, last status $KSTATUS, up to ~480s budget)"
                     fi
                     sleep 3
                 done
