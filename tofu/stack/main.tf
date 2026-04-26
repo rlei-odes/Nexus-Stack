@@ -505,7 +505,7 @@ resource "hcloud_server" "main" {
     command -v docker >/dev/null 2>&1 || { echo "FATAL: Docker installation failed" >&2; exit 1; }
 
     # Install security tools
-    apt-get install -y fail2ban unattended-upgrades
+    apt-get install -y fail2ban unattended-upgrades jq
     
     # Configure automatic security updates
     cat > /etc/apt/apt.conf.d/20auto-upgrades << 'EOF'

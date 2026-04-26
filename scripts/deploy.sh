@@ -422,6 +422,27 @@ if [ $RETRY -eq $MAX_RETRIES ]; then
 fi
 
 # -----------------------------------------------------------------------------
+# Ensure jq is installed on the server.
+# -----------------------------------------------------------------------------
+# `jq` is now bundled into the cloud-init `apt-get install -y …` step
+# in `tofu/stack/main.tf`, so freshly provisioned VMs (after destroy-all)
+# already have it. This block is for already-running VMs that were
+# created BEFORE that change — without jq, the SFTPGo user-creation
+# heredoc and the Kestra register-flow verification block silently
+# break (jq writes "command not found" to stderr that gets swallowed,
+# the consuming `curl` ends up with empty stdin, and the operator
+# sees mysterious 400/empty responses). Idempotent: `apt-get install`
+# is a near-instant no-op when the package is already present.
+if ! ssh nexus "command -v jq" >/dev/null 2>&1; then
+    echo "  Installing jq on the server (one-time bootstrap for VMs created before jq was added to cloud-init)..."
+    if ! ssh nexus "sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq jq >/dev/null"; then
+        echo -e "${RED}Error: failed to install jq on the server. SFTPGo / Kestra register-verify blocks rely on jq.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}  ✓ jq installed${NC}"
+fi
+
+# -----------------------------------------------------------------------------
 # Mount persistent volume (if configured)
 # -----------------------------------------------------------------------------
 PERSISTENT_VOLUME_ID=$(cd "$TOFU_DIR" && tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
@@ -3616,7 +3637,13 @@ CFG
                     KSEC_PUSHED=0
                     KSEC_SKIPPED=0
                     KSEC_FETCH_FAILED=0
-                    KSEC_SEEN=$(mktemp)   # track keys to skip cross-folder dupes
+                    KSEC_COLLISIONS=0
+                    # Two-column file: "<KEY>\t<source-folder>". Used both
+                    # to skip cross-folder duplicates (first-folder-wins,
+                    # deterministic across re-runs) AND to surface a
+                    # collision warning that names BOTH source folders so
+                    # the operator can tell where the divergence is.
+                    KSEC_SEEN=$(mktemp)
                     if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
                         echo "  Building Kestra secret env from Infisical..."
                         INFISICAL_ENV_KESTRA="${INFISICAL_ENV:-dev}"
@@ -3750,11 +3777,17 @@ REMOTE_INF_SECRETS_EOF
                                 # Cross-folder dedupe (first-folder-wins is
                                 # deterministic across repeat runs; last-
                                 # wins would flip env-var values based on
-                                # iteration order).
-                                if grep -qx "$KEY" "$KSEC_SEEN" 2>/dev/null; then
+                                # iteration order). On collision: log a
+                                # warning naming the kept folder and the
+                                # dropped folder so the operator can spot
+                                # divergent values across folders.
+                                EXISTING_FOLDER=$(awk -F'\t' -v k="$KEY" '$1 == k {print $2; exit}' "$KSEC_SEEN" 2>/dev/null)
+                                if [ -n "$EXISTING_FOLDER" ]; then
+                                    echo -e "${YELLOW}    ⚠ Key collision: '$KEY' in folder '$FOLDER_LABEL' shadowed by earlier value from folder '$EXISTING_FOLDER' (first-wins)${NC}"
+                                    KSEC_COLLISIONS=$((KSEC_COLLISIONS+1))
                                     continue
                                 fi
-                                echo "$KEY" >> "$KSEC_SEEN"
+                                printf '%s\t%s\n' "$KEY" "$FOLDER_LABEL" >> "$KSEC_SEEN"
                                 echo "SECRET_${KEY}=${VALUE_B64}" >> "$KESTRA_SECRETS_TMP"
                                 KSEC_PUSHED=$((KSEC_PUSHED+1))
                             done < <(jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' "$SECRETS_BODY" 2>/dev/null)
@@ -3768,7 +3801,7 @@ REMOTE_INF_SECRETS_EOF
                     #    Infisical at the time of the `build_folder()`
                     #    pushes earlier in this script, so we add it here
                     #    so seeded flows can use `{{ secret('GITEA_TOKEN') }}`.
-                    if [ -n "$GITEA_TOKEN" ] && ! grep -qx "GITEA_TOKEN" "$KSEC_SEEN" 2>/dev/null; then
+                    if [ -n "$GITEA_TOKEN" ] && ! awk -F'\t' '$1 == "GITEA_TOKEN" {found=1; exit} END {exit !found}' "$KSEC_SEEN" 2>/dev/null; then
                         echo "SECRET_GITEA_TOKEN=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')" >> "$KESTRA_SECRETS_TMP"
                         KSEC_PUSHED=$((KSEC_PUSHED+1))
                     fi
@@ -3806,9 +3839,11 @@ REMOTE_INF_SECRETS_EOF
                         fi
 
                         if [ "$KSEC_FETCH_FAILED" -gt 0 ]; then
-                            echo -e "${YELLOW}  ⚠ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped $KSEC_SKIPPED invalid keys, $KSEC_FETCH_FAILED Infisical fetches failed — secret set is incomplete)${NC}"
+                            echo -e "${YELLOW}  ⚠ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped=$KSEC_SKIPPED invalid keys, collisions=$KSEC_COLLISIONS, $KSEC_FETCH_FAILED Infisical fetches failed — secret set is incomplete)${NC}"
+                        elif [ "$KSEC_COLLISIONS" -gt 0 ]; then
+                            echo -e "${YELLOW}  ⚠ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped=$KSEC_SKIPPED invalid keys, $KSEC_COLLISIONS cross-folder collisions — see warnings above; first-folder-wins applied)${NC}"
                         else
-                            echo -e "${GREEN}  ✓ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped $KSEC_SKIPPED invalid keys)${NC}"
+                            echo -e "${GREEN}  ✓ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped=$KSEC_SKIPPED invalid keys)${NC}"
                         fi
 
                         # 4. Force-recreate Kestra so the env vars get
