@@ -625,25 +625,33 @@ fi
 # user `nexus-default` is created later via the SFTPGo REST API once the
 # container is up.
 #
-# Empty-password guard: if `SFTPGO_ADMIN_PASS` arrives empty (typical
-# cause: SFTPGo got enabled without running OpenTofu first, so the
-# `random_password.sftpgo_admin` resource isn't in state yet and
-# `jq -r '.sftpgo_admin_password // empty'` returned ""), writing the
-# .env anyway would bootstrap SFTPGo with a blank-password admin. Skip
-# the .env generation and surface a loud warning that points the
-# operator at the OpenTofu run that populates the secret.
+# Empty-password guard: if either `SFTPGO_ADMIN_PASS` or `SFTPGO_USER_PASS`
+# arrives empty (typical cause: SFTPGo got enabled without running
+# OpenTofu first, so the `random_password.sftpgo_admin` /
+# `random_password.sftpgo_user` resources aren't in state yet and
+# `jq -r '... // empty'` returned ""), abort the deploy. Writing the
+# .env anyway would let docker-compose start SFTPGo with a blank-
+# password admin (= a public Cloudflare-Access-protected service with
+# no second auth factor) — that's a security regression worth failing
+# fast on, not just warning. Recovery is one step: run `tofu apply`,
+# then re-run spin-up. Fail-fast here is consistent with other tofu-
+# state-required errors in deploy.sh (e.g., empty $DOMAIN at line 108).
 if echo "$ENABLED_SERVICES" | grep -qw "sftpgo"; then
     if [ -z "$SFTPGO_ADMIN_PASS" ] || [ -z "$SFTPGO_USER_PASS" ]; then
-        echo -e "${YELLOW}  ⚠ SFTPGo enabled but admin/user password missing from OpenTofu state — skipping SFTPGo .env (run \`gh workflow run spin-up.yml\` after \`tofu apply\` so random_password.sftpgo_admin / sftpgo_user are generated and surfaced in SECRETS_JSON)${NC}"
-    else
-        echo "  Generating SFTPGo config from OpenTofu secrets..."
-        mkdir -p "$STACKS_DIR/sftpgo"
-        cat > "$STACKS_DIR/sftpgo/.env" << EOF
+        echo -e "${RED}Error: SFTPGo is enabled but admin/user password is empty in OpenTofu state.${NC}"
+        echo -e "${RED}       Cause: random_password.sftpgo_admin and/or random_password.sftpgo_user${NC}"
+        echo -e "${RED}       are not in state yet. Run \`tofu apply\` (which is what the spin-up${NC}"
+        echo -e "${RED}       workflow does before deploy.sh) and re-run, then SECRETS_JSON will${NC}"
+        echo -e "${RED}       carry .sftpgo_admin_password / .sftpgo_user_password.${NC}"
+        exit 1
+    fi
+    echo "  Generating SFTPGo config from OpenTofu secrets..."
+    mkdir -p "$STACKS_DIR/sftpgo"
+    cat > "$STACKS_DIR/sftpgo/.env" << EOF
 # Auto-generated from OpenTofu secrets - DO NOT COMMIT
 SFTPGO_ADMIN_PASSWORD=$SFTPGO_ADMIN_PASS
 EOF
-        echo -e "${GREEN}  ✓ SFTPGo .env generated${NC}"
-    fi
+    echo -e "${GREEN}  ✓ SFTPGo .env generated${NC}"
 fi
 
 # Generate RedPanda Console .env from OpenTofu secrets
@@ -2580,15 +2588,18 @@ REMOTE_SFTPGO_TOKEN_EOF
             # including R2). home_dir is virtual, scoped to the user; it
             # maps onto the bucket prefix below via key_prefix.
             #
-            # Each input transits as base64 over the heredoc body — none
-            # of the secrets enter argv on either side. The runner uses
-            # only the `printf` builtin to encode (no fork-exec), and the
-            # remote shell decodes via the same builtin before passing
-            # values to `jq -n` via env vars (`env.VAR`) — jq reads them
-            # from its environment, never from argv. The constructed JSON
-            # then transits to remote curl via stdin (`--data-binary @-`),
+            # Each input transits as base64 over the heredoc body — no
+            # secret bytes ever appear in argv on either side. On the
+            # runner, the value is fed to `base64` via a pipe (so the
+            # `printf` part is a builtin and the secret reaches `base64`
+            # over stdin, not argv). On the remote shell, the decode uses
+            # the `printf` builtin → `base64 -d` pipe with the same
+            # property. Decoded values are then handed to a remote `jq -n`
+            # invocation via env vars (`env.VAR`) — jq reads them from
+            # its environment, never from argv. The constructed JSON
+            # transits to remote curl via stdin (`--data-binary @-`),
             # while bearer-token + content-type sit in a mode-600 curl
-            # `--config` file written by `printf` builtin.
+            # `--config` file written by the `printf` builtin.
             SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\n')
             SFTPGO_USER_PASS_B64=$(printf '%s' "$SFTPGO_USER_PASS" | base64 | tr -d '\n')
             SFTPGO_BUCKET_B64=$(printf '%s' "$R2_DATA_BUCKET" | base64 | tr -d '\n')
