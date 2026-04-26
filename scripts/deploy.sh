@@ -3547,11 +3547,20 @@ CFG
                 # Infisical→Kestra secret sync, and both `system.git-sync`
                 # / `system.flow-sync` registrations — so seeded flows
                 # never got synced.
+                # Liveness: print one line every 10 iterations (~30–80 s
+                # of elapsed time depending on how often curl actually
+                # blocks for its full --max-time) so the workflow log
+                # doesn't look stuck on "Configuring Kestra Git sync..."
+                # for minutes with no follow-up.
                 KESTRA_READY=false
+                KESTRA_WAIT_START=$SECONDS
                 for i in $(seq 1 60); do
                     if ssh nexus "curl -sf --connect-timeout 3 --max-time 5 http://localhost:8085/api/v1/flows" >/dev/null 2>&1; then
                         KESTRA_READY=true
                         break
+                    fi
+                    if [ $((i % 10)) -eq 0 ]; then
+                        echo "    ... still waiting for Kestra ($((SECONDS - KESTRA_WAIT_START))s elapsed, up to ~480s budget)"
                     fi
                     sleep 3
                 done
