@@ -3520,18 +3520,36 @@ CFG
             if echo "$ENABLED_SERVICES" | grep -qw "kestra"; then
                 echo "  Configuring Kestra Git sync..."
 
-                # Wait for Kestra to be ready. Budget: 60 × 3 s = 180 s.
-                # Was 20 × 3 s = 60 s and started timing out: Kestra v1.0
-                # is the LTS "all plugins bundled" image (~2 GB pull, ~4 GB
-                # heap), and on a fresh-VM cold start (image-pull + JVM
-                # warmup + plugin load) the API is regularly not ready
-                # within 60 s. Timing out here silently skipped GITEA_TOKEN
-                # PUT, the Infisical→Kestra secret sync, and both
-                # `system.git-sync` / `system.flow-sync` registrations —
-                # so seeded flows never got synced.
+                # Wait for Kestra to be ready. Budget: 60 × ~8 s ≤ 480 s
+                # (~8 min worst case).
+                #
+                # Two corrections from the previous attempt:
+                #
+                # 1. `curl -sf` had no max-time, so when Kestra binds the
+                #    port but the JVM/plugin layer hasn't yet wired up
+                #    request handlers, curl waits the OS-default timeout
+                #    (~75 s) per iteration. The loop was nominally
+                #    60 × 3 s = 180 s but actually ran 268 s in practice
+                #    because curl hung, then we gave up just as Kestra
+                #    was about to be ready. Now: `--connect-timeout 3
+                #    --max-time 5` bounds every iteration to ≤ 8 s
+                #    (5 s curl + 3 s sleep).
+                #
+                # 2. Kestra v1.0 (LTS, all plugins bundled, ~2 GB pull,
+                #    ~4 GB heap) on a fresh-VM cold start needs more than
+                #    just image-pull time: JVM warmup + plugin load can
+                #    push the API-ready point past 5 minutes. 60 × 8 s
+                #    ceiling gives plenty of headroom; the loop exits
+                #    early on the first successful curl, so steady-state
+                #    spin-ups on a warm VM stay fast.
+                #
+                # Timing out here silently skipped GITEA_TOKEN PUT, the
+                # Infisical→Kestra secret sync, and both `system.git-sync`
+                # / `system.flow-sync` registrations — so seeded flows
+                # never got synced.
                 KESTRA_READY=false
                 for i in $(seq 1 60); do
-                    if ssh nexus "curl -sf http://localhost:8085/api/v1/flows" >/dev/null 2>&1; then
+                    if ssh nexus "curl -sf --connect-timeout 3 --max-time 5 http://localhost:8085/api/v1/flows" >/dev/null 2>&1; then
                         KESTRA_READY=true
                         break
                     fi
