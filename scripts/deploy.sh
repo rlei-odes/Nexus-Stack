@@ -3547,9 +3547,10 @@ CFG
                 # Infisical→Kestra secret sync, and both `system.git-sync`
                 # / `system.flow-sync` registrations — so seeded flows
                 # never got synced.
-                # Readiness check: accept ANY HTTP response as proof that
-                # Kestra is up. The compose-level `basic-auth` makes
-                # `/api/v1/flows` return 401 to an unauthenticated curl,
+                # Readiness check: accept HTTP 200, 401, or 403 as proof
+                # that Kestra is up and responding. The compose-level
+                # `basic-auth` makes `/api/v1/flows` return 401 to an
+                # unauthenticated curl,
                 # so `curl -sf` (fail-on-non-2xx) was treating a perfectly-
                 # ready Kestra as "not ready" and waiting out the entire
                 # loop budget. We don't want to leak the admin password
@@ -3619,28 +3620,80 @@ CFG
                         echo "  Building Kestra secret env from Infisical..."
                         INFISICAL_ENV_KESTRA="${INFISICAL_ENV:-dev}"
 
-                        # 1a. Discover folders. ssh+curl on the remote
-                        #     because Infisical only listens on localhost
-                        #     there; jq parse on the runner.
+                        # All Infisical fetches happen on the server
+                        # (localhost:8070 only listens there) but we need
+                        # jq on the runner to parse the responses. So:
+                        #
+                        #   - The Infisical bearer token, project ID, and
+                        #     env slug are base64-encoded on the runner
+                        #     and substituted into a `bash -s` heredoc
+                        #     body. The remote shell decodes them via
+                        #     the `printf` builtin (no fork-exec, no
+                        #     argv) and writes a mode-600 curl
+                        #     `--config` file with the auth header.
+                        #     Same argv-safe pattern PR #486 established.
+                        #   - Folder name + secretPath transit through
+                        #     `curl --get --data-urlencode ...` so
+                        #     names with whitespace or reserved chars
+                        #     produce valid URLs.
+                        #   - Folder iteration uses `while read` over
+                        #     newline-delimited input — `for X in $LIST`
+                        #     would word-split on whitespace.
+                        INF_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
+                        INF_PID_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
+                        INF_ENV_B64=$(printf '%s' "$INFISICAL_ENV_KESTRA" | base64 | tr -d '\n')
+
+                        # 1a. Discover folders.
                         FOLDERS_BODY=$(mktemp)
-                        ssh nexus "curl -s -H 'Authorization: Bearer $INFISICAL_TOKEN' 'http://localhost:8070/api/v1/folders?workspaceId=$PROJECT_ID&environment=$INFISICAL_ENV_KESTRA&path=/'" > "$FOLDERS_BODY" 2>/dev/null || true
+                        ssh nexus "bash -s" <<REMOTE_INF_FOLDERS_EOF > "$FOLDERS_BODY" 2>/dev/null || true
+ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
+PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
+INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
+curl -s --config "\$CFG" --get \\
+    --data-urlencode "workspaceId=\$PID" \\
+    --data-urlencode "environment=\$INF_ENV" \\
+    --data-urlencode "path=/" \\
+    "http://localhost:8070/api/v1/folders"
+REMOTE_INF_FOLDERS_EOF
                         FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null || echo "")
                         rm -f "$FOLDERS_BODY"
 
                         # 1b. For each discovered folder + the root path,
-                        #     fetch all (key, value) pairs. jq base64-
-                        #     encodes the value so newlines / tabs / binary
-                        #     content (multi-line PEMs) survive the TSV
-                        #     transit.
-                        for FOLDER in $FOLDER_LIST __root__; do
+                        #     fetch all (key, value) pairs. Newline-safe
+                        #     iteration via while-read; secretPath URL-
+                        #     encoded via curl --data-urlencode.
+                        while IFS= read -r FOLDER; do
+                            [ -z "$FOLDER" ] && continue
                             if [ "$FOLDER" = "__root__" ]; then
                                 SECRET_PATH="/"
                             else
                                 SECRET_PATH="/$FOLDER"
                             fi
+                            INF_PATH_B64=$(printf '%s' "$SECRET_PATH" | base64 | tr -d '\n')
                             SECRETS_BODY=$(mktemp)
-                            ssh nexus "curl -s -H 'Authorization: Bearer $INFISICAL_TOKEN' 'http://localhost:8070/api/v3/secrets/raw?workspaceId=$PROJECT_ID&environment=$INFISICAL_ENV_KESTRA&secretPath=$SECRET_PATH'" > "$SECRETS_BODY" 2>/dev/null || true
+                            ssh nexus "bash -s" <<REMOTE_INF_SECRETS_EOF > "$SECRETS_BODY" 2>/dev/null || true
+ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
+PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
+INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
+SPATH=\$(printf '%s' '$INF_PATH_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
+curl -s --config "\$CFG" --get \\
+    --data-urlencode "workspaceId=\$PID" \\
+    --data-urlencode "environment=\$INF_ENV" \\
+    --data-urlencode "secretPath=\$SPATH" \\
+    "http://localhost:8070/api/v3/secrets/raw"
+REMOTE_INF_SECRETS_EOF
 
+                            # jq base64-encodes the secretValue so newlines
+                            # / tabs / binary content (multi-line PEMs)
+                            # survive the TSV transit.
                             while IFS=$'\t' read -r KEY VALUE_B64; do
                                 [ -z "$KEY" ] && continue
                                 # Kestra naming rule: ^[A-Za-z][A-Za-z0-9_]*$
@@ -3650,10 +3703,10 @@ CFG
                                     KSEC_SKIPPED=$((KSEC_SKIPPED+1))
                                     continue
                                 fi
-                                # Cross-folder dedupe (last-folder-wins
-                                # would create non-deterministic env-var
-                                # values; first-folder-wins is at least
-                                # deterministic for repeat runs).
+                                # Cross-folder dedupe (first-folder-wins is
+                                # deterministic across repeat runs; last-
+                                # wins would flip env-var values based on
+                                # iteration order).
                                 if grep -qx "$KEY" "$KSEC_SEEN" 2>/dev/null; then
                                     continue
                                 fi
@@ -3662,7 +3715,7 @@ CFG
                                 KSEC_PUSHED=$((KSEC_PUSHED+1))
                             done < <(jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' "$SECRETS_BODY" 2>/dev/null)
                             rm -f "$SECRETS_BODY"
-                        done
+                        done < <(printf '%s\n__root__\n' "$FOLDER_LIST")
                     fi
 
                     # 2. Special case: GITEA_TOKEN is generated by deploy.sh
