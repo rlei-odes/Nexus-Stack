@@ -3652,8 +3652,14 @@ CFG
                         # status from body and warns on non-200 instead
                         # of silently feeding a 401/403/error JSON to jq.
 
-                        # 1a. Discover folders.
-                        FOLDERS_RAW=$(ssh nexus "bash -s" <<REMOTE_INF_FOLDERS_EOF 2>/dev/null) || FOLDERS_RAW=""
+                        # 1a. Discover folders. Tempfile around the
+                        #     heredoc to avoid the awkward bash quirk where
+                        #     `$(... <<EOF body EOF)` parses the closing
+                        #     `)` of `$()` BEFORE the heredoc body, mis-
+                        #     matching parens against the `\$(printf ...)`
+                        #     escapes inside the body.
+                        FOLDERS_RAW_FILE=$(mktemp)
+                        ssh nexus "bash -s" > "$FOLDERS_RAW_FILE" 2>/dev/null <<REMOTE_INF_FOLDERS_EOF || true
 ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
 INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
@@ -3667,6 +3673,8 @@ curl -s -w "\n%{http_code}" --config "\$CFG" --get \\
     --data-urlencode "path=/" \\
     "http://localhost:8070/api/v1/folders"
 REMOTE_INF_FOLDERS_EOF
+                        FOLDERS_RAW=$(cat "$FOLDERS_RAW_FILE")
+                        rm -f "$FOLDERS_RAW_FILE"
                         # Last line = HTTP status; everything before = body.
                         FOLDERS_STATUS=$(printf '%s' "$FOLDERS_RAW" | tail -n1)
                         FOLDERS_STATUS="${FOLDERS_STATUS:-000}"
@@ -3695,7 +3703,11 @@ REMOTE_INF_FOLDERS_EOF
                                 FOLDER_LABEL="$FOLDER"
                             fi
                             INF_PATH_B64=$(printf '%s' "$SECRET_PATH" | base64 | tr -d '\n')
-                            SECRETS_RAW=$(ssh nexus "bash -s" <<REMOTE_INF_SECRETS_EOF 2>/dev/null) || SECRETS_RAW=""
+                            # Same tempfile-around-heredoc pattern as the
+                            # folder-discovery call above (avoids paren
+                            # mismatch in `$(... <<EOF \$(...) EOF)`).
+                            SECRETS_RAW_FILE=$(mktemp)
+                            ssh nexus "bash -s" > "$SECRETS_RAW_FILE" 2>/dev/null <<REMOTE_INF_SECRETS_EOF || true
 ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
 INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
@@ -3710,6 +3722,8 @@ curl -s -w "\n%{http_code}" --config "\$CFG" --get \\
     --data-urlencode "secretPath=\$SPATH" \\
     "http://localhost:8070/api/v3/secrets/raw"
 REMOTE_INF_SECRETS_EOF
+                            SECRETS_RAW=$(cat "$SECRETS_RAW_FILE")
+                            rm -f "$SECRETS_RAW_FILE"
                             SECRETS_STATUS=$(printf '%s' "$SECRETS_RAW" | tail -n1)
                             SECRETS_STATUS="${SECRETS_STATUS:-000}"
                             SECRETS_BODY=$(mktemp)
