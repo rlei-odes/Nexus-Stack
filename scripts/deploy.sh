@@ -3615,6 +3615,7 @@ CFG
                     KESTRA_SECRETS_TMP=$(mktemp)
                     KSEC_PUSHED=0
                     KSEC_SKIPPED=0
+                    KSEC_FETCH_FAILED=0
                     KSEC_SEEN=$(mktemp)   # track keys to skip cross-folder dupes
                     if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
                         echo "  Building Kestra secret env from Infisical..."
@@ -3643,9 +3644,16 @@ CFG
                         INF_PID_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
                         INF_ENV_B64=$(printf '%s' "$INFISICAL_ENV_KESTRA" | base64 | tr -d '\n')
 
+                        # Each Infisical fetch (folders + per-path
+                        # secrets) needs to surface the HTTP status. We
+                        # use `curl -w "\n%{http_code}"` so the LAST line
+                        # of stdout is the status code; everything before
+                        # it is the response body. Runner-side splits
+                        # status from body and warns on non-200 instead
+                        # of silently feeding a 401/403/error JSON to jq.
+
                         # 1a. Discover folders.
-                        FOLDERS_BODY=$(mktemp)
-                        ssh nexus "bash -s" <<REMOTE_INF_FOLDERS_EOF > "$FOLDERS_BODY" 2>/dev/null || true
+                        FOLDERS_RAW=$(ssh nexus "bash -s" <<REMOTE_INF_FOLDERS_EOF 2>/dev/null) || FOLDERS_RAW=""
 ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
 INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
@@ -3653,13 +3661,24 @@ CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
-curl -s --config "\$CFG" --get \\
+curl -s -w "\n%{http_code}" --config "\$CFG" --get \\
     --data-urlencode "workspaceId=\$PID" \\
     --data-urlencode "environment=\$INF_ENV" \\
     --data-urlencode "path=/" \\
     "http://localhost:8070/api/v1/folders"
 REMOTE_INF_FOLDERS_EOF
-                        FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null || echo "")
+                        # Last line = HTTP status; everything before = body.
+                        FOLDERS_STATUS=$(printf '%s' "$FOLDERS_RAW" | tail -n1)
+                        FOLDERS_STATUS="${FOLDERS_STATUS:-000}"
+                        FOLDERS_BODY=$(mktemp)
+                        printf '%s' "$FOLDERS_RAW" | sed '$d' > "$FOLDERS_BODY"
+                        if [ "$FOLDERS_STATUS" = "200" ]; then
+                            FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null || echo "")
+                        else
+                            echo -e "${YELLOW}    ⚠ Infisical folder discovery returned HTTP $FOLDERS_STATUS — Kestra secret env will only contain root-path secrets + GITEA_TOKEN${NC}"
+                            KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
+                            FOLDER_LIST=""
+                        fi
                         rm -f "$FOLDERS_BODY"
 
                         # 1b. For each discovered folder + the root path,
@@ -3670,12 +3689,13 @@ REMOTE_INF_FOLDERS_EOF
                             [ -z "$FOLDER" ] && continue
                             if [ "$FOLDER" = "__root__" ]; then
                                 SECRET_PATH="/"
+                                FOLDER_LABEL="<root>"
                             else
                                 SECRET_PATH="/$FOLDER"
+                                FOLDER_LABEL="$FOLDER"
                             fi
                             INF_PATH_B64=$(printf '%s' "$SECRET_PATH" | base64 | tr -d '\n')
-                            SECRETS_BODY=$(mktemp)
-                            ssh nexus "bash -s" <<REMOTE_INF_SECRETS_EOF > "$SECRETS_BODY" 2>/dev/null || true
+                            SECRETS_RAW=$(ssh nexus "bash -s" <<REMOTE_INF_SECRETS_EOF 2>/dev/null) || SECRETS_RAW=""
 ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
 INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
@@ -3684,12 +3704,22 @@ CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
-curl -s --config "\$CFG" --get \\
+curl -s -w "\n%{http_code}" --config "\$CFG" --get \\
     --data-urlencode "workspaceId=\$PID" \\
     --data-urlencode "environment=\$INF_ENV" \\
     --data-urlencode "secretPath=\$SPATH" \\
     "http://localhost:8070/api/v3/secrets/raw"
 REMOTE_INF_SECRETS_EOF
+                            SECRETS_STATUS=$(printf '%s' "$SECRETS_RAW" | tail -n1)
+                            SECRETS_STATUS="${SECRETS_STATUS:-000}"
+                            SECRETS_BODY=$(mktemp)
+                            printf '%s' "$SECRETS_RAW" | sed '$d' > "$SECRETS_BODY"
+                            if [ "$SECRETS_STATUS" != "200" ]; then
+                                echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) returned HTTP $SECRETS_STATUS — secrets from this folder will be missing in Kestra${NC}"
+                                KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
+                                rm -f "$SECRETS_BODY"
+                                continue
+                            fi
 
                             # jq base64-encodes the secretValue so newlines
                             # / tabs / binary content (multi-line PEMs)
@@ -3731,26 +3761,55 @@ REMOTE_INF_SECRETS_EOF
                     rm -f "$KSEC_SEEN"
 
                     # 3. Append (or replace) the delimited block in
-                    #    Kestra's .env on the server.
+                    #    Kestra's .env on the server. Fail fast if either
+                    #    the .env file is missing or the sed-based block
+                    #    removal fails — silently continuing would let
+                    #    SECRET_* entries accumulate across re-runs (or
+                    #    write to a non-existent file), and the operator
+                    #    has no way to notice unless secrets eventually
+                    #    fail at flow execution time.
                     if [ -s "$KESTRA_SECRETS_TMP" ]; then
-                        # Replace any prior block. `sed -i '/start/,/end/d'`
-                        # handles the idempotent re-run case.
-                        ssh nexus "sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' /opt/docker-server/stacks/kestra/.env 2>/dev/null || true"
+                        if ! ssh nexus "
+                            set -e
+                            ENV_FILE=/opt/docker-server/stacks/kestra/.env
+                            if [ ! -f \"\$ENV_FILE\" ]; then
+                                echo \"ERROR: Kestra .env not found at \$ENV_FILE\" >&2
+                                exit 1
+                            fi
+                            sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' \"\$ENV_FILE\"
+                        "; then
+                            echo -e "${RED}Error: failed to clean previous nexus-secret-sync block from Kestra .env. Aborting deploy to avoid duplicating SECRET_* lines.${NC}"
+                            exit 1
+                        fi
 
-                        {
+                        if ! {
                             echo "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
                             cat "$KESTRA_SECRETS_TMP"
                             echo "# === END nexus-secret-sync ==="
-                        } | ssh nexus "cat >> /opt/docker-server/stacks/kestra/.env"
+                        } | ssh nexus "cat >> /opt/docker-server/stacks/kestra/.env"; then
+                            echo -e "${RED}Error: failed to append nexus-secret-sync block to Kestra .env.${NC}"
+                            exit 1
+                        fi
 
-                        echo -e "${GREEN}  ✓ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped $KSEC_SKIPPED invalid keys)${NC}"
+                        if [ "$KSEC_FETCH_FAILED" -gt 0 ]; then
+                            echo -e "${YELLOW}  ⚠ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped $KSEC_SKIPPED invalid keys, $KSEC_FETCH_FAILED Infisical fetches failed — secret set is incomplete)${NC}"
+                        else
+                            echo -e "${GREEN}  ✓ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped $KSEC_SKIPPED invalid keys)${NC}"
+                        fi
 
                         # 4. Force-recreate Kestra so the env vars get
                         #    loaded. `up -d --force-recreate <svc>` keeps
-                        #    other containers untouched.
+                        #    other containers untouched. Fail-fast: if
+                        #    the restart fails, the new SECRET_* values
+                        #    are sitting in .env but the live container
+                        #    is still running with the old set — flow-
+                        #    sync registration would proceed against a
+                        #    Kestra that can't resolve `{{ secret('GITEA_TOKEN') }}`.
                         echo "  Restarting Kestra to load secrets..."
-                        ssh nexus "cd $REMOTE_STACKS_DIR/kestra && docker compose up -d --force-recreate kestra" >/dev/null 2>&1 \
-                            || echo -e "${YELLOW}  ⚠ Kestra restart returned non-zero — secrets may not have been loaded${NC}"
+                        if ! ssh nexus "cd $REMOTE_STACKS_DIR/kestra && docker compose up -d --force-recreate kestra" >/dev/null 2>&1; then
+                            echo -e "${RED}Error: docker compose up -d --force-recreate kestra failed. Aborting deploy to avoid continuing with un-reloaded secrets.${NC}"
+                            exit 1
+                        fi
 
                         # 5. Re-wait for Kestra to come back up. Same
                         #    auth-aware loop as the initial wait
