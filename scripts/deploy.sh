@@ -3900,6 +3900,63 @@ triggers:
     type: io.kestra.core.models.triggers.types.Schedule
     cron: "*/15 * * * *"' || REGISTER_FAILED=\$((REGISTER_FAILED+1))
 
+# ----------------------------------------------------------------
+# Verify the seeded flow actually lands in Kestra.
+#
+# Without this, system.flow-sync only runs on its 15-min cron, so
+# the tutorials.r2-taxi-pipeline flow doesn't appear in Kestra until
+# the next tick — long after deploy.sh prints "Deployment Complete".
+# Operators reasonably expect the flow to be there immediately and
+# we've already burned cycles debugging "where's the flow?" twice
+# this PR. So: kick one manual execution of system.flow-sync, poll
+# its state up to 60 s, then GET the seeded flow's path. Each step
+# warns clearly if it didn't pan out instead of failing the deploy
+# (the operator can always Execute system.flow-sync manually from
+# the UI as a fallback).
+if [ "\$REGISTER_FAILED" -eq 0 ]; then
+    EXEC_RESP=\$(curl -s --config "\$KCFG" \\
+        -X POST 'http://localhost:8085/api/v1/executions/system/flow-sync' 2>/dev/null) || EXEC_RESP=""
+    EXEC_ID=\$(echo "\$EXEC_RESP" | jq -r '.id // empty' 2>/dev/null)
+
+    if [ -z "\$EXEC_ID" ]; then
+        echo "    ⚠ Could not trigger system.flow-sync execution — first sync will run on the next 15-min cron tick" >&2
+    else
+        # flow-sync = git clone of the workspace repo + a handful of
+        # API calls; usually ~5–10 s. Cap at 30 × 2 s = 60 s.
+        SYNC_STATE=""
+        for poll in \$(seq 1 30); do
+            SYNC_STATE=\$(curl -s --config "\$KCFG" \\
+                "http://localhost:8085/api/v1/executions/\$EXEC_ID" 2>/dev/null \\
+                | jq -r '.state.current // empty' 2>/dev/null)
+            case "\$SYNC_STATE" in
+                SUCCESS|FAILED|KILLED) break ;;
+            esac
+            sleep 2
+        done
+
+        case "\$SYNC_STATE" in
+            SUCCESS)
+                # The flow should now be in Kestra under namespace tutorials.
+                SEED_FLOW_STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \\
+                    --config "\$KCFG" \\
+                    'http://localhost:8085/api/v1/flows/tutorials/r2-taxi-pipeline' 2>/dev/null) || true
+                SEED_FLOW_STATUS="\${SEED_FLOW_STATUS:-000}"
+                if [ "\$SEED_FLOW_STATUS" = "200" ]; then
+                    echo "    ✓ Seeded flow tutorials.r2-taxi-pipeline registered in Kestra" >&2
+                else
+                    echo "    ⚠ system.flow-sync ran but tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that kestra/flows/tutorials/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
+                fi
+                ;;
+            FAILED|KILLED)
+                echo "    ⚠ system.flow-sync execution \$SYNC_STATE — open the execution in the Kestra UI for the error log" >&2
+                ;;
+            *)
+                echo "    ⚠ system.flow-sync did not complete within 60 s (state=\$SYNC_STATE) — first regular cron tick will retry within 15 min" >&2
+                ;;
+        esac
+    fi
+fi
+
 [ "\$REGISTER_FAILED" -eq 0 ] || exit 1
 exit 0
 REMOTE_REGISTER_EOF
