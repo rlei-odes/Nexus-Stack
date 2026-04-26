@@ -6,9 +6,9 @@ title: "SFTPGo"
 
 ![SFTPGo](https://img.shields.io/badge/SFTPGo-2D3748?logo=files&logoColor=white)
 
-**SFTP/SCP/WebDAV server with R2 backend — file-protocol front door onto the datalake**
+**SFTP/SCP server with R2 backend — file-protocol front door onto the datalake**
 
-SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-user virtual filesystems, and pluggable backends. Configured here with the R2 datalake bucket as its S3 backend, it lets external tools read and write the same lake the rest of the stack operates on, using only standard SFTP/WebDAV clients — no S3 SDK required. Common use cases:
+SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-user virtual filesystems, and pluggable backends. **In this Nexus-Stack config the default exposed surface is SFTP plus the web admin UI; WebDAV and FTPS are supported upstream but disabled by default in the shipped compose** (set `SFTPGO_WEBDAVD__BINDINGS__0__PORT` to a real port in `stacks/sftpgo/docker-compose.yml` to enable WebDAV). Configured with the R2 datalake bucket as its S3 backend, SFTPGo lets external tools read and write the same lake the rest of the stack operates on, using only standard SFTP clients — no S3 SDK required. Common use cases:
 
 - Partner-data dropoffs that arrive over plain SFTP
 - BI tools or legacy ETLs that can only push files via SFTP
@@ -21,7 +21,7 @@ SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-
 | SFTP Port | `2022` |
 | Suggested Subdomain | `sftpgo` |
 | Public Access | No (Cloudflare Access on the web UI; SFTP behind opt-in firewall rule) |
-| Authentication | Web admin: Basic Auth (auto-configured); SFTP user: password (auto-configured) |
+| Authentication | Web admin: SFTPGo username/password (auto-configured, gated by Cloudflare Access on top); SFTP user: password (auto-configured) |
 | Website | [sftpgo.com](https://sftpgo.com) |
 | Source | [GitHub](https://github.com/drakkan/sftpgo) |
 
@@ -29,7 +29,7 @@ SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-
 
 ### How to access
 
-**Web admin UI** (Cloudflare Access OTP on top of basic auth):
+**Web admin UI** (Cloudflare Access OTP on top of SFTPGo's own username/password login):
 ```
 https://sftpgo.<your-domain>
 ```

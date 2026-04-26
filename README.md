@@ -184,7 +184,7 @@ After deployment you'll have:
 | **RustFS** | Rust-based S3-compatible object storage (MinIO alternative) | [rustfs.com](https://rustfs.com) |
 | **S3 Manager** | Web-based S3 bucket browser and manager for Hetzner Object Storage | [GitHub](https://github.com/cloudlena/s3manager) |
 | **SeaweedFS** | Distributed object storage with Filer UI and S3 API | [seaweedfs.com](https://seaweedfs.com) |
-| **SFTPGo** | SFTP/SCP/WebDAV server with R2 backend (file-protocol front door onto the datalake) | [sftpgo.com](https://sftpgo.com) |
+| **SFTPGo** | SFTP/SCP server with R2 backend (file-protocol front door onto the datalake; WebDAV/FTPS supported upstream, disabled by default) | [sftpgo.com](https://sftpgo.com) |
 | **Sling** | Lightweight CLI for database-to-database and file-to-database transfers | [slingdata.io](https://slingdata.io) |
 | **Soda** | Data quality testing with SodaCL checks (CLI-only, no web UI) | [soda.io](https://www.soda.io) |
 | **Spark** | Distributed data processing engine (Master + Worker cluster) | [spark.apache.org](https://spark.apache.org) |

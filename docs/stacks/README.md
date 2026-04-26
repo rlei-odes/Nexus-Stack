@@ -169,7 +169,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | **RustFS** | Rust-based S3-compatible storage | [rustfs.md](rustfs.md) |
 | **S3 Manager** | S3 bucket browser | [s3manager.md](s3manager.md) |
 | **SeaweedFS** | Distributed object storage | [seaweedfs.md](seaweedfs.md) |
-| **SFTPGo** | SFTP/WebDAV server with R2 backend | [sftpgo.md](sftpgo.md) |
+| **SFTPGo** | SFTP server with R2 backend (WebDAV/FTPS supported upstream, disabled by default) | [sftpgo.md](sftpgo.md) |
 | **Sling** | Database-to-database transfers | [sling.md](sling.md) |
 | **Soda Core** | Data quality testing | [soda.md](soda.md) |
 | **Superset** | Data exploration & visualization | [superset.md](superset.md) |

@@ -670,8 +670,8 @@ services:
     public: false
     category: "storage"
     website: "https://sftpgo.com"
-    description: "SFTP/SCP/WebDAV server with R2 backend — file-protocol front door onto the datalake."
-    long_description: "SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI and per-user virtual filesystems. Configured here with the R2 datalake bucket as its S3 backend, it lets external tools (CDC pipelines, BI exports, partner-data dropoffs) read and write the same lake the rest of the stack operates on, using only standard SFTP/WebDAV clients — no S3 SDK required."
+    description: "SFTP/SCP server with R2 backend — file-protocol front door onto the datalake."
+    long_description: "SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI and per-user virtual filesystems. In this Nexus-Stack config the default exposed surface is SFTP plus the web admin UI; WebDAV and FTPS are supported upstream but disabled by default in the shipped compose (enable per binding in `stacks/sftpgo/docker-compose.yml`). Configured with the R2 datalake bucket as its S3 backend, it lets external tools (CDC pipelines, BI exports, partner-data dropoffs) read and write the same lake the rest of the stack operates on, using only standard SFTP clients — no S3 SDK required."
     image: "drakkan/sftpgo:v2.7.1"
     tcp_ports:
       sftp: 2022
