@@ -3775,6 +3775,16 @@ chmod 600 "\$KCFG"
 trap 'rm -f "\$KCFG"' EXIT
 printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
 
+# Kestra v1.0 has split create/update semantics:
+#   POST /api/v1/flows               → creates new; returns 422 with
+#                                       body "Flow id already exists"
+#                                       when the flow is already there.
+#   PUT  /api/v1/flows/{ns}/{id}     → updates existing; returns 404
+#                                       if the flow doesn't exist yet.
+# Neither verb alone is upsert. So: try POST first; on 422, fall back to PUT.
+# This is what makes the registration idempotent across re-runs AND lets
+# us push schema changes (e.g. adding `targetNamespace` to flow-sync)
+# without having to manually delete the old flow first.
 register_flow() {
     local FLOW_NAME="\$1"
     local FLOW_BODY="\$2"
@@ -3789,9 +3799,35 @@ register_flow() {
         --data-binary @- 2>/dev/null) || true
     STATUS="\${STATUS:-000}"
     case "\$STATUS" in
-        200|201) echo "    ✓ \$FLOW_NAME registered (HTTP \$STATUS)" >&2 ;;
-        409)     echo "    ✓ \$FLOW_NAME already exists (HTTP 409, idempotent)" >&2 ;;
-        *)       echo "    ⚠ \$FLOW_NAME registration failed (HTTP \$STATUS)" >&2; return 1 ;;
+        200|201)
+            echo "    ✓ \$FLOW_NAME registered (HTTP \$STATUS)" >&2
+            return 0
+            ;;
+        422)
+            # "Flow id already exists" is the idempotent re-run case.
+            # Update with PUT instead. FLOW_NAME format is "ns.id".
+            local NS="\${FLOW_NAME%.*}" ID="\${FLOW_NAME##*.}" PUT_STATUS
+            PUT_STATUS=\$(printf '%s' "\$FLOW_BODY" | curl -s -o /dev/null -w '%{http_code}' \\
+                -X PUT "http://localhost:8085/api/v1/flows/\$NS/\$ID" \\
+                --config "\$KCFG" \\
+                -H 'Content-Type: application/x-yaml' \\
+                --data-binary @- 2>/dev/null) || true
+            PUT_STATUS="\${PUT_STATUS:-000}"
+            case "\$PUT_STATUS" in
+                200|201)
+                    echo "    ✓ \$FLOW_NAME updated (POST 422 → PUT \$PUT_STATUS, idempotent re-run)" >&2
+                    return 0
+                    ;;
+                *)
+                    echo "    ⚠ \$FLOW_NAME update failed (POST 422 → PUT \$PUT_STATUS)" >&2
+                    return 1
+                    ;;
+            esac
+            ;;
+        *)
+            echo "    ⚠ \$FLOW_NAME registration failed (HTTP \$STATUS)" >&2
+            return 1
+            ;;
     esac
 }
 
