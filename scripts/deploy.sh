@@ -3347,8 +3347,8 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 # 1:1 to <path> in the workspace Gitea repo, so every spin-up
                 # gives users the same baseline starter material:
                 #
-                #   examples/workspace-seeds/kestra/flows/tutorials/x.yaml
-                #     → workspace-repo:kestra/flows/tutorials/x.yaml  (Kestra SyncFlows)
+                #   examples/workspace-seeds/kestra/flows/x.yaml
+                #     → workspace-repo:kestra/flows/x.yaml  (Kestra SyncFlows, namespace=tutorials)
                 #   examples/workspace-seeds/notebooks/foo.ipynb
                 #     → workspace-repo:notebooks/foo.ipynb            (Jupyter/Marimo)
                 #
@@ -3574,255 +3574,164 @@ CFG
                 done
 
                 if [ "$KESTRA_READY" = "true" ]; then
-                    # Store GITEA_TOKEN as a Kestra secret. Same argv-safe
-                    # pattern as the bulk Infisical sync below: KESTRA creds
-                    # and the token itself transit base64 over ssh stdin into
-                    # a `bash -s` heredoc, the creds land in a mode-600 curl
-                    # `--config` file, and the token body POSTs via stdin
-                    # (`--data-binary @-`). Nothing leaks into argv on
-                    # either side. HTTP status is captured: anything other
-                    # than 200/201/204 surfaces a warning, because the
-                    # `system.git-sync` and `system.flow-sync` flows
-                    # registered below reference `{{ secret('GITEA_TOKEN') }}`
-                    # — a silent failure here would only manifest as
-                    # cryptic per-flow runtime errors 15 min later.
-                    GTOKEN_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
-                    GTOKEN_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
-                    GTOKEN_VAL_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
-                    GTOKEN_STATUS=$(ssh nexus "bash -s" <<REMOTE_GTOKEN_EOF 2>/dev/null
-KESTRA_USER=\$(printf '%s' '$GTOKEN_USER_B64' | base64 -d)
-KESTRA_PW=\$(printf '%s' '$GTOKEN_PW_B64' | base64 -d)
-GITEA_TOKEN=\$(printf '%s' '$GTOKEN_VAL_B64' | base64 -d)
-KCFG=\$(mktemp)
-chmod 600 "\$KCFG"
-trap 'rm -f "\$KCFG"' EXIT
-printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
-printf '%s' "\$GITEA_TOKEN" | curl -s -o /dev/null -w '%{http_code}' \\
-    -X PUT 'http://localhost:8085/api/v1/secrets/system/GITEA_TOKEN' \\
-    --config "\$KCFG" \\
-    -H 'Content-Type: text/plain' \\
-    --data-binary @-
-REMOTE_GTOKEN_EOF
-) || true
-                    # See note above SEED_STATUS — same `|| echo "000"`
-                    # concatenation bug avoided here: substitute only when
-                    # the inner curl produced no output at all (ssh failure).
-                    GTOKEN_STATUS="${GTOKEN_STATUS:-000}"
-                    case "$GTOKEN_STATUS" in
-                        200|201|204) ;;  # success, no chatter
-                        *)  echo -e "${YELLOW}  ⚠ GITEA_TOKEN write to Kestra returned HTTP $GTOKEN_STATUS — git-sync / flow-sync will fail at runtime${NC}" ;;
-                    esac
-
                     # ----------------------------------------------------------
-                    # Push every Infisical secret into Kestra's secret store so
-                    # Kestra flows can read them via {{ secret('NAME') }}.
-                    # Discovers all folders + root path, no whitelist — new
-                    # user-added folders in Infisical surface in Kestra
-                    # without code changes. Uses the existing GITEA_TOKEN
-                    # PUT-pattern, so secrets land in Kestra's `system`
-                    # namespace alongside it. Idempotent on re-run.
+                    # Sync Infisical secrets + GITEA_TOKEN into Kestra as
+                    # SECRET_<NAME>=<base64> environment variables.
+                    #
+                    # Architecture note: Kestra OSS does NOT support runtime
+                    # secret writes via API. The `/api/v1/secrets/...` PUT
+                    # we tried in earlier rounds returns 404; the
+                    # `/api/v1/namespaces/<ns>/secrets` GET endpoint reports
+                    # `"readOnly": true`. The only supported secret-feed in
+                    # OSS is the `EnvVarSecretProvider`, which reads
+                    # `SECRET_<NAME>=<base64-value>` env vars at container
+                    # start. So we:
+                    #
+                    #   1. Build SECRET_* lines on the runner (jq is
+                    #      installed there; not on the Hetzner VM).
+                    #      Source = every Infisical folder + root path,
+                    #      so user-added secrets in Infisical's UI surface
+                    #      in Kestra without code changes.
+                    #   2. Add SECRET_GITEA_TOKEN as a special-case (the
+                    #      Gitea API token is generated post-Gitea-start
+                    #      in deploy.sh and is not in Infisical at the
+                    #      time of the build_folder() pushes earlier in
+                    #      this script).
+                    #   3. ssh-append a delimited block to
+                    #      /opt/docker-server/stacks/kestra/.env on the
+                    #      server. The delimiter (`# === BEGIN/END
+                    #      nexus-secret-sync ===`) lets re-runs replace
+                    #      the prior block cleanly instead of duplicating.
+                    #   4. `docker compose up -d --force-recreate kestra`
+                    #      — Kestra reads SECRET_* only at process start,
+                    #      a config-reload signal won't pick them up.
+                    #   5. Re-wait for Kestra ready (auth-aware loop).
+                    #
+                    # Cost: one Kestra cold-start (~2–4 min on warm VM).
+                    # Worth it: this is the ONLY mechanism that actually
+                    # makes `{{ secret('GITEA_TOKEN') }}` resolve in flows.
                     # ----------------------------------------------------------
+                    KESTRA_SECRETS_TMP=$(mktemp)
+                    KSEC_PUSHED=0
+                    KSEC_SKIPPED=0
+                    KSEC_SEEN=$(mktemp)   # track keys to skip cross-folder dupes
                     if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
-                        echo "  Pushing Infisical secrets to Kestra..."
-                        KESTRA_SYNC_ENV="${INFISICAL_ENV:-dev}"
+                        echo "  Building Kestra secret env from Infisical..."
+                        INFISICAL_ENV_KESTRA="${INFISICAL_ENV:-dev}"
 
-                        # Base64-encode runner-side values so the heredoc
-                        # substitution can never be broken by special
-                        # characters (single quotes, newlines) in any of
-                        # the values. The remote shell decodes them again.
-                        # `base64 | tr -d '\n'` is portable across GNU
-                        # (`base64 -w0`) and BSD/macOS (`base64` always
-                        # wraps) — script may be run locally for dev.
-                        SYNC_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
-                        SYNC_PROJECT_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
-                        SYNC_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
-                        SYNC_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
-                        SYNC_ENV_B64=$(printf '%s' "$KESTRA_SYNC_ENV" | base64 | tr -d '\n')
+                        # 1a. Discover folders. ssh+curl on the remote
+                        #     because Infisical only listens on localhost
+                        #     there; jq parse on the runner.
+                        FOLDERS_BODY=$(mktemp)
+                        ssh nexus "curl -s -H 'Authorization: Bearer $INFISICAL_TOKEN' 'http://localhost:8070/api/v1/folders?workspaceId=$PROJECT_ID&environment=$INFISICAL_ENV_KESTRA&path=/'" > "$FOLDERS_BODY" 2>/dev/null || true
+                        FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null || echo "")
+                        rm -f "$FOLDERS_BODY"
 
-                        # Folder discovery + per-folder secret fetch all run inside
-                        # a single remote bash invocation. Three reasons this is
-                        # one block:
-                        #   1) Infisical bearer token never enters argv (would be
-                        #      visible in `ps` on the server). It's decoded once
-                        #      from a base64 stdin payload, written into a curl
-                        #      --config file (mode 600, header = "Authorization:
-                        #      Bearer ..."), and reused for both the folder-list
-                        #      call and the per-folder secret-fetch calls.
-                        #   2) Kestra basic-auth password never enters argv either
-                        #      — same --config-file pattern, ~150 PUTs would
-                        #      otherwise repeatedly leak it via `ps`.
-                        #   3) ~150 PUTs share one ssh handshake instead of one
-                        #      ssh per secret.
-                        # Secret values transit jq base64-encoded so newlines /
-                        # tabs / binary content (multi-line PEMs) round-trip
-                        # losslessly through TSV. Keys are validated against
-                        # Kestra's naming rule; non-conforming names are skipped
-                        # to avoid broken URL paths.
-                        if ssh nexus "bash -s" <<REMOTE_SYNC_EOF
-set -o pipefail
-INFISICAL_TOKEN=\$(printf '%s' '$SYNC_TOKEN_B64' | base64 -d)
-PROJECT_ID=\$(printf '%s' '$SYNC_PROJECT_B64' | base64 -d)
-INFISICAL_ENV=\$(printf '%s' '$SYNC_ENV_B64' | base64 -d)
-KESTRA_USER=\$(printf '%s' '$SYNC_USER_B64' | base64 -d)
-KESTRA_PW=\$(printf '%s' '$SYNC_PW_B64' | base64 -d)
+                        # 1b. For each discovered folder + the root path,
+                        #     fetch all (key, value) pairs. jq base64-
+                        #     encodes the value so newlines / tabs / binary
+                        #     content (multi-line PEMs) survive the TSV
+                        #     transit.
+                        for FOLDER in $FOLDER_LIST __root__; do
+                            if [ "$FOLDER" = "__root__" ]; then
+                                SECRET_PATH="/"
+                            else
+                                SECRET_PATH="/$FOLDER"
+                            fi
+                            SECRETS_BODY=$(mktemp)
+                            ssh nexus "curl -s -H 'Authorization: Bearer $INFISICAL_TOKEN' 'http://localhost:8070/api/v3/secrets/raw?workspaceId=$PROJECT_ID&environment=$INFISICAL_ENV_KESTRA&secretPath=$SECRET_PATH'" > "$SECRETS_BODY" 2>/dev/null || true
 
-PUSHED=0
-FAILED=0
-SKIPPED=0
-FETCH_FAILED=0
-COLLISIONS=0
-# Track keys we've already pushed to detect cross-folder collisions.
-# Same secretKey in two Infisical folders would otherwise overwrite
-# silently in Kestra's flat /secrets/system/ namespace, last-folder-wins.
-SEEN_KEYS_FILE=\$(mktemp)
-
-# Two curl --config files: one with the Infisical bearer header, one with
-# the Kestra basic-auth user. Both written via cat-from-stdin (so the
-# secrets never appear in argv even within this remote shell), mode 600
-# from creation, removed via the EXIT trap.
-INFISICAL_CFG=\$(mktemp)
-KESTRA_CURL_CFG=\$(mktemp)
-chmod 600 "\$INFISICAL_CFG" "\$KESTRA_CURL_CFG"
-trap 'rm -f "\$SEEN_KEYS_FILE" "\$INFISICAL_CFG" "\$KESTRA_CURL_CFG"' EXIT
-
-# printf is a bash builtin (no fork-exec), so its arguments never appear
-# in any external process's argv — values are written into the cfg file
-# directly from in-shell. mode-600 was set above before any content lands.
-printf 'header = "Authorization: Bearer %s"\n' "\$INFISICAL_TOKEN" > "\$INFISICAL_CFG"
-printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KESTRA_CURL_CFG"
-
-# Discover folders. \`folders\` returns the children of \`path=/\`.
-# Newline-delimited so the iterator below survives folder names with
-# whitespace (Infisical allows them). Root-path secrets are fetched
-# explicitly via a single \`fetch_secrets_at "/" "<root>"\` call BEFORE
-# the folder loop runs (see below) — a dedicated invocation rather
-# than a loop-internal sentinel, so a real Infisical folder literally
-# named "root" iterates correctly as \`/root\` instead of being shadowed.
-FOLDERS_BODY=\$(mktemp)
-# curl -w '%{http_code}' already prints "000" on connection failure;
-# adding `|| echo "000"` would concatenate to "000000" on failure
-# because curl writes its 000 first, then echo runs and appends.
-# Capture without the fallback and substitute only on truly empty.
-FOLDERS_STATUS=\$(curl -s -o "\$FOLDERS_BODY" -w '%{http_code}' \\
-    --config "\$INFISICAL_CFG" \\
-    --get \\
-    --data-urlencode "workspaceId=\$PROJECT_ID" \\
-    --data-urlencode "environment=\$INFISICAL_ENV" \\
-    --data-urlencode "path=/" \\
-    "http://localhost:8070/api/v1/folders" \\
-    2>/dev/null) || true
-FOLDERS_STATUS="\${FOLDERS_STATUS:-000}"
-if [ "\$FOLDERS_STATUS" = "200" ]; then
-    FOLDER_LIST=\$(jq -r '.folders[]?.name' "\$FOLDERS_BODY" 2>/dev/null || echo "")
-else
-    FETCH_FAILED=\$((FETCH_FAILED+1))
-    echo "    ⚠ Infisical folder discovery returned HTTP \$FOLDERS_STATUS" >&2
-    FOLDER_LIST=""
-fi
-rm -f "\$FOLDERS_BODY"
-
-# fetch_secrets_at "<infisical-path>" "<display-label>"
-#   Fetches and PUT-syncs every secret at the given Infisical secretPath
-#   into Kestra's /secrets/system/ namespace. URL-encodes the path via
-#   --data-urlencode (folders may contain whitespace or other reserved
-#   characters; raw interpolation would produce malformed URLs and
-#   spurious FETCH_FAILED bumps).
-fetch_secrets_at() {
-    local SECRET_PATH="\$1"
-    local FOLDER_LABEL="\$2"
-    local HTTP_BODY HTTP_STATUS SECRETS_JSON KEY VALUE_B64 VALUE
-    HTTP_BODY=\$(mktemp)
-    HTTP_STATUS=\$(curl -s -o "\$HTTP_BODY" -w '%{http_code}' \\
-        --config "\$INFISICAL_CFG" \\
-        --get \\
-        --data-urlencode "workspaceId=\$PROJECT_ID" \\
-        --data-urlencode "environment=\$INFISICAL_ENV" \\
-        --data-urlencode "secretPath=\$SECRET_PATH" \\
-        "http://localhost:8070/api/v3/secrets/raw" \\
-        2>/dev/null) || true
-    HTTP_STATUS="\${HTTP_STATUS:-000}"
-
-    if [ "\$HTTP_STATUS" != "200" ]; then
-        FETCH_FAILED=\$((FETCH_FAILED+1))
-        echo "    ⚠ Infisical fetch \$SECRET_PATH returned HTTP \$HTTP_STATUS" >&2
-        rm -f "\$HTTP_BODY"
-        return
-    fi
-
-    SECRETS_JSON=\$(cat "\$HTTP_BODY")
-    rm -f "\$HTTP_BODY"
-
-    # Process substitution (\< \<(...)) keeps the loop in the parent shell
-    # so the counters increment visibly. jq base64-encodes secretValue so
-    # the TSV transport doesn't mangle newlines/tabs/binary content.
-    while IFS=\$'\t' read -r KEY VALUE_B64; do
-        [ -z "\$KEY" ] && continue
-        # Kestra (and Infisical) convention: [A-Za-z][A-Za-z0-9_]*. Anything
-        # else (slashes, dots, hyphens) would either break the URL path or
-        # fail Kestra's own validation. Skip and record.
-        if ! [[ "\$KEY" =~ ^[A-Za-z][A-Za-z0-9_]*\$ ]]; then
-            SKIPPED=\$((SKIPPED+1))
-            continue
-        fi
-        # Cross-folder collision: same secretKey already pushed from a
-        # different folder. Last-write wins (current behaviour preserved),
-        # but warn explicitly so the operator can rename one of them.
-        if grep -qx "\$KEY" "\$SEEN_KEYS_FILE" 2>/dev/null; then
-            COLLISIONS=\$((COLLISIONS+1))
-            echo "    ⚠ Key collision: '\$KEY' appears in multiple Infisical folders (last-write wins, current folder='\$FOLDER_LABEL')" >&2
-        else
-            echo "\$KEY" >> "\$SEEN_KEYS_FILE"
-        fi
-        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
-        if printf '%s' "\$VALUE" | curl -sf -o /dev/null -X PUT "http://localhost:8085/api/v1/secrets/system/\$KEY" \\
-            --config "\$KESTRA_CURL_CFG" \\
-            -H "Content-Type: text/plain" \\
-            --data-binary @-; then
-            PUSHED=\$((PUSHED+1))
-        else
-            FAILED=\$((FAILED+1))
-        fi
-    done < <(echo "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' 2>/dev/null)
-}
-
-# Root path first — explicit fetch outside the folder loop so a real
-# Infisical folder literally named "root" can't collide with the path-/
-# sentinel.
-fetch_secrets_at "/" "<root>"
-
-# Then every discovered folder. Newline-by-newline iteration via process
-# substitution keeps counters in the parent shell and survives folder
-# names with whitespace.
-while IFS= read -r FOLDER; do
-    [ -z "\$FOLDER" ] && continue
-    fetch_secrets_at "/\$FOLDER" "\$FOLDER"
-done < <(printf '%s\n' "\$FOLDER_LIST")
-
-# Summary to stderr so it appears in the workflow logs even with -o /dev/null.
-echo "  Pushed=\$PUSHED  Failed=\$FAILED  Skipped(invalid-key)=\$SKIPPED  FetchFailed=\$FETCH_FAILED  Collisions=\$COLLISIONS" >&2
-
-# Catastrophic-failure detection. Three independent ways the sync silently
-# does nothing useful:
-#   - PUSHED=0 with FAILED>0: PUTs to Kestra all fail (Kestra auth broken)
-#   - FETCH_FAILED>0: Infisical refused our token / project / path (rotated
-#     token, missing folder, network glitch). Even if some folders still
-#     succeeded, an unreachable folder means partial sync — flag it.
-#   - PUSHED=0 with FETCH_FAILED>0: nothing got through — definitive break
-# Any of these triggers a non-zero exit so the runner-side echo flips to
-# the warning branch.
-if { [ "\$PUSHED" -eq 0 ] && [ "\$FAILED" -gt 0 ]; } || \\
-   [ "\$FETCH_FAILED" -gt 0 ]; then
-    exit 1
-fi
-exit 0
-REMOTE_SYNC_EOF
-                        then
-                            echo -e "${GREEN}  ✓ Infisical → Kestra secret sync complete${NC}"
-                        else
-                            echo -e "${YELLOW}  ⚠ Infisical → Kestra sync had failures (check Kestra/Infisical auth)${NC}"
-                        fi
+                            while IFS=$'\t' read -r KEY VALUE_B64; do
+                                [ -z "$KEY" ] && continue
+                                # Kestra naming rule: ^[A-Za-z][A-Za-z0-9_]*$
+                                # Anything else (slashes, dots, hyphens) won't
+                                # produce a valid `SECRET_<NAME>` env var name.
+                                if ! [[ "$KEY" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]]; then
+                                    KSEC_SKIPPED=$((KSEC_SKIPPED+1))
+                                    continue
+                                fi
+                                # Cross-folder dedupe (last-folder-wins
+                                # would create non-deterministic env-var
+                                # values; first-folder-wins is at least
+                                # deterministic for repeat runs).
+                                if grep -qx "$KEY" "$KSEC_SEEN" 2>/dev/null; then
+                                    continue
+                                fi
+                                echo "$KEY" >> "$KSEC_SEEN"
+                                echo "SECRET_${KEY}=${VALUE_B64}" >> "$KESTRA_SECRETS_TMP"
+                                KSEC_PUSHED=$((KSEC_PUSHED+1))
+                            done < <(jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' "$SECRETS_BODY" 2>/dev/null)
+                            rm -f "$SECRETS_BODY"
+                        done
                     fi
 
+                    # 2. Special case: GITEA_TOKEN is generated by deploy.sh
+                    #    after Gitea boots (it's the on-the-fly admin token
+                    #    used to create the workspace repo). It is NOT in
+                    #    Infisical at the time of the `build_folder()`
+                    #    pushes earlier in this script, so we add it here
+                    #    so seeded flows can use `{{ secret('GITEA_TOKEN') }}`.
+                    if [ -n "$GITEA_TOKEN" ] && ! grep -qx "GITEA_TOKEN" "$KSEC_SEEN" 2>/dev/null; then
+                        echo "SECRET_GITEA_TOKEN=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')" >> "$KESTRA_SECRETS_TMP"
+                        KSEC_PUSHED=$((KSEC_PUSHED+1))
+                    fi
+                    rm -f "$KSEC_SEEN"
+
+                    # 3. Append (or replace) the delimited block in
+                    #    Kestra's .env on the server.
+                    if [ -s "$KESTRA_SECRETS_TMP" ]; then
+                        # Replace any prior block. `sed -i '/start/,/end/d'`
+                        # handles the idempotent re-run case.
+                        ssh nexus "sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' /opt/docker-server/stacks/kestra/.env 2>/dev/null || true"
+
+                        {
+                            echo "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
+                            cat "$KESTRA_SECRETS_TMP"
+                            echo "# === END nexus-secret-sync ==="
+                        } | ssh nexus "cat >> /opt/docker-server/stacks/kestra/.env"
+
+                        echo -e "${GREEN}  ✓ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped $KSEC_SKIPPED invalid keys)${NC}"
+
+                        # 4. Force-recreate Kestra so the env vars get
+                        #    loaded. `up -d --force-recreate <svc>` keeps
+                        #    other containers untouched.
+                        echo "  Restarting Kestra to load secrets..."
+                        ssh nexus "cd $REMOTE_STACKS_DIR/kestra && docker compose up -d --force-recreate kestra" >/dev/null 2>&1 \
+                            || echo -e "${YELLOW}  ⚠ Kestra restart returned non-zero — secrets may not have been loaded${NC}"
+
+                        # 5. Re-wait for Kestra to come back up. Same
+                        #    auth-aware loop as the initial wait
+                        #    (200/401/403 = "server is responding").
+                        echo "  Waiting for Kestra to come back up..."
+                        KESTRA_READY=false
+                        KESTRA_WAIT_START=$SECONDS
+                        for i in $(seq 1 60); do
+                            KSTATUS=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 http://localhost:8085/api/v1/flows" 2>/dev/null) || KSTATUS=""
+                            KSTATUS="${KSTATUS:-000}"
+                            case "$KSTATUS" in
+                                200|401|403) KESTRA_READY=true; break ;;
+                            esac
+                            if [ $((i % 10)) -eq 0 ]; then
+                                echo "    ... still waiting for Kestra restart ($((SECONDS - KESTRA_WAIT_START))s elapsed, last status $KSTATUS)"
+                            fi
+                            sleep 3
+                        done
+
+                        if [ "$KESTRA_READY" != "true" ]; then
+                            echo -e "${YELLOW}  ⚠ Kestra did not come back up after restart — Git sync flow registration will be skipped${NC}"
+                        fi
+                    else
+                        echo -e "${YELLOW}  ⚠ No Kestra SECRET_* lines built (Infisical empty or unreachable, GITEA_TOKEN missing) — flows that reference {{ secret('NAME') }} will fail${NC}"
+                    fi
+                    rm -f "$KESTRA_SECRETS_TMP"
+                fi  # close: KESTRA_READY initial check
+
+                # ----------------------------------------------------------
+                # Register Git-sync + flow-sync flows. Runs only if Kestra
+                # is reachable (initial wait passed and the post-restart
+                # wait either succeeded or wasn't needed).
+                # ----------------------------------------------------------
+                if [ "$KESTRA_READY" = "true" ]; then
                     # ----------------------------------------------------------
                     # Register both Git-sync flows in a single remote bash
                     # invocation:
@@ -3832,16 +3741,19 @@ REMOTE_SYNC_EOF
                     #     repo's `kestra/workflows/` directory into the
                     #     namespace's files area — these are NOT flow defs.
                     #
-                    #   - `flow-sync` (SyncFlows): pulls actual flow YAML
-                    #     definitions from `kestra/flows/` and registers
-                    #     them as Kestra flows. Target namespace is derived
-                    #     from the subdir layout
-                    #     (`kestra/flows/tutorials/x.yaml` → namespace
-                    #     `tutorials`). `delete: true` makes Git the single
-                    #     source of truth — UI-only flows get cleaned up on
-                    #     every sync. This is the persistence layer that
-                    #     survives destroy-all (Gitea repos live on the
-                    #     persistent Hetzner volume `/mnt/nexus-data/gitea/`).
+                    #   - `flow-sync` (SyncFlows): pulls flow YAML files from
+                    #     `kestra/flows/` and registers them under namespace
+                    #     `tutorials`. `targetNamespace: tutorials` is
+                    #     required by the v1.0 plugin (without it, POST /flows
+                    #     returns 422 "tasks[0].targetNamespace: must not be
+                    #     null"). With `includeChildNamespaces: true`, subdirs
+                    #     extend the namespace — e.g.
+                    #     `kestra/flows/sub1/foo.yaml` → `tutorials.sub1`.
+                    #     `delete: true` makes Git the single source of truth
+                    #     — UI-only flows get cleaned up on every sync. This
+                    #     is the persistence layer that survives destroy-all
+                    #     (Gitea repos live on the persistent Hetzner volume
+                    #     `/mnt/nexus-data/gitea/`).
                     #
                     # Kestra creds go through a curl --config file written
                     # via cat-from-stdin instead of `-u user:pw` which would
@@ -3911,6 +3823,8 @@ tasks:
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
     gitDirectory: kestra/flows
+    targetNamespace: tutorials
+    includeChildNamespaces: true
     delete: true
 triggers:
   - id: schedule
@@ -3961,7 +3875,7 @@ if [ "\$REGISTER_FAILED" -eq 0 ]; then
                 if [ "\$SEED_FLOW_STATUS" = "200" ]; then
                     echo "    ✓ Seeded flow tutorials.r2-taxi-pipeline registered in Kestra" >&2
                 else
-                    echo "    ⚠ system.flow-sync ran but tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that kestra/flows/tutorials/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
+                    echo "    ⚠ system.flow-sync ran but tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
                 fi
                 ;;
             FAILED|KILLED)

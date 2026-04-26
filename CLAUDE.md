@@ -569,7 +569,7 @@ networks:
 
 ### Code Examples (`examples/workspace-seeds/`)
 
-Sample code that ships with Nexus-Stack and gets auto-seeded into every user's Gitea workspace repo on spin-up. **`scripts/deploy.sh` walks `examples/workspace-seeds/` recursively and POSTs each file to the matching path in the workspace repo via Gitea's contents API**, so the on-disk layout under `workspace-seeds/` mirrors the workspace repo 1:1 (`workspace-seeds/kestra/flows/tutorials/x.yaml` → repo root `kestra/flows/tutorials/x.yaml`).
+Sample code that ships with Nexus-Stack and gets auto-seeded into every user's Gitea workspace repo on spin-up. **`scripts/deploy.sh` walks `examples/workspace-seeds/` recursively and POSTs each file to the matching path in the workspace repo via Gitea's contents API**, so the on-disk layout under `workspace-seeds/` mirrors the workspace repo 1:1 (`workspace-seeds/kestra/flows/x.yaml` → repo root `kestra/flows/x.yaml`, registered by `system.flow-sync` under namespace `tutorials`).
 
 When adding or editing seeded examples:
 

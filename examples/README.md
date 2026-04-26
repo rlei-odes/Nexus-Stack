@@ -19,15 +19,16 @@ nexus-stack/                                                  workspace Gitea re
 └── examples/                                                 nexus-<slug>-gitea/
     └── workspace-seeds/                                      ├── kestra/
         ├── kestra/                ─────── seed ───►          │   ├── flows/
-        │   ├── flows/                                        │   │   └── tutorials/
-        │   │   └── tutorials/                                │   │       └── r2-taxi-pipeline.yaml
-        │   │       └── r2-taxi-pipeline.yaml                 │   └── workflows/   (helper files)
+        │   ├── flows/                                        │   │   └── r2-taxi-pipeline.yaml
+        │   │   └── r2-taxi-pipeline.yaml                     │   └── workflows/   (helper files)
         │   └── workflows/                                    ├── notebooks/       (when added)
         ├── notebooks/                                        ├── scripts/         (when added)
         ├── scripts/                                          ├── dbt/             (when added)
         ├── dbt/                                              └── sql/             (when added)
         └── sql/
 ```
+
+`system.flow-sync` (registered by `deploy.sh`) syncs `kestra/flows/` into Kestra under target namespace `tutorials` with `includeChildNamespaces: true` — so `kestra/flows/r2-taxi-pipeline.yaml` lands at `tutorials.r2-taxi-pipeline`, and any future subdir like `kestra/flows/sub1/foo.yaml` extends to `tutorials.sub1.foo`.
 
 This means any file you drop under `workspace-seeds/<dir>/<name>` will appear in every user's workspace at the same `<dir>/<name>` after the next Initial Setup. No `deploy.sh` edit, no new code path.
 
@@ -42,7 +43,7 @@ Stick to these names so the various services pick the files up correctly:
 
 | Folder | Consumed by | What goes here |
 |---|---|---|
-| `kestra/flows/` | Kestra (via `system.flow-sync`, registered by `deploy.sh`) | Flow definitions in YAML. `kestra/flows/<namespace>/<id>.yaml` lands in Kestra namespace `<namespace>`. |
+| `kestra/flows/` | Kestra (via `system.flow-sync`, registered by `deploy.sh`) | Flow definitions in YAML. Files at `kestra/flows/<id>.yaml` register under namespace `tutorials`; subdirectories extend the namespace (`kestra/flows/sub1/<id>.yaml` → `tutorials.sub1`). |
 | `kestra/workflows/` | Kestra (via `system.git-sync`, registered by `deploy.sh`) | Helper files referenced by flows: Python scripts, SQL templates, configs. **Not** flow definitions. |
 | `notebooks/` | Jupyter, Marimo, code-server (cloned from the workspace repo) | `.ipynb` notebooks or `.py` scripts. |
 | `scripts/` | code-server, ad-hoc execution | Shell or Python helpers reused across notebooks. |
@@ -92,8 +93,8 @@ Use kebab-case file names that convey what the example does at a glance: `r2-tax
 
 ## Adding a new example
 
-1. Decide which subdirectory under `workspace-seeds/` it belongs in (table above). Stack-specific Kestra material → `kestra/flows/<namespace>/`. Multi-consumer material → top-level `notebooks/` / `scripts/` / etc.
-2. Add the file at the right relative path, e.g. `workspace-seeds/kestra/flows/tutorials/redpanda-produce-consume.yaml` or `workspace-seeds/notebooks/exploring-r2.ipynb`.
+1. Decide which subdirectory under `workspace-seeds/` it belongs in (table above). Stack-specific Kestra material → `kestra/flows/` (lands in namespace `tutorials`). Multi-consumer material → top-level `notebooks/` / `scripts/` / etc.
+2. Add the file at the right relative path, e.g. `workspace-seeds/kestra/flows/redpanda-produce-consume.yaml` (lands in Kestra namespace `tutorials`) or `workspace-seeds/notebooks/exploring-r2.ipynb`.
 3. Read the rules above.
 4. Open a PR. CI doesn't validate the seeds at build time — but `.github/copilot-instructions.md` carries the no-schedule-trigger rule, so Copilot will flag PRs that violate it.
 5. After merge, the next spin-up will land the file in every user's workspace repo. Existing users who already have files in the same path keep their version.
