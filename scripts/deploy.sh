@@ -619,19 +619,31 @@ EOF
     echo -e "${GREEN}  ✓ MinIO .env generated${NC}"
 fi
 
-# Generate SFTPGo .env from OpenTofu secrets
+# Generate SFTPGo .env from OpenTofu secrets.
 # Only the admin password is consumed by docker-compose env-substitution
 # (SFTPGo bootstraps the admin from SFTPGO_DEFAULT_ADMIN_*). The default
 # user `nexus-default` is created later via the SFTPGo REST API once the
 # container is up.
+#
+# Empty-password guard: if `SFTPGO_ADMIN_PASS` arrives empty (typical
+# cause: SFTPGo got enabled without running OpenTofu first, so the
+# `random_password.sftpgo_admin` resource isn't in state yet and
+# `jq -r '.sftpgo_admin_password // empty'` returned ""), writing the
+# .env anyway would bootstrap SFTPGo with a blank-password admin. Skip
+# the .env generation and surface a loud warning that points the
+# operator at the OpenTofu run that populates the secret.
 if echo "$ENABLED_SERVICES" | grep -qw "sftpgo"; then
-    echo "  Generating SFTPGo config from OpenTofu secrets..."
-    mkdir -p "$STACKS_DIR/sftpgo"
-    cat > "$STACKS_DIR/sftpgo/.env" << EOF
+    if [ -z "$SFTPGO_ADMIN_PASS" ] || [ -z "$SFTPGO_USER_PASS" ]; then
+        echo -e "${YELLOW}  ⚠ SFTPGo enabled but admin/user password missing from OpenTofu state — skipping SFTPGo .env (run \`gh workflow run spin-up.yml\` after \`tofu apply\` so random_password.sftpgo_admin / sftpgo_user are generated and surfaced in SECRETS_JSON)${NC}"
+    else
+        echo "  Generating SFTPGo config from OpenTofu secrets..."
+        mkdir -p "$STACKS_DIR/sftpgo"
+        cat > "$STACKS_DIR/sftpgo/.env" << EOF
 # Auto-generated from OpenTofu secrets - DO NOT COMMIT
 SFTPGO_ADMIN_PASSWORD=$SFTPGO_ADMIN_PASS
 EOF
-    echo -e "${GREEN}  ✓ SFTPGo .env generated${NC}"
+        echo -e "${GREEN}  ✓ SFTPGo .env generated${NC}"
+    fi
 fi
 
 # Generate RedPanda Console .env from OpenTofu secrets
