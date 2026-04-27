@@ -3378,13 +3378,16 @@ CFG
                 # URL-encode each path segment via jq @uri.
                 REPO_PATH_ENC=$(jq -rn --arg p "$REPO_PATH" '$p | split("/") | map(@uri) | join("/")')
                 CONTENT_B64=$(base64 < "$SEED_FILE" | tr -d '\n')
+                # No `branch:` field — Gitea defaults to the repo's
+                # default branch. Hardcoding `main` would 404 on forks
+                # whose upstream uses `master` (or any other default),
+                # which is a realistic case in GH_MIRROR_REPOS mode.
                 JSON_BODY=$(jq -n \
                     --arg content "$CONTENT_B64" \
                     --arg path "$REPO_PATH" \
                     '{
                         content: $content,
-                        message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/"),
-                        branch: "main"
+                        message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/")
                     }')
 
                 # Owner is $GITEA_REPO_OWNER, NOT $ADMIN_USERNAME — in
@@ -3872,7 +3875,7 @@ REMOTE_INF_SECRETS_EOF
                     #     returns 422 "tasks[0].targetNamespace: must not be
                     #     null"). With `includeChildNamespaces: true`, subdirs
                     #     extend the namespace — e.g.
-                    #     `kestra/flows/sub1/foo.yaml` → `tutorials.sub1`.
+                    #     `kestra/flows/sub1/foo.yaml` → `nexus-tutorials.sub1`.
                     #     `delete: true` makes Git the single source of truth
                     #     — UI-only flows get cleaned up on every sync. This
                     #     is the persistence layer that survives destroy-all
