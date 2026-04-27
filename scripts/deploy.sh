@@ -4544,11 +4544,31 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                     # or no token was supplied). Hardcoding `main` here
                     # broke `master`-default upstreams: merge-upstream
                     # 404s and the fork drifts.
-                    MERGE_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                        -X POST 'http://localhost:3200/api/v1/repos/$GITEA_USER_USERNAME/$SYNC_FORK_NAME/merge-upstream' \
-                        -H 'Authorization: token $GITEA_TOKEN' \
-                        -H 'Content-Type: application/json' \
-                        -d '{\"branch\":\"$WORKSPACE_BRANCH\"}'")
+                    #
+                    # Auth header + branch body go through a remote
+                    # `curl --config` file (mode 0600, removed via local
+                    # trap) so $GITEA_TOKEN never appears in argv on the
+                    # server (would otherwise be visible in `ps` while
+                    # curl runs). Same argv-safe pattern as the other
+                    # token-bearing calls in this script.
+                    MERGE_TOKEN_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+                    MERGE_BRANCH_B64=$(printf '%s' "$WORKSPACE_BRANCH" | base64 | tr -d '\n')
+                    MERGE_RESULT=$(ssh nexus "bash -s" <<REMOTE_MERGE_EOF 2>/dev/null
+TOK=\$(printf '%s' '$MERGE_TOKEN_B64' | base64 -d)
+BR=\$(printf '%s' '$MERGE_BRANCH_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+{
+    printf 'header = "Authorization: token %s"\n' "\$TOK"
+    printf 'header = "Content-Type: application/json"\n'
+} > "\$CFG"
+printf '{"branch":"%s"}' "\$BR" | curl -s -o /dev/null -w '%{http_code}' \\
+    -X POST 'http://localhost:3200/api/v1/repos/$GITEA_USER_USERNAME/$SYNC_FORK_NAME/merge-upstream' \\
+    --config "\$CFG" \\
+    --data-binary @-
+REMOTE_MERGE_EOF
+)
 
                     if [ "$MERGE_RESULT" = "200" ]; then
                         echo -e "${GREEN}  ✓ Fork synced from upstream (new commits merged)${NC}"
