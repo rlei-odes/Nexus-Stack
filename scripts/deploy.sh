@@ -2811,10 +2811,19 @@ REMOTE_SFTPGO_USER_EOF
             SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
             SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
 
+            # 201 = freshly created (initial-setup or post-destroy).
+            # 400/409 = SFTPGo's "user already exists" responses on a
+            #           re-run of spin-up against an already-running
+            #           container (named volume preserves the row across
+            #           in-place spin-ups; only destroy-all wipes it
+            #           because that destroys the docker volume too).
+            #           Treat as benign — re-deploys aren't supposed to
+            #           print a yellow warning for a healthy state.
             case "$SFTPGO_USER_STATUS" in
-                201) echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
-                *)   echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
-                     echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
+                201)     echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
+                400|409) echo "  ✓ SFTPGo default user 'nexus-default' already exists — left untouched" ;;
+                *)       echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
+                         echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
             esac
         fi
     fi
@@ -3877,6 +3886,14 @@ REMOTE_INF_SECRETS_EOF
                             SECRETS_STATUS=$(printf '%s' "$SECRETS_RAW" | tail -n1)
                             SECRETS_STATUS="${SECRETS_STATUS:-000}"
                             SECRETS_BODY=$(mktemp)
+                            # Plaintext Infisical secret values (after we
+                            # split off the trailing HTTP status line)
+                            # land in this tmp on the runner; register it
+                            # with RUNNER_CLEANUP_PATHS so an interrupted
+                            # run still wipes it. Both happy-path
+                            # `rm -f "$SECRETS_BODY"` calls below remain
+                            # as immediate cleanup.
+                            echo "$SECRETS_BODY" >> "$RUNNER_CLEANUP_PATHS"
                             printf '%s' "$SECRETS_RAW" | sed '$d' > "$SECRETS_BODY"
                             if [ "$SECRETS_STATUS" != "200" ]; then
                                 echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) returned HTTP $SECRETS_STATUS — secrets from this folder will be missing in Kestra${NC}"
