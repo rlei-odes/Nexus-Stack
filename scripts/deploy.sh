@@ -2651,13 +2651,34 @@ fi
 if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] && [ -n "$SFTPGO_USER_PASS" ]; then
     echo "  Configuring SFTPGo..."
 
+    # Two-stage readiness: first /healthz must answer 200 (process is up,
+    # HTTP server bound), THEN the /api/v2/token basic-auth login must
+    # succeed (admin creation via SFTPGO_DEFAULT_ADMIN_* env vars has
+    # actually written to SQLite — this lags /healthz by a few seconds
+    # on cold start). Without the second check, we hit /api/v2/token
+    # while admin-init is still in flight and get 401 → "admin login
+    # failed — default user not created", and the run looks green.
     SFTPGO_READY=false
-    for i in $(seq 1 30); do
+    SFTPGO_PROBE_B64=$(printf '%s' "$SFTPGO_ADMIN_PASS" | base64 | tr -d '\n')
+    for i in $(seq 1 60); do
         SFTPGO_HEALTH=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
         SFTPGO_HEALTH="${SFTPGO_HEALTH:-000}"
         if [ "$SFTPGO_HEALTH" = "200" ]; then
-            SFTPGO_READY=true
-            break
+            # Health passed; now actually try a login.
+            SFTPGO_AUTH_STATUS=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_PROBE_EOF 2>/dev/null
+PW=\$(printf '%s' '$SFTPGO_PROBE_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'user = "nexus-sftpgo:%s"\n' "\$PW" > "\$CFG"
+curl -s -o /dev/null -w '%{http_code}' --config "\$CFG" 'http://localhost:8090/api/v2/token'
+REMOTE_SFTPGO_PROBE_EOF
+) || SFTPGO_AUTH_STATUS=""
+            SFTPGO_AUTH_STATUS="${SFTPGO_AUTH_STATUS:-000}"
+            if [ "$SFTPGO_AUTH_STATUS" = "200" ]; then
+                SFTPGO_READY=true
+                break
+            fi
         fi
         sleep 2
     done
@@ -3954,20 +3975,43 @@ REMOTE_INF_SECRETS_EOF
                             exit 1
                         fi
 
-                        # 5. Re-wait for Kestra to come back up. Same
-                        #    auth-aware loop as the initial wait
-                        #    (200/401/403 = "server is responding").
+                        # 5. Re-wait for Kestra to come back up — and
+                        #    actually authenticate. The previous version
+                        #    accepted 401/403 as "responding", which is
+                        #    fine to know the HTTP server is up but does
+                        #    NOT guarantee the basic-auth layer has
+                        #    finished loading the password from the env-
+                        #    var secret store. Hitting POST /api/v1/flows
+                        #    while basic-auth is still initialising → 401
+                        #    → "Kestra Git sync flow registration had
+                        #    failures" even though the password is right.
+                        #
+                        #    Probe with the actual admin creds (basic auth
+                        #    via curl --config) and require 200 before we
+                        #    consider Kestra ready for registration.
                         echo "  Waiting for Kestra to come back up..."
                         KESTRA_READY=false
                         KESTRA_WAIT_START=$SECONDS
+                        KESTRA_PROBE_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                        KESTRA_PROBE_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
                         for i in $(seq 1 60); do
-                            KSTATUS=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 http://localhost:8085/api/v1/flows" 2>/dev/null) || KSTATUS=""
+                            KSTATUS=$(ssh nexus "bash -s" <<REMOTE_KESTRA_PROBE_EOF 2>/dev/null
+USER=\$(printf '%s' '$KESTRA_PROBE_USER_B64' | base64 -d)
+PW=\$(printf '%s' '$KESTRA_PROBE_PW_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'user = "%s:%s"\n' "\$USER" "\$PW" > "\$CFG"
+curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 --config "\$CFG" 'http://localhost:8085/api/v1/flows'
+REMOTE_KESTRA_PROBE_EOF
+) || KSTATUS=""
                             KSTATUS="${KSTATUS:-000}"
-                            case "$KSTATUS" in
-                                200|401|403) KESTRA_READY=true; break ;;
-                            esac
+                            if [ "$KSTATUS" = "200" ]; then
+                                KESTRA_READY=true
+                                break
+                            fi
                             if [ $((i % 10)) -eq 0 ]; then
-                                echo "    ... still waiting for Kestra restart ($((SECONDS - KESTRA_WAIT_START))s elapsed, last status $KSTATUS)"
+                                echo "    ... still waiting for Kestra restart + auth ($((SECONDS - KESTRA_WAIT_START))s elapsed, last status $KSTATUS)"
                             fi
                             sleep 3
                         done
