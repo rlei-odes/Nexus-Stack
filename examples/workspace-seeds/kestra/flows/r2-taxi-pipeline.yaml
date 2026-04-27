@@ -1,5 +1,5 @@
 id: r2-taxi-pipeline
-namespace: tutorials
+namespace: nexus-tutorials
 description: |
   Bootstrap + analyse the NYC Taxi 2025 dataset on R2.
 
@@ -66,7 +66,12 @@ tasks:
         secretKeyId: "{{ secret('R2_SECRET_KEY') }}"
         bucket: "{{ secret('R2_BUCKET') }}"
         key: "yellow_tripdata_2025-{{ taskrun.value }}.parquet"
-        from: "{{ outputs.download.uri }}"
+        # Inside a `ForEach`, sibling-task outputs are keyed by the
+        # iteration value. `outputs.download.uri` (no key) returns
+        # nothing in Kestra v1.0+ → "Unable to find `uri`" Pebble error.
+        # Indexing with `[taskrun.value]` selects this iteration's
+        # download output.
+        from: "{{ outputs.download[taskrun.value].uri }}"
 
   # ---------------------------------------------------------------------
   # 2. Aggregate stats over all 12 monthly files at once.

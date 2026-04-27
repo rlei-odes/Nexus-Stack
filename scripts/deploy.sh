@@ -3861,7 +3861,7 @@ REMOTE_INF_SECRETS_EOF
                     #
                     #   - `flow-sync` (SyncFlows): pulls flow YAML files from
                     #     `kestra/flows/` and registers them under namespace
-                    #     `tutorials`. `targetNamespace: tutorials` is
+                    #     `nexus-tutorials`. `targetNamespace: nexus-tutorials` is
                     #     required by the v1.0 plugin (without it, POST /flows
                     #     returns 422 "tasks[0].targetNamespace: must not be
                     #     null"). With `includeChildNamespaces: true`, subdirs
@@ -3981,7 +3981,7 @@ tasks:
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
     gitDirectory: kestra/flows
-    targetNamespace: tutorials
+    targetNamespace: nexus-tutorials
     includeChildNamespaces: true
     delete: true
 triggers:
@@ -3993,7 +3993,7 @@ triggers:
 # Verify the seeded flow actually lands in Kestra.
 #
 # Without this, system.flow-sync only runs on its 15-min cron, so
-# the tutorials.r2-taxi-pipeline flow doesn't appear in Kestra until
+# the nexus-tutorials.r2-taxi-pipeline flow doesn't appear in Kestra until
 # the next tick — long after deploy.sh prints "Deployment Complete".
 # Operators reasonably expect the flow to be there immediately and
 # we've already burned cycles debugging "where's the flow?" twice
@@ -4025,15 +4025,15 @@ if [ "\$REGISTER_FAILED" -eq 0 ]; then
 
         case "\$SYNC_STATE" in
             SUCCESS)
-                # The flow should now be in Kestra under namespace tutorials.
+                # The flow should now be in Kestra under namespace nexus-tutorials.
                 SEED_FLOW_STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \\
                     --config "\$KCFG" \\
-                    'http://localhost:8085/api/v1/flows/tutorials/r2-taxi-pipeline' 2>/dev/null) || true
+                    'http://localhost:8085/api/v1/flows/nexus-tutorials/r2-taxi-pipeline' 2>/dev/null) || true
                 SEED_FLOW_STATUS="\${SEED_FLOW_STATUS:-000}"
                 if [ "\$SEED_FLOW_STATUS" = "200" ]; then
-                    echo "    ✓ Seeded flow tutorials.r2-taxi-pipeline registered in Kestra" >&2
+                    echo "    ✓ Seeded flow nexus-tutorials.r2-taxi-pipeline registered in Kestra" >&2
                 else
-                    echo "    ⚠ system.flow-sync ran but tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
+                    echo "    ⚠ system.flow-sync ran but nexus-tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
                 fi
                 ;;
             FAILED|KILLED)
@@ -4310,7 +4310,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
             # 15-min cron tick would eventually pick up the seeded
             # content — but that's a poor onboarding signal. Trigger one
             # more execution now that the fork actually exists; the user
-            # then sees `tutorials.r2-taxi-pipeline` in Kestra within
+            # then sees `nexus-tutorials.r2-taxi-pipeline` in Kestra within
             # ~10 s of deploy completion.
             if [ -n "${KESTRA_PASS:-}" ] && [ -n "${ADMIN_EMAIL:-}" ]; then
                 echo "  Re-triggering system.flow-sync now that the fork is populated..."
@@ -4325,7 +4325,7 @@ trap 'rm -f "\$CFG"' EXIT
 printf 'user = "%s:%s"\n' "\$USER" "\$PW" > "\$CFG"
 curl -s -X POST 'http://localhost:8085/api/v1/executions/system/flow-sync' --config "\$CFG" >/dev/null
 REMOTE_TRIG_EOF
-                echo -e "${GREEN}  ✓ system.flow-sync triggered — tutorials.r2-taxi-pipeline appears in Kestra within ~10 s${NC}"
+                echo -e "${GREEN}  ✓ system.flow-sync triggered — nexus-tutorials.r2-taxi-pipeline appears in Kestra within ~10 s${NC}"
             fi
         fi
     fi
