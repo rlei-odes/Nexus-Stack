@@ -385,7 +385,14 @@ SSH_ERR=$(mktemp)
 # Any later block that mktemp's a file on `nexus` should append the
 # resulting path here, so cleanup is centralised in one trap.
 REMOTE_CLEANUP_PATHS=$(mktemp)
-trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"' EXIT
+# RUNNER_CLEANUP_PATHS — same idea as REMOTE_CLEANUP_PATHS but for
+# secret-bearing temp files on the *runner* itself. Any block that
+# mktemp's a runner-local file containing plaintext secrets (Infisical
+# raw responses, base64-decoded credentials, etc.) should append its
+# path here so the EXIT trap reliably wipes them even when the deploy
+# is interrupted, set -e exits early, or a CI runner gets cancelled.
+RUNNER_CLEANUP_PATHS=$(mktemp)
+trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"; if [ -s "$RUNNER_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && rm -f "$p"; done < "$RUNNER_CLEANUP_PATHS"; fi; rm -f "$RUNNER_CLEANUP_PATHS"' EXIT
 while [ $RETRY -lt $MAX_RETRIES ]; do
     if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$TIMEOUT -o BatchMode=yes nexus 'echo ok' 2>"$SSH_ERR"; then
         echo -e "${GREEN}  ✓ SSH connection established${NC}"
@@ -1359,10 +1366,17 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     WORKSPACE_BRANCH="main"
     if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "${GH_MIRROR_TOKEN:-}" ]; then
         FIRST_MIRROR_FOR_BRANCH=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
-        # Strip `https://github.com/` prefix and `.git` suffix to get `owner/repo`.
+        # Normalize to `owner/repo`:
+        #   - strip `https://github.com/` host prefix
+        #   - strip optional `?…` / `#…` URL parts
+        #   - strip a trailing `/`
+        #   - strip a trailing `.git`
+        # Then validate the result matches `owner/repo` (no inner slashes,
+        # both halves non-empty). Anything else falls back to `main` rather
+        # than building a malformed GitHub API URL.
         GH_OWNER_REPO=$(echo "$FIRST_MIRROR_FOR_BRANCH" \
-            | sed -E 's#^https?://github\.com/##; s#\.git$##')
-        if [ -n "$GH_OWNER_REPO" ]; then
+            | sed -E 's#^https?://github\.com/##; s#[?#].*$##; s#/$##; s#\.git$##')
+        if [ -n "$GH_OWNER_REPO" ] && [[ "$GH_OWNER_REPO" =~ ^[^/]+/[^/]+$ ]]; then
             # Token + URL go through a `curl --config` file (mode 0600)
             # so $GH_MIRROR_TOKEN never appears in argv (would otherwise
             # be visible in the runner's `ps` listing while curl runs).
@@ -3706,6 +3720,13 @@ CFG
                     # makes `{{ secret('GITEA_TOKEN') }}` resolve in flows.
                     # ----------------------------------------------------------
                     KESTRA_SECRETS_TMP=$(mktemp)
+                    # Register with the global RUNNER_CLEANUP_PATHS list
+                    # so the EXIT trap wipes it even when one of the
+                    # `exit 1` paths below fires (sed-cleanup failure,
+                    # Kestra restart timeout, etc.). Without this, a
+                    # mid-flight abort can leave plaintext base64-
+                    # encoded Infisical secrets on the runner FS.
+                    echo "$KESTRA_SECRETS_TMP" >> "$RUNNER_CLEANUP_PATHS"
                     KSEC_PUSHED=0
                     KSEC_SKIPPED=0
                     KSEC_FETCH_FAILED=0
@@ -3819,6 +3840,13 @@ REMOTE_INF_FOLDERS_EOF
                             # folder-discovery call above (avoids paren
                             # mismatch in `$(... <<EOF \$(...) EOF)`).
                             SECRETS_RAW_FILE=$(mktemp)
+                            # Plaintext Infisical secrets land in this
+                            # file on the runner; register it with the
+                            # global RUNNER_CLEANUP_PATHS list so an
+                            # interrupted run still wipes it. The
+                            # explicit `rm -f "$SECRETS_RAW_FILE"` below
+                            # remains the happy-path cleanup.
+                            echo "$SECRETS_RAW_FILE" >> "$RUNNER_CLEANUP_PATHS"
                             ssh nexus "bash -s" > "$SECRETS_RAW_FILE" 2>/dev/null <<REMOTE_INF_SECRETS_EOF || true
 ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
@@ -4519,16 +4547,26 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                 echo "  Re-triggering system.flow-sync now that the fork is populated..."
                 TRIG_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
                 TRIG_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
-                ssh nexus "bash -s" >/dev/null 2>&1 <<REMOTE_TRIG_EOF || true
+                # Use `curl -fsS` so a non-2xx response (e.g. Kestra
+                # unreachable, basic-auth failed) sets a non-zero exit
+                # status, propagated out of the heredoc, captured by
+                # the `if` guard. Previous `curl -s … || true` form
+                # silently masked failures and printed the green
+                # "triggered" line even when nothing was triggered.
+                if ssh nexus "bash -s" >/dev/null 2>&1 <<REMOTE_TRIG_EOF
 USER=\$(printf '%s' '$TRIG_USER_B64' | base64 -d)
 PW=\$(printf '%s' '$TRIG_PW_B64' | base64 -d)
 CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'user = "%s:%s"\n' "\$USER" "\$PW" > "\$CFG"
-curl -s -X POST 'http://localhost:8085/api/v1/executions/system/flow-sync' --config "\$CFG" >/dev/null
+curl -fsS -X POST 'http://localhost:8085/api/v1/executions/system/flow-sync' --config "\$CFG" >/dev/null
 REMOTE_TRIG_EOF
-                echo -e "${GREEN}  ✓ system.flow-sync triggered — nexus-tutorials.r2-taxi-pipeline appears in Kestra within ~10 s${NC}"
+                then
+                    echo -e "${GREEN}  ✓ system.flow-sync triggered — nexus-tutorials.r2-taxi-pipeline appears in Kestra within ~10 s${NC}"
+                else
+                    echo -e "${YELLOW}  ⚠ system.flow-sync re-trigger failed — the next 15-min cron tick will pick up the seeded flow${NC}"
+                fi
             fi
         fi
     fi
