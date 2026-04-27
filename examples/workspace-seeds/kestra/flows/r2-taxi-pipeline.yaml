@@ -4,10 +4,11 @@ description: |
   Bootstrap + analyse the NYC Taxi 2025 dataset on R2.
 
   This flow demonstrates a full Data-Engineering loop:
-    1. For each month 01-12: download the public Yellow-Taxi parquet
-       from NYC TLC's CloudFront and upload it into the R2 datalake
+    1. For each month in the `values:` list (default: 2 months,
+       Jan-Feb 2025): download the public Yellow-Taxi parquet from
+       NYC TLC's CloudFront and upload it into the R2 datalake
        bucket — so every user starts with the same shared data.
-    2. Query the full year via DuckDB through the S3-compatible R2
+    2. Query the months via DuckDB through the S3-compatible R2
        endpoint — no compute cluster, no Spark, no warehouse needed.
     3. Log aggregate stats from the result.
 
@@ -18,9 +19,15 @@ description: |
   spin-ups will leave your edits untouched (seeding only adds new
   files, it never overwrites).
 
-  Manual trigger only: the bootstrap pulls ~720 MB total. Don't put
-  this on a daily cron unless you want to burn through the source's
-  CloudFront budget.
+  Want the full year? Extend the `values:` list under `bootstrap`
+  to ["01" .. "12"]. The default keeps it light: ~120 MB download
+  + ~5 M rows queried, vs. ~720 MB / ~30 M rows for the full year.
+  Since this is a teaching artefact that runs on every student
+  stack on every "Execute", small defaults keep CloudFront egress
+  and run time low when a cohort hits the button at the same time.
+
+  Manual trigger only — no `triggers:` block, by Nexus-Stack
+  convention for seeded example flows.
 
 labels:
   owner: data-engineering
@@ -43,16 +50,17 @@ labels:
 
 tasks:
   # ---------------------------------------------------------------------
-  # 1. Bootstrap: download 12 monthly parquets from CloudFront,
-  #    upload each into R2 under the original filename.
+  # 1. Bootstrap: download N monthly parquets from CloudFront, upload
+  #    each into R2 under the original filename.
   #
+  #    Default: 2 months (Jan-Feb). Edit `values:` to add more.
   #    Sequential (concurrencyLimit: 1) on purpose — each parquet is
-  #    ~60 MB and Kestra's container has 4 GB RAM total. Parallel-12
-  #    would risk OOM. Worst-case wall time on a fresh run: ~3 minutes.
+  #    ~60 MB and Kestra's container has 4 GB RAM total. Parallel
+  #    downloads would risk OOM at higher month counts.
   # ---------------------------------------------------------------------
   - id: bootstrap
     type: io.kestra.plugin.core.flow.ForEach
-    values: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
+    values: ["01", "02"]
     concurrencyLimit: 1
     tasks:
       - id: download
@@ -74,10 +82,11 @@ tasks:
         from: "{{ outputs.download[taskrun.value].uri }}"
 
   # ---------------------------------------------------------------------
-  # 2. Aggregate stats over all 12 monthly files at once.
+  # 2. Aggregate stats over all bootstrapped monthly files at once.
   #    DuckDB + httpfs reads the Parquet files directly via S3, no
-  #    intermediate copy. Wildcard `yellow_tripdata_2025-*.parquet`
-  #    pulls all 12 in one query.
+  #    intermediate copy. The wildcard `yellow_tripdata_2025-*.parquet`
+  #    matches every month present in R2 — so this query
+  #    automatically widens when you extend `values:` above.
   # ---------------------------------------------------------------------
   - id: stats
     type: io.kestra.plugin.jdbc.duckdb.Query
@@ -108,7 +117,7 @@ tasks:
   - id: log_summary
     type: io.kestra.plugin.core.log.Log
     message: |
-      ─── NYC Taxi 2025 — Full-Year Quick-Stats ──────────────
+      ─── NYC Taxi 2025 — Quick-Stats ────────────────────────
         Trips:           {{ outputs.stats.row.total_trips }}
         Avg distance:    {{ outputs.stats.row.avg_distance_mi }} mi
         Avg fare:        $ {{ outputs.stats.row.avg_fare_usd }}
