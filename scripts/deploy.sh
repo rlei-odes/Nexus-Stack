@@ -1333,6 +1333,52 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         GITEA_REPO_OWNER="${ADMIN_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     fi
+
+    # Resolve the workspace repo's default branch.
+    #
+    # Three paths converge on this variable:
+    #   1. Kestra `system.git-sync` / `system.flow-sync` flow YAML
+    #      (`branch: ${WORKSPACE_BRANCH}`)
+    #   2. The post-fork merge-upstream POST (mirror mode only)
+    #   3. Anywhere else in this script that needs a Git ref for the
+    #      workspace repo
+    #
+    # Without this, all three hardcoded `main` and broke for users
+    # mirroring a GitHub repo whose default branch is `master` (or
+    # anything else): SyncFlows clones the wrong branch and silently
+    # syncs nothing; merge-upstream returns 404 and the fork drifts.
+    #
+    # Resolution rules:
+    #   - No mirror: deploy.sh creates the repo itself with `main` →
+    #     `main` is correct, no API call needed.
+    #   - Mirror: query GitHub's REST API for the upstream repo's
+    #     `default_branch`. The fork inherits this value when Gitea
+    #     mirrors + forks the repo. Fall back to `main` on any HTTP
+    #     or parse failure (don't make this a hard dependency — a
+    #     misconfigured GH_MIRROR_TOKEN should warn, not block).
+    WORKSPACE_BRANCH="main"
+    if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "${GH_MIRROR_TOKEN:-}" ]; then
+        FIRST_MIRROR_FOR_BRANCH=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
+        # Strip `https://github.com/` prefix and `.git` suffix to get `owner/repo`.
+        GH_OWNER_REPO=$(echo "$FIRST_MIRROR_FOR_BRANCH" \
+            | sed -E 's#^https?://github\.com/##; s#\.git$##')
+        if [ -n "$GH_OWNER_REPO" ]; then
+            DETECTED_BRANCH=$(curl -fsSL --max-time 10 \
+                -H "Authorization: Bearer $GH_MIRROR_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$GH_OWNER_REPO" 2>/dev/null \
+                | jq -r '.default_branch // empty' 2>/dev/null)
+            if [ -n "$DETECTED_BRANCH" ] && [ "$DETECTED_BRANCH" != "null" ]; then
+                WORKSPACE_BRANCH="$DETECTED_BRANCH"
+                if [ "$WORKSPACE_BRANCH" != "main" ]; then
+                    echo -e "${YELLOW}  ⚠ Upstream $GH_OWNER_REPO uses default branch '$WORKSPACE_BRANCH' (not 'main') — Kestra sync + fork merge-upstream will use this branch${NC}"
+                fi
+            else
+                echo -e "${YELLOW}  ⚠ Could not detect default branch for $GH_OWNER_REPO via GitHub API — defaulting to 'main' (set GH_MIRROR_TOKEN with repo:read scope if your upstream uses 'master' or another branch)${NC}"
+            fi
+        fi
+    fi
+
     # Require BOTH a valid single user email and a user password to use user
     # credentials for service Git integration. Either one missing → fall
     # back to admin. Gate on GITEA_USER_EMAIL (not USER_EMAIL) so a list
@@ -4024,7 +4070,7 @@ tasks:
   - id: sync
     type: io.kestra.plugin.git.SyncNamespaceFiles
     url: http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git
-    branch: main
+    branch: ${WORKSPACE_BRANCH}
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
     namespace: "{{ flow.namespace }}"
@@ -4041,7 +4087,7 @@ tasks:
   - id: sync
     type: io.kestra.plugin.git.SyncFlows
     url: http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git
-    branch: main
+    branch: ${WORKSPACE_BRANCH}
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
     gitDirectory: kestra/flows
@@ -4330,12 +4376,18 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                     # Wait briefly for mirror sync to complete
                     sleep 3
 
-                    # Merge upstream into fork (fast-forward)
+                    # Merge upstream into fork (fast-forward) on the
+                    # branch detected at script-start time (resolved into
+                    # $WORKSPACE_BRANCH from the GitHub API for the first
+                    # mirror URL — defaults to `main` if detection failed
+                    # or no token was supplied). Hardcoding `main` here
+                    # broke `master`-default upstreams: merge-upstream
+                    # 404s and the fork drifts.
                     MERGE_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                         -X POST 'http://localhost:3200/api/v1/repos/$GITEA_USER_USERNAME/$SYNC_FORK_NAME/merge-upstream' \
                         -H 'Authorization: token $GITEA_TOKEN' \
                         -H 'Content-Type: application/json' \
-                        -d '{\"branch\":\"main\"}'")
+                        -d '{\"branch\":\"$WORKSPACE_BRANCH\"}'")
 
                     if [ "$MERGE_RESULT" = "200" ]; then
                         echo -e "${GREEN}  ✓ Fork synced from upstream (new commits merged)${NC}"
