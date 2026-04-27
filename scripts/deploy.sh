@@ -3306,6 +3306,110 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                 -d '{\"name\":\"nexus-automation\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
         fi
 
+        # ---------------------------------------------------------------
+        # seed_workspace_files — POST every file under
+        # `examples/workspace-seeds/` into the workspace Gitea repo at
+        # the same relative path. POST returns 422 ("already exists")
+        # for files the user has already touched, which we count as
+        # SKIPPED so user edits persist across re-deploys.
+        #
+        # Called from BOTH branches of the workspace-repo-creation flow:
+        # the non-mirror branch seeds the default `nexus-<slug>-gitea`
+        # repo, the mirror branch seeds each user's fork after it has
+        # been created. The repo PATH owner comes from
+        # `$GITEA_REPO_OWNER` (set per-mode at the top of this script):
+        # admin in non-mirror / mirror-readonly mode, the user's Gitea
+        # username in mirror+user mode. The auth still goes through the
+        # admin token (`$GITEA_TOKEN`) — admin has API access to write
+        # to user forks too.
+        #
+        # Token transits via a curl `--config` file rather than `-H
+        # 'Authorization: token <TOK>'` per request: the latter would
+        # leak the token into the remote `ps` listing for every
+        # iteration of the loop.
+        # ---------------------------------------------------------------
+        seed_workspace_files() {
+            local SEED_DIR="$PROJECT_ROOT/examples/workspace-seeds"
+            if [ ! -d "$SEED_DIR" ] || [ -z "$GITEA_TOKEN" ] || [ -z "$REPO_NAME" ] || [ -z "$GITEA_REPO_OWNER" ]; then
+                return 0
+            fi
+
+            local SEED_COUNT=0 SEED_SKIPPED=0 SEED_FAILED=0
+            local GITEA_CURL_CFG=""
+            local SEED_CFG_READY=false
+
+            GITEA_CURL_CFG=$(ssh nexus 'mktemp' 2>/dev/null) || GITEA_CURL_CFG=""
+            if [ -n "$GITEA_CURL_CFG" ]; then
+                # Register the remote tmp path with the global EXIT trap.
+                echo "$GITEA_CURL_CFG" >> "$REMOTE_CLEANUP_PATHS"
+                if ssh nexus "umask 077 && cat > '$GITEA_CURL_CFG' && chmod 600 '$GITEA_CURL_CFG'" <<CFG 2>/dev/null
+header = "Authorization: token $GITEA_TOKEN"
+CFG
+                then
+                    SEED_CFG_READY=true
+                fi
+            fi
+
+            if [ "$SEED_CFG_READY" != "true" ]; then
+                echo -e "${YELLOW}  ⚠ Skipping workspace seed (ssh setup of remote curl config failed)${NC}"
+                return 0
+            fi
+
+            echo "  Seeding workspace files into ${GITEA_REPO_OWNER}/${REPO_NAME}..."
+            local SEED_FILE REPO_PATH REPO_PATH_ENC CONTENT_B64 JSON_BODY SEED_STATUS
+            while IFS= read -r -d '' SEED_FILE; do
+                REPO_PATH="${SEED_FILE#$SEED_DIR/}"
+                # Defense in depth — restrict to the safe filesystem
+                # subset (ASCII alphanumerics, dot, dash, underscore,
+                # slash). Closes any shell-injection vector if a future
+                # filename slips a quote / backtick / control char.
+                if ! [[ "$REPO_PATH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+                    echo -e "${YELLOW}    ⚠ Skipping seed with unsafe path: $REPO_PATH${NC}"
+                    SEED_FAILED=$((SEED_FAILED+1))
+                    continue
+                fi
+
+                # URL-encode each path segment via jq @uri.
+                REPO_PATH_ENC=$(jq -rn --arg p "$REPO_PATH" '$p | split("/") | map(@uri) | join("/")')
+                CONTENT_B64=$(base64 < "$SEED_FILE" | tr -d '\n')
+                JSON_BODY=$(jq -n \
+                    --arg content "$CONTENT_B64" \
+                    --arg path "$REPO_PATH" \
+                    '{
+                        content: $content,
+                        message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/"),
+                        branch: "main"
+                    }')
+
+                # Owner is $GITEA_REPO_OWNER, NOT $ADMIN_USERNAME — in
+                # mirror+user mode the workspace is the user's fork.
+                SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                    -X POST 'http://localhost:3200/api/v1/repos/$GITEA_REPO_OWNER/$REPO_NAME/contents/$REPO_PATH_ENC' \
+                    --config '$GITEA_CURL_CFG' \
+                    -H 'Content-Type: application/json' \
+                    --data-binary @-" 2>/dev/null) || true
+                SEED_STATUS="${SEED_STATUS:-000}"
+
+                case "$SEED_STATUS" in
+                    201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
+                    422)     SEED_SKIPPED=$((SEED_SKIPPED+1)) ;;
+                    *)       SEED_FAILED=$((SEED_FAILED+1)) ;;
+                esac
+            done < <(find "$SEED_DIR" -type f -print0 2>/dev/null)
+
+            ssh nexus "rm -f '$GITEA_CURL_CFG'" 2>/dev/null || true
+
+            if [ "$SEED_COUNT" -gt 0 ]; then
+                echo -e "${GREEN}  ✓ Seeded $SEED_COUNT workspace file(s) into Gitea${NC}"
+            fi
+            if [ "$SEED_SKIPPED" -gt 0 ]; then
+                echo -e "${YELLOW}    ($SEED_SKIPPED already existed in Gitea, left untouched)${NC}"
+            fi
+            if [ "$SEED_FAILED" -gt 0 ]; then
+                echo -e "${YELLOW}  ⚠ $SEED_FAILED workspace seed(s) failed (check Gitea logs)${NC}"
+            fi
+        }
+
         if [ -n "$GITEA_TOKEN" ]; then
             GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
 
@@ -3350,168 +3454,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                     echo -e "${GREEN}  ✓ User '$GITEA_USER_USERNAME' added as collaborator${NC}"
                 fi
 
-                # --- Seed example workspace files from examples/workspace-seeds/ ---
-                # NOTE: this block intentionally lives only in the
-                # non-mirror branch (i.e. nested under
-                # `if [ -z "${GH_MIRROR_REPOS:-}" ]`). When `GH_MIRROR_REPOS`
-                # is set, the workspace repo is a *fork of an existing
-                # GitHub repo* whose contents are user-supplied — seeding
-                # Nexus-Stack's stock examples on top would clash with
-                # whatever the user is already mirroring (filename
-                # collisions silently hit the 422 "already exists" path,
-                # but conceptually the user has signalled they're bringing
-                # their own workspace content). If we ever want to seed
-                # in mirror mode too, do it after the fork exists and only
-                # for paths the user's repo doesn't already populate.
-                #
-                # Every file under examples/workspace-seeds/<path> is committed
-                # 1:1 to <path> in the workspace Gitea repo, so every spin-up
-                # gives users the same baseline starter material:
-                #
-                #   examples/workspace-seeds/kestra/flows/x.yaml
-                #     → workspace-repo:kestra/flows/x.yaml  (Kestra SyncFlows, namespace=tutorials)
-                #   examples/workspace-seeds/notebooks/foo.ipynb
-                #     → workspace-repo:notebooks/foo.ipynb            (Jupyter/Marimo)
-                #
-                # Existing files in Gitea are NOT overwritten (POST returns 422
-                # for already-existing files) — user edits persist across
-                # re-deploys. New seed files added in a later Nexus-Stack
-                # release land automatically on the next spin-up.
-                #
-                # Convention rules (see examples/README.md): seeded flows must
-                # not declare schedule triggers. Each one is a teaching artifact
-                # to be triggered manually, not background-cron'd on N stacks.
-                SEED_DIR="$PROJECT_ROOT/examples/workspace-seeds"
-                if [ -d "$SEED_DIR" ] && [ -n "$GITEA_TOKEN" ]; then
-                    SEED_COUNT=0
-                    SEED_SKIPPED=0
-                    SEED_FAILED=0
-
-                    # Write the Gitea Authorization header into a curl
-                    # --config file on the server, instead of passing
-                    # `-H 'Authorization: token <TOKEN>'` on the command
-                    # line per request. Per-iteration -H would expose the
-                    # token in `ps` for every seeded file. Mode-600 +
-                    # explicit cleanup keeps the file unreadable by other
-                    # users for its short lifetime.
-                    # Both ssh setup steps are guarded with `|| true` and a
-                    # success check before the loop runs. The script-wide
-                    # `set -euo pipefail` would otherwise abort the entire
-                    # deploy on a transient ssh blip, even though the seed
-                    # loop is best-effort by design (per-file SEED_FAILED
-                    # counter + warning, no fail-fast). Skip the loop with
-                    # a single visible warning if either step fails.
-                    GITEA_CURL_CFG=$(ssh nexus 'mktemp' 2>/dev/null) || GITEA_CURL_CFG=""
-                    SEED_CFG_READY=false
-                    if [ -n "$GITEA_CURL_CFG" ]; then
-                        # Register the remote tmp path with the global EXIT
-                        # trap so an aborted seed loop (Ctrl-C, workflow
-                        # timeout, ssh failure mid-iteration) still removes
-                        # the remote cred file instead of leaving it behind
-                        # on the server until the next reboot.
-                        echo "$GITEA_CURL_CFG" >> "$REMOTE_CLEANUP_PATHS"
-                        if ssh nexus "umask 077 && cat > '$GITEA_CURL_CFG' && chmod 600 '$GITEA_CURL_CFG'" <<CFG 2>/dev/null
-header = "Authorization: token $GITEA_TOKEN"
-CFG
-                        then
-                            SEED_CFG_READY=true
-                        fi
-                    fi
-
-                    if [ "$SEED_CFG_READY" != "true" ]; then
-                        echo -e "${YELLOW}  ⚠ Skipping workspace seed (ssh setup of remote curl config failed)${NC}"
-                    else
-                    while IFS= read -r -d '' SEED_FILE; do
-                        # 1:1 mapping: relative path inside workspace-seeds/
-                        # is the same as the path in the workspace repo.
-                        REPO_PATH="${SEED_FILE#$SEED_DIR/}"
-
-                        # Defense in depth — the seed tree is under our
-                        # control in the repo, but the path is interpolated
-                        # into a remote shell command (the ssh argument
-                        # below) AND into a URL. A `'` would break shell
-                        # quoting; a space, `;`, backtick or non-ASCII byte
-                        # could either inject shell metacharacters or
-                        # produce an invalid URL. Restrict to the safe
-                        # filesystem subset used by everything we ship:
-                        # ASCII alphanumerics, dot, dash, underscore, slash.
-                        if ! [[ "$REPO_PATH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-                            echo -e "${YELLOW}    ⚠ Skipping seed with unsafe path: $REPO_PATH${NC}"
-                            SEED_FAILED=$((SEED_FAILED+1))
-                            continue
-                        fi
-
-                        # URL-encode each path segment (Gitea's contents
-                        # API expects the raw path component, not the
-                        # query-string-style encoding, so we encode each
-                        # segment and re-join with `/`). After the regex
-                        # check above this is mostly belt-and-braces —
-                        # but the regex allows e.g. `.` which is fine in
-                        # URLs, and any future loosening of the regex
-                        # stays safe by going through this encoder.
-                        REPO_PATH_ENC=$(jq -rn --arg p "$REPO_PATH" \
-                            '$p | split("/") | map(@uri) | join("/")')
-
-                        # `base64 | tr -d '\n'` instead of `base64 -w0` so the
-                        # script also runs locally on macOS (BSD `base64`
-                        # doesn't support `-w`). Single line is required by
-                        # Gitea's contents API.
-                        CONTENT_B64=$(base64 < "$SEED_FILE" | tr -d '\n')
-
-                        # Build the request body via jq (handles all JSON
-                        # escaping correctly for any byte pattern in the
-                        # content). Pipe over ssh stdin to the remote curl
-                        # — putting the full base64 inline as a `-d` arg
-                        # risks ARG_MAX overflow for large files like
-                        # .ipynb notebooks (often >100 KB → ~140 KB base64).
-                        JSON_BODY=$(jq -n \
-                            --arg content "$CONTENT_B64" \
-                            --arg path "$REPO_PATH" \
-                            '{
-                                content: $content,
-                                message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/"),
-                                branch: "main"
-                            }')
-
-                        # Capture HTTP status without `|| echo "000"` fallback —
-                        # curl's `%{http_code}` already prints `000` when no
-                        # HTTP response is received. Combining both produced
-                        # `"000\n000"` on connection failures (curl exit !=0
-                        # → echo appended), garbling the warning text. If
-                        # ssh itself fails completely, $() captures empty
-                        # and we substitute "000" via `:-`.
-                        SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                            -X POST 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/contents/$REPO_PATH_ENC' \
-                            --config '$GITEA_CURL_CFG' \
-                            -H 'Content-Type: application/json' \
-                            --data-binary @-" 2>/dev/null) || true
-                        SEED_STATUS="${SEED_STATUS:-000}"
-
-                        case "$SEED_STATUS" in
-                            201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
-                            422)     SEED_SKIPPED=$((SEED_SKIPPED+1)) ;;  # already exists, leave alone
-                            *)       SEED_FAILED=$((SEED_FAILED+1)) ;;
-                        esac
-                    done < <(find "$SEED_DIR" -type f -print0 2>/dev/null)
-
-                    # Cleanup: remove the cred file. `shred` isn't guaranteed
-                    # available on every Hetzner image, and `rm -f` is
-                    # sufficient here — the file lived on the server's
-                    # local disk under a `mktemp` path with mode 600 for
-                    # the duration of the seed loop only.
-                    ssh nexus "rm -f '$GITEA_CURL_CFG'" 2>/dev/null || true
-
-                    if [ "$SEED_COUNT" -gt 0 ]; then
-                        echo -e "${GREEN}  ✓ Seeded $SEED_COUNT workspace file(s) into Gitea${NC}"
-                    fi
-                    if [ "$SEED_SKIPPED" -gt 0 ]; then
-                        echo -e "${YELLOW}    ($SEED_SKIPPED already existed in Gitea, left untouched)${NC}"
-                    fi
-                    if [ "$SEED_FAILED" -gt 0 ]; then
-                        echo -e "${YELLOW}  ⚠ $SEED_FAILED workspace seed(s) failed (check Gitea logs)${NC}"
-                    fi
-                    fi  # end SEED_CFG_READY guard
-                fi
+                # Seed example workspace files via shared function (also
+                # called from the GH_MIRROR_REPOS branch later in this script
+                # so mirror users get the same starter material). See the
+                # function definition for the full mapping rationale.
+                seed_workspace_files
             fi
 
             # --- Restart services that have Git integration (to pick up .env vars) ---
@@ -4012,7 +3959,7 @@ namespace: system
 tasks:
   - id: sync
     type: io.kestra.plugin.git.SyncNamespaceFiles
-    url: http://gitea:3000/${ADMIN_USERNAME}/${REPO_NAME}.git
+    url: http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git
     branch: main
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
@@ -4029,7 +3976,7 @@ description: Pull flow definitions from internal Gitea, register them in Kestra.
 tasks:
   - id: sync
     type: io.kestra.plugin.git.SyncFlows
-    url: http://gitea:3000/${ADMIN_USERNAME}/${REPO_NAME}.git
+    url: http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git
     branch: main
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
@@ -4336,6 +4283,15 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
                 fi
             fi
         done
+
+        # Seed Nexus-Stack example workspace files into the now-existing
+        # fork (`$GITEA_REPO_OWNER/$REPO_NAME` per line 1300+). Same
+        # function as the non-mirror branch — POST is create-only, so
+        # files the fork already inherited from the upstream mirror get
+        # 422-skipped harmlessly. Without this call the fork would have
+        # no `kestra/flows/r2-taxi-pipeline.yaml`, and `system.flow-sync`
+        # would 404 when trying to clone+sync from the fork URL.
+        seed_workspace_files
     fi
 
     # Restart git-integrated services so they pick up the latest fork content.
