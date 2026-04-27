@@ -4032,7 +4032,7 @@ printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
 #                                       if the flow doesn't exist yet.
 # Neither verb alone is upsert. So: try POST first; on 422, fall back to PUT.
 # This is what makes the registration idempotent across re-runs AND lets
-# us push schema changes (e.g. adding `targetNamespace` to flow-sync)
+# us push schema changes (e.g. adding \`targetNamespace\` to flow-sync)
 # without having to manually delete the old flow first.
 register_flow() {
     local FLOW_NAME="\$1"
