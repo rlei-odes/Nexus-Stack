@@ -2804,7 +2804,13 @@ PASSWORD="\$SFTP_USER_PASS" BUCKET="\$R2_BUCKET" ENDPOINT="\$R2_ENDPOINT" ACCESS
             region: "auto",
             access_key: env.ACCESS_KEY,
             access_secret: { payload: env.SECRET_KEY, status: "Plain" },
-            key_prefix: "sftp/nexus-default/",
+            # Empty key_prefix → user "/" mounts onto the bucket
+            # root, so files written by Kestra / Spark / etc. at the
+            # bucket root are visible to the SFTP user. Multi-tenant
+            # setups (multiple SFTP users sharing one bucket) should
+            # add per-user prefixes when creating additional users —
+            # see "Adding more SFTP users" in docs/stacks/sftpgo.md.
+            key_prefix: "",
             force_path_style: true
         }
     }

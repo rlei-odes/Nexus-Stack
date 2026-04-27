@@ -57,19 +57,19 @@ Password from Infisical (folder `sftpgo`, key `SFTPGO_USER_PASSWORD`).
 
 ### R2 backend
 
-The default user `nexus-default` has its virtual filesystem mapped to the R2 datalake bucket with key prefix `sftp/nexus-default/`. So:
+The default user `nexus-default` has its virtual filesystem mapped to the **root** of the R2 datalake bucket (empty `key_prefix`) — that way the SFTP user can read files written by Kestra flows, Spark jobs, or anything else that lands data at the bucket root. So:
 
 ```
 sftp> put report.csv
 ```
-…lands in R2 at `s3://<your-bucket>/sftp/nexus-default/report.csv`. You can read it back with any tool that talks S3:
+…lands in R2 at `s3://<your-bucket>/report.csv`. You can read it back with any tool that talks S3:
 
 - The DuckDB query in the seeded `r2-taxi-pipeline` Kestra flow
 - `aws s3 cp` (with R2 endpoint override)
-- The s3manager UI at `https://s3manager.<your-domain>`
+- Other S3-compatible browsers (the `s3manager` stack at `https://s3manager.<your-domain>` ships pointed at Hetzner Object Storage by default — re-target it at R2 by overriding `S3_ENDPOINT` / `ACCESS_KEY_ID` / `SECRET_ACCESS_KEY` in `stacks/s3manager/.env` if you want a separate UI for R2)
 
-The reverse direction works too: a file written via S3 to the same key prefix shows up under SFTP as soon as the next `ls` runs.
+The reverse direction works too: a file written via S3 directly into the bucket shows up under SFTP as soon as the next `ls` runs.
 
-### Adding more SFTP users
+### Adding more SFTP users (multi-tenant setups)
 
-In the web admin UI: **Users → Add**. Pick `Cloud filesystem (S3)` for the filesystem provider and reuse the same R2 endpoint + access key from Infisical. Use a distinct `key_prefix` (e.g. `sftp/<username>/`) so each user gets an isolated home directory under the same bucket.
+The default user has full bucket access intentionally — single-user deploys (the common case) get the natural "I see everything I uploaded" UX without touching the admin UI. For multi-tenant setups where multiple SFTP users should share one R2 bucket without seeing each other's files, create the additional users in the web admin UI: **Users → Add** → pick `Cloud filesystem (S3)` for the filesystem provider, reuse the R2 endpoint + access key from Infisical, and set a distinct `key_prefix` (e.g. `sftp/<username>/`) so each new user gets an isolated home directory under the same bucket. The bootstrapped `nexus-default` user can keep its empty prefix or be edited the same way.
