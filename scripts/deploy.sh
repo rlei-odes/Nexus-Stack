@@ -430,7 +430,13 @@ if [ $RETRY -eq $MAX_RETRIES ]; then
     echo -e "${YELLOW}  Last SSH error:${NC}"
     cat "$SSH_ERR" 2>/dev/null || echo "    (no error output captured)"
     rm -f "$SSH_ERR"
-    trap - EXIT
+    # Don't `trap - EXIT` here. The global EXIT trap handles cleanup
+    # of both $REMOTE_CLEANUP_PATHS and $RUNNER_CLEANUP_PATHS list
+    # files (the latter holds runner-side mktemp paths to plaintext
+    # secrets — registered by later blocks). Disabling the trap on
+    # this early exit would skip those rm-f's. The trap is no-op-safe
+    # for files already removed (`rm -f`) and for empty list files
+    # (the `while read` loop simply matches no lines).
     exit 1
 fi
 
