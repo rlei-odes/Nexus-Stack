@@ -1,0 +1,24 @@
+# Placeholder so the `kestra/workflows/` directory exists in every
+# user's workspace Gitea repo from the first deploy.
+#
+# Why this file is here:
+# `system.git-sync` (the Kestra flow registered by deploy.sh) pulls
+# helper files from this directory every 15 minutes via the
+# SyncNamespaceFiles plugin. The plugin throws
+# `IllegalArgumentException: The directory 'kestra/workflows' was
+# not found in the git repository` and the run lands in FAILED
+# state when the directory is missing — flooding the Kestra
+# execution list with red dots even on a perfectly healthy stack.
+#
+# This .gitkeep gets seeded by `scripts/deploy.sh` like any other
+# file under `examples/workspace-seeds/`, materialising
+# `kestra/workflows/.gitkeep` in the fork. SyncNamespaceFiles
+# then sees an empty (but existent) directory and runs to SUCCESS.
+#
+# What goes in this directory:
+# Helper files that flows reference at runtime — Python scripts,
+# SQL templates, configs, JSON fixtures. NOT flow definitions
+# (those go in `kestra/flows/` and are pulled by `system.flow-sync`).
+# Once you add a real file here, this .gitkeep can be deleted, but
+# leaving it is fine — the Kestra plugin ignores dotfiles when
+# materialising files into the namespace's file area.
