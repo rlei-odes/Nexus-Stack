@@ -55,28 +55,43 @@ Password from Infisical (folder `sftpgo`, key `SFTPGO_USER_PASSWORD`).
 > sftp -P 2022 nexus-default@<your-server-ip>
 > ```
 
-### R2 backend
+### Auto-configured layout: one user, multiple backends
 
-The default user `nexus-default` has its virtual filesystem mapped to the **root** of the R2 datalake bucket (empty `key_prefix`) — that way the SFTP user can read files written by Kestra flows, Spark jobs, or anything else that lands data at the bucket root. So:
+The single bootstrapped user `nexus-default` lands you in a layout with one **virtual folder per cloud backend** as a subdirectory of the user's home:
 
 ```
-sftp> put report.csv
+/                          ← local FS scratch space inside the container
+                             (ephemeral by design — see "Local state" callout above)
+/cloudflare_r2/            → s3://<R2_BUCKET>/   (Cloudflare R2 datalake)
+/hetzner_s3/               → s3://<HETZNER_S3_BUCKET_GENERAL>/  (Hetzner Object
+                             Storage — only mounted when HETZNER_S3_* secrets
+                             are present in the deployment)
 ```
-…lands in R2 at `s3://<your-bucket>/report.csv`. You can read it back with any tool that talks S3:
 
-- The DuckDB query in the seeded `r2-taxi-pipeline` Kestra flow
-- `aws s3 cp` (with R2 endpoint override)
-- Other S3-compatible browsers (the `s3manager` stack at `https://s3manager.<your-domain>` ships pointed at Hetzner Object Storage by default — re-target it at R2 by overriding `S3_ENDPOINT` / `ACCESS_KEY_ID` / `SECRET_ACCESS_KEY` in `stacks/s3manager/.env` if you want a separate UI for R2)
+Both `/cloudflare_r2` and `/hetzner_s3` mount with **empty `key_prefix`** — the SFTP user sees the entire bucket so files written by Kestra flows, Spark jobs, or anything else show up directly. Walk in with a single SFTP login, choose which backend to read or write by `cd`-ing into the corresponding directory:
 
-The reverse direction works too: a file written via S3 directly into the bucket shows up under SFTP as soon as the next `ls` runs.
+```
+sftp> cd /cloudflare_r2
+sftp> put report.csv          → lands in R2 at s3://<R2_BUCKET>/report.csv
+sftp> cd /hetzner_s3
+sftp> put backup.tar          → lands in Hetzner OBS at
+                                s3://<HETZNER_BUCKET>/backup.tar
+```
+
+The reverse direction works too: a file written via S3 directly into either bucket appears under the matching SFTP path as soon as the next `ls` runs. Read your Kestra flow output via `cd /cloudflare_r2 && ls nexus-tutorials/NYC/` once the seeded `r2-taxi-pipeline` flow has executed.
+
+You can also read R2 / Hetzner files with any S3-compatible tool — the same buckets are reachable via:
+- The DuckDB query in the seeded `r2-taxi-pipeline` Kestra flow (R2 only)
+- `aws s3 cp` (with the R2 / Hetzner endpoint override)
+- Other S3-compatible browsers — the `s3manager` stack at `https://s3manager.<your-domain>` ships pointed at Hetzner Object Storage by default; re-target via `stacks/s3manager/.env` if you want a separate UI
 
 ### Adding more SFTP users (multi-tenant setups)
 
 The default user has full bucket access intentionally — single-user deploys (the common case) get the natural "I see everything I uploaded" UX without touching the admin UI. For multi-tenant setups where multiple SFTP users should share one R2 bucket without seeing each other's files, create the additional users in the web admin UI: **Users → Add** → pick `Cloud filesystem (S3)` for the filesystem provider, reuse the R2 endpoint + access key from Infisical, and set a distinct `key_prefix` (e.g. `sftp/<username>/`) so each new user gets an isolated home directory under the same bucket. The bootstrapped `nexus-default` user can keep its empty prefix or be edited the same way.
 
-### Connecting to non-R2 storage (other S3 providers, GCS, Azure, local, SFTP-backend)
+### Connecting to additional storage (AWS S3, GCS, Azure, more SFTP-backends, …)
 
-R2 is just the auto-configured default; SFTPGo is **not hardwired** to it. The SFTPGo data provider supports multiple filesystem backends, and **each user picks their own backend independently**. So one user can read/write R2, another can hit Hetzner Object Storage, another can be a passthrough into AWS S3 — all served behind the same SFTP endpoint on port `2022` (and the same web client UI on `https://sftpgo.<your-domain>/web/client/login`).
+R2 + Hetzner Object Storage are auto-mounted because Nexus-Stack already has credentials for them. SFTPGo is **not hardwired** to either — the SFTPGo data provider supports multiple filesystem backends, and you can attach any number of additional ones to `nexus-default` (or to fresh users) via the admin UI:
 
 In the web admin UI, **Users → Add → Filesystem tab → Filesystem provider** offers:
 
@@ -90,10 +105,26 @@ In the web admin UI, **Users → Add → Filesystem tab → Filesystem provider*
 | `SFTP filesystem` | Mount a remote SFTP server as the user's home — useful for chaining SFTPGo as a proxy in front of an existing SFTP target |
 | `HTTP filesystem` | Custom HTTP backend implementing the SFTPGo HTTPFs API |
 
-For a multi-target setup using ONE user account, use **Virtual folders** (Users → Add/Edit → Virtual folders tab): each virtual folder is its own filesystem (e.g. `/r2` → S3 backend on R2, `/hetzner` → S3 backend on Hetzner Object Storage, `/local` → Local filesystem). The user sees them as subdirectories of their home dir.
+**Adding a virtual folder to `nexus-default`** (extends the existing `/cloudflare_r2` and `/hetzner_s3` mounts):
 
-Examples in this stack:
+1. **Folders → Add** in the SFTPGo admin UI. Pick a name (e.g. `aws_s3`), choose the filesystem provider, fill in the credentials. Save.
+2. **Users → nexus-default → Edit → Virtual folders tab → Add** with the folder you just created. Set `Virtual path` to `/aws_s3` (or whatever you want it called inside the user home). Save.
+3. Reload the web client login or run `ls /` over SFTP — the new path is now visible alongside `/cloudflare_r2` and `/hetzner_s3`.
 
-- A user that points at **Hetzner Object Storage** instead of R2: same `Cloud filesystem (S3)` provider, but with `Endpoint = https://<region>.your-objectstorage.com`, the Hetzner-issued access key, and a Hetzner bucket name. Credentials are not auto-pushed to Infisical for Hetzner OBS, so you'd paste them from your Hetzner Cloud console manually.
-- A user that points at **AWS S3** directly: `Endpoint` blank, `Region` set to e.g. `us-east-1`, AWS IAM access key + secret, bucket name. SFTPGo signs SigV4.
-- A user with a `Local filesystem` home: useful if you just want a vanilla SFTP server inside the stack without any cloud egress, e.g. for a one-off file-drop between two services on the same host.
+Concrete examples:
+- **AWS S3** virtual folder: `Cloud filesystem (S3)` provider, `Endpoint` blank, `Region = us-east-1` (or wherever), AWS IAM access key + secret, bucket name. SFTPGo signs SigV4 automatically.
+- **Google Cloud Storage** virtual folder: `Cloud filesystem (Google Cloud Storage)`, paste a service-account JSON key, bucket name.
+- **A second SFTP server as a backend** (chain SFTPGo as a proxy): `SFTP filesystem`, host + port + user + password/key of the remote SFTP target.
+- **A purely-local subdirectory** (encrypted at rest): `Encrypted local filesystem`, passphrase. Files under that virtual path live inside the container's local SFTPGo volume but are AES-encrypted on disk.
+
+Provider matrix (full list from SFTPGo's admin UI):
+
+| Provider | Use for |
+|---|---|
+| `Local filesystem` | Files stored inside the SFTPGo container's volume — survives docker restart but tied to the box |
+| `Cloud filesystem (S3)` | Cloudflare R2 (auto-mounted at `/cloudflare_r2`), Hetzner Object Storage (auto-mounted at `/hetzner_s3`), AWS S3, MinIO, any other S3-compatible endpoint |
+| `Cloud filesystem (Google Cloud Storage)` | GCS bucket with a service-account JSON |
+| `Cloud filesystem (Azure Blob Storage)` | Azure container with account name + key, or Shared Access Signature |
+| `Encrypted local filesystem` | Local filesystem with at-rest encryption (passphrase-derived key) |
+| `SFTP filesystem` | Mount a remote SFTP server as a path — useful for chaining SFTPGo as a proxy in front of an existing SFTP target |
+| `HTTP filesystem` | Custom HTTP backend implementing the SFTPGo HTTPFs API |

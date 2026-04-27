@@ -2755,65 +2755,166 @@ REMOTE_SFTPGO_TOKEN_EOF
             # `--config` file written by the `printf` builtin.
             SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\n')
             SFTPGO_USER_PASS_B64=$(printf '%s' "$SFTPGO_USER_PASS" | base64 | tr -d '\n')
-            SFTPGO_BUCKET_B64=$(printf '%s' "$R2_DATA_BUCKET" | base64 | tr -d '\n')
-            SFTPGO_ENDPOINT_B64=$(printf '%s' "$R2_DATA_ENDPOINT" | base64 | tr -d '\n')
-            SFTPGO_AK_B64=$(printf '%s' "$R2_DATA_ACCESS_KEY" | base64 | tr -d '\n')
-            SFTPGO_SK_B64=$(printf '%s' "$R2_DATA_SECRET_KEY" | base64 | tr -d '\n')
 
-            # Wrap the create-user POST in a runner-local function so we
-            # can call it again after a self-heal DELETE without copy-
-            # pasting the long heredoc body. Closes over the SFTPGO_*_B64
-            # vars defined above; returns the HTTP status on stdout.
-            sftpgo_post_user() {
-                ssh nexus "bash -s" <<REMOTE_SFTPGO_USER_EOF 2>/dev/null
+            # SFTPGo doesn't auto-create the local FS paths it expects:
+            # - home_dir (`/var/lib/sftpgo/users/nexus-default`) is the
+            #   user's local-FS scratch root for files written at path
+            #   "/" (i.e. NOT inside a virtual folder mount).
+            # - mapped_path under each folder (`/var/lib/sftpgo/folders/<name>`)
+            #   is the local "shadow" path SFTPGo uses internally for
+            #   metadata caching even though the actual data is in S3.
+            # Without these, the very first directory listing returns
+            # "Failed to get directory listing" / "lstat: no such file
+            # or directory". Pre-create + chown to the SFTPGo container
+            # uid (1000) before the API calls touch them.
+            ssh nexus "docker exec --user 0 sftpgo sh -c 'mkdir -p /var/lib/sftpgo/users/nexus-default /var/lib/sftpgo/folders/cloudflare_r2 /var/lib/sftpgo/folders/hetzner_s3 && chown -R 1000:1000 /var/lib/sftpgo/users /var/lib/sftpgo/folders'" >/dev/null 2>&1 || true
+
+            SFTPGO_R2_BUCKET_B64=$(printf '%s' "$R2_DATA_BUCKET" | base64 | tr -d '\n')
+            SFTPGO_R2_ENDPOINT_B64=$(printf '%s' "$R2_DATA_ENDPOINT" | base64 | tr -d '\n')
+            SFTPGO_R2_AK_B64=$(printf '%s' "$R2_DATA_ACCESS_KEY" | base64 | tr -d '\n')
+            SFTPGO_R2_SK_B64=$(printf '%s' "$R2_DATA_SECRET_KEY" | base64 | tr -d '\n')
+
+            # The SFTPGo user gets virtual-folders (one per backend) so
+            # a single SFTP login surfaces multiple object-storage
+            # backends as subdirectories of the user's home:
+            #
+            #   /              local FS (scratch space inside the
+            #                  container, ephemeral by design — see
+            #                  the named-volume rationale at the top of
+            #                  the SFTPGo compose)
+            #   /cloudflare_r2   Cloudflare R2 datalake bucket
+            #   /hetzner_s3      Hetzner Object Storage (only mounted if
+            #                    HETZNER_S3_* secrets are present)
+            #
+            # Operators can add more virtual folders for AWS S3, GCS,
+            # Azure Blob, additional MinIO instances, etc. via the
+            # admin UI — see "Connecting to non-R2 storage" in
+            # docs/stacks/sftpgo.md. The auto-configured pair is just
+            # what we have credentials for at deploy time.
+
+            # Helper 1: POST /api/v2/folders to register a backend
+            # under a friendly name. Idempotent: 201 = created,
+            # 409 = already exists from a previous spin-up. Both fine.
+            #
+            # Args (passed via SFTPGO_FOLDER_* env on the runner side
+            # before invocation):
+            #   $1 = SFTPGO_FOLDER_NAME           — virtual folder name
+            #   $2 = SFTPGO_FOLDER_BUCKET_B64
+            #   $3 = SFTPGO_FOLDER_ENDPOINT_B64
+            #   $4 = SFTPGO_FOLDER_REGION         — plain (not base64'd, no secret)
+            #   $5 = SFTPGO_FOLDER_AK_B64
+            #   $6 = SFTPGO_FOLDER_SK_B64
+            sftpgo_post_folder() {
+                local _name="$1" _bucket_b64="$2" _endpoint_b64="$3" _region="$4" _ak_b64="$5" _sk_b64="$6"
+                ssh nexus "bash -s" <<REMOTE_SFTPGO_FOLDER_EOF 2>/dev/null
 TOKEN=\$(printf '%s' '$SFTPGO_TOKEN_B64' | base64 -d)
-SFTP_USER_PASS=\$(printf '%s' '$SFTPGO_USER_PASS_B64' | base64 -d)
-R2_BUCKET=\$(printf '%s' '$SFTPGO_BUCKET_B64' | base64 -d)
-R2_ENDPOINT=\$(printf '%s' '$SFTPGO_ENDPOINT_B64' | base64 -d)
-R2_AK=\$(printf '%s' '$SFTPGO_AK_B64' | base64 -d)
-R2_SK=\$(printf '%s' '$SFTPGO_SK_B64' | base64 -d)
+BUCKET=\$(printf '%s' '$_bucket_b64' | base64 -d)
+ENDPOINT=\$(printf '%s' '$_endpoint_b64' | base64 -d)
+AK=\$(printf '%s' '$_ak_b64' | base64 -d)
+SK=\$(printf '%s' '$_sk_b64' | base64 -d)
 CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "\$TOKEN" > "\$CFG"
-# SFTPGo v2.7.x types `access_secret` as `kms.BaseSecret`, not a plain
-# string. Sending a string returns HTTP 400: "json: cannot unmarshal
-# string into Go struct field S3FsConfig.filesystem.s3config.access_secret
-# of type kms.BaseSecret". `{payload: …, status: "Plain"}` is the wire
-# shape for an unencrypted-on-input secret; SFTPGo encrypts it server-
-# side at first persist (status flips to "Secretbox" on read-back).
-#
-# All env-vars on a single line as a prefix to \`jq -n\` so the
-# line-continuation chain isn't broken by an intervening comment —
-# bash treats a \`#\` after a continued line as the start of a comment
-# that swallows the rest, leaves the prior assignments as bare shell
-# vars (NOT exported to jq's env), and the next physical line runs
-# \`jq -n\` with no env at all → every env.X resolves to null → JSON
-# body has \`password: null, bucket: null, …\` → 400.
-PASSWORD="\$SFTP_USER_PASS" BUCKET="\$R2_BUCKET" ENDPOINT="\$R2_ENDPOINT" ACCESS_KEY="\$R2_AK" SECRET_KEY="\$R2_SK" jq -n '{
-    username: "nexus-default",
-    password: env.PASSWORD,
-    home_dir: "/sftp/nexus-default",
-    permissions: { "/": ["*"] },
-    status: 1,
+NAME='$_name' BUCKET="\$BUCKET" ENDPOINT="\$ENDPOINT" REGION='$_region' AK="\$AK" SK="\$SK" jq -n '{
+    name: env.NAME,
+    mapped_path: ("/var/lib/sftpgo/folders/" + env.NAME),
     filesystem: {
         provider: 1,
         s3config: {
             bucket: env.BUCKET,
             endpoint: env.ENDPOINT,
-            region: "auto",
-            access_key: env.ACCESS_KEY,
-            access_secret: { payload: env.SECRET_KEY, status: "Plain" },
-            # Empty key_prefix → user "/" mounts onto the bucket
-            # root, so files written by Kestra / Spark / etc. at the
-            # bucket root are visible to the SFTP user. Multi-tenant
-            # setups (multiple SFTP users sharing one bucket) should
-            # add per-user prefixes when creating additional users —
-            # see "Adding more SFTP users" in docs/stacks/sftpgo.md.
+            region: env.REGION,
+            access_key: env.AK,
+            access_secret: { payload: env.SK, status: "Plain" },
             key_prefix: "",
             force_path_style: true
         }
     }
+}' | curl -s -o /dev/null -w '%{http_code}' \\
+    -X POST 'http://localhost:8090/api/v2/folders' \\
+    --config "\$CFG" \\
+    --data-binary @-
+REMOTE_SFTPGO_FOLDER_EOF
+            }
+
+            # Register the R2 virtual folder (always — R2 creds are
+            # required for SFTPGo to be configured at all per the
+            # earlier R2_DATA_* guard).
+            R2_FOLDER_STATUS=$(sftpgo_post_folder \
+                "cloudflare_r2" \
+                "$SFTPGO_R2_BUCKET_B64" \
+                "$SFTPGO_R2_ENDPOINT_B64" \
+                "auto" \
+                "$SFTPGO_R2_AK_B64" \
+                "$SFTPGO_R2_SK_B64") || true
+            R2_FOLDER_STATUS="${R2_FOLDER_STATUS:-000}"
+            case "$R2_FOLDER_STATUS" in
+                201)     echo "    ✓ SFTPGo virtual folder '/cloudflare_r2' registered (R2 datalake)" ;;
+                409)     echo "    ✓ SFTPGo virtual folder '/cloudflare_r2' already exists — left untouched" ;;
+                *)       echo -e "${YELLOW}    ⚠ SFTPGo virtual folder '/cloudflare_r2' POST returned HTTP $R2_FOLDER_STATUS${NC}" ;;
+            esac
+
+            # Optionally register the Hetzner Object Storage folder.
+            # Only the lakefs-bucket (HETZNER_S3_BUCKET) credentials are
+            # always populated by the deploy pipeline; if any of the
+            # five fields is missing (e.g. Hetzner OBS unavailable in
+            # the user's project), we skip the mount. Operators can add
+            # it later via the admin UI.
+            VIRTUAL_FOLDERS_JSON='[{"name":"cloudflare_r2","virtual_path":"/cloudflare_r2","quota_size":-1,"quota_files":-1}]'
+            if [ -n "$HETZNER_S3_BUCKET_GENERAL" ] && [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_REGION" ] \
+                && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ]; then
+                HZ_BUCKET_B64=$(printf '%s' "$HETZNER_S3_BUCKET_GENERAL" | base64 | tr -d '\n')
+                HZ_ENDPOINT_B64=$(printf '%s' "$HETZNER_S3_SERVER" | base64 | tr -d '\n')
+                HZ_AK_B64=$(printf '%s' "$HETZNER_S3_ACCESS_KEY" | base64 | tr -d '\n')
+                HZ_SK_B64=$(printf '%s' "$HETZNER_S3_SECRET_KEY" | base64 | tr -d '\n')
+                HZ_FOLDER_STATUS=$(sftpgo_post_folder \
+                    "hetzner_s3" \
+                    "$HZ_BUCKET_B64" \
+                    "$HZ_ENDPOINT_B64" \
+                    "$HETZNER_S3_REGION" \
+                    "$HZ_AK_B64" \
+                    "$HZ_SK_B64") || true
+                HZ_FOLDER_STATUS="${HZ_FOLDER_STATUS:-000}"
+                case "$HZ_FOLDER_STATUS" in
+                    201)     echo "    ✓ SFTPGo virtual folder '/hetzner_s3' registered (Hetzner Object Storage)" ;;
+                    409)     echo "    ✓ SFTPGo virtual folder '/hetzner_s3' already exists — left untouched" ;;
+                    *)       echo -e "${YELLOW}    ⚠ SFTPGo virtual folder '/hetzner_s3' POST returned HTTP $HZ_FOLDER_STATUS${NC}" ;;
+                esac
+                if [ "$HZ_FOLDER_STATUS" = "201" ] || [ "$HZ_FOLDER_STATUS" = "409" ]; then
+                    VIRTUAL_FOLDERS_JSON='[{"name":"cloudflare_r2","virtual_path":"/cloudflare_r2","quota_size":-1,"quota_files":-1},{"name":"hetzner_s3","virtual_path":"/hetzner_s3","quota_size":-1,"quota_files":-1}]'
+                fi
+            else
+                echo "    (Hetzner Object Storage credentials missing — skipping '/hetzner_s3' virtual folder)"
+            fi
+
+            # Helper 2: POST /api/v2/users with a local-FS home and the
+            # registered virtual folders attached. The local home is
+            # ephemeral scratch space; real data sits behind the virtual
+            # folders. SFTPGo materialises home_dir on first login if
+            # missing, so the operator does not have to mkdir it.
+            VIRTUAL_FOLDERS_JSON_B64=$(printf '%s' "$VIRTUAL_FOLDERS_JSON" | base64 | tr -d '\n')
+            sftpgo_post_user() {
+                ssh nexus "bash -s" <<REMOTE_SFTPGO_USER_EOF 2>/dev/null
+TOKEN=\$(printf '%s' '$SFTPGO_TOKEN_B64' | base64 -d)
+SFTP_USER_PASS=\$(printf '%s' '$SFTPGO_USER_PASS_B64' | base64 -d)
+VFOLDERS=\$(printf '%s' '$VIRTUAL_FOLDERS_JSON_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "\$TOKEN" > "\$CFG"
+# All env-vars on a single line as a prefix to \`jq -n\` (see
+# the earlier comment in this file: a comment in the middle of a
+# bash line-continuation chain swallows the prefix and jq runs
+# without env, so all env.X resolve to null → 400).
+PASSWORD="\$SFTP_USER_PASS" VFOLDERS="\$VFOLDERS" jq -n '{
+    username: "nexus-default",
+    password: env.PASSWORD,
+    home_dir: "/var/lib/sftpgo/users/nexus-default",
+    permissions: { "/": ["*"], "/cloudflare_r2": ["*"], "/hetzner_s3": ["*"] },
+    status: 1,
+    filesystem: { provider: 0 },
+    virtual_folders: (env.VFOLDERS | fromjson)
 }' | curl -s -o /dev/null -w '%{http_code}' \\
     -X POST 'http://localhost:8090/api/v2/users' \\
     --config "\$CFG" \\
@@ -2833,8 +2934,8 @@ REMOTE_SFTPGO_USER_EOF
             #           Treat as benign — re-deploys aren't supposed to
             #           print a yellow warning for a healthy state.
             case "$SFTPGO_USER_STATUS" in
-                201)     echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
-                400|409) echo "  ✓ SFTPGo default user 'nexus-default' already exists — left untouched" ;;
+                201)     echo -e "${GREEN}  ✓ SFTPGo user 'nexus-default' created with virtual folders (/cloudflare_r2 + /hetzner_s3 if available)${NC}" ;;
+                400|409) echo "  ✓ SFTPGo user 'nexus-default' already exists — left untouched" ;;
                 *)       echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
                          echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
             esac
