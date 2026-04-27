@@ -3620,7 +3620,7 @@ CFG
             fi
 
             echo "  Seeding workspace files into ${GITEA_REPO_OWNER}/${REPO_NAME}..."
-            local SEED_FILE REPO_PATH REPO_PATH_ENC CONTENT_B64 JSON_BODY SEED_STATUS
+            local SEED_FILE REPO_PATH REPO_PATH_ENC CONTENT_B64 JSON_BODY SEED_STATUS SEED_B64_TMP
             while IFS= read -r -d '' SEED_FILE; do
                 REPO_PATH="${SEED_FILE#$SEED_DIR/}"
                 # Defense in depth — restrict to the safe filesystem
