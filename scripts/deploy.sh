@@ -2754,6 +2754,12 @@ BUCKET="\$R2_BUCKET" \\
 ENDPOINT="\$R2_ENDPOINT" \\
 ACCESS_KEY="\$R2_AK" \\
 SECRET_KEY="\$R2_SK" \\
+# SFTPGo v2.7.x types `access_secret` as `kms.BaseSecret`, not a plain
+# string. Sending a string returns HTTP 400: "json: cannot unmarshal
+# string into Go struct field S3FsConfig.filesystem.s3config.access_secret
+# of type kms.BaseSecret". `{payload: …, status: "Plain"}` is the wire
+# shape for an unencrypted-on-input secret; SFTPGo encrypts it server-
+# side at first persist (status flips to "Secretbox" on read-back).
 jq -n '{
     username: "nexus-default",
     password: env.PASSWORD,
@@ -2767,7 +2773,7 @@ jq -n '{
             endpoint: env.ENDPOINT,
             region: "auto",
             access_key: env.ACCESS_KEY,
-            access_secret: env.SECRET_KEY,
+            access_secret: { payload: env.SECRET_KEY, status: "Plain" },
             key_prefix: "sftp/nexus-default/",
             force_path_style: true
         }
