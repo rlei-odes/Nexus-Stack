@@ -2673,13 +2673,21 @@ if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] &
     # while admin-init is still in flight and get 401 → "admin login
     # failed — default user not created", and the run looks green.
     SFTPGO_READY=false
+    SFTPGO_LAST_AUTH_STATUS="000"
     SFTPGO_PROBE_B64=$(printf '%s' "$SFTPGO_ADMIN_PASS" | base64 | tr -d '\n')
-    for i in $(seq 1 60); do
-        SFTPGO_HEALTH=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
-        SFTPGO_HEALTH="${SFTPGO_HEALTH:-000}"
-        if [ "$SFTPGO_HEALTH" = "200" ]; then
-            # Health passed; now actually try a login.
-            SFTPGO_AUTH_STATUS=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_PROBE_EOF 2>/dev/null
+
+    # Helper: do a /healthz + /api/v2/token probe loop. Sets
+    # SFTPGO_READY=true on first 200 from the auth probe; otherwise
+    # leaves SFTPGO_LAST_AUTH_STATUS at whatever the most recent auth
+    # status was (used below to distinguish "container never came up"
+    # from "container up but auth keeps returning 401").
+    sftpgo_probe_loop() {
+        local _i _ah _au
+        for _i in $(seq 1 60); do
+            _ah=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
+            _ah="${_ah:-000}"
+            if [ "$_ah" = "200" ]; then
+                _au=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_PROBE_EOF 2>/dev/null
 PW=\$(printf '%s' '$SFTPGO_PROBE_B64' | base64 -d)
 CFG=\$(mktemp)
 chmod 600 "\$CFG"
@@ -2687,18 +2695,56 @@ trap 'rm -f "\$CFG"' EXIT
 printf 'user = "nexus-sftpgo:%s"\n' "\$PW" > "\$CFG"
 curl -s -o /dev/null -w '%{http_code}' --config "\$CFG" 'http://localhost:8090/api/v2/token'
 REMOTE_SFTPGO_PROBE_EOF
-) || SFTPGO_AUTH_STATUS=""
-            SFTPGO_AUTH_STATUS="${SFTPGO_AUTH_STATUS:-000}"
-            if [ "$SFTPGO_AUTH_STATUS" = "200" ]; then
-                SFTPGO_READY=true
-                break
+) || _au=""
+                _au="${_au:-000}"
+                SFTPGO_LAST_AUTH_STATUS="$_au"
+                if [ "$_au" = "200" ]; then
+                    SFTPGO_READY=true
+                    return 0
+                fi
             fi
+            sleep 2
+        done
+        return 1
+    }
+
+    sftpgo_probe_loop || true
+
+    # Self-heal stale-admin-hash vs. rotated-env-password mismatch.
+    #
+    # destroy-all *protects* the persistent Hetzner volume (intentional —
+    # Gitea repos / Postgres data live there and survive teardowns). But
+    # the SFTPGo SQLite DB at /mnt/nexus-data/sftpgo/data/sftpgo.db is
+    # *also* on that volume, and it stores the admin password as a
+    # bcrypt hash baked at first-start. After destroy-all, OpenTofu
+    # re-runs `random_password.sftpgo_admin` and generates a NEW value;
+    # the new value goes into stacks/sftpgo/.env and the container's
+    # SFTPGO_DEFAULT_ADMIN_PASSWORD env var, but `CREATE_DEFAULT_ADMIN=1`
+    # is a no-op when the admin row already exists from the previous
+    # life of the volume → DB hash is for the OLD password, env has the
+    # NEW one → every basic-auth call returns 401 forever.
+    #
+    # If the auth probe never got past 401 within the readiness loop
+    # AND the HTTP layer is reachable (i.e. it's auth that's broken,
+    # not the container), wipe the admins table on the volume and
+    # restart the container so CREATE_DEFAULT_ADMIN re-bootstraps with
+    # the current env-var password. Single retry — if it still 401s
+    # afterwards, something else is wrong and we surface the warning.
+    if [ "$SFTPGO_READY" = "false" ] && [ "$SFTPGO_LAST_AUTH_STATUS" = "401" ]; then
+        echo -e "${YELLOW}  ⚠ SFTPGo admin login returns 401 despite correct env password — likely stale admin hash from a preserved persistent volume. Resetting admin DB...${NC}"
+        if ssh nexus "command -v sqlite3 >/dev/null 2>&1 || sudo apt-get install -y sqlite3 >/dev/null 2>&1 ; sudo sqlite3 /mnt/nexus-data/sftpgo/data/sftpgo.db 'DELETE FROM admins;' && docker restart sftpgo >/dev/null" 2>/dev/null; then
+            echo "  Waiting for SFTPGo to bootstrap a fresh admin..."
+            sftpgo_probe_loop || true
+            if [ "$SFTPGO_READY" = "true" ]; then
+                echo -e "${GREEN}  ✓ SFTPGo admin DB reset — basic-auth now matches env password${NC}"
+            fi
+        else
+            echo -e "${YELLOW}    ⚠ Could not reset SFTPGo admin DB via ssh — configure manually in the UI${NC}"
         fi
-        sleep 2
-    done
+    fi
 
     if [ "$SFTPGO_READY" = "false" ]; then
-        echo -e "${YELLOW}  ⚠ SFTPGo not ready after 60s — skipping default-user creation${NC}"
+        echo -e "${YELLOW}  ⚠ SFTPGo not ready after probe (last auth status $SFTPGO_LAST_AUTH_STATUS) — skipping default-user creation${NC}"
     elif [ -z "$R2_DATA_BUCKET" ] || [ -z "$R2_DATA_ENDPOINT" ] || [ -z "$R2_DATA_ACCESS_KEY" ] || [ -z "$R2_DATA_SECRET_KEY" ]; then
         echo -e "${YELLOW}  ⚠ R2 datalake credentials missing — SFTPGo admin is up, but default user not created (configure manually in the UI)${NC}"
     else
