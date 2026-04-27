@@ -1870,6 +1870,16 @@ if echo \"$ENABLED_LIST\" | grep -qw \"dify\"; then
     chown -R 1001:1001 /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
 fi
 
+# Fix SFTPGo data permissions. The drakkan/sftpgo image runs as uid
+# 1000:1000; without this chown the SQLite users-DB at
+# /var/lib/sftpgo/sftpgo.db can't be created (\"unable to open
+# database file: no such file or directory\") and the container
+# enters a restart loop, surfacing as Bad Gateway through Cloudflare.
+if echo \"$ENABLED_LIST\" | grep -qw \"sftpgo\"; then
+    mkdir -p /mnt/nexus-data/sftpgo/data
+    chown -R 1000:1000 /mnt/nexus-data/sftpgo/data
+fi
+
 for service in $ENABLED_LIST; do
     echo \"[DEBUG] Checking service: \$service\" >&2
 
