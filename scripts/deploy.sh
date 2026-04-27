@@ -4285,13 +4285,49 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
         done
 
         # Seed Nexus-Stack example workspace files into the now-existing
-        # fork (`$GITEA_REPO_OWNER/$REPO_NAME` per line 1300+). Same
-        # function as the non-mirror branch — POST is create-only, so
-        # files the fork already inherited from the upstream mirror get
-        # 422-skipped harmlessly. Without this call the fork would have
-        # no `kestra/flows/r2-taxi-pipeline.yaml`, and `system.flow-sync`
-        # would 404 when trying to clone+sync from the fork URL.
-        seed_workspace_files
+        # fork. The mirror loop above OVERWRITES `$REPO_NAME` per
+        # iteration to the mirror's name (`mirror-readonly-<repo>`),
+        # which would make the seed POST hit the wrong repo. Restore
+        # `$REPO_NAME` to the FORK name (line 4204: `$FORK_NAME` =
+        # `${ORIG_NAME}_${GITEA_USER_SANITIZED}` = e.g.
+        # `Bsc_EDS_GIS_FS2026_stefan_koch`) before calling
+        # `seed_workspace_files`, and ensure `$GITEA_REPO_OWNER` is
+        # the user's username (the fork owner). POST is create-only,
+        # so files the fork already inherited from upstream get
+        # 422-skipped harmlessly.
+        if [ -n "${FORK_NAME:-}" ] && [ -n "${GITEA_USER_USERNAME:-}" ]; then
+            REPO_NAME="$FORK_NAME"
+            GITEA_REPO_OWNER="$GITEA_USER_USERNAME"
+            seed_workspace_files
+
+            # The Kestra-bootstrap block higher up in this script
+            # registered `system.flow-sync` and triggered ONE execution
+            # to verify the seeded flow was visible. In mirror mode that
+            # initial trigger ran BEFORE this fork was created, so the
+            # SyncFlows task got a 404 cloning the (then-nonexistent)
+            # fork. The flow itself is registered with the correct fork
+            # URL (we use $GITEA_REPO_OWNER/$REPO_NAME), so the next
+            # 15-min cron tick would eventually pick up the seeded
+            # content — but that's a poor onboarding signal. Trigger one
+            # more execution now that the fork actually exists; the user
+            # then sees `tutorials.r2-taxi-pipeline` in Kestra within
+            # ~10 s of deploy completion.
+            if [ -n "${KESTRA_PASS:-}" ] && [ -n "${ADMIN_EMAIL:-}" ]; then
+                echo "  Re-triggering system.flow-sync now that the fork is populated..."
+                TRIG_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
+                TRIG_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
+                ssh nexus "bash -s" >/dev/null 2>&1 <<REMOTE_TRIG_EOF || true
+USER=\$(printf '%s' '$TRIG_USER_B64' | base64 -d)
+PW=\$(printf '%s' '$TRIG_PW_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'user = "%s:%s"\n' "\$USER" "\$PW" > "\$CFG"
+curl -s -X POST 'http://localhost:8085/api/v1/executions/system/flow-sync' --config "\$CFG" >/dev/null
+REMOTE_TRIG_EOF
+                echo -e "${GREEN}  ✓ system.flow-sync triggered — tutorials.r2-taxi-pipeline appears in Kestra within ~10 s${NC}"
+            fi
+        fi
     fi
 
     # Restart git-integrated services so they pick up the latest fork content.
