@@ -2798,7 +2798,13 @@ REMOTE_SFTPGO_TOKEN_EOF
             SFTPGO_ENDPOINT_B64=$(printf '%s' "$R2_DATA_ENDPOINT" | base64 | tr -d '\n')
             SFTPGO_AK_B64=$(printf '%s' "$R2_DATA_ACCESS_KEY" | base64 | tr -d '\n')
             SFTPGO_SK_B64=$(printf '%s' "$R2_DATA_SECRET_KEY" | base64 | tr -d '\n')
-            SFTPGO_USER_STATUS=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_USER_EOF 2>/dev/null
+
+            # Wrap the create-user POST in a runner-local function so we
+            # can call it again after a self-heal DELETE without copy-
+            # pasting the long heredoc body. Closes over the SFTPGO_*_B64
+            # vars defined above; returns the HTTP status on stdout.
+            sftpgo_post_user() {
+                ssh nexus "bash -s" <<REMOTE_SFTPGO_USER_EOF 2>/dev/null
 TOKEN=\$(printf '%s' '$SFTPGO_TOKEN_B64' | base64 -d)
 SFTP_USER_PASS=\$(printf '%s' '$SFTPGO_USER_PASS_B64' | base64 -d)
 R2_BUCKET=\$(printf '%s' '$SFTPGO_BUCKET_B64' | base64 -d)
@@ -2843,14 +2849,43 @@ jq -n '{
     --config "\$CFG" \\
     --data-binary @-
 REMOTE_SFTPGO_USER_EOF
-) || true
+            }
+
+            SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
             SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
 
+            # Self-heal stale-user-row vs. rotated-env-password mismatch.
+            #
+            # destroy-all preserves the persistent volume on purpose, so
+            # /mnt/nexus-data/sftpgo/data/sftpgo.db carries the
+            # `nexus-default` row across teardowns — INCLUDING its
+            # bcrypt-hashed password from a previous deploy. After a
+            # fresh `tofu apply` the runner-side $SFTPGO_USER_PASS is a
+            # NEW value, but POST /api/v2/users hits the duplicate-key
+            # constraint (400 with that exact message in v2.7.x; can also
+            # be 409 in some flows) and bails — leaving Infisical out of
+            # sync with the on-volume hash. Result: the credentials the
+            # operator copies from Control Plane / Infisical no longer
+            # log in via web client or SFTP.
+            #
+            # Symmetric to the admin-DB self-heal earlier in this block:
+            # if the POST fails with a duplicate-style status, DELETE
+            # the user row on the volume and re-POST. The second POST
+            # then re-creates the row with the current password hash.
+            if [ "$SFTPGO_USER_STATUS" = "400" ] || [ "$SFTPGO_USER_STATUS" = "409" ]; then
+                echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — likely stale row from preserved volume. Resetting and re-creating...${NC}"
+                if ssh nexus "command -v sqlite3 >/dev/null 2>&1 || sudo apt-get install -y sqlite3 >/dev/null 2>&1 ; sudo sqlite3 /mnt/nexus-data/sftpgo/data/sftpgo.db \"DELETE FROM users WHERE username='nexus-default';\"" 2>/dev/null; then
+                    SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
+                    SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
+                else
+                    echo -e "${YELLOW}    ⚠ Could not reset SFTPGo user row via ssh — configure manually in the UI${NC}"
+                fi
+            fi
+
             case "$SFTPGO_USER_STATUS" in
-                201) echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
-                409) echo -e "${YELLOW}  ⚠ SFTPGo user 'nexus-default' already exists — left untouched${NC}" ;;
-                *)   echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
-                     echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
+                200|201) echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
+                *)       echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
+                         echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
             esac
         fi
     fi
