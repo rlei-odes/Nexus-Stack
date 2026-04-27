@@ -4006,10 +4006,20 @@ curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 --config
 REMOTE_KESTRA_PROBE_EOF
 ) || KSTATUS=""
                             KSTATUS="${KSTATUS:-000}"
-                            if [ "$KSTATUS" = "200" ]; then
-                                KESTRA_READY=true
-                                break
-                            fi
+                            # Auth-wired = NOT 401. /api/v1/flows in
+                            # Kestra v1.0 OSS responds 404 to GET (the
+                            # endpoint only accepts POST, with a tenant-
+                            # prefixed read path at /api/v1/main/flows
+                            # that returns 405 for GET) — but BOTH 404
+                            # and 405 mean basic-auth was accepted. The
+                            # only "auth-not-yet-wired" signal is 401.
+                            # Accepting any non-401 here keeps the probe
+                            # forwards-compatible with future Kestra
+                            # endpoint reshuffles too.
+                            case "$KSTATUS" in
+                                401|000) ;;  # not ready, keep looping
+                                *) KESTRA_READY=true; break ;;
+                            esac
                             if [ $((i % 10)) -eq 0 ]; then
                                 echo "    ... still waiting for Kestra restart + auth ($((SECONDS - KESTRA_WAIT_START))s elapsed, last status $KSTATUS)"
                             fi
