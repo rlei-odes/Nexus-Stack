@@ -1363,11 +1363,23 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         GH_OWNER_REPO=$(echo "$FIRST_MIRROR_FOR_BRANCH" \
             | sed -E 's#^https?://github\.com/##; s#\.git$##')
         if [ -n "$GH_OWNER_REPO" ]; then
-            DETECTED_BRANCH=$(curl -fsSL --max-time 10 \
-                -H "Authorization: Bearer $GH_MIRROR_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/$GH_OWNER_REPO" 2>/dev/null \
-                | jq -r '.default_branch // empty' 2>/dev/null)
+            # Token + URL go through a `curl --config` file (mode 0600)
+            # so $GH_MIRROR_TOKEN never appears in argv (would otherwise
+            # be visible in the runner's `ps` listing while curl runs).
+            # Same pattern as the Kestra/Infisical paths elsewhere in
+            # this script.
+            DETECTED_BRANCH=""
+            GH_API_CFG=$(mktemp)
+            chmod 600 "$GH_API_CFG"
+            {
+                printf 'header = "Authorization: Bearer %s"\n' "$GH_MIRROR_TOKEN"
+                printf 'header = "Accept: application/vnd.github+json"\n'
+                printf 'url = "https://api.github.com/repos/%s"\n' "$GH_OWNER_REPO"
+                printf 'max-time = 10\nfail\nsilent\nshow-error\nlocation\n'
+            } > "$GH_API_CFG"
+            DETECTED_BRANCH=$(curl --config "$GH_API_CFG" 2>/dev/null \
+                | jq -r '.default_branch // empty' 2>/dev/null) || DETECTED_BRANCH=""
+            rm -f "$GH_API_CFG"
             if [ -n "$DETECTED_BRANCH" ] && [ "$DETECTED_BRANCH" != "null" ]; then
                 WORKSPACE_BRANCH="$DETECTED_BRANCH"
                 if [ "$WORKSPACE_BRANCH" != "main" ]; then
