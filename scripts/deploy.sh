@@ -2772,18 +2772,21 @@ CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "\$TOKEN" > "\$CFG"
-PASSWORD="\$SFTP_USER_PASS" \\
-BUCKET="\$R2_BUCKET" \\
-ENDPOINT="\$R2_ENDPOINT" \\
-ACCESS_KEY="\$R2_AK" \\
-SECRET_KEY="\$R2_SK" \\
 # SFTPGo v2.7.x types `access_secret` as `kms.BaseSecret`, not a plain
 # string. Sending a string returns HTTP 400: "json: cannot unmarshal
 # string into Go struct field S3FsConfig.filesystem.s3config.access_secret
 # of type kms.BaseSecret". `{payload: …, status: "Plain"}` is the wire
 # shape for an unencrypted-on-input secret; SFTPGo encrypts it server-
 # side at first persist (status flips to "Secretbox" on read-back).
-jq -n '{
+#
+# All env-vars on a single line as a prefix to \`jq -n\` so the
+# line-continuation chain isn't broken by an intervening comment —
+# bash treats a \`#\` after a continued line as the start of a comment
+# that swallows the rest, leaves the prior assignments as bare shell
+# vars (NOT exported to jq's env), and the next physical line runs
+# \`jq -n\` with no env at all → every env.X resolves to null → JSON
+# body has \`password: null, bucket: null, …\` → 400.
+PASSWORD="\$SFTP_USER_PASS" BUCKET="\$R2_BUCKET" ENDPOINT="\$R2_ENDPOINT" ACCESS_KEY="\$R2_AK" SECRET_KEY="\$R2_SK" jq -n '{
     username: "nexus-default",
     password: env.PASSWORD,
     home_dir: "/sftp/nexus-default",
