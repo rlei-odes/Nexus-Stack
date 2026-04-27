@@ -3789,7 +3789,13 @@ REMOTE_INF_SECRETS_EOF
                             fi
                         fi
                         if [ "$ALREADY_HAVE_GITEA_TOKEN" = "false" ]; then
-                            echo "SECRET_GITEA_TOKEN=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')" >> "$KESTRA_SECRETS_TMP"
+                            # Encode in a separate var rather than inline `$(…)` —
+                            # nested double quotes inside `$()` are valid bash
+                            # (the inner context is independent), but Copilot
+                            # repeatedly flagged it as ambiguous; the two-line
+                            # form costs nothing and silences the false positive.
+                            GITEA_TOKEN_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+                            printf 'SECRET_GITEA_TOKEN=%s\n' "$GITEA_TOKEN_B64" >> "$KESTRA_SECRETS_TMP"
                             KSEC_PUSHED=$((KSEC_PUSHED+1))
                         fi
                     fi
