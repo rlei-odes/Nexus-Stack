@@ -73,7 +73,12 @@ tasks:
         accessKeyId: "{{ secret('R2_ACCESS_KEY') }}"
         secretKeyId: "{{ secret('R2_SECRET_KEY') }}"
         bucket: "{{ secret('R2_BUCKET') }}"
-        key: "yellow_tripdata_2025-{{ taskrun.value }}.parquet"
+        # Write under nexus-tutorials/NYC/ so this seed flow's data
+        # is namespaced inside R2 alongside any other tutorials that
+        # ship with Nexus-Stack later — keeps the bucket root clean
+        # and lets students reason about which dataset belongs to
+        # which tutorial without scanning filenames.
+        key: "nexus-tutorials/NYC/yellow_tripdata_2025-{{ taskrun.value }}.parquet"
         # Inside a `ForEach`, sibling-task outputs are keyed by the
         # iteration value. `outputs.download.uri` (no key) returns
         # nothing in Kestra v1.0+ → "Unable to find `uri`" Pebble error.
@@ -84,9 +89,10 @@ tasks:
   # ---------------------------------------------------------------------
   # 2. Aggregate stats over all bootstrapped monthly files at once.
   #    DuckDB + httpfs reads the Parquet files directly via S3, no
-  #    intermediate copy. The wildcard `yellow_tripdata_2025-*.parquet`
-  #    matches every month present in R2 — so this query
-  #    automatically widens when you extend `values:` above.
+  #    intermediate copy. The wildcard
+  #    `nexus-tutorials/NYC/yellow_tripdata_2025-*.parquet` matches
+  #    every month present in R2 — so this query automatically widens
+  #    when you extend `values:` above.
   # ---------------------------------------------------------------------
   - id: stats
     type: io.kestra.plugin.jdbc.duckdb.Query
@@ -107,7 +113,7 @@ tasks:
         MIN(tpep_pickup_datetime)        AS earliest_pickup,
         MAX(tpep_pickup_datetime)        AS latest_pickup
       FROM read_parquet(
-        's3://{{ secret('R2_BUCKET') }}/yellow_tripdata_2025-*.parquet'
+        's3://{{ secret('R2_BUCKET') }}/nexus-tutorials/NYC/yellow_tripdata_2025-*.parquet'
       );
     fetchType: FETCH_ONE
 
