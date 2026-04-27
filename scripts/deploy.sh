@@ -1366,20 +1366,25 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             # Token + URL go through a `curl --config` file (mode 0600)
             # so $GH_MIRROR_TOKEN never appears in argv (would otherwise
             # be visible in the runner's `ps` listing while curl runs).
-            # Same pattern as the Kestra/Infisical paths elsewhere in
-            # this script.
-            DETECTED_BRANCH=""
-            GH_API_CFG=$(mktemp)
-            chmod 600 "$GH_API_CFG"
-            {
-                printf 'header = "Authorization: Bearer %s"\n' "$GH_MIRROR_TOKEN"
-                printf 'header = "Accept: application/vnd.github+json"\n'
-                printf 'url = "https://api.github.com/repos/%s"\n' "$GH_OWNER_REPO"
-                printf 'max-time = 10\nfail\nsilent\nshow-error\nlocation\n'
-            } > "$GH_API_CFG"
-            DETECTED_BRANCH=$(curl --config "$GH_API_CFG" 2>/dev/null \
-                | jq -r '.default_branch // empty' 2>/dev/null) || DETECTED_BRANCH=""
-            rm -f "$GH_API_CFG"
+            # The mktemp + curl + cleanup are wrapped in a subshell with
+            # `trap … EXIT HUP INT TERM` so the token-bearing config file
+            # is always removed — even on Ctrl-C, runner cancellation, or
+            # an unexpected `set -e` exit between mktemp and rm. Same
+            # argv-safe pattern as the Kestra/Infisical paths elsewhere
+            # in this script.
+            DETECTED_BRANCH=$(
+                GH_API_CFG=$(mktemp)
+                trap 'rm -f "$GH_API_CFG"' EXIT HUP INT TERM
+                chmod 600 "$GH_API_CFG"
+                {
+                    printf 'header = "Authorization: Bearer %s"\n' "$GH_MIRROR_TOKEN"
+                    printf 'header = "Accept: application/vnd.github+json"\n'
+                    printf 'url = "https://api.github.com/repos/%s"\n' "$GH_OWNER_REPO"
+                    printf 'max-time = 10\nfail\nsilent\nshow-error\nlocation\n'
+                } > "$GH_API_CFG"
+                curl --config "$GH_API_CFG" 2>/dev/null \
+                    | jq -r '.default_branch // empty' 2>/dev/null || true
+            )
             if [ -n "$DETECTED_BRANCH" ] && [ "$DETECTED_BRANCH" != "null" ]; then
                 WORKSPACE_BRANCH="$DETECTED_BRANCH"
                 if [ "$WORKSPACE_BRANCH" != "main" ]; then
