@@ -2679,7 +2679,11 @@ if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] &
     # defensive cap for the cold-start race between /healthz returning
     # 200 and the data provider finishing admin-init.
     for _i in $(seq 1 60); do
-        _ah=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
+        # `--connect-timeout 3 --max-time 5` mirrors the Kestra
+        # readiness probe — bounds each iteration so a stalled
+        # localhost socket can't make the loop hang past the 60×2 s
+        # ceiling.
+        _ah=$(ssh nexus "curl -s --connect-timeout 3 --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
         _ah="${_ah:-000}"
         if [ "$_ah" = "200" ]; then
             _au=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_PROBE_EOF 2>/dev/null
@@ -2688,7 +2692,7 @@ CFG=\$(mktemp)
 chmod 600 "\$CFG"
 trap 'rm -f "\$CFG"' EXIT
 printf 'user = "nexus-sftpgo:%s"\n' "\$PW" > "\$CFG"
-curl -s -o /dev/null -w '%{http_code}' --config "\$CFG" 'http://localhost:8090/api/v2/token'
+curl -s --connect-timeout 3 --max-time 5 -o /dev/null -w '%{http_code}' --config "\$CFG" 'http://localhost:8090/api/v2/token'
 REMOTE_SFTPGO_PROBE_EOF
 ) || _au=""
             _au="${_au:-000}"
@@ -3524,27 +3528,44 @@ CFG
 
                 # URL-encode each path segment via jq @uri.
                 REPO_PATH_ENC=$(jq -rn --arg p "$REPO_PATH" '$p | split("/") | map(@uri) | join("/")')
-                CONTENT_B64=$(base64 < "$SEED_FILE" | tr -d '\n')
+
+                # Base64-encode the seed file into a tmpfile and let jq
+                # read it via `--rawfile` (NOT `--arg "$CONTENT"`).
+                # `--arg` passes the value through execve, which is
+                # capped by ARG_MAX (~2 MB on Linux). Notebooks, binary
+                # assets, etc. can easily exceed that — and silently
+                # fail seeding when they do. `--rawfile` reads from
+                # disk, no argv limit. The tmpfile is registered with
+                # the global RUNNER_CLEANUP_PATHS list so an interrupt
+                # between mktemp and the explicit `rm -f` below still
+                # gets it removed via the EXIT trap.
+                SEED_B64_TMP=$(mktemp)
+                echo "$SEED_B64_TMP" >> "$RUNNER_CLEANUP_PATHS"
+                base64 < "$SEED_FILE" | tr -d '\n' > "$SEED_B64_TMP"
+
                 # No `branch:` field — Gitea defaults to the repo's
                 # default branch. Hardcoding `main` would 404 on forks
                 # whose upstream uses `master` (or any other default),
                 # which is a realistic case in GH_MIRROR_REPOS mode.
-                JSON_BODY=$(jq -n \
-                    --arg content "$CONTENT_B64" \
+                #
+                # Owner is $GITEA_REPO_OWNER, NOT $ADMIN_USERNAME — in
+                # mirror+user mode the workspace is the user's fork.
+                # The constructed JSON streams directly to ssh's stdin
+                # via the pipe (no intermediate variable), so no
+                # buffered $JSON_BODY can hit memory limits either.
+                SEED_STATUS=$(jq -n \
+                    --rawfile content "$SEED_B64_TMP" \
                     --arg path "$REPO_PATH" \
                     '{
                         content: $content,
                         message: ("chore(seed): add " + $path + " from Nexus-Stack examples/workspace-seeds/")
-                    }')
-
-                # Owner is $GITEA_REPO_OWNER, NOT $ADMIN_USERNAME — in
-                # mirror+user mode the workspace is the user's fork.
-                SEED_STATUS=$(printf '%s' "$JSON_BODY" | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
+                    }' | ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
                     -X POST 'http://localhost:3200/api/v1/repos/$GITEA_REPO_OWNER/$REPO_NAME/contents/$REPO_PATH_ENC' \
                     --config '$GITEA_CURL_CFG' \
                     -H 'Content-Type: application/json' \
                     --data-binary @-" 2>/dev/null) || true
                 SEED_STATUS="${SEED_STATUS:-000}"
+                rm -f "$SEED_B64_TMP"
 
                 case "$SEED_STATUS" in
                     201|200) SEED_COUNT=$((SEED_COUNT+1)) ;;
@@ -4076,19 +4097,18 @@ curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 --config
 REMOTE_KESTRA_PROBE_EOF
 ) || KSTATUS=""
                             KSTATUS="${KSTATUS:-000}"
-                            # Auth-wired = NOT 401. /api/v1/flows in
-                            # Kestra v1.0 OSS responds 404 to GET (the
-                            # endpoint only accepts POST, with a tenant-
-                            # prefixed read path at /api/v1/main/flows
-                            # that returns 405 for GET) — but BOTH 404
-                            # and 405 mean basic-auth was accepted. The
-                            # only "auth-not-yet-wired" signal is 401.
-                            # Accepting any non-401 here keeps the probe
-                            # forwards-compatible with future Kestra
-                            # endpoint reshuffles too.
+                            # Treat Kestra as ready only on known auth-
+                            # success statuses for this probe. /api/v1/flows
+                            # in Kestra v1.0 OSS responds 404 to GET (the
+                            # endpoint only accepts POST, with the read
+                            # path moved under tenant prefix at
+                            # /api/v1/main/flows that returns 405 for GET).
+                            # Both 404 and 405 mean basic-auth was accepted.
+                            # 401 = auth not yet wired; 000 = curl couldn't
+                            # talk to Kestra; 5xx = Kestra reachable but
+                            # internal-error during startup → keep looping.
                             case "$KSTATUS" in
-                                401|000) ;;  # not ready, keep looping
-                                *) KESTRA_READY=true; break ;;
+                                200|404|405) KESTRA_READY=true; break ;;
                             esac
                             if [ $((i % 10)) -eq 0 ]; then
                                 echo "    ... still waiting for Kestra restart + auth ($((SECONDS - KESTRA_WAIT_START))s elapsed, last status $KSTATUS)"
