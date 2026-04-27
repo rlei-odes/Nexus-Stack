@@ -3599,15 +3599,23 @@ CFG
                     KSEC_SKIPPED=0
                     KSEC_FETCH_FAILED=0
                     KSEC_COLLISIONS=0
-                    # Two-column file: "<KEY>\t<source-folder>". Used both
-                    # to skip cross-folder duplicates (first-folder-wins,
-                    # deterministic across re-runs) AND to surface a
-                    # collision warning that names BOTH source folders so
-                    # the operator can tell where the divergence is.
-                    KSEC_SEEN=$(mktemp)
+                    # KSEC_SEEN is allocated only inside the Infisical-guard
+                    # below, so the runner doesn't leak a tmp file on stacks
+                    # where Infisical isn't reachable. The post-guard
+                    # GITEA_TOKEN-special-case at the bottom of this block
+                    # checks `[ -n "$KSEC_SEEN" ] && [ -f ... ]` before
+                    # running awk, so an unset/missing seen-file is safe.
+                    KSEC_SEEN=""
                     if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
                         echo "  Building Kestra secret env from Infisical..."
                         INFISICAL_ENV_KESTRA="${INFISICAL_ENV:-dev}"
+                        # Two-column file: "<KEY>\t<source-folder>". Used
+                        # both to skip cross-folder duplicates (first-
+                        # folder-wins, deterministic across re-runs) AND
+                        # to surface a collision warning that names BOTH
+                        # source folders so the operator can tell where
+                        # the divergence is.
+                        KSEC_SEEN=$(mktemp)
 
                         # All Infisical fetches happen on the server
                         # (localhost:8070 only listens there) but we need
@@ -3767,11 +3775,25 @@ REMOTE_INF_SECRETS_EOF
                     #    Infisical at the time of the `build_folder()`
                     #    pushes earlier in this script, so we add it here
                     #    so seeded flows can use `{{ secret('GITEA_TOKEN') }}`.
-                    if [ -n "$GITEA_TOKEN" ] && ! awk -F'\t' '$1 == "GITEA_TOKEN" {found=1; exit} END {exit !found}' "$KSEC_SEEN" 2>/dev/null; then
-                        echo "SECRET_GITEA_TOKEN=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')" >> "$KESTRA_SECRETS_TMP"
-                        KSEC_PUSHED=$((KSEC_PUSHED+1))
+                    # Write SECRET_GITEA_TOKEN unless it was already
+                    # pushed via Infisical (guard against duplicate). The
+                    # awk dedupe-check only runs when KSEC_SEEN was
+                    # actually populated by the Infisical loop above; on
+                    # stacks where Infisical isn't reachable, the file
+                    # doesn't exist and we just write the token directly.
+                    if [ -n "$GITEA_TOKEN" ]; then
+                        ALREADY_HAVE_GITEA_TOKEN=false
+                        if [ -n "$KSEC_SEEN" ] && [ -f "$KSEC_SEEN" ]; then
+                            if awk -F'\t' '$1 == "GITEA_TOKEN" {found=1; exit} END {exit !found}' "$KSEC_SEEN" 2>/dev/null; then
+                                ALREADY_HAVE_GITEA_TOKEN=true
+                            fi
+                        fi
+                        if [ "$ALREADY_HAVE_GITEA_TOKEN" = "false" ]; then
+                            echo "SECRET_GITEA_TOKEN=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')" >> "$KESTRA_SECRETS_TMP"
+                            KSEC_PUSHED=$((KSEC_PUSHED+1))
+                        fi
                     fi
-                    rm -f "$KSEC_SEEN"
+                    [ -n "$KSEC_SEEN" ] && rm -f "$KSEC_SEEN"
 
                     # 3. Append (or replace) the delimited block in
                     #    Kestra's .env on the server. Fail fast if either
@@ -3795,12 +3817,28 @@ REMOTE_INF_SECRETS_EOF
                             exit 1
                         fi
 
+                        # Append the secret block AND lock the .env to mode
+                        # 0600. The stack .env files are rsync'd from the
+                        # runner with preserved modes, so under a default
+                        # umask they can land at 0644 (world-readable) on
+                        # the server. Since we're now writing 100+ base64-
+                        # encoded Infisical secrets (R2 keys, DB passwords,
+                        # GITEA_TOKEN, …) into this file, world-readable
+                        # would expose every secret to any local user on
+                        # the VM. `chmod 600` runs in the SAME ssh shell
+                        # so the file is never visible to other users
+                        # AFTER the SECRET_* block has been appended.
                         if ! {
                             echo "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
                             cat "$KESTRA_SECRETS_TMP"
                             echo "# === END nexus-secret-sync ==="
-                        } | ssh nexus "cat >> /opt/docker-server/stacks/kestra/.env"; then
-                            echo -e "${RED}Error: failed to append nexus-secret-sync block to Kestra .env.${NC}"
+                        } | ssh nexus "
+                            set -e
+                            ENV_FILE=/opt/docker-server/stacks/kestra/.env
+                            cat >> \"\$ENV_FILE\"
+                            chmod 600 \"\$ENV_FILE\"
+                        "; then
+                            echo -e "${RED}Error: failed to append nexus-secret-sync block to Kestra .env (or chmod 600 it).${NC}"
                             exit 1
                         fi
 
