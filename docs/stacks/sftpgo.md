@@ -31,9 +31,17 @@ SFTPGo is a fully-featured SFTP/SCP/WebDAV/FTPS server with a web admin UI, per-
 
 **Web admin UI** (Cloudflare Access OTP on top of SFTPGo's own username/password login):
 ```
-https://sftpgo.<your-domain>
+https://sftpgo.<your-domain>/web/admin/login
 ```
 Log in with `nexus-sftpgo` and the password from Infisical (folder `sftpgo`, key `SFTPGO_ADMIN_PASSWORD`).
+
+> ⚠️ The `/web/admin/login` path matters. SFTPGo's default landing page at `https://sftpgo.<your-domain>/` redirects to `/web/client/login`, which is the *user* web client (a separate login form backed by the `users` table). Entering admin credentials there fails with "Invalid credentials" because `nexus-sftpgo` only exists in the admin table, not the user table. Bookmark the `/web/admin/login` URL to avoid the redirect.
+
+**Web client UI** (for the default SFTP user `nexus-default` to browse R2 contents in a browser):
+```
+https://sftpgo.<your-domain>/web/client/login
+```
+Log in with `nexus-default` and the password from Infisical (folder `sftpgo`, key `SFTPGO_USER_PASSWORD`).
 
 **SFTP**: the SFTP port (`2022`) is closed by default — SFTPGo is reachable only from inside the Docker network until you opt in. Open it via **Firewall** in the Control Plane (toggle `sftpgo` → `sftp`, restrict to your source IP or range, hit **Spin Up**). Then:
 ```
