@@ -14,21 +14,26 @@ For now there is only `workspace-seeds/`. If we ever ship reference material tha
 
 The directory layout under `workspace-seeds/` mirrors the workspace Gitea repo's root **1:1**. Whatever path a file has under `workspace-seeds/`, that's the path it lands at in the workspace repo:
 
+Source tree under `examples/workspace-seeds/`:
+
 ```
-nexus-stack/                                                  workspace Gitea repo (after spin-up):
-└── examples/                                                 nexus-<slug>-gitea/
-    └── workspace-seeds/                                      ├── kestra/
-        ├── kestra/                ─────── seed ───►          │   ├── flows/
-        │   ├── flows/                                        │   │   └── r2-taxi-pipeline.yaml
-        │   │   └── r2-taxi-pipeline.yaml                     │   └── workflows/   (helper files)
-        │   └── workflows/                                    ├── notebooks/       (when added)
-        ├── notebooks/                                        ├── scripts/         (when added)
-        ├── scripts/                                          ├── dbt/             (when added)
-        ├── dbt/                                              └── sql/             (when added)
-        └── sql/
+examples/workspace-seeds/
+├── kestra/
+│   ├── flows/
+│   │   └── r2-taxi-pipeline.yaml
+│   └── workflows/                  (helper files: scripts, configs, SQL templates)
+├── notebooks/                      (when added — Jupyter / Marimo / code-server)
+├── scripts/                        (when added — code-server, ad-hoc execution)
+├── dbt/                            (when added — code-server, manual `dbt`)
+└── sql/                            (when added — DuckDB, Trino, ClickHouse)
 ```
 
-`system.flow-sync` (registered by `deploy.sh`) syncs `kestra/flows/` into Kestra under target namespace `tutorials` with `includeChildNamespaces: true` — so `kestra/flows/r2-taxi-pipeline.yaml` lands at `tutorials.r2-taxi-pipeline`, and any future subdir like `kestra/flows/sub1/foo.yaml` extends to `tutorials.sub1.foo`.
+Mapping: every file `examples/workspace-seeds/<path>` is seeded to `<path>` in the workspace Gitea repo (`nexus-<slug>-gitea/<path>`). For example:
+
+- `examples/workspace-seeds/kestra/flows/r2-taxi-pipeline.yaml` → `nexus-<slug>-gitea/kestra/flows/r2-taxi-pipeline.yaml`
+- `examples/workspace-seeds/notebooks/foo.ipynb` → `nexus-<slug>-gitea/notebooks/foo.ipynb`
+
+`system.flow-sync` (registered by `deploy.sh`) then syncs `kestra/flows/` into Kestra under target namespace `tutorials` with `includeChildNamespaces: true` — so `kestra/flows/r2-taxi-pipeline.yaml` lands at `tutorials.r2-taxi-pipeline`, and any future subdir like `kestra/flows/sub1/foo.yaml` extends to `tutorials.sub1.foo`.
 
 This means any file you drop under `workspace-seeds/<dir>/<name>` will appear in every user's workspace at the same `<dir>/<name>` after the next Initial Setup. No `deploy.sh` edit, no new code path.
 
