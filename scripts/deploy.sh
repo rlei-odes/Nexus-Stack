@@ -2880,9 +2880,35 @@ REMOTE_SFTPGO_USER_EOF
             # then re-creates the row with the current password hash.
             if [ "$SFTPGO_USER_STATUS" = "400" ] || [ "$SFTPGO_USER_STATUS" = "409" ]; then
                 echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — likely stale row from preserved volume. Resetting and re-creating...${NC}"
-                if ssh nexus "command -v sqlite3 >/dev/null 2>&1 || sudo apt-get install -y sqlite3 >/dev/null 2>&1 ; sudo sqlite3 /mnt/nexus-data/sftpgo/data/sftpgo.db \"DELETE FROM users WHERE username='nexus-default';\"" 2>/dev/null; then
-                    SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
-                    SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
+                # DELETE the stale row on disk + restart the container.
+                # Restart is required: SFTPGo's data provider keeps the
+                # users table in an in-memory cache, so a SQL-only DELETE
+                # leaves the cached entry in place and the next POST hits
+                # the same duplicate-key 400 even though the on-disk
+                # users table is now empty. (The admin self-heal earlier
+                # in this block follows the same DELETE+restart pattern.)
+                if ssh nexus "command -v sqlite3 >/dev/null 2>&1 || sudo apt-get install -y sqlite3 >/dev/null 2>&1 ; sudo sqlite3 /mnt/nexus-data/sftpgo/data/sftpgo.db \"DELETE FROM users WHERE username='nexus-default';\" && docker restart sftpgo >/dev/null" 2>/dev/null; then
+                    echo "  Waiting for SFTPGo to come back up..."
+                    SFTPGO_LAST_AUTH_STATUS="000"
+                    SFTPGO_READY=false
+                    sftpgo_probe_loop || true
+                    if [ "$SFTPGO_READY" = "true" ]; then
+                        # Need a fresh admin token: container restart
+                        # invalidated the previous JWT.
+                        SFTPGO_TOKEN_RESP=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_TOKEN_EOF2 2>/dev/null
+ADMIN_PW=\$(printf '%s' '$SFTPGO_ADMIN_B64' | base64 -d)
+CFG=\$(mktemp)
+chmod 600 "\$CFG"
+trap 'rm -f "\$CFG"' EXIT
+printf 'user = "nexus-sftpgo:%s"\n' "\$ADMIN_PW" > "\$CFG"
+curl -s --config "\$CFG" 'http://localhost:8090/api/v2/token'
+REMOTE_SFTPGO_TOKEN_EOF2
+) || SFTPGO_TOKEN_RESP=""
+                        SFTPGO_TOKEN=$(echo "$SFTPGO_TOKEN_RESP" | jq -r '.access_token // empty' 2>/dev/null)
+                        SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\n')
+                        SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
+                        SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
+                    fi
                 else
                     echo -e "${YELLOW}    ⚠ Could not reset SFTPGo user row via ssh — configure manually in the UI${NC}"
                 fi
