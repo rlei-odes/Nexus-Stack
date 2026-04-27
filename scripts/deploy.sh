@@ -390,7 +390,13 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
     if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$TIMEOUT -o BatchMode=yes nexus 'echo ok' 2>"$SSH_ERR"; then
         echo -e "${GREEN}  ✓ SSH connection established${NC}"
         rm -f "$SSH_ERR"
-        trap - EXIT
+        # NOTE: do NOT `trap - EXIT` here. The EXIT trap installed at
+        # the top of this section also walks $REMOTE_CLEANUP_PATHS and
+        # ssh-rm's any remote tmp files that downstream blocks (seed
+        # loop, secret-sync, …) registered. Removing the trap on first
+        # SSH success would leave token-bearing curl --config files
+        # behind on the server if the deploy aborts later. The trap'\''s
+        # `rm -f $SSH_ERR` is no-op-safe when the file is already gone.
         break
     fi
     RETRY=$((RETRY + 1))

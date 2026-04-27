@@ -21,7 +21,7 @@ examples/workspace-seeds/
 ├── kestra/
 │   ├── flows/
 │   │   └── r2-taxi-pipeline.yaml
-│   └── workflows/                  (helper files: scripts, configs, SQL templates)
+│   └── workflows/                  (when added — helper files: scripts, configs, SQL templates)
 ├── notebooks/                      (when added — Jupyter / Marimo / code-server)
 ├── scripts/                        (when added — code-server, ad-hoc execution)
 ├── dbt/                            (when added — code-server, manual `dbt`)
@@ -59,7 +59,7 @@ If a new stack needs its own per-stack folder, add it under `workspace-seeds/<st
 
 ## How seeding works
 
-`scripts/deploy.sh`, after the workspace repo exists, walks every file under `examples/workspace-seeds/`, base64-encodes it, and POSTs it to the internal Gitea API (`http://localhost:3200/api/v1/repos/<admin>/<repo>/contents/<path>`, accessed via SSH from the runner) with the relative path.
+`scripts/deploy.sh`, after the workspace repo exists, walks every file under `examples/workspace-seeds/`, base64-encodes it, and POSTs it to the internal Gitea API (`http://localhost:3200/api/v1/repos/<owner>/<repo>/contents/<path>`, accessed via SSH from the runner) with the relative path. `<owner>` is the Gitea admin in the default workspace-repo case, or the user's Gitea username in the GH_MIRROR_REPOS+user-fork case (deploy.sh resolves this via `$GITEA_REPO_OWNER`, set per-mode at the top of the script).
 
 - HTTP **201/200** → file created. Counted as `SEEDED`.
 - HTTP **422** → file already exists. Counted as `SKIPPED`. **Existing files are never overwritten** — user edits persist across re-deploys.
