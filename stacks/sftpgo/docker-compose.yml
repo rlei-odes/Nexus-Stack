@@ -21,11 +21,29 @@
 # `SFTPGO_USER_PASSWORD`. The web admin UI is gated by Cloudflare Access
 # email-OTP on top.
 #
-# Persistent state (SFTPGo's internal SQLite DB tracking users and
-# virtual folders) lives on the persistent Hetzner volume at
-# /mnt/nexus-data/sftpgo/data (mounted into the container at
-# /var/lib/sftpgo) — survives teardown and destroy-all. User files
-# themselves live in R2, not on the volume.
+# Local state is ephemeral. SFTPGo's SQLite at /var/lib/sftpgo tracks
+# only the admin account, the `nexus-default` user definition, and SFTP
+# host keys — none of which need to outlive the container. Real user
+# files live in R2 via the per-user S3 vfs config (key_prefix
+# `sftp/<username>/`), not in /var/lib/sftpgo.
+#
+# We therefore use a docker-named-volume rather than a bind-mount onto
+# the persistent Hetzner volume at /mnt/nexus-data/. This is deliberate:
+# - destroy-all preserves /mnt/nexus-data/ (Gitea repos, Postgres data
+#   that genuinely need to outlive a teardown live there) but
+# - random_password.sftpgo_admin / random_password.sftpgo_user
+#   regenerate on every fresh `tofu apply`, so a persisted SQLite would
+#   carry stale bcrypt hashes that no longer match Infisical/Control
+#   Plane → 401 forever, plus "user already exists" 400s on re-create.
+# An ephemeral docker-named-volume side-steps the whole class of state-
+# mismatch problems: every fresh apply gets a clean DB,
+# CREATE_DEFAULT_ADMIN bootstraps the admin with the current env-var
+# password, and POST /api/v2/users creates `nexus-default` cleanly.
+#
+# Trade-off: SFTP host keys regenerate on every fresh deploy → SFTP
+# clients see one "REMOTE HOST IDENTIFICATION HAS CHANGED" warning and
+# need to refresh their known_hosts (`ssh-keygen -R <host>`). This is
+# acceptable for a teardown-and-rebuild workflow.
 # =============================================================================
 
 services:
@@ -71,12 +89,16 @@ services:
       retries: 3
       start_period: 30s
     volumes:
-      # SFTPGo's internal state (SQLite users DB, host keys). User data
-      # itself goes to R2 via per-user S3 vfs config — no need to mount
-      # a /srv/sftpgo file tree on the host.
-      - /mnt/nexus-data/sftpgo/data:/var/lib/sftpgo
+      # Docker-named-volume (NOT a bind-mount onto /mnt/nexus-data/).
+      # See the top-of-file Persistent state comment for rationale —
+      # ephemeral SQLite avoids stale-bcrypt-hash mismatches across
+      # destroy-all + initial-setup. User files live in R2.
+      - sftpgo-data:/var/lib/sftpgo
     networks:
       - app-network
+
+volumes:
+  sftpgo-data:
 
 networks:
   app-network:

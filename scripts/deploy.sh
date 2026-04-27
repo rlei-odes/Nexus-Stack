@@ -1890,16 +1890,6 @@ if echo \"$ENABLED_LIST\" | grep -qw \"dify\"; then
     chown -R 1001:1001 /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
 fi
 
-# Fix SFTPGo data permissions. The drakkan/sftpgo image runs as uid
-# 1000:1000; without this chown the SQLite users-DB at
-# /var/lib/sftpgo/sftpgo.db can't be created (\"unable to open
-# database file: no such file or directory\") and the container
-# enters a restart loop, surfacing as Bad Gateway through Cloudflare.
-if echo \"$ENABLED_LIST\" | grep -qw \"sftpgo\"; then
-    mkdir -p /mnt/nexus-data/sftpgo/data
-    chown -R 1000:1000 /mnt/nexus-data/sftpgo/data
-fi
-
 for service in $ENABLED_LIST; do
     echo \"[DEBUG] Checking service: \$service\" >&2
 
@@ -2679,21 +2669,20 @@ if echo "$ENABLED_SERVICES" | grep -qw "sftpgo" && [ -n "$SFTPGO_ADMIN_PASS" ] &
     # while admin-init is still in flight and get 401 → "admin login
     # failed — default user not created", and the run looks green.
     SFTPGO_READY=false
-    SFTPGO_LAST_AUTH_STATUS="000"
     SFTPGO_PROBE_B64=$(printf '%s' "$SFTPGO_ADMIN_PASS" | base64 | tr -d '\n')
 
-    # Helper: do a /healthz + /api/v2/token probe loop. Sets
-    # SFTPGO_READY=true on first 200 from the auth probe; otherwise
-    # leaves SFTPGO_LAST_AUTH_STATUS at whatever the most recent auth
-    # status was (used below to distinguish "container never came up"
-    # from "container up but auth keeps returning 401").
-    sftpgo_probe_loop() {
-        local _i _ah _au
-        for _i in $(seq 1 60); do
-            _ah=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
-            _ah="${_ah:-000}"
-            if [ "$_ah" = "200" ]; then
-                _au=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_PROBE_EOF 2>/dev/null
+    # /healthz + /api/v2/token probe loop. With ephemeral SFTPGo state
+    # (docker-named-volume, NOT a bind-mount onto /mnt/nexus-data/), the
+    # admin row is freshly bootstrapped from $SFTPGO_DEFAULT_ADMIN_*
+    # on every cold start, so this loop succeeds on the first or
+    # second iteration in practice. The 60×2 s ceiling is just a
+    # defensive cap for the cold-start race between /healthz returning
+    # 200 and the data provider finishing admin-init.
+    for _i in $(seq 1 60); do
+        _ah=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/healthz 2>/dev/null") || true
+        _ah="${_ah:-000}"
+        if [ "$_ah" = "200" ]; then
+            _au=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_PROBE_EOF 2>/dev/null
 PW=\$(printf '%s' '$SFTPGO_PROBE_B64' | base64 -d)
 CFG=\$(mktemp)
 chmod 600 "\$CFG"
@@ -2702,55 +2691,17 @@ printf 'user = "nexus-sftpgo:%s"\n' "\$PW" > "\$CFG"
 curl -s -o /dev/null -w '%{http_code}' --config "\$CFG" 'http://localhost:8090/api/v2/token'
 REMOTE_SFTPGO_PROBE_EOF
 ) || _au=""
-                _au="${_au:-000}"
-                SFTPGO_LAST_AUTH_STATUS="$_au"
-                if [ "$_au" = "200" ]; then
-                    SFTPGO_READY=true
-                    return 0
-                fi
+            _au="${_au:-000}"
+            if [ "$_au" = "200" ]; then
+                SFTPGO_READY=true
+                break
             fi
-            sleep 2
-        done
-        return 1
-    }
-
-    sftpgo_probe_loop || true
-
-    # Self-heal stale-admin-hash vs. rotated-env-password mismatch.
-    #
-    # destroy-all *protects* the persistent Hetzner volume (intentional —
-    # Gitea repos / Postgres data live there and survive teardowns). But
-    # the SFTPGo SQLite DB at /mnt/nexus-data/sftpgo/data/sftpgo.db is
-    # *also* on that volume, and it stores the admin password as a
-    # bcrypt hash baked at first-start. After destroy-all, OpenTofu
-    # re-runs `random_password.sftpgo_admin` and generates a NEW value;
-    # the new value goes into stacks/sftpgo/.env and the container's
-    # SFTPGO_DEFAULT_ADMIN_PASSWORD env var, but `CREATE_DEFAULT_ADMIN=1`
-    # is a no-op when the admin row already exists from the previous
-    # life of the volume → DB hash is for the OLD password, env has the
-    # NEW one → every basic-auth call returns 401 forever.
-    #
-    # If the auth probe never got past 401 within the readiness loop
-    # AND the HTTP layer is reachable (i.e. it's auth that's broken,
-    # not the container), wipe the admins table on the volume and
-    # restart the container so CREATE_DEFAULT_ADMIN re-bootstraps with
-    # the current env-var password. Single retry — if it still 401s
-    # afterwards, something else is wrong and we surface the warning.
-    if [ "$SFTPGO_READY" = "false" ] && [ "$SFTPGO_LAST_AUTH_STATUS" = "401" ]; then
-        echo -e "${YELLOW}  ⚠ SFTPGo admin login returns 401 despite correct env password — likely stale admin hash from a preserved persistent volume. Resetting admin DB...${NC}"
-        if ssh nexus "command -v sqlite3 >/dev/null 2>&1 || sudo apt-get install -y sqlite3 >/dev/null 2>&1 ; sudo sqlite3 /mnt/nexus-data/sftpgo/data/sftpgo.db 'DELETE FROM admins;' && docker restart sftpgo >/dev/null" 2>/dev/null; then
-            echo "  Waiting for SFTPGo to bootstrap a fresh admin..."
-            sftpgo_probe_loop || true
-            if [ "$SFTPGO_READY" = "true" ]; then
-                echo -e "${GREEN}  ✓ SFTPGo admin DB reset — basic-auth now matches env password${NC}"
-            fi
-        else
-            echo -e "${YELLOW}    ⚠ Could not reset SFTPGo admin DB via ssh — configure manually in the UI${NC}"
         fi
-    fi
+        sleep 2
+    done
 
     if [ "$SFTPGO_READY" = "false" ]; then
-        echo -e "${YELLOW}  ⚠ SFTPGo not ready after probe (last auth status $SFTPGO_LAST_AUTH_STATUS) — skipping default-user creation${NC}"
+        echo -e "${YELLOW}  ⚠ SFTPGo not ready after probe — skipping default-user creation${NC}"
     elif [ -z "$R2_DATA_BUCKET" ] || [ -z "$R2_DATA_ENDPOINT" ] || [ -z "$R2_DATA_ACCESS_KEY" ] || [ -z "$R2_DATA_SECRET_KEY" ]; then
         echo -e "${YELLOW}  ⚠ R2 datalake credentials missing — SFTPGo admin is up, but default user not created (configure manually in the UI)${NC}"
     else
@@ -2860,64 +2811,10 @@ REMOTE_SFTPGO_USER_EOF
             SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
             SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
 
-            # Self-heal stale-user-row vs. rotated-env-password mismatch.
-            #
-            # destroy-all preserves the persistent volume on purpose, so
-            # /mnt/nexus-data/sftpgo/data/sftpgo.db carries the
-            # `nexus-default` row across teardowns — INCLUDING its
-            # bcrypt-hashed password from a previous deploy. After a
-            # fresh `tofu apply` the runner-side $SFTPGO_USER_PASS is a
-            # NEW value, but POST /api/v2/users hits the duplicate-key
-            # constraint (400 with that exact message in v2.7.x; can also
-            # be 409 in some flows) and bails — leaving Infisical out of
-            # sync with the on-volume hash. Result: the credentials the
-            # operator copies from Control Plane / Infisical no longer
-            # log in via web client or SFTP.
-            #
-            # Symmetric to the admin-DB self-heal earlier in this block:
-            # if the POST fails with a duplicate-style status, DELETE
-            # the user row on the volume and re-POST. The second POST
-            # then re-creates the row with the current password hash.
-            if [ "$SFTPGO_USER_STATUS" = "400" ] || [ "$SFTPGO_USER_STATUS" = "409" ]; then
-                echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — likely stale row from preserved volume. Resetting and re-creating...${NC}"
-                # DELETE the stale row on disk + restart the container.
-                # Restart is required: SFTPGo's data provider keeps the
-                # users table in an in-memory cache, so a SQL-only DELETE
-                # leaves the cached entry in place and the next POST hits
-                # the same duplicate-key 400 even though the on-disk
-                # users table is now empty. (The admin self-heal earlier
-                # in this block follows the same DELETE+restart pattern.)
-                if ssh nexus "command -v sqlite3 >/dev/null 2>&1 || sudo apt-get install -y sqlite3 >/dev/null 2>&1 ; sudo sqlite3 /mnt/nexus-data/sftpgo/data/sftpgo.db \"DELETE FROM users WHERE username='nexus-default';\" && docker restart sftpgo >/dev/null" 2>/dev/null; then
-                    echo "  Waiting for SFTPGo to come back up..."
-                    SFTPGO_LAST_AUTH_STATUS="000"
-                    SFTPGO_READY=false
-                    sftpgo_probe_loop || true
-                    if [ "$SFTPGO_READY" = "true" ]; then
-                        # Need a fresh admin token: container restart
-                        # invalidated the previous JWT.
-                        SFTPGO_TOKEN_RESP=$(ssh nexus "bash -s" <<REMOTE_SFTPGO_TOKEN_EOF2 2>/dev/null
-ADMIN_PW=\$(printf '%s' '$SFTPGO_ADMIN_B64' | base64 -d)
-CFG=\$(mktemp)
-chmod 600 "\$CFG"
-trap 'rm -f "\$CFG"' EXIT
-printf 'user = "nexus-sftpgo:%s"\n' "\$ADMIN_PW" > "\$CFG"
-curl -s --config "\$CFG" 'http://localhost:8090/api/v2/token'
-REMOTE_SFTPGO_TOKEN_EOF2
-) || SFTPGO_TOKEN_RESP=""
-                        SFTPGO_TOKEN=$(echo "$SFTPGO_TOKEN_RESP" | jq -r '.access_token // empty' 2>/dev/null)
-                        SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\n')
-                        SFTPGO_USER_STATUS=$(sftpgo_post_user) || true
-                        SFTPGO_USER_STATUS="${SFTPGO_USER_STATUS:-000}"
-                    fi
-                else
-                    echo -e "${YELLOW}    ⚠ Could not reset SFTPGo user row via ssh — configure manually in the UI${NC}"
-                fi
-            fi
-
             case "$SFTPGO_USER_STATUS" in
-                200|201) echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
-                *)       echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
-                         echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
+                201) echo -e "${GREEN}  ✓ SFTPGo default user 'nexus-default' created (R2 backend)${NC}" ;;
+                *)   echo -e "${YELLOW}  ⚠ SFTPGo user creation returned HTTP $SFTPGO_USER_STATUS — configure manually${NC}"
+                     echo -e "${YELLOW}    Credentials available in Infisical${NC}" ;;
             esac
         fi
     fi
