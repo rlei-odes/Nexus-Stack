@@ -73,3 +73,27 @@ The reverse direction works too: a file written via S3 directly into the bucket 
 ### Adding more SFTP users (multi-tenant setups)
 
 The default user has full bucket access intentionally — single-user deploys (the common case) get the natural "I see everything I uploaded" UX without touching the admin UI. For multi-tenant setups where multiple SFTP users should share one R2 bucket without seeing each other's files, create the additional users in the web admin UI: **Users → Add** → pick `Cloud filesystem (S3)` for the filesystem provider, reuse the R2 endpoint + access key from Infisical, and set a distinct `key_prefix` (e.g. `sftp/<username>/`) so each new user gets an isolated home directory under the same bucket. The bootstrapped `nexus-default` user can keep its empty prefix or be edited the same way.
+
+### Connecting to non-R2 storage (other S3 providers, GCS, Azure, local, SFTP-backend)
+
+R2 is just the auto-configured default; SFTPGo is **not hardwired** to it. The SFTPGo data provider supports multiple filesystem backends, and **each user picks their own backend independently**. So one user can read/write R2, another can hit Hetzner Object Storage, another can be a passthrough into AWS S3 — all served behind the same SFTP endpoint on port `2022` (and the same web client UI on `https://sftpgo.<your-domain>/web/client/login`).
+
+In the web admin UI, **Users → Add → Filesystem tab → Filesystem provider** offers:
+
+| Provider | Use for |
+|---|---|
+| `Local filesystem` | Files stored inside the SFTPGo container's volume — survives docker restart but tied to the box |
+| `Cloud filesystem (S3)` | Cloudflare R2 (the default `nexus-default` setup), AWS S3, MinIO, Hetzner Object Storage, any other S3-compatible endpoint. Set `Endpoint`, `Region`, `Bucket`, `Access key`, `Access secret`, optional `Key prefix` |
+| `Cloud filesystem (Google Cloud Storage)` | GCS bucket with a service-account JSON |
+| `Cloud filesystem (Azure Blob Storage)` | Azure container with account name + key, or Shared Access Signature |
+| `Encrypted local filesystem` | Local filesystem with at-rest encryption (passphrase-derived key) |
+| `SFTP filesystem` | Mount a remote SFTP server as the user's home — useful for chaining SFTPGo as a proxy in front of an existing SFTP target |
+| `HTTP filesystem` | Custom HTTP backend implementing the SFTPGo HTTPFs API |
+
+For a multi-target setup using ONE user account, use **Virtual folders** (Users → Add/Edit → Virtual folders tab): each virtual folder is its own filesystem (e.g. `/r2` → S3 backend on R2, `/hetzner` → S3 backend on Hetzner Object Storage, `/local` → Local filesystem). The user sees them as subdirectories of their home dir.
+
+Examples in this stack:
+
+- A user that points at **Hetzner Object Storage** instead of R2: same `Cloud filesystem (S3)` provider, but with `Endpoint = https://<region>.your-objectstorage.com`, the Hetzner-issued access key, and a Hetzner bucket name. Credentials are not auto-pushed to Infisical for Hetzner OBS, so you'd paste them from your Hetzner Cloud console manually.
+- A user that points at **AWS S3** directly: `Endpoint` blank, `Region` set to e.g. `us-east-1`, AWS IAM access key + secret, bucket name. SFTPGo signs SigV4.
+- A user with a `Local filesystem` home: useful if you just want a vanilla SFTP server inside the stack without any cloud egress, e.g. for a one-off file-drop between two services on the same host.
