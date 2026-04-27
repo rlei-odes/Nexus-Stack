@@ -674,11 +674,22 @@ if echo "$ENABLED_SERVICES" | grep -qw "sftpgo"; then
     fi
     echo "  Generating SFTPGo config from OpenTofu secrets..."
     mkdir -p "$STACKS_DIR/sftpgo"
-    cat > "$STACKS_DIR/sftpgo/.env" << EOF
+    # umask 077 inside a subshell forces the .env to be created at
+    # mode 0600 from byte 0, so the admin password is never visible
+    # to other local users on the runner (or on the VM after rsync,
+    # which preserves modes). chmod 600 after-the-fact is also
+    # applied as belt-and-braces in case the file already existed
+    # at a wider permission and `cat >` only truncates content,
+    # not mode.
+    (
+        umask 077
+        cat > "$STACKS_DIR/sftpgo/.env" << EOF
 # Auto-generated from OpenTofu secrets - DO NOT COMMIT
 SFTPGO_ADMIN_PASSWORD=$SFTPGO_ADMIN_PASS
 EOF
-    echo -e "${GREEN}  ✓ SFTPGo .env generated${NC}"
+    )
+    chmod 600 "$STACKS_DIR/sftpgo/.env"
+    echo -e "${GREEN}  ✓ SFTPGo .env generated (mode 0600)${NC}"
 fi
 
 # Generate RedPanda Console .env from OpenTofu secrets
@@ -3823,17 +3834,17 @@ REMOTE_INF_SECRETS_EOF
                             exit 1
                         fi
 
-                        # Append the secret block AND lock the .env to mode
-                        # 0600. The stack .env files are rsync'd from the
-                        # runner with preserved modes, so under a default
-                        # umask they can land at 0644 (world-readable) on
-                        # the server. Since we're now writing 100+ base64-
-                        # encoded Infisical secrets (R2 keys, DB passwords,
-                        # GITEA_TOKEN, …) into this file, world-readable
-                        # would expose every secret to any local user on
-                        # the VM. `chmod 600` runs in the SAME ssh shell
-                        # so the file is never visible to other users
-                        # AFTER the SECRET_* block has been appended.
+                        # Lock the .env to mode 0600 BEFORE appending the
+                        # SECRET_* block, then append. Doing chmod first
+                        # closes the race window where the file could be
+                        # world-readable (0644 from rsync-preserved modes
+                        # under default umask) WHILE the new secrets are
+                        # being written — a concurrent reader could grab
+                        # a partial copy of base64-encoded R2 keys / DB
+                        # passwords / GITEA_TOKEN. chmod 600 idempotent
+                        # at the start; the file definitely exists
+                        # because the preceding sed-removal step opened
+                        # and re-wrote it.
                         if ! {
                             echo "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
                             cat "$KESTRA_SECRETS_TMP"
@@ -3841,10 +3852,10 @@ REMOTE_INF_SECRETS_EOF
                         } | ssh nexus "
                             set -e
                             ENV_FILE=/opt/docker-server/stacks/kestra/.env
-                            cat >> \"\$ENV_FILE\"
                             chmod 600 \"\$ENV_FILE\"
+                            cat >> \"\$ENV_FILE\"
                         "; then
-                            echo -e "${RED}Error: failed to append nexus-secret-sync block to Kestra .env (or chmod 600 it).${NC}"
+                            echo -e "${RED}Error: failed to chmod 0600 + append nexus-secret-sync block to Kestra .env.${NC}"
                             exit 1
                         fi
 
