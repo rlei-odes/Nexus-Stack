@@ -3610,7 +3610,12 @@ CFG
                     # start. So we:
                     #
                     #   1. Build SECRET_* lines on the runner (jq is
-                    #      installed there; not on the Hetzner VM).
+                    #      available there; the VM also has jq now via
+                    #      cloud-init + the runtime install check at the
+                    #      top of this script, but the runner-side build
+                    #      keeps the dedupe / collision-warning logic in
+                    #      one place and avoids piping a megabyte of
+                    #      response bodies through ssh stdin per folder).
                     #      Source = every Infisical folder + root path,
                     #      so user-added secrets in Infisical's UI surface
                     #      in Kestra without code changes.
@@ -3708,7 +3713,12 @@ REMOTE_INF_FOLDERS_EOF
                         FOLDERS_BODY=$(mktemp)
                         printf '%s' "$FOLDERS_RAW" | sed '$d' > "$FOLDERS_BODY"
                         if [ "$FOLDERS_STATUS" = "200" ]; then
-                            FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null || echo "")
+                            # Sort the folder list alphabetically so the
+                            # first-folder-wins collision policy is
+                            # deterministic across re-runs even if
+                            # Infisical's API returns folders in a
+                            # different order between calls.
+                            FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null | LC_ALL=C sort || echo "")
                         else
                             echo -e "${YELLOW}    ⚠ Infisical folder discovery returned HTTP $FOLDERS_STATUS — Kestra secret env will only contain root-path secrets + GITEA_TOKEN${NC}"
                             KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
@@ -3919,10 +3929,14 @@ REMOTE_INF_SECRETS_EOF
                     # Kestra creds go through a curl --config file written
                     # via cat-from-stdin instead of `-u user:pw` which would
                     # expose KESTRA_PASS in the remote `ps` listing. HTTP
-                    # status is captured per flow:
-                    #   200/201 → created
-                    #   409     → already exists (idempotent re-run, OK)
-                    #   other   → real failure, surfaced as warning
+                    # status is captured per flow with a POST→PUT fallback
+                    # for idempotent re-runs (Kestra v1.0 OSS has no upsert
+                    # verb — POST is create-only, PUT is update-only):
+                    #   POST 200/201            → created (first-time)
+                    #   POST 422 → PUT 200/201  → updated (idempotent re-run,
+                    #                              also picks up YAML changes)
+                    #   anything else           → real failure, surfaced as
+                    #                              warning
                     # ----------------------------------------------------------
                     REGISTER_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
                     REGISTER_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')

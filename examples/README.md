@@ -57,10 +57,10 @@ If a new stack needs its own per-stack folder, add it under `workspace-seeds/<st
 `scripts/deploy.sh`, after the workspace repo exists, walks every file under `examples/workspace-seeds/`, base64-encodes it, and POSTs it to the internal Gitea API (`http://localhost:3200/api/v1/repos/<admin>/<repo>/contents/<path>`, accessed via SSH from the runner) with the relative path.
 
 - HTTP **201/200** → file created. Counted as `SEEDED`.
-- HTTP **422** → file already exists. Counted as `SKIPPED`. **Existing files are never overwritten** — student edits persist across re-deploys.
+- HTTP **422** → file already exists. Counted as `SKIPPED`. **Existing files are never overwritten** — user edits persist across re-deploys.
 - Anything else → `FAILED`, logged as a warning.
 
-Because seeds use `POST` (create-only) instead of `PUT` (upsert), the seed step is safe to re-run after every spin-up. The trade-off: when you publish a new version of a seed file in a Nexus-Stack release, students who already have the file get the old version. If you need to push an updated example, give it a new filename or version-suffix it.
+Because seeds use `POST` (create-only) instead of `PUT` (upsert), the seed step is safe to re-run after every spin-up. The trade-off: when you publish a new version of a seed file in a Nexus-Stack release, users who already have the file get the old version. If you need to push an updated example, give it a new filename or version-suffix it.
 
 ## Rules for seeded files
 
@@ -81,7 +81,7 @@ If you genuinely need a system-level scheduled flow (e.g. a periodic data refres
 
 ### 2. Reference Infisical-managed secrets only via `{{ secret('NAME') }}`
 
-`scripts/deploy.sh` syncs every Infisical secret into Kestra's secret store on each spin-up (the block that does this is the one tagged "Push every Infisical secret into Kestra's secret store" in `deploy.sh`, sitting next to the existing `GITEA_TOKEN` PUT). Reference them in flows as `{{ secret('R2_ACCESS_KEY') }}`, `{{ secret('GITEA_TOKEN') }}`, etc. Never hardcode credentials in seed files — this directory is public on GitHub.
+`scripts/deploy.sh` syncs every Infisical secret into Kestra on each spin-up: the values are base64-encoded and written as `SECRET_<NAME>=<base64>` env-var entries into a delimited block in `stacks/kestra/.env` (search the script for `BEGIN nexus-secret-sync`), then Kestra is `--force-recreate`d so its `EnvVarSecretProvider` picks them up at startup. Reference them in flows as `{{ secret('R2_ACCESS_KEY') }}`, `{{ secret('GITEA_TOKEN') }}`, etc. Never hardcode credentials in seed files — this directory is public on GitHub.
 
 ### 3. Idempotent if executed multiple times
 
