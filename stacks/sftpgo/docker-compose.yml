@@ -57,6 +57,13 @@
 # clients see one "REMOTE HOST IDENTIFICATION HAS CHANGED" warning and
 # need to refresh their known_hosts (`ssh-keygen -R <host>`). This is
 # acceptable for a teardown-and-rebuild workflow.
+#
+# ARM64 compatibility: drakkan/sftpgo:v2.7.1 ships a multi-arch manifest
+# with linux/amd64, linux/arm64, linux/arm/v7, and linux/ppc64le. The
+# arm64 entry is the one we run on Hetzner cax-class (Ampere Altra) ARM
+# servers. Verified via `docker manifest inspect drakkan/sftpgo:v2.7.1`
+# on 2026-04-28 (per CLAUDE.md "Adding New Stacks → Verify ARM64
+# compatibility BEFORE creating the stack").
 # =============================================================================
 
 services:
