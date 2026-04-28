@@ -2767,7 +2767,19 @@ REMOTE_SFTPGO_TOKEN_EOF
             # "Failed to get directory listing" / "lstat: no such file
             # or directory". Pre-create + chown to the SFTPGo container
             # uid (1000) before the API calls touch them.
-            ssh nexus "docker exec --user 0 sftpgo sh -c 'mkdir -p /var/lib/sftpgo/users/nexus-default /var/lib/sftpgo/folders/cloudflare_r2 /var/lib/sftpgo/folders/hetzner_s3 && chown -R 1000:1000 /var/lib/sftpgo/users /var/lib/sftpgo/folders'" >/dev/null 2>&1 || true
+            # Capture stderr so a real failure (container missing,
+            # docker daemon unhealthy, …) surfaces with the actual
+            # cause rather than being swallowed silently. Subsequent
+            # API calls (folder POST, user POST) will fail downstream
+            # if these dirs aren't there, and "Failed to get directory
+            # listing" 100 lines later is a confusing way to learn the
+            # mkdir step never ran.
+            SFTPGO_PREP_ERR=$(ssh nexus "docker exec --user 0 sftpgo sh -c 'mkdir -p /var/lib/sftpgo/users/nexus-default /var/lib/sftpgo/folders/cloudflare_r2 /var/lib/sftpgo/folders/hetzner_s3 && chown -R 1000:1000 /var/lib/sftpgo/users /var/lib/sftpgo/folders'" 2>&1) || SFTPGO_PREP_ERR_RC=$?
+            if [ -n "${SFTPGO_PREP_ERR_RC:-}" ]; then
+                echo -e "${YELLOW}  ⚠ SFTPGo dir-prep step (mkdir/chown inside the container) failed: $SFTPGO_PREP_ERR${NC}"
+                echo -e "${YELLOW}    → SFTPGo user-creation will likely fail with 'Failed to get directory listing' on first login. Configure manually in the admin UI if needed.${NC}"
+            fi
+            unset SFTPGO_PREP_ERR_RC
 
             SFTPGO_R2_BUCKET_B64=$(printf '%s' "$R2_DATA_BUCKET" | base64 | tr -d '\n')
             SFTPGO_R2_ENDPOINT_B64=$(printf '%s' "$R2_DATA_ENDPOINT" | base64 | tr -d '\n')
@@ -4041,7 +4053,29 @@ REMOTE_INF_SECRETS_EOF
 
                             # jq base64-encodes the secretValue so newlines
                             # / tabs / binary content (multi-line PEMs)
-                            # survive the TSV transit.
+                            # survive the TSV transit. Validate the
+                            # response shape before parsing — Infisical
+                            # occasionally returns a non-JSON error body
+                            # with HTTP 200 (e.g. mid-restart) or a JSON
+                            # blob without a `.secrets` array, and a
+                            # silently-empty TSV would skip the whole
+                            # folder without bumping KSEC_FETCH_FAILED.
+                            JQ_TSV_TMP=$(mktemp)
+                            echo "$JQ_TSV_TMP" >> "$RUNNER_CLEANUP_PATHS"
+                            if ! jq -er '.secrets | type == "array"' "$SECRETS_BODY" >/dev/null 2>&1; then
+                                echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) returned HTTP 200 but the body has no \`.secrets\` array — secrets from this folder will be missing in Kestra${NC}"
+                                KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
+                                rm -f "$SECRETS_BODY" "$JQ_TSV_TMP"
+                                continue
+                            fi
+                            jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' "$SECRETS_BODY" > "$JQ_TSV_TMP" 2>/dev/null || JQ_TSV_RC=$?
+                            if [ -n "${JQ_TSV_RC:-}" ]; then
+                                echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) parsed as JSON but jq tsv-extract failed (exit $JQ_TSV_RC) — secrets from this folder will be missing in Kestra${NC}"
+                                KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
+                                rm -f "$SECRETS_BODY" "$JQ_TSV_TMP"
+                                unset JQ_TSV_RC
+                                continue
+                            fi
                             while IFS=$'\t' read -r KEY VALUE_B64; do
                                 [ -z "$KEY" ] && continue
                                 # Kestra naming rule: ^[A-Za-z][A-Za-z0-9_]*$
@@ -4067,8 +4101,8 @@ REMOTE_INF_SECRETS_EOF
                                 printf '%s\t%s\n' "$KEY" "$FOLDER_LABEL" >> "$KSEC_SEEN"
                                 echo "SECRET_${KEY}=${VALUE_B64}" >> "$KESTRA_SECRETS_TMP"
                                 KSEC_PUSHED=$((KSEC_PUSHED+1))
-                            done < <(jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' "$SECRETS_BODY" 2>/dev/null)
-                            rm -f "$SECRETS_BODY"
+                            done < "$JQ_TSV_TMP"
+                            rm -f "$SECRETS_BODY" "$JQ_TSV_TMP"
                         done < <(printf '%s\n/\n' "$FOLDER_LIST")
                     fi
 
