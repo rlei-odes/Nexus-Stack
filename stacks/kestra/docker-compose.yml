@@ -73,7 +73,7 @@ services:
           # 1 GB cap the JVM spent its time in GC-thrashing (observed 97 %
           # memory utilisation and 200 %+ CPU on an idle container). 4 GB
           # matches Kestra's own "many plugins" recommendation and leaves
-          # breathing room for parallel classroom flow executions.
+          # breathing room for parallel tutorial flow executions.
           memory: 4g
     volumes:
       - kestra-data:/app/storage

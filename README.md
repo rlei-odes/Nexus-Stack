@@ -66,7 +66,7 @@ After deployment you'll have:
 
 ![Quick Start Flow](docs/assets/architecture-quickstart.svg)
 
-## Available Stacks (62)
+## Available Stacks (63)
 
 [![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)](https://akhq.io)
 [![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)](https://www.adminer.org)
@@ -118,6 +118,7 @@ After deployment you'll have:
 [![RustFS](https://img.shields.io/badge/RustFS-B7410E?logo=rust&logoColor=white)](https://rustfs.com)
 [![S3 Manager](https://img.shields.io/badge/S3_Manager-2E7D32?logo=amazons3&logoColor=white)](https://github.com/cloudlena/s3manager)
 [![SeaweedFS](https://img.shields.io/badge/SeaweedFS-4CAF50?logo=amazons3&logoColor=white)](https://seaweedfs.com)
+[![SFTPGo](https://img.shields.io/badge/SFTPGo-2D3748?logo=files&logoColor=white)](https://sftpgo.com)
 [![Sling](https://img.shields.io/badge/Sling-FF6B35?logo=data&logoColor=white)](https://slingdata.io)
 [![Soda](https://img.shields.io/badge/Soda-6C47FF?logo=database&logoColor=white)](https://www.soda.io)
 [![Spark](https://img.shields.io/badge/Apache_Spark-E25A1C?logo=apachespark&logoColor=white)](https://spark.apache.org)
@@ -183,6 +184,7 @@ After deployment you'll have:
 | **RustFS** | Rust-based S3-compatible object storage (MinIO alternative) | [rustfs.com](https://rustfs.com) |
 | **S3 Manager** | Web-based S3 bucket browser and manager for Hetzner Object Storage | [GitHub](https://github.com/cloudlena/s3manager) |
 | **SeaweedFS** | Distributed object storage with Filer UI and S3 API | [seaweedfs.com](https://seaweedfs.com) |
+| **SFTPGo** | SFTP/SCP server with R2 backend (file-protocol front door onto the datalake; WebDAV/FTPS supported upstream, disabled by default) | [sftpgo.com](https://sftpgo.com) |
 | **Sling** | Lightweight CLI for database-to-database and file-to-database transfers | [slingdata.io](https://slingdata.io) |
 | **Soda** | Data quality testing with SodaCL checks (CLI-only, no web UI) | [soda.io](https://www.soda.io) |
 | **Spark** | Distributed data processing engine (Master + Worker cluster) | [spark.apache.org](https://spark.apache.org) |

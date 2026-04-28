@@ -36,6 +36,4 @@ Access MinIO Console at `https://minio.<domain>` to:
 
 **S3 API Access:**
 - **Console UI**: `https://minio.<domain>` (accessible via Cloudflare Tunnel)
-- **S3 API**: `http://localhost:9000` (cluster/localhost only - not exposed via tunnel)
-
-For S3 API access from external applications, use the Console UI or SSH tunnel. Direct S3 API exposure via Cloudflare Tunnel is not configured by default for security reasons.
+- **S3 API**: closed by default — reachable only from inside the Docker network at `minio:9000` (other in-stack containers use this). Open it externally via **Firewall** in the Control Plane (toggle `minio` → `s3-api`, restrict to your source IP, hit **Spin Up**) — then external S3 clients can connect to `http://<your-server-ip>:9000`. The S3 API is HTTP, but Nexus-Stack does not configure a Cloudflare Tunnel ingress route for port 9000 by default — the firewall opt-in is the supported external-access path.

@@ -73,10 +73,26 @@ resource "random_password" "dagster_db" {
   special = false
 }
 
-# Kestra admin password
+# Kestra admin password.
+#
+# Kestra v1.0 OSS basic-auth has a hard validator: the password MUST
+# contain at least one uppercase, one lowercase, AND one digit. If any
+# of the three is missing, Kestra silently *disables* basic-auth — all
+# /api/v1/* calls return 401, /api/v1/configs shows
+# `basicAuthEnabled: null`, and `/api/v1/basicAuthValidationErrors`
+# spits out the exact rule. With `special = false` and no character-
+# class minima, `random_password` produced an alphabetic-only string
+# (no digit) and broke every Kestra sync-flow registration in
+# deploy.sh on that spin-up.
+#
+# `min_numeric/upper/lower = 1` enforces Kestra's rule on every
+# regenerated password.
 resource "random_password" "kestra_admin" {
-  length  = 24
-  special = false
+  length      = 24
+  special     = false
+  min_numeric = 1
+  min_upper   = 1
+  min_lower   = 1
 }
 
 # Kestra database password
@@ -129,6 +145,17 @@ resource "random_password" "mage_admin" {
 
 # MinIO root password
 resource "random_password" "minio_root" {
+  length  = 24
+  special = false
+}
+
+# SFTPGo admin (web UI / REST API) and default user (SFTP login)
+resource "random_password" "sftpgo_admin" {
+  length  = 24
+  special = false
+}
+
+resource "random_password" "sftpgo_user" {
   length  = 24
   special = false
 }
@@ -494,7 +521,7 @@ resource "hcloud_server" "main" {
     command -v docker >/dev/null 2>&1 || { echo "FATAL: Docker installation failed" >&2; exit 1; }
 
     # Install security tools
-    apt-get install -y fail2ban unattended-upgrades
+    apt-get install -y fail2ban unattended-upgrades jq
     
     # Configure automatic security updates
     cat > /etc/apt/apt.conf.d/20auto-upgrades << 'EOF'

@@ -116,6 +116,7 @@ Cloudflare Tunnels handle HTTPS perfectly, but a few services need raw TCP acces
 | **[RustFS](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/rustfs.md)** | `rustfs/rustfs:1.0.0-alpha.82` | Rust rewrite of MinIO's protocol surface. Lower RAM footprint and better tail latency; still pre-1.0 so treat it as experimental for production. |
 | **[S3 Manager](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/s3manager.md)** | `cloudlena/s3manager:latest` | Simple web bucket browser. Preconfigured against the Hetzner Object Storage credentials from `.env`, so it works out of the box. |
 | **[SeaweedFS](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/seaweedfs.md)** | `chrislusf/seaweedfs:3.82` | Distributed object store designed for billions of tiny files where MinIO struggles. Has its own Filer UI plus an S3 API compatibility layer. |
+| **[SFTPGo](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/sftpgo.md)** | `drakkan/sftpgo:v2.7.1` | SFTP/SCP server with a web admin UI. Configured here with the R2 datalake bucket as its S3 backend, so external tools that only speak SFTP can read and write the same files the rest of the stack accesses via S3. SFTPGo also supports WebDAV and FTPS upstream, but Nexus-Stack disables both by default in the shipped compose. |
 
 ## Workflow orchestration & automation
 
