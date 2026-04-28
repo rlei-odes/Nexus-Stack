@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.11...v0.52.0) (2026-04-28)
+
+
+### 🚀 Features
+
+* **examples:** Default r2-taxi-pipeline to 2 months instead of 12 ([cf10cbc](https://github.com/stefanko-ch/Nexus-Stack/commit/cf10cbc0200d3af70d63ed4b7de06a2e281354eb))
+* **examples:** r2-taxi-pipeline writes to nexus-tutorials/NYC/ subpath ([bde1b95](https://github.com/stefanko-ch/Nexus-Stack/commit/bde1b9579aa88a560e920f4afe14d6d6d285f3b8))
+* **kestra,stacks:** Reorg workspace-seeds under kestra/ and add SFTPGo stack ([a02a86a](https://github.com/stefanko-ch/Nexus-Stack/commit/a02a86ad60bd1a380aa043f340f741bfe194792d))
+* **kestra,stacks:** Reorg workspace-seeds under kestra/ and add SFTPGo stack ([bdf1f9a](https://github.com/stefanko-ch/Nexus-Stack/commit/bdf1f9a20a19794e5bd3cd3148aa5cab4acfec70))
+* **kestra:** Seed classroom NYC-Taxi sample flow into Gitea on spin-up ([e7aac3e](https://github.com/stefanko-ch/Nexus-Stack/commit/e7aac3e9e11f2945dd89c1448e39213499a44676))
+* **kestra:** Sync all Infisical secrets + register flow-sync from Gitea ([dadc3db](https://github.com/stefanko-ch/Nexus-Stack/commit/dadc3db97e801e2866a41c65e63a3b9226713ca1))
+* **kestra:** Sync all Infisical secrets + register flow-sync from Gitea ([5483277](https://github.com/stefanko-ch/Nexus-Stack/commit/54832775e9a5aa2b8a3f58f424ec6d1426a6ed17))
+* **scripts:** Verify seeded flow lands in Kestra after registration ([c22f2a0](https://github.com/stefanko-ch/Nexus-Stack/commit/c22f2a0d17870253dd74a819c74db3b07e859963))
+* **sftpgo:** Default nexus-default user to bucket-root (empty key_prefix) instead of per-user subdir ([3993dee](https://github.com/stefanko-ch/Nexus-Stack/commit/3993deeeb9d4ac8383c0554833af043bdb00b793))
+* **sftpgo:** Single user, multiple cloud backends as virtual folders ([8dc6cd3](https://github.com/stefanko-ch/Nexus-Stack/commit/8dc6cd3407f2d8c203c37c4cf1e0a377cb1810c3))
+
+
+### 🐛 Bug Fixes
+
+* **examples:** Seed kestra/workflows/.gitkeep so system.git-sync stops failing ([1978ed7](https://github.com/stefanko-ch/Nexus-Stack/commit/1978ed7146a89058060da8c818a971d98fa0f1bd))
+* **kestra:** Address PR review comments — robustness + portability ([038ef1c](https://github.com/stefanko-ch/Nexus-Stack/commit/038ef1c6070482caccb073b493b7439043061e86))
+* **kestra:** Address PR review comments on Infisical→Kestra secret sync ([ce11c96](https://github.com/stefanko-ch/Nexus-Stack/commit/ce11c96c6119b001b24fe002a2e94176d1f33d21))
+* **kestra:** Address PR review round 4 — ps-leak hardening + doc accuracy ([fa8201e](https://github.com/stefanko-ch/Nexus-Stack/commit/fa8201e2fe892d9a366a1e37938d244953824928))
+* **kestra:** Rename namespace tutorials → nexus-tutorials + fix ForEach output reference ([6e682d5](https://github.com/stefanko-ch/Nexus-Stack/commit/6e682d5ec831627294c05f4d41ec69b3e4e5a19d))
+* **scripts,docs:** Address PR review comments ([4145825](https://github.com/stefanko-ch/Nexus-Stack/commit/41458250b1e26059405b269bc7af690aaf3376e4))
+* **scripts,docs:** Address PR review comments (Infisical fetch status + fail-fast on critical-path errors) ([11ab5d7](https://github.com/stefanko-ch/Nexus-Stack/commit/11ab5d70e334ba842b749bcadbdf88fdb5e58d4b))
+* **scripts,docs:** Address PR review comments (round 6) ([ae5b583](https://github.com/stefanko-ch/Nexus-Stack/commit/ae5b5833257716c181144cf39285ac1fc379da15))
+* **scripts,examples:** Address PR review comments (comments + determinism + stale refs) ([766972d](https://github.com/stefanko-ch/Nexus-Stack/commit/766972de9121c92d5b95cc6910dfd03800e6790d))
+* **scripts,examples:** Address PR review comments (real issues + dismiss false positives) ([cb6ab3f](https://github.com/stefanko-ch/Nexus-Stack/commit/cb6ab3f527fde4e7a2d3122d4b49633a80aec9d0))
+* **scripts,examples:** Replace dead Kestra-secret API-PUT with env-var sync; fix flow-sync targetNamespace ([87c4598](https://github.com/stefanko-ch/Nexus-Stack/commit/87c4598f24941a5a5274b58464ab9d5d2fb46c24))
+* **scripts,sftpgo:** Address PR review comments ([6befa0e](https://github.com/stefanko-ch/Nexus-Stack/commit/6befa0eb9604953c33182d7b55617c13c8e08a0f))
+* **scripts,stacks:** Address PR review comments (round 2) ([1eb99fa](https://github.com/stefanko-ch/Nexus-Stack/commit/1eb99fac30db6c1114bd2ae709a63bace0a64338))
+* **scripts,tofu:** Address PR review comments (jq on VM + collision warnings) ([62c9634](https://github.com/stefanko-ch/Nexus-Stack/commit/62c963476d7c5097f6593ec545ee56b6df59f9cc))
+* **scripts:** Accept 401 as Kestra-ready in readiness loop ([4a012b1](https://github.com/stefanko-ch/Nexus-Stack/commit/4a012b14611bd7b92fd776d46c85e219b8278bb6))
+* **scripts:** Add liveness output to Kestra readiness loop ([d085638](https://github.com/stefanko-ch/Nexus-Stack/commit/d085638e3dde235cdcd26f3a321b821b450b1731))
+* **scripts:** Address PR review comments ([3698133](https://github.com/stefanko-ch/Nexus-Stack/commit/36981338e479a5d97428b3a90cf063880e6bc5ec))
+* **scripts:** Address PR review comments ([c440c36](https://github.com/stefanko-ch/Nexus-Stack/commit/c440c36cca39ae76b2dbf9aed2ba03e64d9063ca))
+* **scripts:** Address PR review comments ([7e75112](https://github.com/stefanko-ch/Nexus-Stack/commit/7e75112481f14cc82d70e5884acddc925b27692a))
+* **scripts:** Address PR review comments ([8f8c1d6](https://github.com/stefanko-ch/Nexus-Stack/commit/8f8c1d69e905677b2f32012efb838f01f8838959))
+* **scripts:** Address PR review comments (Infisical-fetch hardening + readiness comment) ([9803bfd](https://github.com/stefanko-ch/Nexus-Stack/commit/9803bfd87402a29fab6d88e85a834028cbb219d8))
+* **scripts:** Address PR review comments (round 5) ([e986f13](https://github.com/stefanko-ch/Nexus-Stack/commit/e986f134b36cdc032296d146d49a1a67528d672a))
+* **scripts:** Address PR review comments (round 5) ([de53a7a](https://github.com/stefanko-ch/Nexus-Stack/commit/de53a7af2b20df55415da2bfc613843e1630c312))
+* **scripts:** Address PR review comments (round 6) ([2756631](https://github.com/stefanko-ch/Nexus-Stack/commit/2756631fc682eb91f6fd1f70a0d13e6017ab81da))
+* **scripts:** Address PR review comments (round 7) ([242ffeb](https://github.com/stefanko-ch/Nexus-Stack/commit/242ffeb97b88627e90fda3b52bf2732e7944c448))
+* **scripts:** Address PR review comments (round 8) ([ef71ca9](https://github.com/stefanko-ch/Nexus-Stack/commit/ef71ca9173b8901c75e32cf9a66176ee1eda0015))
+* **scripts:** Address PR review comments (round 9) ([eaf66f1](https://github.com/stefanko-ch/Nexus-Stack/commit/eaf66f197b42ffa72bb7bc46728968a8197b53f3))
+* **scripts:** Auth probe should accept any non-401 (Kestra v1.0 GET /api/v1/flows is 404) ([8a24237](https://github.com/stefanko-ch/Nexus-Stack/commit/8a242373df426094c2da5c9e79d87806203c58eb))
+* **scripts:** Bound curl in Kestra readiness loop, allow up to ~8 min ([6daca92](https://github.com/stefanko-ch/Nexus-Stack/commit/6daca9242831879e338d5afb497203e15d4d6ee5))
+* **scripts:** Bump Kestra readiness loop from 60 s to 180 s ([f184159](https://github.com/stefanko-ch/Nexus-Stack/commit/f184159ed20762182939cd7a6faa87047acd7492))
+* **scripts:** chmod 0600 SFTPGo .env at creation + chmod-before-append on Kestra .env ([5e7aa88](https://github.com/stefanko-ch/Nexus-Stack/commit/5e7aa88f93f827314b7aa586c1702a834594928f))
+* **scripts:** Detect upstream default_branch for GH_MIRROR_REPOS mode (drop hardcoded 'main') ([2ca6cf2](https://github.com/stefanko-ch/Nexus-Stack/commit/2ca6cf2fc462a61993739499f2aabeb3815803b1))
+* **scripts:** Don't unset EXIT trap on SSH-timeout exit (lets RUNNER_CLEANUP_PATHS run) ([187d37f](https://github.com/stefanko-ch/Nexus-Stack/commit/187d37f9b973389adb15ddfd587b7480ab881573))
+* **scripts:** Drop __root__ folder-list sentinel — use literal "/" path instead ([019875b](https://github.com/stefanko-ch/Nexus-Stack/commit/019875bda0d7769918fd1480556dd7b8b8a85897))
+* **scripts:** Escape backticks in Kestra heredoc comment (was triggering command-substitution on runner) ([a0d9b22](https://github.com/stefanko-ch/Nexus-Stack/commit/a0d9b22a9d201163b301bb0d790cb6c3c09c0012))
+* **scripts:** mirror-mode seed uses fork name + re-trigger system.flow-sync after fork is populated ([38a8144](https://github.com/stefanko-ch/Nexus-Stack/commit/38a81442113421d2e04e7071a6458a29c288982e))
+* **scripts:** Move GH_MIRROR_TOKEN out of curl argv (use --config file, mode 0600) ([2477fa7](https://github.com/stefanko-ch/Nexus-Stack/commit/2477fa7c8f2073b629c20a35963102707b654501))
+* **scripts:** Move GITEA_TOKEN out of merge-upstream argv on the server ([435a04b](https://github.com/stefanko-ch/Nexus-Stack/commit/435a04b25e10e85332be02c9d7fd965705b76e4b))
+* **scripts:** Refactor SECRET_GITEA_TOKEN base64 build into two lines (silence repeated Copilot false-positive) ([090f55c](https://github.com/stefanko-ch/Nexus-Stack/commit/090f55c766fe486e80430b806caaa3d54e4be714))
+* **scripts:** register_flow falls back POST→PUT for idempotent re-runs ([e62026a](https://github.com/stefanko-ch/Nexus-Stack/commit/e62026ab249cefd7f8f63a06ae041073b0c8c46f))
+* **scripts:** Repair syntax error from previous commit (heredoc-in-$(…)) ([3b0c8f1](https://github.com/stefanko-ch/Nexus-Stack/commit/3b0c8f19737ff770212f9e9f18560cfa0008aeb6))
+* **scripts:** Seed workspace files in mirror mode + use $GITEA_REPO_OWNER for repo URLs ([41793ea](https://github.com/stefanko-ch/Nexus-Stack/commit/41793ea8e0e2ac3bfca2d78f0ee9a961d0c02f5d))
+* **scripts:** seed_workspace_files default branch + namespace example consistency ([a6e884f](https://github.com/stefanko-ch/Nexus-Stack/commit/a6e884f0ca58f8668a0988664c0f615ba1b7c57f))
+* **scripts:** seed-loop tmp-file leak guard + chmod 600 Kestra .env ([31f5197](https://github.com/stefanko-ch/Nexus-Stack/commit/31f5197e01299f97f2507f0933a8f18800caa566))
+* **scripts:** Self-heal SFTPGo admin DB when persistent volume preserves stale hash ([189b345](https://github.com/stefanko-ch/Nexus-Stack/commit/189b345bdff2148b9bb2fa4e6627fa966856355d))
+* **scripts:** Self-heal SFTPGo user-row when persistent volume preserves stale hash ([a8316ae](https://github.com/stefanko-ch/Nexus-Stack/commit/a8316ae75fbf332d939ae0cf84c4b468745df964))
+* **scripts:** SFTPGo s3config.access_secret needs structured BaseSecret object ([fc2b37b](https://github.com/stefanko-ch/Nexus-Stack/commit/fc2b37bca381668e02299baa06dace9060d3d621))
+* **scripts:** SFTPGo user POST sent null fields because comment broke env-var line continuation ([a629aac](https://github.com/stefanko-ch/Nexus-Stack/commit/a629aaccb530253e0a601e244baa57eac031e228))
+* **scripts:** SFTPGo user self-heal must docker-restart so the cache picks up the DELETE ([31f6b86](https://github.com/stefanko-ch/Nexus-Stack/commit/31f6b86e9d4bd351239fc6d735f42b2fef828a3c))
+* **scripts:** trap-cleanup the GH API config file on all exit paths ([20cf8d2](https://github.com/stefanko-ch/Nexus-Stack/commit/20cf8d21caadac01a223a05310f51041e76a1a09))
+* **scripts:** Two-stage readiness for SFTPGo + Kestra (auth-actually-works probe) ([c54904c](https://github.com/stefanko-ch/Nexus-Stack/commit/c54904cb0395e2e1146695d8e38ce77bd3fc4f65))
+* **stacks,docs:** Address PR review comments (round 3) ([6a0fb6b](https://github.com/stefanko-ch/Nexus-Stack/commit/6a0fb6b69d4634f399e28a6e95abe8a8931c0795))
+* **stacks,docs:** Address PR review comments (round 4) ([3956cdc](https://github.com/stefanko-ch/Nexus-Stack/commit/3956cdc1c7e48adca1cb0cb61c2618203b5839cb))
+* **stacks,docs:** Align MinIO with same firewall-override pattern ([2736805](https://github.com/stefanko-ch/Nexus-Stack/commit/27368050634f9f7d7589fbb1c9fbd42bee96047f))
+* **stacks:** chown SFTPGo data dir to 1000:1000 before container start ([82da549](https://github.com/stefanko-ch/Nexus-Stack/commit/82da549cfdac4e377b559959132ea0548267942e))
+* **tofu:** Force kestra_admin password to include a digit (Kestra OSS basic-auth requirement) ([37741f1](https://github.com/stefanko-ch/Nexus-Stack/commit/37741f1bc7d0c2646a13b886690f8bc18738deb1))
+
+
+### ♻️ Refactoring
+
+* **examples:** Restructure to workspace-seeds/ + add no-schedule-triggers convention ([1f125ba](https://github.com/stefanko-ch/Nexus-Stack/commit/1f125ba180851ed4776b1f459b3bfaa7db4d133b))
+* **sftpgo:** Replace persistent bind-mount with docker named volume; drop self-heal layer ([3390c5c](https://github.com/stefanko-ch/Nexus-Stack/commit/3390c5c51435f17ffdc308790f03a71194321962))
+
+
+### 📚 Documentation
+
+* **examples:** Replace ambiguous side-by-side ASCII tree with single tree + explicit mapping examples ([e5a934d](https://github.com/stefanko-ch/Nexus-Stack/commit/e5a934d8eb6203a87b893d360425f08026924542))
+* make all badges clickable and link to relevant resources ([c20d85b](https://github.com/stefanko-ch/Nexus-Stack/commit/c20d85b19261479a8830b52d0bdc4a2972b5a3b4))
+* make all README badges clickable (Option 1) ([5057748](https://github.com/stefanko-ch/Nexus-Stack/commit/50577482e37cf480bd59740779d8a7c2f61cf212))
+* **sftpgo:** Direct admin login URL to /web/admin/login (root redirects to client) ([37ecedd](https://github.com/stefanko-ch/Nexus-Stack/commit/37ecedd0bb378a2e5669b09b241588a33d00353f))
+* **sftpgo:** Document ARM64 manifest check for drakkan/sftpgo:v2.7.1 ([604358f](https://github.com/stefanko-ch/Nexus-Stack/commit/604358fa8844e60b24ae8596db1692d98fc36062))
+* **sftpgo:** Explain that R2 is the default but SFTPGo can serve any backend ([484959e](https://github.com/stefanko-ch/Nexus-Stack/commit/484959ec78f2e269046bcd0e4c7e70fbcca92e1e))
+
 ## [0.51.11](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.10...v0.51.11) (2026-04-23)
 
 
