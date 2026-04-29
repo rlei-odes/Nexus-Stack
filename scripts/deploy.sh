@@ -4806,6 +4806,163 @@ REMOTE_TRIG_EOF
     fi
 fi
 
+# ==========================================================================
+# Sync Infisical secrets into Jupyter as plaintext env-vars
+# ==========================================================================
+# Mirror of Kestra's secret-sync (see ~line 3840) but adapted for Python:
+#   - Variable names mirror Infisical keys 1:1 (NO `SECRET_` prefix). User
+#     code reads `os.environ['R2_ACCESS_KEY']` directly — no helper module.
+#   - Values stored plaintext (Python expects raw, not base64).
+#   - Multi-line values + names that aren't valid shell identifiers are
+#     skipped with a warning. The .env-file format can't carry newlines
+#     across `docker compose up` reliably; PEM keys etc. need a different
+#     mechanism (mount-as-file) — out of scope here.
+#   - Restart strategy: `docker compose up -d` (NO `--force-recreate`).
+#     Docker hashes the resolved compose-config (including env_file
+#     content) into a label and only recreates when that hash changes.
+#     Avoids killing live notebook kernels on no-op spin-ups.
+#
+# In notebooks: `import os; os.environ['R2_ACCESS_KEY']`. GITEA_TOKEN
+# included as a special case (same as Kestra) — auto-generated each
+# spin-up, not in Infisical.
+# --------------------------------------------------------------------------
+if echo "$ENABLED_SERVICES" | grep -qw "jupyter" \
+    && [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+    echo "Syncing Infisical secrets into Jupyter env..."
+
+    JUP_INF_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
+    JUP_INF_PID_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
+    JUP_INF_ENV_B64=$(printf '%s' "${INFISICAL_ENV:-dev}" | base64 | tr -d '\n')
+    JUP_GTOKEN_B64=$(printf '%s' "${GITEA_TOKEN:-}" | base64 | tr -d '\n')
+
+    # All work happens server-side in a single ssh invocation: discover
+    # Infisical folders, fetch secrets per folder, base64-decode each
+    # value, validate name + multi-line, dedupe across folders (first-
+    # wins), write delimited block into stacks/jupyter/.env, restart
+    # only-if-changed via `docker compose up -d`. Returns a single
+    # `RESULT pushed=N skipped_name=N skipped_multi=N failed=N collisions=N`
+    # line to the runner so we can format the user-facing log message.
+    JUP_SYNC_OUT=$(ssh nexus "bash -s" <<REMOTE_JUPYTER_SECRETS_EOF
+ITOK=\$(printf '%s' '$JUP_INF_TOKEN_B64' | base64 -d)
+PID=\$(printf '%s' '$JUP_INF_PID_B64' | base64 -d)
+INF_ENV=\$(printf '%s' '$JUP_INF_ENV_B64' | base64 -d)
+GTOKEN=\$(printf '%s' '$JUP_GTOKEN_B64' | base64 -d)
+ENV_FILE=/opt/docker-server/stacks/jupyter/.env
+
+CFG=\$(mktemp)
+SEEN=\$(mktemp)
+APPEND=\$(mktemp)
+chmod 600 "\$CFG" "\$APPEND"
+trap 'rm -f "\$CFG" "\$SEEN" "\$APPEND"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
+
+[ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$ENV_FILE"
+
+PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0
+
+# Folder discovery (sort for deterministic first-wins on re-runs).
+FOLDERS_JSON=\$(curl -s --config "\$CFG" --get \\
+    --data-urlencode "workspaceId=\$PID" \\
+    --data-urlencode "environment=\$INF_ENV" \\
+    "http://localhost:8070/api/v1/folders" 2>/dev/null || echo '{}')
+FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' 2>/dev/null | LC_ALL=C sort)
+# Append "/" sentinel for the root path. Slashes can't appear in folder
+# names so this is unambiguous.
+FOLDERS=\$(printf '%s\n/\n' "\$FOLDERS")
+
+while IFS= read -r FOLDER; do
+    [ -z "\$FOLDER" ] && continue
+    if [ "\$FOLDER" = "/" ]; then
+        SECRET_PATH="/"; FOLDER_LABEL="<root>"
+    else
+        SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
+    fi
+    SECRETS_JSON=\$(curl -s --config "\$CFG" --get \\
+        --data-urlencode "workspaceId=\$PID" \\
+        --data-urlencode "environment=\$INF_ENV" \\
+        --data-urlencode "secretPath=\$SECRET_PATH" \\
+        "http://localhost:8070/api/v3/secrets/raw" 2>/dev/null)
+    if ! printf '%s' "\$SECRETS_JSON" | jq -e '.secrets | type == "array"' >/dev/null 2>&1; then
+        FAILED=\$((FAILED+1))
+        echo "  ⚠ Infisical fetch '\$FOLDER_LABEL' returned bad shape, skipping" >&2
+        continue
+    fi
+    while IFS=\$'\t' read -r KEY VALUE_B64; do
+        [ -z "\$KEY" ] && continue
+        if ! printf '%s' "\$KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*\$'; then
+            SKIPPED_NAME=\$((SKIPPED_NAME+1)); continue
+        fi
+        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
+        # Multi-line guard: env-file can't carry newlines portably.
+        if printf '%s' "\$VALUE" | grep -q \$'\n'; then
+            SKIPPED_MULTI=\$((SKIPPED_MULTI+1))
+            echo "  ⚠ Skipping multi-line secret '\$KEY' (folder '\$FOLDER_LABEL') — env-file format can't carry newlines reliably" >&2
+            continue
+        fi
+        EXISTING=\$(awk -F'\t' -v k="\$KEY" '\$1 == k {print \$2; exit}' "\$SEEN")
+        if [ -n "\$EXISTING" ]; then
+            COLLISIONS=\$((COLLISIONS+1))
+            echo "  ⚠ Key collision: '\$KEY' in folder '\$FOLDER_LABEL' shadowed by earlier value from folder '\$EXISTING' (first-wins)" >&2
+            continue
+        fi
+        printf '%s\t%s\n' "\$KEY" "\$FOLDER_LABEL" >> "\$SEEN"
+        printf '%s=%s\n' "\$KEY" "\$VALUE" >> "\$APPEND"
+        PUSHED=\$((PUSHED+1))
+    done < <(printf '%s' "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' 2>/dev/null)
+done <<< "\$FOLDERS"
+
+# GITEA_TOKEN special case — generated by deploy.sh post-Gitea-bootstrap,
+# not in Infisical at the time of build_folder() pushes earlier in the
+# same run. Same handling as Kestra's secret-sync.
+if [ -n "\$GTOKEN" ] && ! grep -qE '^GITEA_TOKEN=' "\$APPEND"; then
+    printf 'GITEA_TOKEN=%s\n' "\$GTOKEN" >> "\$APPEND"
+    PUSHED=\$((PUSHED+1))
+fi
+
+# Append delimited block. Block-replace pattern (sed-strip + cat-append)
+# matches Kestra's pattern at line ~4174 — re-runs replace cleanly
+# instead of stacking duplicate KEY=value lines.
+{
+    echo "# === BEGIN nexus-secret-sync (Infisical → Jupyter env, plaintext, regenerated each spin-up — do not edit by hand) ==="
+    cat "\$APPEND"
+    echo "# === END nexus-secret-sync ==="
+} >> "\$ENV_FILE"
+
+echo "RESULT pushed=\$PUSHED skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS"
+REMOTE_JUPYTER_SECRETS_EOF
+) || JUP_SYNC_OUT=""
+
+    JUP_RESULT_LINE=$(echo "$JUP_SYNC_OUT" | grep "^RESULT" | head -1)
+    JUP_PUSHED=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*pushed=\([0-9]*\).*/\1/p')
+    JUP_FAILED=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')
+    JUP_COLLISIONS=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*collisions=\([0-9]*\).*/\1/p')
+
+    if [ -z "$JUP_PUSHED" ]; then
+        echo -e "${YELLOW}  ⚠ Jupyter Infisical sync produced no result — check Infisical reachability + jq presence on the VM${NC}"
+    else
+        if [ "${JUP_FAILED:-0}" -gt 0 ]; then
+            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .env (${JUP_FAILED} folder fetches failed — secret set is incomplete)${NC}"
+        elif [ "${JUP_COLLISIONS:-0}" -gt 0 ]; then
+            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .env (${JUP_COLLISIONS} cross-folder collisions — first-wins applied)${NC}"
+        else
+            echo -e "${GREEN}  ✓ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .env (plaintext, exact key names)${NC}"
+        fi
+
+        # Recreate-on-change. `docker compose up -d` recomputes the
+        # resolved-config hash (including env_file content) and only
+        # recreates the container when that hash differs. No-op when
+        # secrets are unchanged → live notebook kernels survive
+        # spin-ups that don't touch any secret.
+        if ssh nexus "cd $REMOTE_STACKS_DIR/jupyter && docker compose up -d jupyter" >/dev/null 2>&1; then
+            echo -e "${GREEN}  ✓ Jupyter restart-on-change applied${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ docker compose up -d jupyter failed — notebook may still be running with old secrets until next spin-up${NC}"
+        fi
+    fi
+fi
+
 # Configure Wiki.js admin (uses user_email, not admin)
 if echo "$ENABLED_SERVICES" | grep -qw "wikijs" && [ -n "$WIKIJS_ADMIN_PASS" ]; then
     (
