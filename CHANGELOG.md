@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.52.0...v0.53.0) (2026-04-29)
+
+
+### 🚀 Features
+
+* **portainer:** Make Portainer a core service (always enabled) ([5f432b3](https://github.com/stefanko-ch/Nexus-Stack/commit/5f432b3c8f735ca8208ad84921835309355b1dda))
+* **portainer:** Promote Portainer to a core service (always enabled) ([9b12bf0](https://github.com/stefanko-ch/Nexus-Stack/commit/9b12bf079f11016cc862b930afd8e12e0281462e))
+
+
+### 🐛 Bug Fixes
+
+* **portainer,scripts,docs:** Address PR review comments ([a22005f](https://github.com/stefanko-ch/Nexus-Stack/commit/a22005f8a85cafb5dc1ddf9c48f80eb9ec29d5c7))
+* **portainer,sftpgo,docs:** Address PR review comments ([2ab4bcd](https://github.com/stefanko-ch/Nexus-Stack/commit/2ab4bcd0538989eb19b6569b4a5dbc45767bc06b))
+* **portainer,sftpgo:** Drop healthcheck blocks — distroless images can't run CMD-SHELL probes ([0a7b938](https://github.com/stefanko-ch/Nexus-Stack/commit/0a7b938f2ed1264d83cacf1b58f2cfdd9a4de50c))
+* **portainer:** Bump pin from 2.27.9 (LTS) to 2.40.0 (mainline) to avoid downgrade ([3509cd8](https://github.com/stefanko-ch/Nexus-Stack/commit/3509cd8b358bc5d12ba0c86eb305c1bd51e96951))
+* **scripts,docs:** Address PR review comments ([eefccb2](https://github.com/stefanko-ch/Nexus-Stack/commit/eefccb2fe82b030b9515534838a532a4487e04aa))
+
 ## [0.52.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.51.11...v0.52.0) (2026-04-28)
 
 
