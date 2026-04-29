@@ -70,14 +70,13 @@ services:
       # not via pip/conda. PYTHONPATH must be set explicitly because our
       # custom command: overrides the default entrypoint that normally sets it.
       PYTHONPATH: /usr/local/spark/python:/usr/local/spark/python/lib/py4j-0.10.9.9-src.zip
-      # Driver-side hint that propagates to executors. Without this, the
-      # driver tells executors to use `python3` — which on the
-      # apache/spark:4.1.1 base (Ubuntu 22.04) symlinks to 3.10 even
-      # though our custom Dockerfile installs 3.13 alongside. Mismatch
-      # against Jupyter's 3.13 driver causes a PYTHON_VERSION_MISMATCH
-      # PySparkRuntimeError on every action that triggers an executor
-      # task (e.g. df.show(), df.collect()).
-      PYSPARK_PYTHON: /usr/bin/python3.13
+      # Executor-Python pinning (cluster-mode only) is set in
+      # spark-init.py via `spark.pyspark.python` rather than via env
+      # here, because /usr/bin/python3.13 only exists on
+      # spark-worker — not in this Jupyter container, whose Python
+      # lives at /opt/conda/bin/python. Setting PYSPARK_PYTHON in
+      # this env would propagate to local-mode runs (when
+      # SPARK_MASTER falls back to local[*]) and break them.
       SPARK_MASTER: ${SPARK_MASTER:-local[*]}
       # S3 (Hetzner Object Storage) for Spark access
       SPARK_HADOOP_fs_s3a_endpoint: ${HETZNER_S3_ENDPOINT:-}
@@ -87,13 +86,19 @@ services:
       SPARK_HADOOP_fs_s3a_impl: org.apache.hadoop.fs.s3a.S3AFileSystem
       HETZNER_S3_BUCKET: ${HETZNER_S3_BUCKET:-}
       # Driver heap override. The pyspark-notebook image ships with
-      # SPARK_OPTS=-Xmx4096M, which doesn't fit our 3g container limit
-      # and is overkill for interactive notebooks anyway — heavy data
-      # lives in executors on spark-worker, the driver only handles
-      # query plans, broadcasts, and .collect()/.show() results.
-      # Override here to 2g so the driver fits comfortably alongside
-      # the Python kernel + JupyterLab + sparksql_magic in 3g.
-      SPARK_OPTS: "--driver-java-options=-Xms512M --driver-java-options=-Xmx2048M --driver-java-options=-Dlog4j.logLevel=info"
+      # SPARK_OPTS=-Xmx4096M (split across three repeated
+      # `--driver-java-options=` flags — Spark's option parser
+      # treats that as a single-valued flag where last-occurrence
+      # wins, dropping earlier values). We use `--driver-memory`
+      # instead, which is the canonical single-valued flag for
+      # heap, and a single `--driver-java-options=` for the
+      # log4j level. 2 GiB driver fits comfortably alongside the
+      # Python kernel + JupyterLab + sparksql_magic in 3g — heavy
+      # data lives in executors on spark-worker, the driver only
+      # handles query plans, broadcasts, and
+      # .collect()/.show() results. Per-session override possible
+      # via SparkSession.builder.config("spark.driver.memory", "4g").
+      SPARK_OPTS: "--driver-memory 2g --driver-java-options=-Dlog4j.logLevel=info"
     env_file:
       - path: .env
         required: false

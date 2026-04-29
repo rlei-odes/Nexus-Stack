@@ -4851,6 +4851,17 @@ if echo "$ENABLED_SERVICES" | grep -qw "jupyter" \
     # `RESULT pushed=N skipped_name=N skipped_multi=N failed=N collisions=N succeeded=N wrote=0|1`
     # line to the runner so we can format the user-facing log message.
     JUP_SYNC_OUT=$(ssh nexus "bash -s" <<REMOTE_JUPYTER_SECRETS_EOF
+# Strict mode inside the heredoc. The remote bash spawned by
+# `bash -s` does NOT inherit the parent script's `set -euo
+# pipefail`; without these, a failed `mv`, `sed`, or pipefail
+# violation could be silently ignored and let the script report
+# `wrote=1` while having actually written nothing useful (or
+# torn the file in half). Set them here so any I/O / parser
+# failure aborts the heredoc cleanly — the parent already
+# tolerates that via `|| JUP_SYNC_OUT=""` and the empty-
+# RESULT-line warning branch.
+set -euo pipefail
+
 ITOK=\$(printf '%s' '$JUP_INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$JUP_INF_PID_B64' | base64 -d)
 INF_ENV=\$(printf '%s' '$JUP_INF_ENV_B64' | base64 -d)
@@ -4911,8 +4922,11 @@ FOLDERS_JSON=\$(curl -sS --config "\$CFG" --get \\
 # If FOLDERS_JSON is unparseable jq prints to stderr and the result
 # is empty; we still try the "/" sentinel root path below, so the
 # only loss vs masking is one extra deploy-log line that points at
-# the actual cause.
-FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' | LC_ALL=C sort)
+# the actual cause. `|| true` keeps a parser-error from aborting
+# under `set -euo pipefail` (top of heredoc) — empty FOLDERS plus
+# the "/" sentinel is a valid path forward and we'd rather emit
+# the warning than abort the whole sync.
+FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' | LC_ALL=C sort || true)
 # Append "/" sentinel for the root path. Slashes can't appear in folder
 # names so this is unambiguous.
 FOLDERS=\$(printf '%s\n/\n' "\$FOLDERS")
@@ -4925,13 +4939,17 @@ while IFS= read -r FOLDER; do
         SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
     fi
     # Stderr left attached for the same reason as the folder-discovery
-    # call above — `-sS` errors surface in the deploy log.
+    # call above — `-sS` errors surface in the deploy log. `|| true`
+    # tolerates the curl exit code under `set -euo pipefail`; a
+    # failed fetch lands an empty SECRETS_JSON which the
+    # `.secrets | type == "array"` jq check below correctly
+    # converts into a per-folder FAILED++.
     SECRETS_JSON=\$(curl -sS --config "\$CFG" --get \\
         --connect-timeout 5 --max-time 30 \\
         --data-urlencode "workspaceId=\$PID" \\
         --data-urlencode "environment=\$INF_ENV" \\
         --data-urlencode "secretPath=\$SECRET_PATH" \\
-        "http://localhost:8070/api/v3/secrets/raw")
+        "http://localhost:8070/api/v3/secrets/raw" || true)
     # Two-stage validation: (1) is `.secrets` a JSON array, (2) does
     # the TSV extraction itself succeed. SUCCEEDED is incremented
     # ONLY after both pass — otherwise an unexpected `secretValue`
@@ -4956,7 +4974,14 @@ while IFS= read -r FOLDER; do
         if ! printf '%s' "\$KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*\$'; then
             SKIPPED_NAME=\$((SKIPPED_NAME+1)); continue
         fi
-        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d)
+        # `|| true` so a single corrupt base64 value (very unlikely
+        # given that we encoded with @base64 from jq, but defensive)
+        # produces an empty VALUE rather than aborting the whole
+        # sync under `set -euo pipefail`. Empty VALUE downstream
+        # just yields a `KEY=` line which is a valid env-var with
+        # empty value — semantically distinguishable from "not
+        # present" if the operator ever needs to triage.
+        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d || true)
         # Multi-line guard: env-file can't carry newlines portably.
         if printf '%s' "\$VALUE" | grep -q \$'\n'; then
             SKIPPED_MULTI=\$((SKIPPED_MULTI+1))
