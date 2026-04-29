@@ -6,6 +6,24 @@ order: 5
 
 # Troubleshooting Guide
 
+## First stop: open Portainer
+
+Before SSH-ing into the box or hunting through GitHub Actions logs, open Portainer at `https://portainer.<your-domain>`. It's a [core service](../stacks/portainer.md) — always running, never an opt-in — exactly so you can reach it when something else is broken.
+
+Portainer surfaces the things you're most likely to need:
+
+| Symptom | Where to look in Portainer |
+|---|---|
+| Service web UI returns 502 / Bad Gateway | Containers → `<service-name>` → check **Status** column. `Restarting` or `Exited` → click into it → **Logs** tab |
+| Container restarting repeatedly / exited with code 137 / `docker inspect` shows `OOMKilled: true` | Containers → `<service-name>` → **Stats** tab → memory graph against `deploy.resources.limits.memory` from the compose |
+| Image pull failed during a fresh deploy | Images → search the failing image name → if missing, the worker never pulled it (likely auth / network) |
+| Port collision after enabling a new service | Networks → `app-network` → cross-check the listed containers' published ports |
+| A container won't start and the compose looks fine | Containers → `<name>` → **Inspect** → look at the actual env vars Docker injected vs the `.env` file you expected |
+
+If Portainer itself is the broken thing (rare — it's a single Go binary, no DB), fall back to SSH and the rest of this guide.
+
+> ℹ️ **Not every "running" container shows a green "healthy" badge.** Some stacks intentionally omit a `healthcheck:` block — typically because the upstream image is too minimal to support a shell-based probe (no `sh`/`curl`/`wget` available), or because reachability is verified externally via the Cloudflare Tunnel front-door instead. Docker reports those containers as just `running` (no health decoration). That's expected; only an actually-coloured **orange "unhealthy"** badge or a `Restarting`/`Exited` status indicates a real problem. If you need to know which specific stacks are in this category, check each `stacks/<name>/docker-compose.yml` for the presence or absence of `healthcheck:`.
+
 ## Firewall Management
 
 ### External TCP Access Not Working

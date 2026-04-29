@@ -15,6 +15,10 @@
 # - gitea: Self-hosted Git service
 # - grafana: Observability platform
 # - infisical: Required for secret management
+# - portainer: Always-on Docker dashboard for diagnosing container state.
+#              When something goes wrong (restart-loop, OOM, port collision,
+#              image pull failure) Portainer is the operator's first stop —
+#              shouldn't require an opt-in to be there when you need it.
 # These services are automatically enabled during initial setup and cannot be
 # disabled from the Control Plane.
 #
@@ -510,11 +514,12 @@ services:
     subdomain: "portainer"
     port: 9090
     public: false
+    core: true
     category: "core"
     website: "https://www.portainer.io"
-    description: "Docker container management UI for easy deployment and monitoring."
-    long_description: "Portainer is a container management platform that simplifies Docker operations. View running containers, inspect logs, manage images, networks, and volumes through an intuitive web UI. Monitor resource usage, restart services, and deploy new containers without CLI access."
-    image: "portainer/portainer-ce:lts"
+    description: "Always-on Docker dashboard. First stop for diagnosing a misbehaving container — logs, state, restart, image inspection, network and volume views in a single pane."
+    long_description: "Portainer is a container management platform that simplifies Docker operations. View running containers, inspect logs, manage images, networks, and volumes through an intuitive web UI. Monitor resource usage, restart services, and deploy new containers without CLI access. Marked `core: true` because diagnosing a stuck container shouldn't require an opt-in step — Portainer ships always-on alongside Gitea, Grafana, and Infisical."
+    image: "portainer/portainer-ce:2.40.0"
 
   pgadmin:
     subdomain: "pgadmin"

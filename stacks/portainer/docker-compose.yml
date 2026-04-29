@@ -7,7 +7,14 @@
 
 services:
   portainer:
-    image: ${IMAGE_PORTAINER:-portainer/portainer-ce:latest}
+    image: ${IMAGE_PORTAINER:-portainer/portainer-ce:2.40.0}
+    # Pinned to 2.40.0 (current stable mainline). Note: when bumping
+    # this in future PRs, only bump UPWARD (or wipe portainer_data
+    # volume on a destroy-all). Portainer's BoltDB schema is
+    # forward-only — a downgrade refuses to start with
+    # "database schema version does not align with the server version"
+    # because newer Portainer versions migrate the DB and older
+    # versions can't read the migrated form.
     container_name: portainer
     restart: unless-stopped
     ports:
@@ -16,12 +23,12 @@ services:
       resources:
         limits:
           memory: 512m
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9000/ || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
+    # No healthcheck: portainer/portainer-ce ships with no `wget` /
+    # `curl` and the older shell-based probe (`wget --spider …`)
+    # would always exit non-zero, marking the container "unhealthy"
+    # even though the service is running fine. We rely on the
+    # Cloudflare Tunnel front-door (a real hang surfaces as a 502
+    # at https://portainer.<domain>) instead of an in-container probe.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data

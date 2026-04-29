@@ -102,12 +102,16 @@ services:
       resources:
         limits:
           memory: 512m
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    # No healthcheck: drakkan/sftpgo:v2.7.1 is a minimal image with
+    # `sh` available (deploy.sh's mkdir/chown step uses
+    # `docker exec sftpgo sh -c …` and works) but NO `curl` / `wget`,
+    # so the previous shell-based `curl -sf /healthz` probe always
+    # exited non-zero and marked the container "unhealthy" even
+    # though the HTTP server answers /healthz fine on port 8080.
+    # Reachability is verified externally via the Cloudflare Tunnel
+    # (a real hang surfaces as a 502 at https://sftpgo.<domain>);
+    # deploy.sh's auth-aware readiness probe (in scripts/deploy.sh)
+    # covers the cold-start race during initial spin-up.
     volumes:
       # Docker-named-volume (NOT a bind-mount onto /mnt/nexus-data/).
       # See the top-of-file Persistent state comment for rationale —
