@@ -4871,18 +4871,16 @@ chmod 600 "\$CFG" "\$APPEND" "\$NEW_BLOCK"
 trap 'rm -f "\$CFG" "\$SEEN" "\$APPEND" "\$NEW_BLOCK" "\$TMP_OUT"' EXIT
 printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
 
-[ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
-chmod 600 "\$ENV_FILE"
-
-# One-time migration: strip any pre-existing nexus-secret-sync block
-# from the legacy `.env` location. An earlier iteration of this
-# script wrote the block there before review feedback (#495) moved
-# it to a dedicated file to avoid colliding with compose's
-# `\${VAR}`-interpolation. Idempotent — no-op if not present.
+# NOTE: ENV_FILE is intentionally NOT touched/created here. Both the
+# touch-if-missing AND the legacy-`.env`-migration are deferred to the
+# success path below (after at least one folder fetch returned a
+# parseable secrets array). Otherwise an Infisical outage on first
+# install would leak an empty `.infisical.env` (defeating the
+# untouched-on-failure guarantee), and a transient outage during
+# upgrade would strip the legacy `.env` block before the new
+# `.infisical.env` is populated — losing the only working copy of
+# the secrets.
 LEGACY_ENV=/opt/docker-server/stacks/jupyter/.env
-if [ -f "\$LEGACY_ENV" ]; then
-    sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$LEGACY_ENV"
-fi
 
 PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0; SUCCEEDED=0; WROTE=0
 
@@ -4972,6 +4970,13 @@ fi
     echo "# === END nexus-secret-sync ==="
 } > "\$NEW_BLOCK"
 
+# Past the SUCCEEDED guard — safe to mutate ENV_FILE and the legacy
+# `.env`. Both touched here (not earlier), so an Infisical outage
+# can't leak an empty `.infisical.env` on first install or strip
+# the legacy block before the new one is in place.
+[ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+
 # Atomic replace: build the new file content with the old block
 # stripped and the new block appended, then `mv` into place. The
 # temp file is created in the SAME directory as ENV_FILE so the
@@ -4985,6 +4990,17 @@ cat "\$NEW_BLOCK" >> "\$TMP_OUT"
 mv "\$TMP_OUT" "\$ENV_FILE"
 chmod 600 "\$ENV_FILE"
 WROTE=1
+
+# One-time migration of the legacy `.env` location: an earlier
+# iteration of this script wrote the sync block to `.env` before
+# review feedback (#495) moved it to a dedicated file. We strip
+# any leftover block from `.env` ONLY now that the new
+# `.infisical.env` is successfully in place, so a transient
+# Infisical outage during upgrade can't end up with neither
+# location holding the secrets. Idempotent — no-op if absent.
+if [ -f "\$LEGACY_ENV" ]; then
+    sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$LEGACY_ENV"
+fi
 
 echo "RESULT pushed=\$PUSHED skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=\$WROTE"
 REMOTE_JUPYTER_SECRETS_EOF
