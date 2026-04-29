@@ -435,8 +435,8 @@ fi
 # on purpose (so user-toggled non-core services aren't reset by a yaml
 # sync). But that preservation also keeps an existing row at
 # `enabled = 0` when its `core` flag flips from 0 → 1 across a deploy —
-# e.g. promoting Portainer to a core service in PR #493 — leaving the
-# row out of sync with the new invariant.
+# i.e. when a service is promoted to a core service across deploys —
+# leaving the row out of sync with the new invariant.
 #
 # This step MUST run AFTER Step 3 (services deployed = enabled). If it
 # ran before, Step 3 would propagate the freshly-flipped `enabled = 1`
@@ -454,7 +454,7 @@ fi
 echo "  Enforcing core = 1 → enabled = 1 invariant..."
 set +e
 WRANGLER_OUTPUT=$(npx wrangler@latest d1 execute "$D1_DATABASE_NAME" \
-  --remote --command "UPDATE services SET enabled = 1 WHERE core = 1 AND enabled = 0;" 2>&1)
+  --remote --command "UPDATE services SET enabled = 1, updated_at = datetime('now') WHERE core = 1 AND enabled = 0;" 2>&1)
 WRANGLER_EXIT=$?
 set -e
 if [ $WRANGLER_EXIT -eq 0 ]; then
