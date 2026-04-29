@@ -22,6 +22,8 @@ Portainer surfaces the things you're most likely to need:
 
 If Portainer itself is the broken thing (rare — it's a single Go binary, no DB), fall back to SSH and the rest of this guide.
 
+> ℹ️ **Not every "running" container shows a green "healthy" badge.** Stacks that ship as a distroless image (no shell, no `curl`/`wget` — e.g. Portainer itself, SFTPGo) cannot run a CMD-SHELL-based probe and therefore have no `healthcheck:` block in their compose. Docker reports them as just `running` (no health decoration). That's expected; only an actually-coloured **orange "unhealthy"** badge or a `Restarting`/`Exited` status indicates a real problem.
+
 ## Firewall Management
 
 ### External TCP Access Not Working
