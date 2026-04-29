@@ -7,7 +7,14 @@
 
 services:
   portainer:
-    image: ${IMAGE_PORTAINER:-portainer/portainer-ce:2.27.9}
+    image: ${IMAGE_PORTAINER:-portainer/portainer-ce:2.40.0}
+    # Pinned to 2.40.0 (current stable mainline). Note: when bumping
+    # this in future PRs, only bump UPWARD (or wipe portainer_data
+    # volume on a destroy-all). Portainer's BoltDB schema is
+    # forward-only — a downgrade refuses to start with
+    # "database schema version does not align with the server version"
+    # because newer Portainer versions migrate the DB and older
+    # versions can't read the migrated form.
     container_name: portainer
     restart: unless-stopped
     ports:
