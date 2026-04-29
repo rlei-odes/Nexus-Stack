@@ -78,6 +78,14 @@ services:
       SPARK_HADOOP_fs_s3a_path_style_access: "true"
       SPARK_HADOOP_fs_s3a_impl: org.apache.hadoop.fs.s3a.S3AFileSystem
       HETZNER_S3_BUCKET: ${HETZNER_S3_BUCKET:-}
+      # Driver heap override. The pyspark-notebook image ships with
+      # SPARK_OPTS=-Xmx4096M, which doesn't fit our 3g container limit
+      # and is overkill for interactive notebooks anyway — heavy data
+      # lives in executors on spark-worker, the driver only handles
+      # query plans, broadcasts, and .collect()/.show() results.
+      # Override here to 2g so the driver fits comfortably alongside
+      # the Python kernel + JupyterLab + sparksql_magic in 3g.
+      SPARK_OPTS: "--driver-java-options=-Xms512M --driver-java-options=-Xmx2048M --driver-java-options=-Dlog4j.logLevel=info"
     env_file:
       - path: .env
         required: false
@@ -86,7 +94,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 3g
     volumes:
       - jupyter-data:/home/jovyan/work
       - ./spark-init.py:/opt/spark-init.py:ro
