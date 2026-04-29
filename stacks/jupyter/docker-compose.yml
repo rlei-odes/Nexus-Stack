@@ -97,6 +97,16 @@ services:
     env_file:
       - path: .env
         required: false
+      # Infisical secrets land in a dedicated file (written by
+      # scripts/deploy.sh's secret-sync block), not in `.env`. Two
+      # reasons: (1) `.env` is also used by docker compose for
+      # `${VAR}` interpolation in this very file (image tag, ports,
+      # env defaults) — a secret named e.g. `IMAGE_JUPYTER` in
+      # Infisical would silently rewrite the compose config; (2) it
+      # keeps the config-hash that compose uses for restart-on-change
+      # detection scoped to actually-secret-relevant content.
+      - path: .infisical.env
+        required: false
     ports:
       - "8087:8888"
     deploy:

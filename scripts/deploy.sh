@@ -4836,34 +4836,60 @@ if echo "$ENABLED_SERVICES" | grep -qw "jupyter" \
     JUP_GTOKEN_B64=$(printf '%s' "${GITEA_TOKEN:-}" | base64 | tr -d '\n')
 
     # All work happens server-side in a single ssh invocation: discover
-    # Infisical folders, fetch secrets per folder, base64-decode each
-    # value, validate name + multi-line, dedupe across folders (first-
-    # wins), write delimited block into stacks/jupyter/.env, restart
-    # only-if-changed via `docker compose up -d`. Returns a single
-    # `RESULT pushed=N skipped_name=N skipped_multi=N failed=N collisions=N`
+    # Infisical folders, fetch secrets per folder (with timeouts so a
+    # stalled API can't hang the deploy), base64-decode each value,
+    # validate name + multi-line, dedupe across folders (first-wins),
+    # build the secret-sync block into a temp file, then atomically
+    # replace the matching block in `.infisical.env` (a dedicated file,
+    # NOT `.env` — see jupyter docker-compose.yml for the rationale on
+    # avoiding `${VAR}`-interpolation collisions). Sorted by key so
+    # unchanged secret sets produce a byte-identical block → compose's
+    # config-hash detection can correctly skip the recreate. If no
+    # folder fetch succeeds, we DO NOT touch the existing file —
+    # otherwise an Infisical outage would silently wipe working creds.
+    # Returns a single
+    # `RESULT pushed=N skipped_name=N skipped_multi=N failed=N collisions=N succeeded=N wrote=0|1`
     # line to the runner so we can format the user-facing log message.
     JUP_SYNC_OUT=$(ssh nexus "bash -s" <<REMOTE_JUPYTER_SECRETS_EOF
 ITOK=\$(printf '%s' '$JUP_INF_TOKEN_B64' | base64 -d)
 PID=\$(printf '%s' '$JUP_INF_PID_B64' | base64 -d)
 INF_ENV=\$(printf '%s' '$JUP_INF_ENV_B64' | base64 -d)
 GTOKEN=\$(printf '%s' '$JUP_GTOKEN_B64' | base64 -d)
-ENV_FILE=/opt/docker-server/stacks/jupyter/.env
+ENV_FILE=/opt/docker-server/stacks/jupyter/.infisical.env
 
 CFG=\$(mktemp)
 SEEN=\$(mktemp)
 APPEND=\$(mktemp)
-chmod 600 "\$CFG" "\$APPEND"
-trap 'rm -f "\$CFG" "\$SEEN" "\$APPEND"' EXIT
+NEW_BLOCK=\$(mktemp)
+TMP_OUT=""
+chmod 600 "\$CFG" "\$APPEND" "\$NEW_BLOCK"
+# TMP_OUT is added to the trap pre-emptively (empty default), then
+# assigned later via mktemp inside ENV_FILE's directory. If the
+# script exits between that mktemp and the final mv, the trap cleans
+# up; on the success path mv consumes TMP_OUT and the trap rm is a
+# no-op.
+trap 'rm -f "\$CFG" "\$SEEN" "\$APPEND" "\$NEW_BLOCK" "\$TMP_OUT"' EXIT
 printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
 
 [ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
 chmod 600 "\$ENV_FILE"
-sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$ENV_FILE"
 
-PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0
+# One-time migration: strip any pre-existing nexus-secret-sync block
+# from the legacy `.env` location. An earlier iteration of this
+# script wrote the block there before review feedback (#495) moved
+# it to a dedicated file to avoid colliding with compose's
+# `\${VAR}`-interpolation. Idempotent — no-op if not present.
+LEGACY_ENV=/opt/docker-server/stacks/jupyter/.env
+if [ -f "\$LEGACY_ENV" ]; then
+    sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$LEGACY_ENV"
+fi
 
-# Folder discovery (sort for deterministic first-wins on re-runs).
-FOLDERS_JSON=\$(curl -s --config "\$CFG" --get \\
+PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0; SUCCEEDED=0; WROTE=0
+
+# Folder discovery. Tight timeouts so a stalled local Infisical API
+# can't hang the entire deploy. Connect 5s, total 15s.
+FOLDERS_JSON=\$(curl -sS --config "\$CFG" --get \\
+    --connect-timeout 5 --max-time 15 \\
     --data-urlencode "workspaceId=\$PID" \\
     --data-urlencode "environment=\$INF_ENV" \\
     "http://localhost:8070/api/v1/folders" 2>/dev/null || echo '{}')
@@ -4879,7 +4905,8 @@ while IFS= read -r FOLDER; do
     else
         SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
     fi
-    SECRETS_JSON=\$(curl -s --config "\$CFG" --get \\
+    SECRETS_JSON=\$(curl -sS --config "\$CFG" --get \\
+        --connect-timeout 5 --max-time 30 \\
         --data-urlencode "workspaceId=\$PID" \\
         --data-urlencode "environment=\$INF_ENV" \\
         --data-urlencode "secretPath=\$SECRET_PATH" \\
@@ -4889,6 +4916,7 @@ while IFS= read -r FOLDER; do
         echo "  ⚠ Infisical fetch '\$FOLDER_LABEL' returned bad shape, skipping" >&2
         continue
     fi
+    SUCCEEDED=\$((SUCCEEDED+1))
     while IFS=\$'\t' read -r KEY VALUE_B64; do
         [ -z "\$KEY" ] && continue
         if ! printf '%s' "\$KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*\$'; then
@@ -4921,16 +4949,44 @@ if [ -n "\$GTOKEN" ] && ! grep -qE '^GITEA_TOKEN=' "\$APPEND"; then
     PUSHED=\$((PUSHED+1))
 fi
 
-# Append delimited block. Block-replace pattern (sed-strip + cat-append)
-# matches Kestra's pattern at line ~4174 — re-runs replace cleanly
-# instead of stacking duplicate KEY=value lines.
+# Safety: if NO folder fetch succeeded (Infisical down/misconfigured),
+# leave the existing file untouched. Wiping creds on a transient
+# Infisical outage and then restarting Jupyter with empty env would be
+# strictly worse than running on slightly stale secrets for one cycle.
+if [ "\$SUCCEEDED" -eq 0 ]; then
+    echo "  ⚠ No Infisical folder fetch succeeded — leaving existing \$ENV_FILE untouched" >&2
+    echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=0 wrote=0"
+    exit 0
+fi
+
+# Build the new block into a temp file first. Sort by key so the
+# output is deterministic across re-runs even if Infisical's API
+# returns secrets in a different order — otherwise compose's config
+# hash would change spuriously and we'd recreate Jupyter (killing
+# kernels) on every spin-up despite zero secret changes.
+# `sort -t= -k1,1` splits at the first '=' (so values containing '='
+# don't break the sort) and orders by key only.
 {
     echo "# === BEGIN nexus-secret-sync (Infisical → Jupyter env, plaintext, regenerated each spin-up — do not edit by hand) ==="
-    cat "\$APPEND"
+    LC_ALL=C sort -t= -k1,1 "\$APPEND"
     echo "# === END nexus-secret-sync ==="
-} >> "\$ENV_FILE"
+} > "\$NEW_BLOCK"
 
-echo "RESULT pushed=\$PUSHED skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS"
+# Atomic replace: build the new file content with the old block
+# stripped and the new block appended, then `mv` into place. The
+# temp file is created in the SAME directory as ENV_FILE so the
+# rename is guaranteed atomic (cross-filesystem mv falls back to
+# copy+unlink, which is not). A Ctrl-C / SIGKILL between the strip
+# and the write can't leave \$ENV_FILE in a half-state.
+TMP_OUT=\$(mktemp -p "\$(dirname "\$ENV_FILE")" .infisical.env.XXXXXX)
+chmod 600 "\$TMP_OUT"
+sed '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$ENV_FILE" > "\$TMP_OUT"
+cat "\$NEW_BLOCK" >> "\$TMP_OUT"
+mv "\$TMP_OUT" "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+WROTE=1
+
+echo "RESULT pushed=\$PUSHED skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=\$WROTE"
 REMOTE_JUPYTER_SECRETS_EOF
 ) || JUP_SYNC_OUT=""
 
@@ -4938,16 +4994,23 @@ REMOTE_JUPYTER_SECRETS_EOF
     JUP_PUSHED=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*pushed=\([0-9]*\).*/\1/p')
     JUP_FAILED=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')
     JUP_COLLISIONS=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*collisions=\([0-9]*\).*/\1/p')
+    JUP_WROTE=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*wrote=\([0-9]*\).*/\1/p')
 
     if [ -z "$JUP_PUSHED" ]; then
         echo -e "${YELLOW}  ⚠ Jupyter Infisical sync produced no result — check Infisical reachability + jq presence on the VM${NC}"
+    elif [ "${JUP_WROTE:-0}" -eq 0 ]; then
+        # Sync ran but decided not to overwrite (Infisical unreachable
+        # or every folder fetch failed). Existing .infisical.env is
+        # preserved. Skip the recreate so we don't bounce Jupyter for
+        # nothing.
+        echo -e "${YELLOW}  ⚠ Skipped Jupyter .infisical.env update (Infisical unreachable or all folder fetches failed) — keeping previous secret set, no restart${NC}"
     else
         if [ "${JUP_FAILED:-0}" -gt 0 ]; then
-            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .env (${JUP_FAILED} folder fetches failed — secret set is incomplete)${NC}"
+            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (${JUP_FAILED} folder fetches failed — secret set is incomplete)${NC}"
         elif [ "${JUP_COLLISIONS:-0}" -gt 0 ]; then
-            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .env (${JUP_COLLISIONS} cross-folder collisions — first-wins applied)${NC}"
+            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (${JUP_COLLISIONS} cross-folder collisions — first-wins applied)${NC}"
         else
-            echo -e "${GREEN}  ✓ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .env (plaintext, exact key names)${NC}"
+            echo -e "${GREEN}  ✓ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (plaintext, exact key names)${NC}"
         fi
 
         # Recreate-on-change. `docker compose up -d` recomputes the
@@ -4955,10 +5018,16 @@ REMOTE_JUPYTER_SECRETS_EOF
         # recreates the container when that hash differs. No-op when
         # secrets are unchanged → live notebook kernels survive
         # spin-ups that don't touch any secret.
-        if ssh nexus "cd $REMOTE_STACKS_DIR/jupyter && docker compose up -d jupyter" >/dev/null 2>&1; then
+        # Capture stdout+stderr so the operator sees actionable error
+        # output (network missing, compose syntax error, image pull
+        # failure, …) instead of a bare "failed" message.
+        JUP_RESTART_OUT=$(ssh nexus "cd $REMOTE_STACKS_DIR/jupyter && docker compose up -d jupyter" 2>&1)
+        JUP_RESTART_RC=$?
+        if [ $JUP_RESTART_RC -eq 0 ]; then
             echo -e "${GREEN}  ✓ Jupyter restart-on-change applied${NC}"
         else
-            echo -e "${YELLOW}  ⚠ docker compose up -d jupyter failed — notebook may still be running with old secrets until next spin-up${NC}"
+            echo -e "${YELLOW}  ⚠ docker compose up -d jupyter failed (exit $JUP_RESTART_RC) — notebook may still be running with old secrets until next spin-up${NC}"
+            echo "$JUP_RESTART_OUT" | sed 's/^/      /' >&2
         fi
     fi
 fi
