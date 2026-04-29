@@ -6,6 +6,22 @@ order: 5
 
 # Troubleshooting Guide
 
+## First stop: open Portainer
+
+Before SSH-ing into the box or hunting through GitHub Actions logs, open Portainer at `https://portainer.<your-domain>`. It's a [core service](../stacks/portainer.md) — always running, never an opt-in — exactly so you can reach it when something else is broken.
+
+Portainer surfaces the things you're most likely to need:
+
+| Symptom | Where to look in Portainer |
+|---|---|
+| Service web UI returns 502 / Bad Gateway | Containers → `<service-name>` → check **Status** column. `Restarting` or `Exited` → click into it → **Logs** tab |
+| `docker ps` on the box shows OOM-killed | Containers → `<service-name>` → **Stats** tab → memory graph against `deploy.resources.limits.memory` from the compose |
+| Image pull failed during a fresh deploy | Images → search the failing image name → if missing, the worker never pulled it (likely auth / network) |
+| Port collision after enabling a new service | Networks → `app-network` → cross-check the listed containers' published ports |
+| A container won't start and the compose looks fine | Containers → `<name>` → **Inspect** → look at the actual env vars Docker injected vs the `.env` file you expected |
+
+If Portainer itself is the broken thing (rare — it's a single Go binary, no DB), fall back to SSH and the rest of this guide.
+
 ## Firewall Management
 
 ### External TCP Access Not Working

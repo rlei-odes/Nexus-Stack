@@ -173,7 +173,7 @@ After deployment you'll have:
 | **OpenMetadata** | Open-source metadata management for data discovery and governance | [open-metadata.org](https://open-metadata.org) |
 | **pg_ducklake** | PostgreSQL with DuckLake extension - SQL-native lakehouse with S3 storage | [pgducklake.select](https://pgducklake.select) |
 | **pgAdmin** | PostgreSQL administration and development platform | [pgadmin.org](https://www.pgadmin.org) |
-| **Portainer** | Docker container management UI | [portainer.io](https://www.portainer.io) |
+| **Portainer** | Always-on Docker dashboard — first stop for inspecting a misbehaving container (logs, state, restart). Auto-deployed alongside Gitea/Grafana/Infisical | [portainer.io](https://www.portainer.io) |
 | **PostgreSQL** | Powerful open-source relational database (internal-only, no web UI) | [postgresql.org](https://www.postgresql.org) |
 | **Prefect** | Modern Python-native workflow orchestration for data pipelines | [prefect.io](https://www.prefect.io) |
 | **Quickwit** | Cloud-native search engine for log management and analytics | [quickwit.io](https://quickwit.io) |
@@ -222,7 +222,9 @@ Manage your Nexus-Stack infrastructure via web interface at `https://control.YOU
 
 **Pre-select services during Initial Setup:**
 ```bash
-gh workflow run initial-setup.yaml -f enabled_services="grafana,n8n,portainer"
+# Core services (Gitea, Grafana, Infisical, Portainer) are always enabled —
+# pass any additional services you want active on the first spin-up.
+gh workflow run initial-setup.yaml -f enabled_services="n8n,kestra"
 ```
 
 → See [docs/admin-guides/setup-guide.md](docs/admin-guides/setup-guide.md) for configuration details.

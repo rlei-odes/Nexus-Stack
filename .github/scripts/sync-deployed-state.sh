@@ -284,6 +284,27 @@ PYEOF
   else
     echo "  ℹ️  No services to update"
   fi
+
+  # Invariant: every core: true service must be enabled = 1.
+  # The metadata UPDATE above preserves the operator's `enabled` choice on
+  # purpose (so user-toggled non-core services aren't reset). But that
+  # preservation also keeps an existing row at `enabled = 0` when its
+  # `core` flag flips from 0 → 1 across a deploy (e.g. promoting Portainer
+  # to a core service in #492). Force `enabled = 1` for any row where
+  # `core = 1` so the promotion takes effect on existing installs without
+  # the operator having to toggle it manually in the Control Plane UI.
+  echo "  Enforcing core = 1 → enabled = 1 invariant..."
+  set +e
+  WRANGLER_OUTPUT=$(npx wrangler@latest d1 execute "$D1_DATABASE_NAME" \
+    --remote --command "UPDATE services SET enabled = 1 WHERE core = 1 AND enabled = 0;" 2>&1)
+  WRANGLER_EXIT=$?
+  set -e
+  if [ $WRANGLER_EXIT -eq 0 ]; then
+    echo "  ✅ Core-services invariant enforced"
+  else
+    SANITIZED_ERROR=$(sanitize_error "$WRANGLER_OUTPUT")
+    echo "  ⚠️ Core-services invariant UPDATE had issues: $SANITIZED_ERROR" >&2
+  fi
 else
   echo "  ⚠️ services.yaml not found - skipping sync"
 fi
