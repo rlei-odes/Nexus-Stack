@@ -284,27 +284,6 @@ PYEOF
   else
     echo "  ℹ️  No services to update"
   fi
-
-  # Invariant: every core: true service must be enabled = 1.
-  # The metadata UPDATE above preserves the operator's `enabled` choice on
-  # purpose (so user-toggled non-core services aren't reset). But that
-  # preservation also keeps an existing row at `enabled = 0` when its
-  # `core` flag flips from 0 → 1 across a deploy (e.g. promoting Portainer
-  # to a core service in #492). Force `enabled = 1` for any row where
-  # `core = 1` so the promotion takes effect on existing installs without
-  # the operator having to toggle it manually in the Control Plane UI.
-  echo "  Enforcing core = 1 → enabled = 1 invariant..."
-  set +e
-  WRANGLER_OUTPUT=$(npx wrangler@latest d1 execute "$D1_DATABASE_NAME" \
-    --remote --command "UPDATE services SET enabled = 1 WHERE core = 1 AND enabled = 0;" 2>&1)
-  WRANGLER_EXIT=$?
-  set -e
-  if [ $WRANGLER_EXIT -eq 0 ]; then
-    echo "  ✅ Core-services invariant enforced"
-  else
-    SANITIZED_ERROR=$(sanitize_error "$WRANGLER_OUTPUT")
-    echo "  ⚠️ Core-services invariant UPDATE had issues: $SANITIZED_ERROR" >&2
-  fi
 else
   echo "  ⚠️ services.yaml not found - skipping sync"
 fi
@@ -448,6 +427,41 @@ else
   SANITIZED_ERROR=$(sanitize_error "$FW_DEPLOYED_OUTPUT")
   echo "  ⚠️ Failed to sync firewall deployed state (non-critical)" >&2
   echo "  Error: $SANITIZED_ERROR" >&2
+fi
+
+# Step 4.5: Enforce the `core = 1 → enabled = 1` invariant.
+#
+# The metadata UPDATE in Step 1 preserves the operator's `enabled` choice
+# on purpose (so user-toggled non-core services aren't reset by a yaml
+# sync). But that preservation also keeps an existing row at
+# `enabled = 0` when its `core` flag flips from 0 → 1 across a deploy —
+# e.g. promoting Portainer to a core service in PR #493 — leaving the
+# row out of sync with the new invariant.
+#
+# This step MUST run AFTER Step 3 (services deployed = enabled). If it
+# ran before, Step 3 would propagate the freshly-flipped `enabled = 1`
+# into `deployed = 1` even though the actual container wasn't started
+# in the just-finished spin-up (because deploy.sh saw the OLD enabled
+# list when it ran). The Control Plane would then mis-report the
+# newly-promoted core service as "deployed and running" when it's
+# actually not.
+#
+# Two-phase rollout for the existing-install case:
+#   1. This spin-up: enabled flips from 0 → 1 here, deployed stays 0.
+#      Control Plane shows the service as "selected, pending deploy".
+#   2. Next spin-up: deploy.sh sees enabled = 1, starts the container,
+#      Step 3 propagates deployed = 1.
+echo "  Enforcing core = 1 → enabled = 1 invariant..."
+set +e
+WRANGLER_OUTPUT=$(npx wrangler@latest d1 execute "$D1_DATABASE_NAME" \
+  --remote --command "UPDATE services SET enabled = 1 WHERE core = 1 AND enabled = 0;" 2>&1)
+WRANGLER_EXIT=$?
+set -e
+if [ $WRANGLER_EXIT -eq 0 ]; then
+  echo "  ✅ Core-services invariant enforced"
+else
+  SANITIZED_ERROR=$(sanitize_error "$WRANGLER_OUTPUT")
+  echo "  ⚠️ Core-services invariant UPDATE had issues: $SANITIZED_ERROR" >&2
 fi
 
 # Step 5: Final verification - list all services in D1

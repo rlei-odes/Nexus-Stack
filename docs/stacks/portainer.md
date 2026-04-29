@@ -12,7 +12,7 @@ Portainer is a **core service** in Nexus-Stack: it's auto-deployed alongside Git
 
 What you get out of the box:
 - Container view (state, restart, logs, exec into a shell, resource usage)
-- Image inspection (layers, env, entrypoint, vulnerability scan)
+- Image inspection (layers, env, entrypoint)
 - Volume + network management
 - Stack deployment with Docker Compose (rarely needed in this project — `scripts/deploy.sh` handles stack lifecycle — but useful for ad-hoc experiments)
 
