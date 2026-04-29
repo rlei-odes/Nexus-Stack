@@ -70,6 +70,14 @@ services:
       # not via pip/conda. PYTHONPATH must be set explicitly because our
       # custom command: overrides the default entrypoint that normally sets it.
       PYTHONPATH: /usr/local/spark/python:/usr/local/spark/python/lib/py4j-0.10.9.9-src.zip
+      # Driver-side hint that propagates to executors. Without this, the
+      # driver tells executors to use `python3` — which on the
+      # apache/spark:4.1.1 base (Ubuntu 22.04) symlinks to 3.10 even
+      # though our custom Dockerfile installs 3.13 alongside. Mismatch
+      # against Jupyter's 3.13 driver causes a PYTHON_VERSION_MISMATCH
+      # PySparkRuntimeError on every action that triggers an executor
+      # task (e.g. df.show(), df.collect()).
+      PYSPARK_PYTHON: /usr/bin/python3.13
       SPARK_MASTER: ${SPARK_MASTER:-local[*]}
       # S3 (Hetzner Object Storage) for Spark access
       SPARK_HADOOP_fs_s3a_endpoint: ${HETZNER_S3_ENDPOINT:-}
