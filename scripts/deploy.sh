@@ -4885,12 +4885,16 @@ LEGACY_ENV=/opt/docker-server/stacks/jupyter/.env
 PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0; SUCCEEDED=0; WROTE=0
 
 # Folder discovery. Tight timeouts so a stalled local Infisical API
-# can't hang the entire deploy. Connect 5s, total 15s.
+# can't hang the entire deploy. Connect 5s, total 15s. Stderr is NOT
+# redirected — `-sS` is specifically meant to surface curl-level
+# errors (timeout, connect-refused, DNS, …) without the noise of a
+# normal verbose stream, and a `2>/dev/null` here would defeat that.
+# Errors flow up the ssh channel into the runner's stderr → deploy log.
 FOLDERS_JSON=\$(curl -sS --config "\$CFG" --get \\
     --connect-timeout 5 --max-time 15 \\
     --data-urlencode "workspaceId=\$PID" \\
     --data-urlencode "environment=\$INF_ENV" \\
-    "http://localhost:8070/api/v1/folders" 2>/dev/null || echo '{}')
+    "http://localhost:8070/api/v1/folders" || echo '{}')
 FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' 2>/dev/null | LC_ALL=C sort)
 # Append "/" sentinel for the root path. Slashes can't appear in folder
 # names so this is unambiguous.
@@ -4903,12 +4907,14 @@ while IFS= read -r FOLDER; do
     else
         SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
     fi
+    # Stderr left attached for the same reason as the folder-discovery
+    # call above — `-sS` errors surface in the deploy log.
     SECRETS_JSON=\$(curl -sS --config "\$CFG" --get \\
         --connect-timeout 5 --max-time 30 \\
         --data-urlencode "workspaceId=\$PID" \\
         --data-urlencode "environment=\$INF_ENV" \\
         --data-urlencode "secretPath=\$SECRET_PATH" \\
-        "http://localhost:8070/api/v3/secrets/raw" 2>/dev/null)
+        "http://localhost:8070/api/v3/secrets/raw")
     if ! printf '%s' "\$SECRETS_JSON" | jq -e '.secrets | type == "array"' >/dev/null 2>&1; then
         FAILED=\$((FAILED+1))
         echo "  ⚠ Infisical fetch '\$FOLDER_LABEL' returned bad shape, skipping" >&2
