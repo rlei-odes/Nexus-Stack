@@ -519,7 +519,7 @@ services:
     website: "https://www.portainer.io"
     description: "Always-on Docker dashboard. First stop for diagnosing a misbehaving container — logs, state, restart, image inspection, network and volume views in a single pane."
     long_description: "Portainer is a container management platform that simplifies Docker operations. View running containers, inspect logs, manage images, networks, and volumes through an intuitive web UI. Monitor resource usage, restart services, and deploy new containers without CLI access. Marked `core: true` because diagnosing a stuck container shouldn't require an opt-in step — Portainer ships always-on alongside Gitea, Grafana, and Infisical."
-    image: "portainer/portainer-ce:lts"
+    image: "portainer/portainer-ce:2.27.9"
 
   pgadmin:
     subdomain: "pgadmin"

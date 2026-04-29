@@ -15,7 +15,7 @@ Portainer surfaces the things you're most likely to need:
 | Symptom | Where to look in Portainer |
 |---|---|
 | Service web UI returns 502 / Bad Gateway | Containers → `<service-name>` → check **Status** column. `Restarting` or `Exited` → click into it → **Logs** tab |
-| `docker ps` on the box shows OOM-killed | Containers → `<service-name>` → **Stats** tab → memory graph against `deploy.resources.limits.memory` from the compose |
+| Container restarting repeatedly / exited with code 137 / `docker inspect` shows `OOMKilled: true` | Containers → `<service-name>` → **Stats** tab → memory graph against `deploy.resources.limits.memory` from the compose |
 | Image pull failed during a fresh deploy | Images → search the failing image name → if missing, the worker never pulled it (likely auth / network) |
 | Port collision after enabling a new service | Networks → `app-network` → cross-check the listed containers' published ports |
 | A container won't start and the compose looks fine | Containers → `<name>` → **Inspect** → look at the actual env vars Docker injected vs the `.env` file you expected |

@@ -7,7 +7,7 @@
 
 services:
   portainer:
-    image: ${IMAGE_PORTAINER:-portainer/portainer-ce:lts}
+    image: ${IMAGE_PORTAINER:-portainer/portainer-ce:2.27.9}
     container_name: portainer
     restart: unless-stopped
     ports:
@@ -16,12 +16,12 @@ services:
       resources:
         limits:
           memory: 512m
-    # No healthcheck: portainer/portainer-ce:lts is a distroless image
-    # — no shell, no wget, no curl. Any CMD-SHELL-based probe fails
-    # immediately and Docker labels the container "unhealthy" even
-    # though the service is running fine. We rely on the Cloudflare
-    # Tunnel front-door (a real hang surfaces as a 502 at
-    # https://portainer.<domain>) instead of an in-container probe.
+    # No healthcheck: portainer/portainer-ce ships with no `wget` /
+    # `curl` and the older shell-based probe (`wget --spider …`)
+    # would always exit non-zero, marking the container "unhealthy"
+    # even though the service is running fine. We rely on the
+    # Cloudflare Tunnel front-door (a real hang surfaces as a 502
+    # at https://portainer.<domain>) instead of an in-container probe.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
