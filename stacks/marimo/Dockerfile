@@ -29,9 +29,12 @@ USER root
 # image is Debian (NOT Alpine) — the previous stacks/marimo/docker-compose.yml
 # used `apk add` which silently failed because apk doesn't exist here;
 # git was simply missing. Install via apt-get at build time so the
-# entrypoint can rely on it.
+# entrypoint can rely on it. `gosu` is a tiny setuid helper used by the
+# entrypoint to drop privileges from root → appuser AFTER chowning the
+# notebook volume (a fresh docker-named-volume is mounted root:root,
+# which the appuser-running marimo can't write to).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
+    apt-get install -y --no-install-recommends git gosu && \
     rm -rf /var/lib/apt/lists/*
 
 # Spark Connect client + Ibis adapter. `--no-cache-dir` keeps the layer
@@ -43,4 +46,8 @@ RUN pip install --no-cache-dir \
     "grpcio-status>=1.62" \
     "pyarrow>=15"
 
-USER appuser
+# Stay as root — the entrypoint chowns the notebooks volume then drops
+# to appuser via gosu before exec'ing marimo. We can't drop here
+# because the chown needs root and the entrypoint is what handles
+# the volume init (the volume is mounted AFTER the image is built, so
+# any chown done at build time is overlaid and lost).

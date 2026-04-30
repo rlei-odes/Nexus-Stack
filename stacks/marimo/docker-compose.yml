@@ -24,23 +24,30 @@ services:
     image: ${IMAGE_MARIMO:-nexus-marimo:latest-sql-spark}
     container_name: marimo
     restart: unless-stopped
-    # Entrypoint just sets up Gitea netrc + clones the workspace repo.
-    # git is installed by the Dockerfile (Marimo's base is Debian, NOT
-    # Alpine — the previous `apk add` was a silent-failure latent bug).
+    # Entrypoint runs as root: (1) chown /app/notebooks to appuser since
+    # a fresh docker-named-volume mounts root-owned regardless of the
+    # image's pre-baked perms, (2) set up Gitea netrc + clone workspace
+    # repo as appuser via gosu, (3) exec marimo as appuser. git, gosu,
+    # and python3 are all installed by the Dockerfile (Marimo's base is
+    # Debian, NOT Alpine — the previous `apk add` was a silent-failure
+    # latent bug, and the chown was missing entirely).
     entrypoint: >
       sh -c "
-        if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
-          echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > ~/.netrc;
-          chmod 600 ~/.netrc;
-        fi;
-        if [ -n \"$$GITEA_REPO_URL\" ] && [ ! -d /app/notebooks/$$REPO_NAME/.git ]; then
-          if git clone \"$$GITEA_REPO_URL\" /app/notebooks/$$REPO_NAME; then
-            echo '[marimo] Cloned Git repo into /app/notebooks/'$$REPO_NAME;
-          else
-            echo '[marimo] Warning: Failed to clone '$$GITEA_REPO_URL >&2;
+        chown -R appuser:appuser /app/notebooks;
+        gosu appuser sh -c '
+          if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
+            echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > ~/.netrc;
+            chmod 600 ~/.netrc;
           fi;
-        fi;
-        exec marimo edit --host 0.0.0.0 --port 8080 --no-token /app/notebooks
+          if [ -n \"$$GITEA_REPO_URL\" ] && [ ! -d /app/notebooks/$$REPO_NAME/.git ]; then
+            if git clone \"$$GITEA_REPO_URL\" /app/notebooks/$$REPO_NAME; then
+              echo \"[marimo] Cloned Git repo into /app/notebooks/$$REPO_NAME\";
+            else
+              echo \"[marimo] Warning: Failed to clone $$GITEA_REPO_URL\" >&2;
+            fi;
+          fi;
+        ';
+        exec gosu appuser marimo edit --host 0.0.0.0 --port 8080 --no-token /app/notebooks
       "
     env_file:
       - path: .env
@@ -83,7 +90,11 @@ services:
     volumes:
       - marimo_data:/app/notebooks
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1"]
+      # python3 instead of wget — Marimo's Debian-slim base doesn't
+      # include wget (or curl), but python3 is the whole reason this
+      # container exists, so it's guaranteed available.
+      # urlopen raises on non-2xx; sys.exit(0) on success → healthy.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request, sys; urllib.request.urlopen(\"http://localhost:8080/\").close(); sys.exit(0)' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
