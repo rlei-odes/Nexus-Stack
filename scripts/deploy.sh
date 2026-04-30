@@ -5022,13 +5022,28 @@ if [ -n "\$GTOKEN" ] && ! grep -qE '^GITEA_TOKEN=' "\$APPEND"; then
     PUSHED=\$((PUSHED+1))
 fi
 
-# Safety: if NO folder fetch succeeded (Infisical down/misconfigured),
-# leave the existing file untouched. Wiping creds on a transient
-# Infisical outage and then restarting Jupyter with empty env would be
-# strictly worse than running on slightly stale secrets for one cycle.
+# Safety: two distinct "don't overwrite" gates, each guarding a
+# different failure mode that would otherwise wipe working creds.
+#
+# (1) No folder fetch succeeded — Infisical down, network broken,
+#     auth invalid. SUCCEEDED == 0.
 if [ "\$SUCCEEDED" -eq 0 ]; then
     echo "  ⚠ No Infisical folder fetch succeeded — leaving existing \$ENV_FILE untouched" >&2
     echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=0 wrote=0"
+    exit 0
+fi
+
+# (2) Folder fetches succeeded but returned zero usable secrets
+#     across the entire project. Most likely: wrong workspace
+#     environment slug, Infisical permissions misconfigured for
+#     the machine token, or a temporary backend bug returning
+#     empty arrays. Could also be a legitimate "user emptied
+#     Infisical" — but at that point the safe move is the same:
+#     leave the previous block in place and let a real change
+#     pick it up next run, with a warning the operator can read.
+if [ "\$PUSHED" -eq 0 ]; then
+    echo "  ⚠ Infisical returned \$SUCCEEDED folder(s) but zero usable secrets — leaving existing \$ENV_FILE untouched (check env slug + token permissions in Infisical)" >&2
+    echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=0"
     exit 0
 fi
 
@@ -5097,11 +5112,16 @@ REMOTE_JUPYTER_SECRETS_EOF
     if [ -z "$JUP_PUSHED" ]; then
         echo -e "${YELLOW}  ⚠ Jupyter Infisical sync produced no result — check Infisical reachability + jq presence on the VM${NC}"
     elif [ "${JUP_WROTE:-0}" -eq 0 ]; then
-        # Sync ran but decided not to overwrite (Infisical unreachable
-        # or every folder fetch failed). Existing .infisical.env is
-        # preserved. Skip the recreate so we don't bounce Jupyter for
-        # nothing.
-        echo -e "${YELLOW}  ⚠ Skipped Jupyter .infisical.env update (Infisical unreachable or all folder fetches failed) — keeping previous secret set, no restart${NC}"
+        # Sync ran but decided not to overwrite. Three reasons can
+        # produce wrote=0: (a) jq missing on the VM, (b) no folder
+        # fetch succeeded (Infisical unreachable / auth broken),
+        # (c) all folder fetches succeeded but returned zero
+        # secrets (likely wrong env slug or token permissions).
+        # The specific reason was already printed by the remote
+        # heredoc to the deploy log; here we just acknowledge the
+        # decision and skip the recreate so we don't bounce
+        # Jupyter for nothing.
+        echo -e "${YELLOW}  ⚠ Skipped Jupyter .infisical.env update — keeping previous secret set, no restart (see prior warning for cause)${NC}"
     else
         if [ "${JUP_FAILED:-0}" -gt 0 ]; then
             echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (${JUP_FAILED} folder fetches failed — secret set is incomplete)${NC}"
