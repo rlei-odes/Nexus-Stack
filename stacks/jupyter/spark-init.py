@@ -13,8 +13,23 @@ try:
     # container (which has its python at /opt/conda/bin/python via
     # conda, not /usr/bin/python3.13), so we leave Spark to pick up
     # its own interpreter.
+    #
+    # We set BOTH `spark.pyspark.python` and `spark.executorEnv.
+    # PYSPARK_PYTHON` because Spark 4.1.1 standalone-cluster
+    # PythonWorkerFactory ignores the former in some code paths and
+    # falls back to the literal string "python3" — observed live:
+    # config showed `spark.pyspark.python=/usr/bin/python3.13`
+    # correctly via /api/v1/applications/.../environment, yet the
+    # executor still spawned `python3 -m pyspark.daemon` (= 3.10
+    # via the OS symlink), producing PYTHON_VERSION_MISMATCH. The
+    # `spark.executorEnv.*` config family is Spark's explicit
+    # mechanism for propagating env vars to executor processes,
+    # which the worker factory consults directly via envVars
+    # before any conf lookup. Belt + suspenders.
     if master.startswith("spark://"):
-        builder = builder.config("spark.pyspark.python", "/usr/bin/python3.13")
+        builder = (builder
+                   .config("spark.pyspark.python", "/usr/bin/python3.13")
+                   .config("spark.executorEnv.PYSPARK_PYTHON", "/usr/bin/python3.13"))
     endpoint = os.environ.get("SPARK_HADOOP_fs_s3a_endpoint", "")
     if endpoint:
         builder = builder \
