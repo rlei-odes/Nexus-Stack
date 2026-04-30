@@ -1,9 +1,16 @@
 # =============================================================================
-# Marimo - Reactive Python Notebook
+# Marimo - Reactive Python Notebook with Spark Connect
 # https://marimo.${DOMAIN}
 # =============================================================================
 # Marimo is a reactive Python notebook that's reproducible, git-friendly,
-# and deployable as apps. SQL variant includes DuckDB and data analysis tools.
+# and deployable as apps. The SQL variant ships DuckDB + Ibis + Polars.
+#
+# Spark integration: this image extends ghcr.io/marimo-team/marimo:latest-sql
+# with pyspark[connect] + ibis-framework[pyspark] (see ./Dockerfile).
+# Notebooks call `from _nexus_spark import get_spark; spark = get_spark()`
+# to get a Spark Connect session against sc://spark-connect:15002. The
+# driver-JVM lives in the spark-connect container — Marimo is gRPC-only,
+# so 1 GiB memory is plenty.
 #
 # Git Integration: If Gitea is enabled, the shared workspace repo is
 # auto-cloned into /app/notebooks/.
@@ -11,45 +18,85 @@
 
 services:
   marimo:
-    image: ${IMAGE_MARIMO:-ghcr.io/marimo-team/marimo:latest-sql}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_MARIMO:-nexus-marimo:latest-sql-spark}
     container_name: marimo
     restart: unless-stopped
+    # Entrypoint runs as root: (1) chown /app/notebooks to appuser since
+    # a fresh docker-named-volume mounts root-owned regardless of the
+    # image's pre-baked perms, (2) set up Gitea netrc + clone workspace
+    # repo as appuser via gosu, (3) exec marimo as appuser. git, gosu,
+    # and python3 are all installed by the Dockerfile (Marimo's base is
+    # Debian, NOT Alpine — the previous `apk add` was a silent-failure
+    # latent bug, and the chown was missing entirely).
     entrypoint: >
       sh -c "
-        if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
-          echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > ~/.netrc;
-          chmod 600 ~/.netrc;
+        if [ \"$$(stat -c '%U' /app/notebooks)\" != \"appuser\" ]; then
+          chown -R appuser:appuser /app/notebooks;
         fi;
-        if [ -n \"$$GITEA_REPO_URL\" ] && [ ! -d /app/notebooks/$$REPO_NAME/.git ]; then
-          if ! command -v git >/dev/null 2>&1; then
-            apk add --no-cache git || echo '[marimo] Warning: Failed to install git' >&2;
+        gosu appuser sh -c '
+          if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
+            echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > ~/.netrc;
+            chmod 600 ~/.netrc;
           fi;
-          if command -v git >/dev/null 2>&1; then
+          if [ -n \"$$GITEA_REPO_URL\" ] && [ ! -d /app/notebooks/$$REPO_NAME/.git ]; then
             if git clone \"$$GITEA_REPO_URL\" /app/notebooks/$$REPO_NAME; then
-              echo '[marimo] Cloned Git repo into /app/notebooks/'$$REPO_NAME;
+              echo \"[marimo] Cloned Git repo into /app/notebooks/$$REPO_NAME\";
             else
-              echo '[marimo] Warning: Failed to clone '$$GITEA_REPO_URL >&2;
+              echo \"[marimo] Warning: Failed to clone $$GITEA_REPO_URL\" >&2;
             fi;
           fi;
-        fi;
-        exec marimo edit --host 0.0.0.0 --port 8080 --no-token /app/notebooks
+        ';
+        exec gosu appuser marimo edit --host 0.0.0.0 --port 8080 --no-token /app/notebooks
       "
     env_file:
       - path: .env
+        required: false
+      # Infisical secrets land in a dedicated file (written by
+      # scripts/deploy.sh's secret-sync block). Same pattern as
+      # stacks/jupyter/docker-compose.yml — `.env` would also be
+      # consumed by docker compose for `${VAR}` interpolation in this
+      # file, and a secret named e.g. `IMAGE_MARIMO` could silently
+      # rewrite the compose config. Dedicated file avoids that class
+      # of footgun.
+      - path: .infisical.env
         required: false
     ports:
       - "2718:8080"
     environment:
       - HOST=0.0.0.0
       - PORT=8080
+      # Default Spark Connect endpoint for the helper module
+      # (examples/workspace-seeds/marimo/_nexus_spark.py). Override
+      # per-notebook via os.environ if pointing at a different cluster.
+      - SPARK_CONNECT_URL=sc://spark-connect:15002
+      # NOTE: HETZNER_S3_* are intentionally NOT set here. They land
+      # in `.infisical.env` via the secret-sync block in deploy.sh
+      # and reach the container via env_file above. Listing them in
+      # the `environment:` section would override the env_file values
+      # (Compose precedence: environment > env_file) — and since the
+      # `${VAR:-}` interpolation reads from the host's compose .env
+      # (not .infisical.env), these would resolve to empty strings,
+      # silently wiping the Infisical-provided values at container
+      # start. Defeating the entire point of the secret sync.
     deploy:
       resources:
         limits:
-          memory: 512m
+          # 1 GiB is plenty for a Spark Connect client. The driver-JVM
+          # lives in the spark-connect container; Marimo just runs
+          # Python + gRPC + Arrow batches. If notebooks pull huge
+          # .toPandas() results client-side, raise to 2g.
+          memory: 1g
     volumes:
       - marimo_data:/app/notebooks
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1"]
+      # python3 instead of wget — Marimo's Debian-slim base doesn't
+      # include wget (or curl), but python3 is the whole reason this
+      # container exists, so it's guaranteed available.
+      # urlopen raises on non-2xx; sys.exit(0) on success → healthy.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request, sys; urllib.request.urlopen(\"http://localhost:8080/\").close(); sys.exit(0)' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

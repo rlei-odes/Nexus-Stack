@@ -384,9 +384,9 @@ services:
     public: false
     category: "dev-tools"
     website: "https://marimo.io"
-    description: "Reactive Python notebook with SQL support, reproducible and git-friendly."
-    long_description: "Marimo is a reactive Python notebook that automatically re-executes dependent cells when you modify code. Notebooks are stored as pure Python files (git-friendly), support SQL natively, and can be deployed as interactive web apps. A modern alternative to Jupyter with built-in reproducibility."
-    image: "ghcr.io/marimo-team/marimo:latest-sql"
+    description: "Reactive Python notebook with SQL + Spark Connect support, reproducible and git-friendly."
+    long_description: "Marimo is a reactive Python notebook that automatically re-executes dependent cells when you modify code. Notebooks are stored as pure Python files (git-friendly), support SQL natively, and can be deployed as interactive web apps. Pre-wired to talk to the Spark cluster via Spark Connect (sc://spark-connect:15002) — pyspark[connect] + ibis-framework[pyspark] are pre-installed."
+    image: "nexus-marimo:latest-sql-spark"
 
   meltano:
     port: 5000
