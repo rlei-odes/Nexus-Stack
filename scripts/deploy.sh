@@ -4860,13 +4860,13 @@ if echo "$ENABLED_SERVICES" | grep -qw "jupyter" \
     # line to the runner so we can format the user-facing log message.
     JUP_SYNC_OUT=$(ssh nexus "bash -s" <<REMOTE_JUPYTER_SECRETS_EOF
 # Strict mode inside the heredoc. The remote bash spawned by
-# `bash -s` does NOT inherit the parent script's `set -euo
-# pipefail`; without these, a failed `mv`, `sed`, or pipefail
+# 'bash -s' does NOT inherit the parent script's 'set -euo
+# pipefail'; without these, a failed 'mv', 'sed', or pipefail
 # violation could be silently ignored and let the script report
-# `wrote=1` while having actually written nothing useful (or
+# 'wrote=1' while having actually written nothing useful (or
 # torn the file in half). Set them here so any I/O / parser
 # failure aborts the heredoc cleanly — the parent already
-# tolerates that via `|| JUP_SYNC_OUT=""` and the empty-
+# tolerates that via '|| JUP_SYNC_OUT=""' and the empty-
 # RESULT-line warning branch.
 set -euo pipefail
 
@@ -4903,13 +4903,13 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # NOTE: ENV_FILE is intentionally NOT touched/created here. Both the
-# touch-if-missing AND the legacy-`.env`-migration are deferred to the
+# touch-if-missing AND the legacy-'.env'-migration are deferred to the
 # success path below (after at least one folder fetch returned a
 # parseable secrets array). Otherwise an Infisical outage on first
-# install would leak an empty `.infisical.env` (defeating the
+# install would leak an empty '.infisical.env' (defeating the
 # untouched-on-failure guarantee), and a transient outage during
-# upgrade would strip the legacy `.env` block before the new
-# `.infisical.env` is populated — losing the only working copy of
+# upgrade would strip the legacy '.env' block before the new
+# '.infisical.env' is populated — losing the only working copy of
 # the secrets.
 LEGACY_ENV=/opt/docker-server/stacks/jupyter/.env
 
@@ -4917,21 +4917,21 @@ PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0; SUCCEEDED=0; 
 
 # Folder discovery. Tight timeouts so a stalled local Infisical API
 # can't hang the entire deploy. Connect 5s, total 15s. Stderr is NOT
-# redirected — `-sS` is specifically meant to surface curl-level
+# redirected — '-sS' is specifically meant to surface curl-level
 # errors (timeout, connect-refused, DNS, …) without the noise of a
-# normal verbose stream, and a `2>/dev/null` here would defeat that.
+# normal verbose stream, and a '2>/dev/null' here would defeat that.
 # Errors flow up the ssh channel into the runner's stderr → deploy log.
 FOLDERS_JSON=\$(curl -sS --config "\$CFG" --get \\
     --connect-timeout 5 --max-time 15 \\
     --data-urlencode "workspaceId=\$PID" \\
     --data-urlencode "environment=\$INF_ENV" \\
     "http://localhost:8070/api/v1/folders" || echo '{}')
-# `2>/dev/null` deliberately omitted — see jq presence check above.
+# '2>/dev/null' deliberately omitted — see jq presence check above.
 # If FOLDERS_JSON is unparseable jq prints to stderr and the result
 # is empty; we still try the "/" sentinel root path below, so the
 # only loss vs masking is one extra deploy-log line that points at
-# the actual cause. `|| true` keeps a parser-error from aborting
-# under `set -euo pipefail` (top of heredoc) — empty FOLDERS plus
+# the actual cause. '|| true' keeps a parser-error from aborting
+# under 'set -euo pipefail' (top of heredoc) — empty FOLDERS plus
 # the "/" sentinel is a valid path forward and we'd rather emit
 # the warning than abort the whole sync.
 FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' | LC_ALL=C sort || true)
@@ -4947,10 +4947,10 @@ while IFS= read -r FOLDER; do
         SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
     fi
     # Stderr left attached for the same reason as the folder-discovery
-    # call above — `-sS` errors surface in the deploy log. `|| true`
-    # tolerates the curl exit code under `set -euo pipefail`; a
+    # call above — '-sS' errors surface in the deploy log. '|| true'
+    # tolerates the curl exit code under 'set -euo pipefail'; a
     # failed fetch lands an empty SECRETS_JSON which the
-    # `.secrets | type == "array"` jq check below correctly
+    # '.secrets | type == "array"' jq check below correctly
     # converts into a per-folder FAILED++.
     SECRETS_JSON=\$(curl -sS --config "\$CFG" --get \\
         --connect-timeout 5 --max-time 30 \\
@@ -4958,11 +4958,11 @@ while IFS= read -r FOLDER; do
         --data-urlencode "environment=\$INF_ENV" \\
         --data-urlencode "secretPath=\$SECRET_PATH" \\
         "http://localhost:8070/api/v3/secrets/raw" || true)
-    # Two-stage validation: (1) is `.secrets` a JSON array, (2) does
+    # Two-stage validation: (1) is '.secrets' a JSON array, (2) does
     # the TSV extraction itself succeed. SUCCEEDED is incremented
-    # ONLY after both pass — otherwise an unexpected `secretValue`
+    # ONLY after both pass — otherwise an unexpected 'secretValue'
     # type or a malformed entry could let the script proceed with
-    # SUCCEEDED>0 and overwrite \`.infisical.env\` with an empty/
+    # SUCCEEDED>0 and overwrite \'.infisical.env\' with an empty/
     # partial block, silently wiping previously working secrets.
     # jq stderr is left attached so the actual error is visible in
     # the deploy log.
@@ -4982,11 +4982,11 @@ while IFS= read -r FOLDER; do
         if ! printf '%s' "\$KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*\$'; then
             SKIPPED_NAME=\$((SKIPPED_NAME+1)); continue
         fi
-        # `|| true` so a single corrupt base64 value (very unlikely
+        # '|| true' so a single corrupt base64 value (very unlikely
         # given that we encoded with @base64 from jq, but defensive)
         # produces an empty VALUE rather than aborting the whole
-        # sync under `set -euo pipefail`. Empty VALUE downstream
-        # just yields a `KEY=` line which is a valid env-var with
+        # sync under 'set -euo pipefail'. Empty VALUE downstream
+        # just yields a 'KEY=' line which is a valid env-var with
         # empty value — semantically distinguishable from "not
         # present" if the operator ever needs to triage.
         VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d || true)
@@ -5002,13 +5002,13 @@ while IFS= read -r FOLDER; do
             echo "  ⚠ Key collision: '\$KEY' in folder '\$FOLDER_LABEL' shadowed by earlier value from folder '\$EXISTING' (first-wins)" >&2
             continue
         fi
-        # Emit values double-quoted with `\` and `"` escaped, so
+        # Emit values double-quoted with '\' and '"' escaped, so
         # arbitrary content round-trips through Compose's dotenv
         # parser without surprises:
         #   - Leading/trailing whitespace is preserved (an unquoted
         #     value would have it stripped on parse).
-        #   - Embedded `"` and `\` survive (we backslash-escape them).
-        #   - Embedded `#` is harmless (Compose only treats `#` as
+        #   - Embedded '"' and '\' survive (we backslash-escape them).
+        #   - Embedded '#' is harmless (Compose only treats '#' as
         #     a comment delimiter at the start of a line, not
         #     inline), but quoting still doesn't hurt.
         # Multi-line values are already filtered out above, so we
@@ -5060,7 +5060,7 @@ fi
 # returns secrets in a different order — otherwise compose's config
 # hash would change spuriously and we'd recreate Jupyter (killing
 # kernels) on every spin-up despite zero secret changes.
-# `sort -t= -k1,1` splits at the first '=' (so values containing '='
+# 'sort -t= -k1,1' splits at the first '=' (so values containing '='
 # don't break the sort) and orders by key only.
 {
     echo "# === BEGIN nexus-secret-sync (Infisical → Jupyter env, plaintext, regenerated each spin-up — do not edit by hand) ==="
@@ -5069,14 +5069,14 @@ fi
 } > "\$NEW_BLOCK"
 
 # Past the SUCCEEDED guard — safe to mutate ENV_FILE and the legacy
-# `.env`. Both touched here (not earlier), so an Infisical outage
-# can't leak an empty `.infisical.env` on first install or strip
+# '.env'. Both touched here (not earlier), so an Infisical outage
+# can't leak an empty '.infisical.env' on first install or strip
 # the legacy block before the new one is in place.
 [ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
 chmod 600 "\$ENV_FILE"
 
 # Atomic replace: build the new file content with the old block
-# stripped and the new block appended, then `mv` into place. The
+# stripped and the new block appended, then 'mv' into place. The
 # temp file is created in the SAME directory as ENV_FILE so the
 # rename is guaranteed atomic (cross-filesystem mv falls back to
 # copy+unlink, which is not). A Ctrl-C / SIGKILL between the strip
@@ -5089,11 +5089,11 @@ mv "\$TMP_OUT" "\$ENV_FILE"
 chmod 600 "\$ENV_FILE"
 WROTE=1
 
-# One-time migration of the legacy `.env` location: an earlier
-# iteration of this script wrote the sync block to `.env` before
+# One-time migration of the legacy '.env' location: an earlier
+# iteration of this script wrote the sync block to '.env' before
 # review feedback (#495) moved it to a dedicated file. We strip
-# any leftover block from `.env` ONLY now that the new
-# `.infisical.env` is successfully in place, so a transient
+# any leftover block from '.env' ONLY now that the new
+# '.infisical.env' is successfully in place, so a transient
 # Infisical outage during upgrade can't end up with neither
 # location holding the secrets. Idempotent — no-op if absent.
 if [ -f "\$LEGACY_ENV" ]; then
