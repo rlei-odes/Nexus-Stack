@@ -107,7 +107,13 @@ def _(df):
 
 @app.cell
 def _(df):
-    from pyspark.sql import functions as F
+    # Spark Connect requires functions from `pyspark.sql.connect.functions`,
+    # NOT the top-level `pyspark.sql.functions` — the latter resolves to the
+    # classic implementation (`pyspark.sql.classic.column._to_java_column`)
+    # which needs a local JVM SparkContext we don't have here. There's no
+    # automatic dispatch between the two in pyspark 4.1; the import path
+    # has to match the session type.
+    from pyspark.sql.connect import functions as F
 
     df.groupBy("department").agg(
         F.count("name").alias("employees"),
