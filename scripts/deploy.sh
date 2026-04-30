@@ -2068,6 +2068,20 @@ EOF
 
         # Helper: build folder creation + secrets payload JSON files
         # Usage: build_folder "folder-name" "KEY1" "val1" "KEY2" "val2" ...
+        #
+        # Pairs with an empty value are SKIPPED — neither sent to
+        # Infisical nor included in the upsert payload. This matters
+        # because the API call uses `mode: "upsert"`: passing
+        # KEY="" would overwrite an operator-edited non-empty value
+        # in the Infisical UI with empty, defeating the "user edits
+        # preserved across re-deploys" promise. With the skip, the
+        # caller can pass optional values like `${VAR:-}` without
+        # worrying that an unset VAR will silently wipe a UI-edit.
+        # Net effect: build_folder behaves like create-or-update for
+        # populated values, no-op for empty values. (Note: this
+        # also means rotating a secret to empty in source-of-truth
+        # is NOT propagated — but doing that is a manual operator
+        # action via the UI today, so this trade-off is fine.)
         build_folder() {
             local folder=$1; shift
             # Folder creation payload
@@ -2079,6 +2093,10 @@ EOF
             local jq_filter='{projectId: $pid, environment: $env, secretPath: ("/'"$folder"'"), mode: "upsert", secrets: ['
             local i=0
             while [ $# -ge 2 ]; do
+                if [ -z "$2" ]; then
+                    shift 2
+                    continue
+                fi
                 jq_args+=("--arg" "k$i" "$1" "--arg" "v$i" "$2")
                 [ $i -gt 0 ] && jq_filter+=","
                 jq_filter+='{secretKey: $k'"$i"', secretValue: $v'"$i"'}'

@@ -12,7 +12,7 @@ For now there is only `workspace-seeds/`. If we ever ship reference material tha
 
 ## How `workspace-seeds/` maps to the workspace repo
 
-The directory layout under `workspace-seeds/` mirrors the workspace Gitea repo's root **1:1**. Whatever path a file has under `workspace-seeds/`, that's the path it lands at in the workspace repo:
+The directory layout under `workspace-seeds/` mirrors the **`nexus_seeds/`** subtree of the workspace Gitea repo. Every path you have under `workspace-seeds/<...>` lands at `nexus_seeds/<...>` in the workspace repo (the prefix added in #501 to keep Nexus-Stack-managed files visually separated from user-managed content at the repo root):
 
 Source tree under `examples/workspace-seeds/`:
 
