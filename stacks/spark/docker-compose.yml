@@ -181,6 +181,18 @@ services:
       - spark.connect.grpc.binding.port=15002
       - --conf
       - spark.driver.host=spark-connect
+      # spark.driver.bindAddress=0.0.0.0 is REQUIRED — without it
+      # the driver's RPC server (port 42205+ for executor back-channel)
+      # binds to 127.0.0.1 only, and spark-worker's executors can't
+      # reach it across the Docker app-network. Symptom: every
+      # CoarseGrainedExecutorBackend exits with code 1 immediately
+      # after launch ("Command exited with code 1" in worker logs,
+      # empty stderr/stdout because it dies before logging anything),
+      # crash-looping forever as Standalone keeps re-spawning. Same
+      # rationale as SPARK_MASTER_OPTS=-Dspark.master.bindAddress=0.0.0.0
+      # on spark-master above.
+      - --conf
+      - spark.driver.bindAddress=0.0.0.0
       - --name
       - SparkConnectServer
       # Positional app jar — provides the SparkConnectServer class.
