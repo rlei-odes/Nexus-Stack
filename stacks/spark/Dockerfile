@@ -35,11 +35,13 @@ RUN apt-get update && \
 # on every UDF / Python-touching task. Repointing the symlink at image
 # build time is the only mechanism that bypasses that hardcode.
 #
-# Safety: the spark-worker container is minimal — no apt, no systemd,
-# no OS scripts run at runtime that would care which python3.x is the
-# default. The previous concern about "not overwriting system python3"
-# was theoretical; in practice nothing else in this image touches
-# python3 except Spark itself, and Spark wants 3.13.
+# Safety: the spark-worker container is minimal at runtime — no
+# package installs (apt-get only runs at image build time, never
+# inside the running container), no systemd, no OS scripts that
+# would care which python3.x is the default. The previous concern
+# about "not overwriting system python3" was theoretical; in
+# practice nothing else in this image touches python3 at runtime
+# except Spark itself, and Spark wants 3.13.
 RUN ln -sf /usr/bin/python3.13 /usr/bin/python3
 
 # PYSPARK_PYTHON env-var kept as belt-and-suspenders. With the symlink
