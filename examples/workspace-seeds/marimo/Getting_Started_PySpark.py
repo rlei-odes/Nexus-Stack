@@ -10,7 +10,7 @@ ordering automatically once dependencies are declared).
 
 import marimo
 
-__generated_with = "0.13.0"
+__generated_with = "0.23.4"
 app = marimo.App(width="medium")
 
 

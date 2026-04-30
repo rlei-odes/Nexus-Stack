@@ -40,7 +40,7 @@ the Kestra equivalent uses (DuckDB+httpfs for the stats query).
 
 import marimo
 
-__generated_with = "0.13.0"
+__generated_with = "0.23.4"
 app = marimo.App(width="medium")
 
 

@@ -21,7 +21,13 @@
 # footgun. Bump both together.
 # =============================================================================
 
-FROM ghcr.io/marimo-team/marimo:latest-sql
+# Pinned to a specific marimo version for reproducibility AND so the
+# seed notebooks' `__generated_with = "X.Y.Z"` field stays valid (a
+# floating `:latest-sql` tag could pull a marimo older than the seeds'
+# `__generated_with` version, which marimo refuses to open).
+# When bumping: also bump `__generated_with` in
+# examples/workspace-seeds/marimo/*.py to match.
+FROM ghcr.io/marimo-team/marimo:0.23.4-sql
 
 USER root
 
