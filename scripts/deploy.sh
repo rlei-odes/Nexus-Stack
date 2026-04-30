@@ -2133,10 +2133,18 @@ EOF
         # Fallback chain for the canonical HETZNER_S3_BUCKET key
         # (used by ad-hoc workloads): prefer _general (workloads
         # bucket by convention), fall back to _lakefs (always
-        # populated when the LakeFS-aware path runs). If neither
-        # is set we still push the rest of the credentials and an
-        # empty HETZNER_S3_BUCKET — the user can override in the
-        # Infisical UI without losing the credentials.
+        # populated when the LakeFS-aware path runs).
+        # Empty values from this call are NOT pushed (build_folder
+        # skips empty pairs — see helper definition above). So if
+        # neither _general nor _lakefs is populated, HETZNER_S3_BUCKET
+        # simply WILL NOT exist in Infisical for this run; the
+        # operator can add it via the UI later, and that UI-set
+        # value won't be clobbered on a subsequent spin-up that
+        # also has no source-of-truth value (skip-on-empty preserves
+        # it). Same applies to the explicit per-bucket keys
+        # (_LAKEFS / _GENERAL / _PGDUCKLAKE): they appear in the
+        # Infisical folder only if the corresponding bucket has
+        # actually been provisioned by control-plane Tofu.
         if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ]; then
             DEFAULT_HETZNER_BUCKET="${HETZNER_S3_BUCKET_GENERAL:-${HETZNER_S3_BUCKET:-}}"
             build_folder "hetzner-s3" \
