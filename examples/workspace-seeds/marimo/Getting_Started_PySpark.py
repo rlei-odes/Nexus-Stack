@@ -49,13 +49,20 @@ def _():
 
 @app.cell
 def _(mo, spark):
+    # Local import — NOT returned from this cell. Marimo enforces
+    # single-cell-defines-each-name across the DAG, and the S3 cell
+    # below has its own `import os` block. Keeping `os` cell-local
+    # here avoids that conflict.
+    import os as _os
+
+    _connect_url = _os.environ.get("SPARK_CONNECT_URL", "sc://spark-connect:15002")
     mo.md(
         f"""
         ## 1. Verify Cluster Connection
 
         - **Spark version:** `{spark.version}`
-        - **Connect URL:** `sc://spark-connect:15002`
-        - **Session ID:** `{spark.client.session_id}`
+        - **Connect URL:** `{_connect_url}`
+        - **Session type:** `{type(spark).__module__}.{type(spark).__name__}`
         """
     )
     return
