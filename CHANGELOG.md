@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.53.0...v0.54.0) (2026-04-30)
+
+
+### 🚀 Features
+
+* **jupyter:** Sync Infisical secrets into Jupyter env on spin-up ([cb4d6e4](https://github.com/stefanko-ch/Nexus-Stack/commit/cb4d6e417950f8e0ab2cacb45a053419abf27e5a))
+
+
+### 🐛 Bug Fixes
+
+* **jupyter,stacks:** Spark/PySpark fixes + Infisical secret-sync + re-categorize 8 stacks ([7895a13](https://github.com/stefanko-ch/Nexus-Stack/commit/7895a13134fc7b4c5094bec225319b9567fdd32c))
+* **jupyter:** Add spark.executorEnv.PYSPARK_PYTHON to actually pin executor Python ([331c5b6](https://github.com/stefanko-ch/Nexus-Stack/commit/331c5b67835ee9a43ea80bda76c7bc80dbe26543))
+* **jupyter:** Address PR review comments ([bbb1c26](https://github.com/stefanko-ch/Nexus-Stack/commit/bbb1c2631c4c555847c42a08ee51a646508faafe))
+* **jupyter:** Address PR review comments ([9fe47ca](https://github.com/stefanko-ch/Nexus-Stack/commit/9fe47ca6b5bcaba3b4f71dcfe97c68fff1dac469))
+* **jupyter:** Address PR review comments (round 2) ([d71f239](https://github.com/stefanko-ch/Nexus-Stack/commit/d71f239ded7fd4d2902d7c9ee51d9636e8e7a46a))
+* **jupyter:** Address PR review comments (round 3) ([039b949](https://github.com/stefanko-ch/Nexus-Stack/commit/039b949ab95c40e421d2801d3c9b8271a7af9b89))
+* **jupyter:** Address PR review comments (round 4) ([b9281c6](https://github.com/stefanko-ch/Nexus-Stack/commit/b9281c6c35177d1a766e657a36d156fa7a707a64))
+* **jupyter:** Address PR review comments (round 5) ([df05106](https://github.com/stefanko-ch/Nexus-Stack/commit/df05106989e68f917dfca6a96c97eb796468e71d))
+* **jupyter:** Address PR review comments (round 6) ([a3605cd](https://github.com/stefanko-ch/Nexus-Stack/commit/a3605cdac10c38e585785e31dee69a555ac21dbd))
+* **jupyter:** Address PR review comments (round 7) ([945ce7f](https://github.com/stefanko-ch/Nexus-Stack/commit/945ce7f77b741c83829b0825faf3cde3492a8a04))
+* **jupyter:** Address PR review comments (round 8) ([3f10307](https://github.com/stefanko-ch/Nexus-Stack/commit/3f10307cbb20712e9789e6a69ddc13bfbd89cb24))
+* **jupyter:** Right-size Spark driver heap for the 3g container ([dbf3f35](https://github.com/stefanko-ch/Nexus-Stack/commit/dbf3f35dd83477b6b9a39e6399a11af84ef830a5))
+* **jupyter:** Set PYSPARK_PYTHON so executors match driver's 3.13 ([3a72c85](https://github.com/stefanko-ch/Nexus-Stack/commit/3a72c8522b8a137008d7f08fbb42dc27e3247128))
+* **spark,jupyter:** Symlink python3→3.13 on worker — PYSPARK_PYTHON config not honored by Spark 4.1.1 daemon launch ([26364ae](https://github.com/stefanko-ch/Nexus-Stack/commit/26364aedce43a4741761a476efba1b105b66cc5b))
+* **spark:** Address PR review comments (round 2) ([9b64499](https://github.com/stefanko-ch/Nexus-Stack/commit/9b644999ea53c8898bab25a0e5319e65e387bc5e))
+* **spark:** Move from 'orchestration' to 'analytics' category ([b8316b5](https://github.com/stefanko-ch/Nexus-Stack/commit/b8316b5bdfd810b9e14096210717aaef1a90ea9b))
+* **stacks:** Re-categorize 7 misfit stacks + drop now-empty 'files' category ([3a6a509](https://github.com/stefanko-ch/Nexus-Stack/commit/3a6a509835780df12da3a57f2244e55cfc49ee4e))
+
 ## [0.53.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.52.0...v0.53.0) (2026-04-29)
 
 
