@@ -33,7 +33,9 @@ services:
     # latent bug, and the chown was missing entirely).
     entrypoint: >
       sh -c "
-        chown -R appuser:appuser /app/notebooks;
+        if [ \"$$(stat -c '%U' /app/notebooks)\" != \"appuser\" ]; then
+          chown -R appuser:appuser /app/notebooks;
+        fi;
         gosu appuser sh -c '
           if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
             echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > ~/.netrc;
@@ -70,15 +72,15 @@ services:
       # (examples/workspace-seeds/marimo/_nexus_spark.py). Override
       # per-notebook via os.environ if pointing at a different cluster.
       - SPARK_CONNECT_URL=sc://spark-connect:15002
-      # S3 (Hetzner Object Storage) — exposed so Spark sessions built
-      # via the helper module can register Hadoop config for s3a://
-      # paths. The Connect-server side reads its own copy from the
-      # spark-connect compose env; this set lets notebooks see the
-      # bucket name etc. for path construction.
-      - HETZNER_S3_ENDPOINT=${HETZNER_S3_ENDPOINT:-}
-      - HETZNER_S3_ACCESS_KEY=${HETZNER_S3_ACCESS_KEY:-}
-      - HETZNER_S3_SECRET_KEY=${HETZNER_S3_SECRET_KEY:-}
-      - HETZNER_S3_BUCKET=${HETZNER_S3_BUCKET:-}
+      # NOTE: HETZNER_S3_* are intentionally NOT set here. They land
+      # in `.infisical.env` via the secret-sync block in deploy.sh
+      # and reach the container via env_file above. Listing them in
+      # the `environment:` section would override the env_file values
+      # (Compose precedence: environment > env_file) — and since the
+      # `${VAR:-}` interpolation reads from the host's compose .env
+      # (not .infisical.env), these would resolve to empty strings,
+      # silently wiping the Infisical-provided values at container
+      # start. Defeating the entire point of the secret sync.
     deploy:
       resources:
         limits:

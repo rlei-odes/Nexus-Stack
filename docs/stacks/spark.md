@@ -14,7 +14,7 @@ Apache Spark provides a unified analytics engine for large-scale data processing
 |---------|-------|
 | Default Port | `8088` (Master Web UI) |
 | Classic cluster port | `7077` (internal — Jupyter connects here) |
-| Spark Connect port | `15002` (internal — Marimo / future code-server connect here via `sc://`) |
+| Spark Connect port | `15002` (internal Docker network only — Marimo / future code-server connect here via `sc://spark-connect:15002`. NOT published to the host or routed via Cloudflare Tunnel.) |
 | Suggested Subdomain | `spark` |
 | Public Access | No (cluster management) |
 | Website | [spark.apache.org](https://spark.apache.org) |

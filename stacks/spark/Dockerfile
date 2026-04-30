@@ -69,9 +69,29 @@ RUN curl -fSL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.2/
 # runtime). Same pattern as the hadoop-aws JARs above. Pinned to
 # match the apache/spark:4.1.1 base so there's no Scala-major or
 # protobuf-shading mismatch with the rest of the assembly.
+#
+# Each JAR is verified against Maven Central's published SHA-1
+# checksum so the build fails loudly if the artifact bytes get
+# tampered with at the registry, in transit, or via a
+# cache/CDN-poisoning attack. SHA-1 (not 256/512) because Maven
+# Central only publishes .sha1 and .md5 sidecars for these
+# artifacts — verified live (.sha512 returns 404). SHA-1 is
+# cryptographically weak BUT still effective against random
+# corruption + non-targeted tampering, which is the realistic
+# threat model for a Maven Central CDN-fetch in CI.
+# (The pre-existing hadoop-aws + AWS SDK downloads above don't
+# yet have this guard — TODO in a separate hardening PR; not
+# done here to keep the diff scoped to the new Connect-server
+# addition.)
 RUN curl -fSL https://repo1.maven.org/maven2/org/apache/spark/spark-connect_2.13/4.1.1/spark-connect_2.13-4.1.1.jar \
         -o /opt/spark/jars/spark-connect_2.13-4.1.1.jar && \
+    curl -fSL https://repo1.maven.org/maven2/org/apache/spark/spark-connect_2.13/4.1.1/spark-connect_2.13-4.1.1.jar.sha1 \
+        | awk '{print $1 "  /opt/spark/jars/spark-connect_2.13-4.1.1.jar"}' \
+        | sha1sum -c - && \
     curl -fSL https://repo1.maven.org/maven2/org/apache/spark/spark-connect-common_2.13/4.1.1/spark-connect-common_2.13-4.1.1.jar \
-        -o /opt/spark/jars/spark-connect-common_2.13-4.1.1.jar
+        -o /opt/spark/jars/spark-connect-common_2.13-4.1.1.jar && \
+    curl -fSL https://repo1.maven.org/maven2/org/apache/spark/spark-connect-common_2.13/4.1.1/spark-connect-common_2.13-4.1.1.jar.sha1 \
+        | awk '{print $1 "  /opt/spark/jars/spark-connect-common_2.13-4.1.1.jar"}' \
+        | sha1sum -c -
 
 USER spark

@@ -189,6 +189,13 @@ def _(spark):
     import os
 
     bucket = os.environ.get("HETZNER_S3_BUCKET", "")
+    # Initialize all return-tuple names BEFORE the conditional so
+    # both branches define them. Otherwise the else-branch return
+    # would raise UnboundLocalError on `sample_path` when
+    # HETZNER_S3_BUCKET is unset (the common case before Infisical
+    # has any S3 secrets in it).
+    sample_path = None
+    df_s3 = None
     if bucket:
         # Write a small CSV, then read it back. Both happen on the
         # spark-connect server side; only the resulting Arrow batches
@@ -206,7 +213,6 @@ def _(spark):
             "Set it via Infisical (key HETZNER_S3_BUCKET) and re-run a spin-up "
             "to populate the Marimo container env."
         )
-        df_s3 = None
     return bucket, df_s3, os, result_msg, sample_path
 
 

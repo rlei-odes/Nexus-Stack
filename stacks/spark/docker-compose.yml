@@ -140,8 +140,12 @@ services:
   # We launch via spark-submit so SparkConf is wired up correctly
   # (--master, --conf), and the SparkConnectPlugin gets registered.
   #
-  # Resources: 1.5 GiB driver-heap is plenty — the heavy work happens
-  # on the worker, the Connect server is mostly a gRPC↔Spark adapter.
+  # Resources: container is capped at 1.5 GiB; the driver JVM uses
+  # Spark's default heap (1g) within that, leaving headroom for
+  # native code and gRPC buffers. The heavy work happens on the
+  # worker, the Connect server is mostly a gRPC↔Spark adapter so
+  # the default heap is fine. Bump --driver-memory in the command
+  # below if you see OOMs in connect-server logs.
   # =========================================================================
   spark-connect:
     image: ${IMAGE_SPARK:-nexus-spark:4.1.1-python3.13}
@@ -181,8 +185,14 @@ services:
       # Pre-downloaded by stacks/spark/Dockerfile to avoid runtime
       # ivy resolution.
       - /opt/spark/jars/spark-connect_2.13-4.1.1.jar
-    ports:
-      - "15002:15002"
+    # No `ports:` mapping — clients reach 15002 via the Docker
+    # `app-network` only (`sc://spark-connect:15002`). Publishing
+    # to the host would expose the gRPC endpoint on the VM's
+    # interfaces, contradicting the "no auth on Spark itself,
+    # protected by Cloudflare Tunnel boundary" assumption above.
+    # If host-side debug access is ever needed, add a 127.0.0.1
+    # bind temporarily (`"127.0.0.1:15002:15002"`), don't
+    # publish on 0.0.0.0.
     networks:
       - app-network
       - spark-internal

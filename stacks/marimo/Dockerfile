@@ -37,14 +37,19 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git gosu && \
     rm -rf /var/lib/apt/lists/*
 
-# Spark Connect client + Ibis adapter. `--no-cache-dir` keeps the layer
-# small. Versions pinned to match spark-master 4.1.1.
+# Spark Connect client + Ibis adapter. `--no-cache-dir` keeps the
+# layer small. ALL versions pinned exactly to make rebuilds
+# reproducible — open-ended `>=` constraints would let pip pull a
+# newer grpcio / pyarrow on every rebuild and silently break
+# wire-protocol compat with the spark-connect 4.1.1 server. The
+# pins below match the known-good combination from marimo-team's
+# own pyspark smoke tests.
 RUN pip install --no-cache-dir \
     "pyspark[connect]==4.1.1" \
     "ibis-framework[pyspark]==10.5.0" \
-    "grpcio>=1.62" \
-    "grpcio-status>=1.62" \
-    "pyarrow>=15"
+    "grpcio==1.71.0" \
+    "grpcio-status==1.71.0" \
+    "pyarrow==19.0.1"
 
 # Stay as root — the entrypoint chowns the notebooks volume then drops
 # to appuser via gosu before exec'ing marimo. We can't drop here
