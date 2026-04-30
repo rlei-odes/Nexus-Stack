@@ -2068,6 +2068,20 @@ EOF
 
         # Helper: build folder creation + secrets payload JSON files
         # Usage: build_folder "folder-name" "KEY1" "val1" "KEY2" "val2" ...
+        #
+        # Pairs with an empty value are SKIPPED — neither sent to
+        # Infisical nor included in the upsert payload. This matters
+        # because the API call uses `mode: "upsert"`: passing
+        # KEY="" would overwrite an operator-edited non-empty value
+        # in the Infisical UI with empty, defeating the "user edits
+        # preserved across re-deploys" promise. With the skip, the
+        # caller can pass optional values like `${VAR:-}` without
+        # worrying that an unset VAR will silently wipe a UI-edit.
+        # Net effect: build_folder behaves like create-or-update for
+        # populated values, no-op for empty values. (Note: this
+        # also means rotating a secret to empty in source-of-truth
+        # is NOT propagated — but doing that is a manual operator
+        # action via the UI today, so this trade-off is fine.)
         build_folder() {
             local folder=$1; shift
             # Folder creation payload
@@ -2079,6 +2093,10 @@ EOF
             local jq_filter='{projectId: $pid, environment: $env, secretPath: ("/'"$folder"'"), mode: "upsert", secrets: ['
             local i=0
             while [ $# -ge 2 ]; do
+                if [ -z "$2" ]; then
+                    shift 2
+                    continue
+                fi
                 jq_args+=("--arg" "k$i" "$1" "--arg" "v$i" "$2")
                 [ $i -gt 0 ] && jq_filter+=","
                 jq_filter+='{secretKey: $k'"$i"', secretValue: $v'"$i"'}'
@@ -2102,13 +2120,42 @@ EOF
                 "R2_BUCKET" "$R2_DATA_BUCKET"
         fi
 
-        if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_BUCKET_GENERAL" ]; then
+        # Push Hetzner S3 secrets to Infisical whenever credentials are
+        # available, even if not all three bucket names (lakefs, general,
+        # pgducklake) are populated. The previous gate required
+        # $HETZNER_S3_BUCKET_GENERAL — but that's only created when
+        # the control-plane Tofu's `general` bucket resource exists,
+        # which isn't always the case (see #503). Result: notebook
+        # stacks (Marimo via .infisical.env, Jupyter, code-server)
+        # would silently miss all four HETZNER_S3_* env vars even
+        # though the credentials and at least one bucket are
+        # provisioned.
+        # Fallback chain for the canonical HETZNER_S3_BUCKET key
+        # (used by ad-hoc workloads): prefer _general (workloads
+        # bucket by convention), fall back to _lakefs (always
+        # populated when the LakeFS-aware path runs).
+        # Empty values from this call are NOT pushed (build_folder
+        # skips empty pairs — see helper definition above). So if
+        # neither _general nor _lakefs is populated, HETZNER_S3_BUCKET
+        # simply WILL NOT exist in Infisical for this run; the
+        # operator can add it via the UI later, and that UI-set
+        # value won't be clobbered on a subsequent spin-up that
+        # also has no source-of-truth value (skip-on-empty preserves
+        # it). Same applies to the explicit per-bucket keys
+        # (_LAKEFS / _GENERAL / _PGDUCKLAKE): they appear in the
+        # Infisical folder only if the corresponding bucket has
+        # actually been provisioned by control-plane Tofu.
+        if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ]; then
+            DEFAULT_HETZNER_BUCKET="${HETZNER_S3_BUCKET_GENERAL:-${HETZNER_S3_BUCKET:-}}"
             build_folder "hetzner-s3" \
                 "HETZNER_S3_ENDPOINT" "https://$HETZNER_S3_SERVER" \
                 "HETZNER_S3_REGION" "$HETZNER_S3_REGION" \
                 "HETZNER_S3_ACCESS_KEY" "$HETZNER_S3_ACCESS_KEY" \
                 "HETZNER_S3_SECRET_KEY" "$HETZNER_S3_SECRET_KEY" \
-                "HETZNER_S3_BUCKET" "$HETZNER_S3_BUCKET_GENERAL"
+                "HETZNER_S3_BUCKET" "$DEFAULT_HETZNER_BUCKET" \
+                "HETZNER_S3_BUCKET_LAKEFS" "${HETZNER_S3_BUCKET:-}" \
+                "HETZNER_S3_BUCKET_GENERAL" "${HETZNER_S3_BUCKET_GENERAL:-}" \
+                "HETZNER_S3_BUCKET_PGDUCKLAKE" "${HETZNER_S3_BUCKET_PGDUCKLAKE:-}"
         fi
 
         if [ -n "$EXTERNAL_S3_ENDPOINT" ] && [ -n "$EXTERNAL_S3_ACCESS_KEY" ] && [ -n "$EXTERNAL_S3_SECRET_KEY" ] && [ -n "$EXTERNAL_S3_BUCKET" ]; then
@@ -3634,7 +3681,19 @@ CFG
             echo "  Seeding workspace files into ${GITEA_REPO_OWNER}/${REPO_NAME}..."
             local SEED_FILE REPO_PATH REPO_PATH_ENC CONTENT_B64 JSON_BODY SEED_STATUS SEED_B64_TMP
             while IFS= read -r -d '' SEED_FILE; do
-                REPO_PATH="${SEED_FILE#$SEED_DIR/}"
+                # Seeds land under `nexus_seeds/<original-path>` in the
+                # workspace repo (#501). E.g., examples/workspace-seeds/
+                # marimo/Getting_Started_PySpark.py → repo's
+                # nexus_seeds/marimo/Getting_Started_PySpark.py. Keeps
+                # Nexus-Stack-managed files visually separated from the
+                # user's own course material at the repo root.
+                # Old root-level paths (`kestra/`, `marimo/`) from
+                # pre-#501 spin-ups become orphaned and can be deleted
+                # by the user — they're harmless because Kestra's
+                # `system.flow-sync` now scans `nexus_seeds/kestra/flows/`
+                # and ignores the old root location. See "Code
+                # Examples" in CLAUDE.md for the full convention.
+                REPO_PATH="nexus_seeds/${SEED_FILE#$SEED_DIR/}"
                 # Defense in depth — restrict to the safe filesystem
                 # subset (ASCII alphanumerics, dot, dash, underscore,
                 # slash). Closes any shell-injection vector if a future
@@ -4278,17 +4337,20 @@ REMOTE_KESTRA_PROBE_EOF
                     #
                     #   - `git-sync` (SyncNamespaceFiles): pulls helper files
                     #     (Python scripts, configs, SQL templates) from the
-                    #     repo's `kestra/workflows/` directory into the
-                    #     namespace's files area — these are NOT flow defs.
+                    #     repo's `nexus_seeds/kestra/workflows/` directory
+                    #     into the namespace's files area — these are NOT
+                    #     flow defs.
                     #
                     #   - `flow-sync` (SyncFlows): pulls flow YAML files from
-                    #     `kestra/flows/` and registers them under namespace
-                    #     `nexus-tutorials`. `targetNamespace: nexus-tutorials` is
-                    #     required by the v1.0 plugin (without it, POST /flows
-                    #     returns 422 "tasks[0].targetNamespace: must not be
-                    #     null"). With `includeChildNamespaces: true`, subdirs
+                    #     `nexus_seeds/kestra/flows/` and registers them under
+                    #     namespace `nexus-tutorials`. `targetNamespace:
+                    #     nexus-tutorials` is required by the v1.0 plugin
+                    #     (without it, POST /flows returns 422
+                    #     "tasks[0].targetNamespace: must not be null").
+                    #     With `includeChildNamespaces: true`, subdirs
                     #     extend the namespace — e.g.
-                    #     `kestra/flows/sub1/foo.yaml` → `nexus-tutorials.sub1`.
+                    #     `nexus_seeds/kestra/flows/sub1/foo.yaml` →
+                    #     `nexus-tutorials.sub1`.
                     #     `delete: true` makes Git the single source of truth
                     #     — UI-only flows get cleaned up on every sync. This
                     #     is the persistence layer that survives destroy-all
@@ -4386,7 +4448,7 @@ tasks:
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
     namespace: "{{ flow.namespace }}"
-    gitDirectory: kestra/workflows
+    gitDirectory: nexus_seeds/kestra/workflows
 triggers:
   - id: schedule
     type: io.kestra.core.models.triggers.types.Schedule
@@ -4402,7 +4464,7 @@ tasks:
     branch: ${WORKSPACE_BRANCH}
     username: ${ADMIN_USERNAME}
     password: "{{ secret('\''GITEA_TOKEN'\'') }}"
-    gitDirectory: kestra/flows
+    gitDirectory: nexus_seeds/kestra/flows
     targetNamespace: nexus-tutorials
     includeChildNamespaces: true
     delete: true
@@ -4455,7 +4517,7 @@ if [ "\$REGISTER_FAILED" -eq 0 ]; then
                 if [ "\$SEED_FLOW_STATUS" = "200" ]; then
                     echo "    ✓ Seeded flow nexus-tutorials.r2-taxi-pipeline registered in Kestra" >&2
                 else
-                    echo "    ⚠ system.flow-sync ran but nexus-tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
+                    echo "    ⚠ system.flow-sync ran but nexus-tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
                 fi
                 ;;
             FAILED|KILLED)
