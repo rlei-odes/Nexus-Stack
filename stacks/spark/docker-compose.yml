@@ -3,16 +3,23 @@
 # =============================================================================
 # Access via: https://spark.${domain} (Master Web UI)
 # Apache Spark provides a unified analytics engine for large-scale data
-# processing. This stack runs a standalone cluster with one master and one
-# worker node.
+# processing. This stack runs a standalone cluster with one master, one
+# worker, and a Spark Connect server.
 #
-# Jupyter PySpark connects to this cluster via spark://spark-master:7077
+# Two client protocols served in parallel:
+#   - Classic (port 7077): Jupyter connects via spark://spark-master:7077.
+#     Driver-JVM lives in the client (Jupyter container).
+#   - Spark Connect (port 15002): Marimo / code-server / future thin clients
+#     connect via sc://spark-connect:15002. Driver-JVM lives in the
+#     spark-connect container, clients are gRPC-only (no JDK needed).
+#
 # S3 access (Hetzner Object Storage) is pre-configured via Hadoop properties.
 #
 # IMAGE: Custom Dockerfile installs Python 3.13 (from deadsnakes PPA) on the
 # official apache/spark:4.1.1 base (Ubuntu 22.04 + Python 3.10) to match
 # Jupyter's Python version. PySpark requires matching minor versions.
-# Also includes hadoop-aws + AWS SDK v2 JARs for S3A filesystem support.
+# Also includes hadoop-aws + AWS SDK v2 JARs for S3A filesystem support
+# and the Spark Connect server JARs.
 #
 # NOTE: Uses /opt/entrypoint.sh + spark-class to run processes in foreground
 # (not start-master.sh/start-worker.sh which are daemon launchers).
@@ -20,6 +27,9 @@
 # SECURITY:
 # - Protected by Cloudflare Access (email OTP authentication)
 # - No authentication on Spark itself (relies on Cloudflare Access)
+# - Spark Connect 15002 is exposed to the host but only on the Docker
+#   internal network — Cloudflare Tunnel does NOT route it externally.
+#   Clients reach it via the docker app-network only.
 # =============================================================================
 
 services:
@@ -116,6 +126,87 @@ services:
     networks:
       - app-network
       - spark-internal
+
+  # =========================================================================
+  # Spark Connect server — gRPC endpoint on port 15002 for thin clients.
+  # =========================================================================
+  # Runs as its own Spark application: a separate driver-JVM that
+  # connects to spark-master at 7077 to schedule tasks on the worker.
+  # Clients (Marimo, future code-server) talk to it via gRPC (`sc://`)
+  # and never need a JVM or pyspark[full] locally.
+  #
+  # The Connect-server class lives in spark-connect_2.13-4.1.1.jar
+  # which is pre-downloaded into /opt/spark/jars/ by the Dockerfile.
+  # We launch via spark-submit so SparkConf is wired up correctly
+  # (--master, --conf), and the SparkConnectPlugin gets registered.
+  #
+  # Resources: 1.5 GiB driver-heap is plenty — the heavy work happens
+  # on the worker, the Connect server is mostly a gRPC↔Spark adapter.
+  # =========================================================================
+  spark-connect:
+    image: ${IMAGE_SPARK:-nexus-spark:4.1.1-python3.13}
+    container_name: spark-connect
+    hostname: spark-connect
+    restart: unless-stopped
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      # S3 (Hetzner Object Storage) — Connect server is also a Spark
+      # driver and submits jobs that may read s3a:// paths.
+      SPARK_HADOOP_fs_s3a_endpoint: ${HETZNER_S3_ENDPOINT:-}
+      SPARK_HADOOP_fs_s3a_access_key: ${HETZNER_S3_ACCESS_KEY:-}
+      SPARK_HADOOP_fs_s3a_secret_key: ${HETZNER_S3_SECRET_KEY:-}
+      SPARK_HADOOP_fs_s3a_path_style_access: "true"
+      SPARK_HADOOP_fs_s3a_impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+    env_file:
+      - path: .env
+        required: false
+    entrypoint: ["/opt/entrypoint.sh"]
+    command:
+      - /opt/spark/bin/spark-submit
+      - --class
+      - org.apache.spark.sql.connect.service.SparkConnectServer
+      - --master
+      - spark://spark-master:7077
+      - --conf
+      - spark.connect.grpc.binding.host=0.0.0.0
+      - --conf
+      - spark.connect.grpc.binding.port=15002
+      - --conf
+      - spark.driver.host=spark-connect
+      - --name
+      - SparkConnectServer
+      # Positional app jar — provides the SparkConnectServer class.
+      # Pre-downloaded by stacks/spark/Dockerfile to avoid runtime
+      # ivy resolution.
+      - /opt/spark/jars/spark-connect_2.13-4.1.1.jar
+    ports:
+      - "15002:15002"
+    networks:
+      - app-network
+      - spark-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1536m
+        reservations:
+          cpus: "0.25"
+          memory: 256m
+    healthcheck:
+      # TCP-only — the gRPC port either accepts connections or it
+      # doesn't. A real gRPC health probe would need grpcurl which
+      # isn't in the image; bare TCP is enough to know the JVM is
+      # listening.
+      test: ["CMD-SHELL", "bash -c '(echo > /dev/tcp/localhost/15002) >/dev/null 2>&1'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # Generous start_period because the Connect server has to bring
+      # up a full SparkContext + register with master + bind gRPC
+      # before it can accept connections.
+      start_period: 90s
 
 networks:
   app-network:

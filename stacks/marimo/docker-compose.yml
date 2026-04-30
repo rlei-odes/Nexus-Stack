@@ -1,9 +1,16 @@
 # =============================================================================
-# Marimo - Reactive Python Notebook
+# Marimo - Reactive Python Notebook with Spark Connect
 # https://marimo.${DOMAIN}
 # =============================================================================
 # Marimo is a reactive Python notebook that's reproducible, git-friendly,
-# and deployable as apps. SQL variant includes DuckDB and data analysis tools.
+# and deployable as apps. The SQL variant ships DuckDB + Ibis + Polars.
+#
+# Spark integration: this image extends ghcr.io/marimo-team/marimo:latest-sql
+# with pyspark[connect] + ibis-framework[pyspark] (see ./Dockerfile).
+# Notebooks call `from _nexus_spark import get_spark; spark = get_spark()`
+# to get a Spark Connect session against sc://spark-connect:15002. The
+# driver-JVM lives in the spark-connect container — Marimo is gRPC-only,
+# so 1 GiB memory is plenty.
 #
 # Git Integration: If Gitea is enabled, the shared workspace repo is
 # auto-cloned into /app/notebooks/.
@@ -11,9 +18,15 @@
 
 services:
   marimo:
-    image: ${IMAGE_MARIMO:-ghcr.io/marimo-team/marimo:latest-sql}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_MARIMO:-nexus-marimo:latest-sql-spark}
     container_name: marimo
     restart: unless-stopped
+    # Entrypoint just sets up Gitea netrc + clones the workspace repo.
+    # git is installed by the Dockerfile (Marimo's base is Debian, NOT
+    # Alpine — the previous `apk add` was a silent-failure latent bug).
     entrypoint: >
       sh -c "
         if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
@@ -21,15 +34,10 @@ services:
           chmod 600 ~/.netrc;
         fi;
         if [ -n \"$$GITEA_REPO_URL\" ] && [ ! -d /app/notebooks/$$REPO_NAME/.git ]; then
-          if ! command -v git >/dev/null 2>&1; then
-            apk add --no-cache git || echo '[marimo] Warning: Failed to install git' >&2;
-          fi;
-          if command -v git >/dev/null 2>&1; then
-            if git clone \"$$GITEA_REPO_URL\" /app/notebooks/$$REPO_NAME; then
-              echo '[marimo] Cloned Git repo into /app/notebooks/'$$REPO_NAME;
-            else
-              echo '[marimo] Warning: Failed to clone '$$GITEA_REPO_URL >&2;
-            fi;
+          if git clone \"$$GITEA_REPO_URL\" /app/notebooks/$$REPO_NAME; then
+            echo '[marimo] Cloned Git repo into /app/notebooks/'$$REPO_NAME;
+          else
+            echo '[marimo] Warning: Failed to clone '$$GITEA_REPO_URL >&2;
           fi;
         fi;
         exec marimo edit --host 0.0.0.0 --port 8080 --no-token /app/notebooks
@@ -37,15 +45,41 @@ services:
     env_file:
       - path: .env
         required: false
+      # Infisical secrets land in a dedicated file (written by
+      # scripts/deploy.sh's secret-sync block). Same pattern as
+      # stacks/jupyter/docker-compose.yml — `.env` would also be
+      # consumed by docker compose for `${VAR}` interpolation in this
+      # file, and a secret named e.g. `IMAGE_MARIMO` could silently
+      # rewrite the compose config. Dedicated file avoids that class
+      # of footgun.
+      - path: .infisical.env
+        required: false
     ports:
       - "2718:8080"
     environment:
       - HOST=0.0.0.0
       - PORT=8080
+      # Default Spark Connect endpoint for the helper module
+      # (examples/workspace-seeds/marimo/_nexus_spark.py). Override
+      # per-notebook via os.environ if pointing at a different cluster.
+      - SPARK_CONNECT_URL=sc://spark-connect:15002
+      # S3 (Hetzner Object Storage) — exposed so Spark sessions built
+      # via the helper module can register Hadoop config for s3a://
+      # paths. The Connect-server side reads its own copy from the
+      # spark-connect compose env; this set lets notebooks see the
+      # bucket name etc. for path construction.
+      - HETZNER_S3_ENDPOINT=${HETZNER_S3_ENDPOINT:-}
+      - HETZNER_S3_ACCESS_KEY=${HETZNER_S3_ACCESS_KEY:-}
+      - HETZNER_S3_SECRET_KEY=${HETZNER_S3_SECRET_KEY:-}
+      - HETZNER_S3_BUCKET=${HETZNER_S3_BUCKET:-}
     deploy:
       resources:
         limits:
-          memory: 512m
+          # 1 GiB is plenty for a Spark Connect client. The driver-JVM
+          # lives in the spark-connect container; Marimo just runs
+          # Python + gRPC + Arrow batches. If notebooks pull huge
+          # .toPandas() results client-side, raise to 2g.
+          memory: 1g
     volumes:
       - marimo_data:/app/notebooks
     healthcheck:

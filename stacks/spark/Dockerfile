@@ -1,5 +1,5 @@
 # =============================================================================
-# Apache Spark - Custom image with Python 3.13 and S3A support
+# Apache Spark - Custom image with Python 3.13, S3A, and Spark Connect support
 # =============================================================================
 # The official apache/spark:4.1.1 image is based on Ubuntu 22.04 (Jammy) which
 # ships Python 3.10. Jupyter pyspark-notebook uses Python 3.13 (via conda).
@@ -9,6 +9,10 @@
 # 1. Installs Python 3.13 from the deadsnakes PPA to match Jupyter.
 # 2. Downloads hadoop-aws + AWS SDK v2 JARs for S3A filesystem support
 #    (required for s3a:// paths, e.g. Hetzner Object Storage).
+# 3. Downloads Spark Connect server JARs so the master can start a gRPC
+#    Connect endpoint (port 15002) for thin clients (Marimo, code-server,
+#    perspectivisch Jupyter). Classic standalone-cluster on 7077 keeps
+#    serving Jupyter unchanged.
 # =============================================================================
 
 FROM apache/spark:4.1.1
@@ -58,5 +62,16 @@ RUN curl -fSL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.2/
         -o /opt/spark/jars/hadoop-aws-3.4.2.jar && \
     curl -fSL https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar \
         -o /opt/spark/jars/bundle-2.29.52.jar
+
+# Download Spark Connect server JARs. Pre-baking them avoids a ~30s
+# ivy-resolution cold-start every container boot (which is what
+# `--packages org.apache.spark:spark-connect_2.13:4.1.1` would do at
+# runtime). Same pattern as the hadoop-aws JARs above. Pinned to
+# match the apache/spark:4.1.1 base so there's no Scala-major or
+# protobuf-shading mismatch with the rest of the assembly.
+RUN curl -fSL https://repo1.maven.org/maven2/org/apache/spark/spark-connect_2.13/4.1.1/spark-connect_2.13-4.1.1.jar \
+        -o /opt/spark/jars/spark-connect_2.13-4.1.1.jar && \
+    curl -fSL https://repo1.maven.org/maven2/org/apache/spark/spark-connect-common_2.13/4.1.1/spark-connect-common_2.13-4.1.1.jar \
+        -o /opt/spark/jars/spark-connect-common_2.13-4.1.1.jar
 
 USER spark

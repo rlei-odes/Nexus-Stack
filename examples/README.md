@@ -22,7 +22,10 @@ examples/workspace-seeds/
 │   ├── flows/
 │   │   └── r2-taxi-pipeline.yaml
 │   └── workflows/                  (when added — helper files: scripts, configs, SQL templates)
-├── notebooks/                      (when added — Jupyter / Marimo / code-server)
+├── marimo/
+│   ├── _nexus_spark.py             (Spark Connect helper — `from _nexus_spark import get_spark`)
+│   └── Getting_Started_PySpark.py  (seed Marimo notebook demonstrating PySpark + Spark SQL via Ibis)
+├── notebooks/                      (when added — Jupyter / code-server, .ipynb)
 ├── scripts/                        (when added — code-server, ad-hoc execution)
 ├── dbt/                            (when added — code-server, manual `dbt`)
 └── sql/                            (when added — DuckDB, Trino, ClickHouse)
@@ -50,7 +53,8 @@ Stick to these names so the various services pick the files up correctly:
 |---|---|---|
 | `kestra/flows/` | Kestra (via `system.flow-sync`, registered by `deploy.sh`) | Flow definitions in YAML. Files at `kestra/flows/<id>.yaml` register under namespace `nexus-tutorials`; subdirectories extend the namespace (`kestra/flows/sub1/<id>.yaml` → `nexus-tutorials.sub1`). |
 | `kestra/workflows/` | Kestra (via `system.git-sync`, registered by `deploy.sh`) | Helper files referenced by flows: Python scripts, SQL templates, configs. **Not** flow definitions. |
-| `notebooks/` | Jupyter, Marimo, code-server (cloned from the workspace repo) | `.ipynb` notebooks or `.py` scripts. |
+| `marimo/` | Marimo (cloned from the workspace repo into `/app/notebooks/<repo>/marimo/`) | Marimo notebooks (plain `.py` files using `marimo.App` + `@app.cell`) plus the `_nexus_spark.py` helper that wires `SparkSession.builder.remote("sc://spark-connect:15002")`. Per-stack folder because Marimo's `.py` notebook format is incompatible with Jupyter `.ipynb` and the helper module is Marimo-specific. |
+| `notebooks/` | Jupyter, code-server (cloned from the workspace repo) | `.ipynb` notebooks (Jupyter) or `.py` scripts (code-server). NOT for Marimo notebooks — those go in `marimo/`. |
 | `scripts/` | code-server, ad-hoc execution | Shell or Python helpers reused across notebooks. |
 | `dbt/` | code-server, manual `dbt` invocation | A normal dbt project tree (`dbt_project.yml`, `models/`, etc.). |
 | `sql/` | DuckDB, Trino, ClickHouse — anywhere SQL gets pasted | Stand-alone SQL files. |

@@ -5166,6 +5166,187 @@ REMOTE_JUPYTER_SECRETS_EOF
     fi
 fi
 
+# ==========================================================================
+# Sync Infisical secrets into Marimo as plaintext env-vars (closes #497)
+# ==========================================================================
+# Same pattern as the Jupyter sync block above — see that block's comment
+# for the full rationale (atomic write into a dedicated .infisical.env,
+# deterministic sort, dotenv-quoted values, two outage-safety guards,
+# strict-mode heredoc, etc.). Differences from the Jupyter block:
+#   - Service-gate string: 'marimo' instead of 'jupyter'.
+#   - ENV_FILE / LEGACY_ENV paths: stacks/marimo/ instead of stacks/jupyter/.
+#   - Restart command: docker compose up -d marimo.
+#   - RESULT-line variable names use the MAR_ prefix to keep the runner-side
+#     parsing decoupled from the Jupyter pass.
+# All Round-1..8 hardenings from the Jupyter block carry over verbatim.
+# --------------------------------------------------------------------------
+if echo "$ENABLED_SERVICES" | grep -qw "marimo" \
+    && [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+    echo "Syncing Infisical secrets into Marimo env..."
+
+    MAR_INF_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
+    MAR_INF_PID_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
+    MAR_INF_ENV_B64=$(printf '%s' "${INFISICAL_ENV:-dev}" | base64 | tr -d '\n')
+    MAR_GTOKEN_B64=$(printf '%s' "${GITEA_TOKEN:-}" | base64 | tr -d '\n')
+
+    MAR_SYNC_OUT=$(ssh nexus "bash -s" <<REMOTE_MARIMO_SECRETS_EOF
+set -euo pipefail
+
+ITOK=\$(printf '%s' '$MAR_INF_TOKEN_B64' | base64 -d)
+PID=\$(printf '%s' '$MAR_INF_PID_B64' | base64 -d)
+INF_ENV=\$(printf '%s' '$MAR_INF_ENV_B64' | base64 -d)
+GTOKEN=\$(printf '%s' '$MAR_GTOKEN_B64' | base64 -d)
+ENV_FILE=/opt/docker-server/stacks/marimo/.infisical.env
+
+CFG=\$(mktemp)
+SEEN=\$(mktemp)
+APPEND=\$(mktemp)
+NEW_BLOCK=\$(mktemp)
+TSV=\$(mktemp)
+TMP_OUT=""
+chmod 600 "\$CFG" "\$APPEND" "\$NEW_BLOCK" "\$TSV"
+trap 'rm -f "\$CFG" "\$SEEN" "\$APPEND" "\$NEW_BLOCK" "\$TSV" "\$TMP_OUT"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo "  ⚠ jq is not installed on the remote VM — Infisical sync needs jq, install with: sudo apt-get install -y jq" >&2
+    echo "RESULT pushed=0 skipped_name=0 skipped_multi=0 failed=0 collisions=0 succeeded=0 wrote=0"
+    exit 0
+fi
+
+LEGACY_ENV=/opt/docker-server/stacks/marimo/.env
+
+PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0; SUCCEEDED=0; WROTE=0
+
+FOLDERS_JSON=\$(curl -sS --config "\$CFG" --get \\
+    --connect-timeout 5 --max-time 15 \\
+    --data-urlencode "workspaceId=\$PID" \\
+    --data-urlencode "environment=\$INF_ENV" \\
+    "http://localhost:8070/api/v1/folders" || echo '{}')
+FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' | LC_ALL=C sort || true)
+FOLDERS=\$(printf '%s\n/\n' "\$FOLDERS")
+
+while IFS= read -r FOLDER; do
+    [ -z "\$FOLDER" ] && continue
+    if [ "\$FOLDER" = "/" ]; then
+        SECRET_PATH="/"; FOLDER_LABEL="<root>"
+    else
+        SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
+    fi
+    SECRETS_JSON=\$(curl -sS --config "\$CFG" --get \\
+        --connect-timeout 5 --max-time 30 \\
+        --data-urlencode "workspaceId=\$PID" \\
+        --data-urlencode "environment=\$INF_ENV" \\
+        --data-urlencode "secretPath=\$SECRET_PATH" \\
+        "http://localhost:8070/api/v3/secrets/raw" || true)
+    if ! printf '%s' "\$SECRETS_JSON" | jq -e '.secrets | type == "array"' >/dev/null; then
+        FAILED=\$((FAILED+1))
+        echo "  ⚠ Infisical fetch '\$FOLDER_LABEL' returned bad shape, skipping" >&2
+        continue
+    fi
+    if ! printf '%s' "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' > "\$TSV"; then
+        FAILED=\$((FAILED+1))
+        echo "  ⚠ jq TSV extraction failed for folder '\$FOLDER_LABEL' — skipping (folder is NOT counted as succeeded)" >&2
+        continue
+    fi
+    SUCCEEDED=\$((SUCCEEDED+1))
+    while IFS=\$'\t' read -r KEY VALUE_B64; do
+        [ -z "\$KEY" ] && continue
+        if ! printf '%s' "\$KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*\$'; then
+            SKIPPED_NAME=\$((SKIPPED_NAME+1)); continue
+        fi
+        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d || true)
+        if printf '%s' "\$VALUE" | grep -q \$'\n'; then
+            SKIPPED_MULTI=\$((SKIPPED_MULTI+1))
+            echo "  ⚠ Skipping multi-line secret '\$KEY' (folder '\$FOLDER_LABEL') — env-file format can't carry newlines reliably" >&2
+            continue
+        fi
+        EXISTING=\$(awk -F'\t' -v k="\$KEY" '\$1 == k {print \$2; exit}' "\$SEEN")
+        if [ -n "\$EXISTING" ]; then
+            COLLISIONS=\$((COLLISIONS+1))
+            echo "  ⚠ Key collision: '\$KEY' in folder '\$FOLDER_LABEL' shadowed by earlier value from folder '\$EXISTING' (first-wins)" >&2
+            continue
+        fi
+        ESCAPED_VALUE=\$(printf '%s' "\$VALUE" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+        printf '%s\t%s\n' "\$KEY" "\$FOLDER_LABEL" >> "\$SEEN"
+        printf '%s="%s"\n' "\$KEY" "\$ESCAPED_VALUE" >> "\$APPEND"
+        PUSHED=\$((PUSHED+1))
+    done < "\$TSV"
+done <<< "\$FOLDERS"
+
+if [ -n "\$GTOKEN" ] && ! grep -qE '^GITEA_TOKEN=' "\$APPEND"; then
+    ESCAPED_GTOKEN=\$(printf '%s' "\$GTOKEN" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+    printf 'GITEA_TOKEN="%s"\n' "\$ESCAPED_GTOKEN" >> "\$APPEND"
+    PUSHED=\$((PUSHED+1))
+fi
+
+if [ "\$SUCCEEDED" -eq 0 ]; then
+    echo "  ⚠ No Infisical folder fetch succeeded — leaving existing \$ENV_FILE untouched" >&2
+    echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=0 wrote=0"
+    exit 0
+fi
+
+if [ "\$PUSHED" -eq 0 ]; then
+    echo "  ⚠ Infisical returned \$SUCCEEDED folder(s) but zero usable secrets — leaving existing \$ENV_FILE untouched (check env slug + token permissions in Infisical)" >&2
+    echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=0"
+    exit 0
+fi
+
+{
+    echo "# === BEGIN nexus-secret-sync (Infisical → Marimo env, plaintext, regenerated each spin-up — do not edit by hand) ==="
+    LC_ALL=C sort -t= -k1,1 "\$APPEND"
+    echo "# === END nexus-secret-sync ==="
+} > "\$NEW_BLOCK"
+
+[ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+
+TMP_OUT=\$(mktemp -p "\$(dirname "\$ENV_FILE")" .infisical.env.XXXXXX)
+chmod 600 "\$TMP_OUT"
+sed '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$ENV_FILE" > "\$TMP_OUT"
+cat "\$NEW_BLOCK" >> "\$TMP_OUT"
+mv "\$TMP_OUT" "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+WROTE=1
+
+if [ -f "\$LEGACY_ENV" ]; then
+    sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$LEGACY_ENV"
+fi
+
+echo "RESULT pushed=\$PUSHED skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=\$WROTE"
+REMOTE_MARIMO_SECRETS_EOF
+) || MAR_SYNC_OUT=""
+
+    MAR_RESULT_LINE=$(printf '%s\n' "$MAR_SYNC_OUT" | awk '/^RESULT/ {print; exit}')
+    MAR_PUSHED=$(echo "$MAR_RESULT_LINE" | sed -n 's/.*pushed=\([0-9]*\).*/\1/p')
+    MAR_FAILED=$(echo "$MAR_RESULT_LINE" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')
+    MAR_COLLISIONS=$(echo "$MAR_RESULT_LINE" | sed -n 's/.*collisions=\([0-9]*\).*/\1/p')
+    MAR_WROTE=$(echo "$MAR_RESULT_LINE" | sed -n 's/.*wrote=\([0-9]*\).*/\1/p')
+
+    if [ -z "$MAR_PUSHED" ]; then
+        echo -e "${YELLOW}  ⚠ Marimo Infisical sync produced no result — check Infisical reachability + jq presence on the VM${NC}"
+    elif [ "${MAR_WROTE:-0}" -eq 0 ]; then
+        echo -e "${YELLOW}  ⚠ Skipped Marimo .infisical.env update — keeping previous secret set, no restart (see prior warning for cause)${NC}"
+    else
+        if [ "${MAR_FAILED:-0}" -gt 0 ]; then
+            echo -e "${YELLOW}  ⚠ Wrote $MAR_PUSHED Infisical env-vars to Marimo .infisical.env (${MAR_FAILED} folder fetches failed — secret set is incomplete)${NC}"
+        elif [ "${MAR_COLLISIONS:-0}" -gt 0 ]; then
+            echo -e "${YELLOW}  ⚠ Wrote $MAR_PUSHED Infisical env-vars to Marimo .infisical.env (${MAR_COLLISIONS} cross-folder collisions — first-wins applied)${NC}"
+        else
+            echo -e "${GREEN}  ✓ Wrote $MAR_PUSHED Infisical env-vars to Marimo .infisical.env (plaintext, exact key names)${NC}"
+        fi
+
+        MAR_RESTART_RC=0
+        MAR_RESTART_OUT=$(ssh nexus "cd $REMOTE_STACKS_DIR/marimo && docker compose up -d marimo" 2>&1) || MAR_RESTART_RC=$?
+        if [ "$MAR_RESTART_RC" -eq 0 ]; then
+            echo -e "${GREEN}  ✓ Marimo restart-on-change applied${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ docker compose up -d marimo failed (exit $MAR_RESTART_RC) — notebook may still be running with old secrets until next spin-up${NC}"
+            echo "$MAR_RESTART_OUT" | sed 's/^/      /' >&2
+        fi
+    fi
+fi
+
 # Configure Wiki.js admin (uses user_email, not admin)
 if echo "$ENABLED_SERVICES" | grep -qw "wikijs" && [ -n "$WIKIJS_ADMIN_PASS" ]; then
     (
