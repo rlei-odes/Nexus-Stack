@@ -4820,7 +4820,15 @@ fi
 #   - Restart strategy: `docker compose up -d` (NO `--force-recreate`).
 #     Docker hashes the resolved compose-config (including env_file
 #     content) into a label and only recreates when that hash changes.
-#     Avoids killing live notebook kernels on no-op spin-ups.
+#     Note this only avoids the EXTRA restart this step would add —
+#     within a full spin-up, Jupyter is already restarted earlier by
+#     the Git-integration block (search deploy.sh for
+#     "Restarting services with Git integration"), so live notebook
+#     kernels do not survive a complete spin-up regardless. The
+#     no-op-on-unchanged-content property still matters for
+#     out-of-band invocations (e.g. a hypothetical "sync secrets
+#     only" workflow), and saves a needless second recreate cycle
+#     here when the secret set hasn't changed.
 #
 # In notebooks: `import os; os.environ['R2_ACCESS_KEY']`. GITEA_TOKEN
 # included as a special case (same as Kestra) — auto-generated each
@@ -5134,8 +5142,11 @@ REMOTE_JUPYTER_SECRETS_EOF
         # Recreate-on-change. `docker compose up -d` recomputes the
         # resolved-config hash (including env_file content) and only
         # recreates the container when that hash differs. No-op when
-        # secrets are unchanged → live notebook kernels survive
-        # spin-ups that don't touch any secret.
+        # secrets are unchanged → avoids ADDING an extra recreate
+        # cycle on top of the unconditional Git-integration restart
+        # that runs earlier in deploy.sh (kernels are already gone
+        # from that path within a spin-up — the no-op here just
+        # prevents a second pointless bounce).
         # Capture stdout+stderr so the operator sees actionable error
         # output (network missing, compose syntax error, image pull
         # failure, …) instead of a bare "failed" message.
