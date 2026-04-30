@@ -24,7 +24,8 @@ examples/workspace-seeds/
 │   └── workflows/                  (when added — helper files: scripts, configs, SQL templates)
 ├── marimo/
 │   ├── _nexus_spark.py             (Spark Connect helper — `from _nexus_spark import get_spark`)
-│   └── Getting_Started_PySpark.py  (seed Marimo notebook demonstrating PySpark + Spark SQL via Ibis)
+│   ├── Getting_Started_PySpark.py  (seed Marimo notebook demonstrating PySpark + Spark SQL via Ibis)
+│   └── NYC_Taxi_Pipeline.py        (seed Marimo notebook: NYC TLC bootstrap to Hetzner S3 + Spark analytics — mirror of Kestra's r2-taxi-pipeline)
 ├── notebooks/                      (when added — Jupyter / code-server, .ipynb)
 ├── scripts/                        (when added — code-server, ad-hoc execution)
 ├── dbt/                            (when added — code-server, manual `dbt`)

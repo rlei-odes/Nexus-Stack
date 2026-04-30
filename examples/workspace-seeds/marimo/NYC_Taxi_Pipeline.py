@@ -3,12 +3,21 @@
 Mirror of the Kestra `r2-taxi-pipeline.yaml` flow, adapted for Marimo:
 
     1. Bootstrap: download monthly Yellow-Taxi parquets from NYC TLC's
-       public CloudFront and upload each to Hetzner Object Storage at
-       `s3a://<HETZNER_S3_BUCKET>/nexus-tutorials/NYC/yellow_tripdata_2025-MM.parquet`.
-       DuckDB does the transfer (it has both HTTP and S3 support built in
-       via httpfs). No compute-cluster round-trip needed.
-    2. Read all months back as a Spark DataFrame via the Connect server.
+       public CloudFront and upload each to Hetzner Object Storage.
+       DuckDB does the transfer via `s3://...` (its httpfs extension's
+       URL scheme — same physical bucket as the s3a:// reads below,
+       just a different client-library URI prefix). No compute-cluster
+       round-trip needed.
+    2. Read all months back as a Spark DataFrame via the Connect server
+       using `s3a://...` (Spark's Hadoop-FileSystem URI scheme; uses
+       hadoop-aws under the hood, which is configured server-side in
+       spark-connect).
     3. Aggregate stats with Spark SQL and render as a paginated table.
+
+Both `s3://` (DuckDB) and `s3a://` (Spark) point at the same physical
+object: `<HETZNER_S3_BUCKET>/nexus-tutorials/NYC/yellow_tripdata_2025-MM.parquet`.
+The two URI schemes are just two clients' conventions for talking to
+S3-compatible storage; the bytes on disk are identical.
 
 Default: 2 months (Jan + Feb 2025). Edit the `months` list to add more.
 The Kestra flow has the same default for the same reason — every student
