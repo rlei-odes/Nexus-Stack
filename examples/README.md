@@ -32,14 +32,24 @@ examples/workspace-seeds/
 └── sql/                            (when added — DuckDB, Trino, ClickHouse)
 ```
 
-Mapping: every file `examples/workspace-seeds/<path>` is seeded to `<path>` in the workspace Gitea repo (`nexus-<slug>-gitea/<path>`). For example:
+Mapping: every file `examples/workspace-seeds/<path>` is seeded to `nexus_seeds/<path>` in the workspace Gitea repo (`nexus-<slug>-gitea/nexus_seeds/<path>`). For example:
 
-- `examples/workspace-seeds/kestra/flows/r2-taxi-pipeline.yaml` → `nexus-<slug>-gitea/kestra/flows/r2-taxi-pipeline.yaml`
-- `examples/workspace-seeds/notebooks/foo.ipynb` → `nexus-<slug>-gitea/notebooks/foo.ipynb`
+- `examples/workspace-seeds/kestra/flows/r2-taxi-pipeline.yaml` → `nexus-<slug>-gitea/nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml`
+- `examples/workspace-seeds/notebooks/foo.ipynb` → `nexus-<slug>-gitea/nexus_seeds/notebooks/foo.ipynb`
 
-`system.flow-sync` (registered by `deploy.sh`) then syncs `kestra/flows/` into Kestra under target namespace `nexus-tutorials` with `includeChildNamespaces: true` — so `kestra/flows/r2-taxi-pipeline.yaml` lands at `nexus-tutorials.r2-taxi-pipeline`, and any future subdir like `kestra/flows/sub1/foo.yaml` extends to `nexus-tutorials.sub1.foo`.
+The `nexus_seeds/` prefix keeps Nexus-Stack-managed files visually separated from the user's own course material at the workspace-repo root (introduced in #501; pre-existing repos that still have files at the root level continue to work but those files are orphaned — see migration notes below).
 
-This means any file you drop under `workspace-seeds/<dir>/<name>` will appear in every user's workspace at the same `<dir>/<name>` after the next Initial Setup. No `deploy.sh` edit, no new code path.
+`system.flow-sync` (registered by `deploy.sh`) then syncs `nexus_seeds/kestra/flows/` into Kestra under target namespace `nexus-tutorials` with `includeChildNamespaces: true` — so `nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml` lands at `nexus-tutorials.r2-taxi-pipeline`, and any future subdir like `nexus_seeds/kestra/flows/sub1/foo.yaml` extends to `nexus-tutorials.sub1.foo`.
+
+This means any file you drop under `workspace-seeds/<dir>/<name>` will appear in every user's workspace at `nexus_seeds/<dir>/<name>` after the next Initial Setup. No `deploy.sh` edit, no new code path.
+
+### Migration note for pre-#501 workspace repos
+
+Workspace repos created before #501 was merged have seed files at the repo root (`kestra/`, `marimo/`). Those root-level files are NOT auto-deleted on upgrade — `build_folder` (the Gitea seed pusher) is create-only and the migration would risk overwriting user edits. After the upgrade:
+
+- The new seeds appear at `nexus_seeds/<dir>/<file>` (e.g. `nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml`).
+- The old root-level copies become orphaned: Kestra's `system.flow-sync` only scans `nexus_seeds/kestra/flows/` now, and notebook stacks should be updated to look under `nexus_seeds/marimo/` etc.
+- Operators can manually delete the orphaned root-level directories (`kestra/`, `marimo/`) when the team is ready.
 
 ## Subdirectory conventions
 
@@ -52,9 +62,9 @@ Stick to these names so the various services pick the files up correctly:
 
 | Folder | Consumed by | What goes here |
 |---|---|---|
-| `kestra/flows/` | Kestra (via `system.flow-sync`, registered by `deploy.sh`) | Flow definitions in YAML. Files at `kestra/flows/<id>.yaml` register under namespace `nexus-tutorials`; subdirectories extend the namespace (`kestra/flows/sub1/<id>.yaml` → `nexus-tutorials.sub1`). |
+| `kestra/flows/` | Kestra (via `system.flow-sync`, registered by `deploy.sh`) | Flow definitions in YAML. Files at `nexus_seeds/kestra/flows/<id>.yaml` register under namespace `nexus-tutorials`; subdirectories extend the namespace (`nexus_seeds/kestra/flows/sub1/<id>.yaml` → `nexus-tutorials.sub1`). |
 | `kestra/workflows/` | Kestra (via `system.git-sync`, registered by `deploy.sh`) | Helper files referenced by flows: Python scripts, SQL templates, configs. **Not** flow definitions. |
-| `marimo/` | Marimo (cloned from the workspace repo into `/app/notebooks/<repo>/marimo/`) | Marimo notebooks (plain `.py` files using `marimo.App` + `@app.cell`) plus the `_nexus_spark.py` helper that wires `SparkSession.builder.remote("sc://spark-connect:15002")`. Per-stack folder because Marimo's `.py` notebook format is incompatible with Jupyter `.ipynb` and the helper module is Marimo-specific. |
+| `marimo/` | Marimo (cloned from the workspace repo into `/app/notebooks/<repo>/nexus_seeds/marimo/`) | Marimo notebooks (plain `.py` files using `marimo.App` + `@app.cell`) plus the `_nexus_spark.py` helper that wires `SparkSession.builder.remote("sc://spark-connect:15002")`. Per-stack folder because Marimo's `.py` notebook format is incompatible with Jupyter `.ipynb` and the helper module is Marimo-specific. |
 | `notebooks/` | Jupyter, code-server (cloned from the workspace repo) | `.ipynb` notebooks (Jupyter) or `.py` scripts (code-server). NOT for Marimo notebooks — those go in `marimo/`. |
 | `scripts/` | code-server, ad-hoc execution | Shell or Python helpers reused across notebooks. |
 | `dbt/` | code-server, manual `dbt` invocation | A normal dbt project tree (`dbt_project.yml`, `models/`, etc.). |

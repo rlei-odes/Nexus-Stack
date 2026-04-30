@@ -12,12 +12,13 @@ description: |
        endpoint — no compute cluster, no Spark, no warehouse needed.
     3. Log aggregate stats from the result.
 
-  This file was seeded into your Gitea workspace repo from
-  `nexus-stack/examples/workspace-seeds/kestra/flows/r2-taxi-pipeline.yaml`
+  This file was seeded into your Gitea workspace repo at
+  `nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml` (from the
+  Nexus-Stack source `examples/workspace-seeds/kestra/flows/`)
   during Initial Setup. Edit the file in Gitea — Kestra picks up the
-  change within 15 minutes via `system.flow-sync`. Subsequent
-  spin-ups will leave your edits untouched (seeding only adds new
-  files, it never overwrites).
+  change within 15 minutes via `system.flow-sync` (which scans
+  `nexus_seeds/kestra/flows/`). Subsequent spin-ups will leave your
+  edits untouched (seeding only adds new files, it never overwrites).
 
   Want the full year? Extend the `values:` list under `bootstrap`
   to ["01" .. "12"]. The default keeps it light: ~120 MB download

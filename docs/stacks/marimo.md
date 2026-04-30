@@ -44,7 +44,7 @@ The Marimo container is a thin gRPC client — the driver-JVM lives in the dedic
 
 ### Quickstart
 
-A seed notebook ships in every workspace at `marimo/Getting_Started_PySpark.py` (auto-cloned from your Gitea workspace repo on first launch). Open it from `https://marimo.<your-domain>` and hit **Run all**.
+A seed notebook ships in every workspace at `nexus_seeds/marimo/Getting_Started_PySpark.py` (auto-cloned from your Gitea workspace repo on first launch). Open it from `https://marimo.<your-domain>` and hit **Run all**. A second seed notebook `nexus_seeds/marimo/NYC_Taxi_Pipeline.py` shows the bootstrap-to-S3 + Spark-analytics pattern.
 
 The minimal pattern is:
 
@@ -55,7 +55,7 @@ df = spark.createDataFrame([("a", 1), ("b", 2)], ["k", "v"])
 df  # auto-rendered as paginated mo.ui.table.lazy
 ```
 
-The `_nexus_spark` helper (also seeded into the workspace, at `marimo/_nexus_spark.py`) caches a single SparkSession across cells and notebooks within the same Python process — see its docstring for details.
+The `_nexus_spark` helper (also seeded into the workspace, at `nexus_seeds/marimo/_nexus_spark.py`) caches a single SparkSession across cells and notebooks within the same Python process — see its docstring for details.
 
 ### Spark SQL via Ibis
 
