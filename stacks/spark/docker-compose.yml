@@ -27,9 +27,11 @@
 # SECURITY:
 # - Protected by Cloudflare Access (email OTP authentication)
 # - No authentication on Spark itself (relies on Cloudflare Access)
-# - Spark Connect 15002 is exposed to the host but only on the Docker
-#   internal network — Cloudflare Tunnel does NOT route it externally.
-#   Clients reach it via the docker app-network only.
+# - Spark Connect 15002 is NOT published to the host. The
+#   spark-connect service has no `ports:` mapping; clients reach it
+#   only from containers on the Docker app-network (e.g. Marimo at
+#   sc://spark-connect:15002). Cloudflare Tunnel does not route it
+#   externally either.
 # =============================================================================
 
 services:

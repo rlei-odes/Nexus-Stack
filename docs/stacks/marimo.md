@@ -22,7 +22,7 @@ Marimo is a reactive Python notebook that's reproducible, git-friendly, and depl
 | Default Port | `2718` |
 | Suggested Subdomain | `marimo` |
 | Public Access | No (contains notebooks/code) |
-| Image | `nexus-marimo:latest-sql-spark` (custom, see [stacks/marimo/Dockerfile](../../stacks/marimo/Dockerfile)) |
+| Image | `nexus-marimo:latest-sql-spark` (custom, see `stacks/marimo/Dockerfile`) |
 | Website | [marimo.io](https://marimo.io) |
 | Source | [GitHub](https://github.com/marimo-team/marimo) |
 

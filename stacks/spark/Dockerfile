@@ -11,7 +11,7 @@
 #    (required for s3a:// paths, e.g. Hetzner Object Storage).
 # 3. Downloads Spark Connect server JARs so the master can start a gRPC
 #    Connect endpoint (port 15002) for thin clients (Marimo, code-server,
-#    perspectivisch Jupyter). Classic standalone-cluster on 7077 keeps
+#    eventually Jupyter). Classic standalone-cluster on 7077 keeps
 #    serving Jupyter unchanged.
 # =============================================================================
 
