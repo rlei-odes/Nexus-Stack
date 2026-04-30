@@ -47,8 +47,8 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir \
     "pyspark[connect]==4.1.1" \
     "ibis-framework[pyspark]==10.5.0" \
-    "grpcio==1.71.0" \
-    "grpcio-status==1.71.0" \
+    "grpcio==1.76.0" \
+    "grpcio-status==1.76.0" \
     "pyarrow==19.0.1"
 
 # Stay as root — the entrypoint chowns the notebooks volume then drops
