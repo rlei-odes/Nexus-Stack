@@ -70,6 +70,13 @@ services:
       # not via pip/conda. PYTHONPATH must be set explicitly because our
       # custom command: overrides the default entrypoint that normally sets it.
       PYTHONPATH: /usr/local/spark/python:/usr/local/spark/python/lib/py4j-0.10.9.9-src.zip
+      # Executor-Python pinning (cluster-mode only) is set in
+      # spark-init.py via `spark.pyspark.python` rather than via env
+      # here, because /usr/bin/python3.13 only exists on
+      # spark-worker — not in this Jupyter container, whose Python
+      # lives at /opt/conda/bin/python. Setting PYSPARK_PYTHON in
+      # this env would propagate to local-mode runs (when
+      # SPARK_MASTER falls back to local[*]) and break them.
       SPARK_MASTER: ${SPARK_MASTER:-local[*]}
       # S3 (Hetzner Object Storage) for Spark access
       SPARK_HADOOP_fs_s3a_endpoint: ${HETZNER_S3_ENDPOINT:-}
@@ -78,15 +85,39 @@ services:
       SPARK_HADOOP_fs_s3a_path_style_access: "true"
       SPARK_HADOOP_fs_s3a_impl: org.apache.hadoop.fs.s3a.S3AFileSystem
       HETZNER_S3_BUCKET: ${HETZNER_S3_BUCKET:-}
+      # Driver heap override. The pyspark-notebook image ships with
+      # SPARK_OPTS=-Xmx4096M (split across three repeated
+      # `--driver-java-options=` flags — Spark's option parser
+      # treats that as a single-valued flag where last-occurrence
+      # wins, dropping earlier values). We use `--driver-memory`
+      # instead, which is the canonical single-valued flag for
+      # heap, and a single `--driver-java-options=` for the
+      # log4j level. 2 GiB driver fits comfortably alongside the
+      # Python kernel + JupyterLab + sparksql_magic in 3g — heavy
+      # data lives in executors on spark-worker, the driver only
+      # handles query plans, broadcasts, and
+      # .collect()/.show() results. Per-session override possible
+      # via SparkSession.builder.config("spark.driver.memory", "4g").
+      SPARK_OPTS: "--driver-memory 2g --driver-java-options=-Dlog4j.logLevel=info"
     env_file:
       - path: .env
+        required: false
+      # Infisical secrets land in a dedicated file (written by
+      # scripts/deploy.sh's secret-sync block), not in `.env`. Two
+      # reasons: (1) `.env` is also used by docker compose for
+      # `${VAR}` interpolation in this very file (image tag, ports,
+      # env defaults) — a secret named e.g. `IMAGE_JUPYTER` in
+      # Infisical would silently rewrite the compose config; (2) it
+      # keeps the config-hash that compose uses for restart-on-change
+      # detection scoped to actually-secret-relevant content.
+      - path: .infisical.env
         required: false
     ports:
       - "8087:8888"
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 3g
     volumes:
       - jupyter-data:/home/jovyan/work
       - ./spark-init.py:/opt/spark-init.py:ro

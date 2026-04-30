@@ -55,6 +55,12 @@ terraform.rc
 # Stack secrets (auto-generated on server)
 stacks/.env
 stacks/*/.env
+# Infisical-managed secret block written by scripts/deploy.sh's
+# secret-sync (currently only stacks/jupyter/.infisical.env, but
+# the same pattern lands in code-server (#496) and marimo (#497)).
+# Should never be in git — kept on the server only.
+stacks/*/.infisical.env
+*.infisical.env
 
 # Generated firewall override files (created by deploy.sh)
 stacks/*/docker-compose.firewall.yml

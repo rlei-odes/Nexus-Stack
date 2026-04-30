@@ -4,6 +4,17 @@ try:
     from pyspark.sql import SparkSession
     master = os.environ.get("SPARK_MASTER", "local[*]")
     builder = SparkSession.builder.master(master).appName("Jupyter Notebook")
+    # Pin executor Python to 3.13 ONLY in cluster mode. The
+    # spark-worker container has /usr/bin/python3.13 installed
+    # (custom Dockerfile), but the default symlink /usr/bin/python3
+    # still points at 3.10 — without this, the executor forks
+    # python3 → 3.10 → PYTHON_VERSION_MISMATCH against Jupyter's
+    # 3.13 driver. In local mode the "executor" runs in this same
+    # container (which has its python at /opt/conda/bin/python via
+    # conda, not /usr/bin/python3.13), so we leave Spark to pick up
+    # its own interpreter.
+    if master.startswith("spark://"):
+        builder = builder.config("spark.pyspark.python", "/usr/bin/python3.13")
     endpoint = os.environ.get("SPARK_HADOOP_fs_s3a_endpoint", "")
     if endpoint:
         builder = builder \

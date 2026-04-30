@@ -4806,6 +4806,366 @@ REMOTE_TRIG_EOF
     fi
 fi
 
+# ==========================================================================
+# Sync Infisical secrets into Jupyter as plaintext env-vars
+# ==========================================================================
+# Mirror of Kestra's secret-sync (see ~line 3840) but adapted for Python:
+#   - Variable names mirror Infisical keys 1:1 (NO `SECRET_` prefix). User
+#     code reads `os.environ['R2_ACCESS_KEY']` directly — no helper module.
+#   - Values stored plaintext (Python expects raw, not base64).
+#   - Multi-line values + names that aren't valid shell identifiers are
+#     skipped with a warning. The .env-file format can't carry newlines
+#     across `docker compose up` reliably; PEM keys etc. need a different
+#     mechanism (mount-as-file) — out of scope here.
+#   - Restart strategy: `docker compose up -d` (NO `--force-recreate`).
+#     Docker hashes the resolved compose-config (including env_file
+#     content) into a label and only recreates when that hash changes.
+#     Note this only avoids the EXTRA restart this step would add —
+#     within a full spin-up, Jupyter is already restarted earlier by
+#     the Git-integration block (search deploy.sh for
+#     "Restarting services with Git integration"), so live notebook
+#     kernels do not survive a complete spin-up regardless. The
+#     no-op-on-unchanged-content property still matters for
+#     out-of-band invocations (e.g. a hypothetical "sync secrets
+#     only" workflow), and saves a needless second recreate cycle
+#     here when the secret set hasn't changed.
+#
+# In notebooks: `import os; os.environ['R2_ACCESS_KEY']`. GITEA_TOKEN
+# included as a special case (same as Kestra) — auto-generated each
+# spin-up, not in Infisical.
+# --------------------------------------------------------------------------
+if echo "$ENABLED_SERVICES" | grep -qw "jupyter" \
+    && [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+    echo "Syncing Infisical secrets into Jupyter env..."
+
+    JUP_INF_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
+    JUP_INF_PID_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
+    JUP_INF_ENV_B64=$(printf '%s' "${INFISICAL_ENV:-dev}" | base64 | tr -d '\n')
+    JUP_GTOKEN_B64=$(printf '%s' "${GITEA_TOKEN:-}" | base64 | tr -d '\n')
+
+    # All work happens server-side in a single ssh invocation: discover
+    # Infisical folders, fetch secrets per folder (with timeouts so a
+    # stalled API can't hang the deploy), base64-decode each value,
+    # validate name + multi-line, dedupe across folders (first-wins),
+    # build the secret-sync block into a temp file, then atomically
+    # replace the matching block in `.infisical.env` (a dedicated file,
+    # NOT `.env` — see jupyter docker-compose.yml for the rationale on
+    # avoiding `${VAR}`-interpolation collisions). Sorted by key so
+    # unchanged secret sets produce a byte-identical block → compose's
+    # config-hash detection can correctly skip the recreate. If no
+    # folder fetch succeeds, we DO NOT touch the existing file —
+    # otherwise an Infisical outage would silently wipe working creds.
+    # Returns a single
+    # `RESULT pushed=N skipped_name=N skipped_multi=N failed=N collisions=N succeeded=N wrote=0|1`
+    # line to the runner so we can format the user-facing log message.
+    JUP_SYNC_OUT=$(ssh nexus "bash -s" <<REMOTE_JUPYTER_SECRETS_EOF
+# Strict mode inside the heredoc. The remote bash spawned by
+# 'bash -s' does NOT inherit the parent script's 'set -euo
+# pipefail'; without these, a failed 'mv', 'sed', or pipefail
+# violation could be silently ignored and let the script report
+# 'wrote=1' while having actually written nothing useful (or
+# torn the file in half). Set them here so any I/O / parser
+# failure aborts the heredoc cleanly — the parent already
+# tolerates that via '|| JUP_SYNC_OUT=""' and the empty-
+# RESULT-line warning branch.
+set -euo pipefail
+
+ITOK=\$(printf '%s' '$JUP_INF_TOKEN_B64' | base64 -d)
+PID=\$(printf '%s' '$JUP_INF_PID_B64' | base64 -d)
+INF_ENV=\$(printf '%s' '$JUP_INF_ENV_B64' | base64 -d)
+GTOKEN=\$(printf '%s' '$JUP_GTOKEN_B64' | base64 -d)
+ENV_FILE=/opt/docker-server/stacks/jupyter/.infisical.env
+
+CFG=\$(mktemp)
+SEEN=\$(mktemp)
+APPEND=\$(mktemp)
+NEW_BLOCK=\$(mktemp)
+TSV=\$(mktemp)
+TMP_OUT=""
+chmod 600 "\$CFG" "\$APPEND" "\$NEW_BLOCK" "\$TSV"
+# TMP_OUT is added to the trap pre-emptively (empty default), then
+# assigned later via mktemp inside ENV_FILE's directory. If the
+# script exits between that mktemp and the final mv, the trap cleans
+# up; on the success path mv consumes TMP_OUT and the trap rm is a
+# no-op.
+trap 'rm -f "\$CFG" "\$SEEN" "\$APPEND" "\$NEW_BLOCK" "\$TSV" "\$TMP_OUT"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
+
+# Fail-fast on missing jq: the entire pipeline below depends on it,
+# and a missing-jq failure mode otherwise surfaces as the generic
+# "all folder fetches failed" message which leads operators on a
+# wild goose chase debugging Infisical instead of installing a
+# package on the VM.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "  ⚠ jq is not installed on the remote VM — Infisical sync needs jq, install with: sudo apt-get install -y jq" >&2
+    echo "RESULT pushed=0 skipped_name=0 skipped_multi=0 failed=0 collisions=0 succeeded=0 wrote=0"
+    exit 0
+fi
+
+# NOTE: ENV_FILE is intentionally NOT touched/created here. Both the
+# touch-if-missing AND the legacy-'.env'-migration are deferred to the
+# success path below (after at least one folder fetch returned a
+# parseable secrets array). Otherwise an Infisical outage on first
+# install would leak an empty '.infisical.env' (defeating the
+# untouched-on-failure guarantee), and a transient outage during
+# upgrade would strip the legacy '.env' block before the new
+# '.infisical.env' is populated — losing the only working copy of
+# the secrets.
+LEGACY_ENV=/opt/docker-server/stacks/jupyter/.env
+
+PUSHED=0; SKIPPED_NAME=0; SKIPPED_MULTI=0; FAILED=0; COLLISIONS=0; SUCCEEDED=0; WROTE=0
+
+# Folder discovery. Tight timeouts so a stalled local Infisical API
+# can't hang the entire deploy. Connect 5s, total 15s. Stderr is NOT
+# redirected — '-sS' is specifically meant to surface curl-level
+# errors (timeout, connect-refused, DNS, …) without the noise of a
+# normal verbose stream, and a '2>/dev/null' here would defeat that.
+# Errors flow up the ssh channel into the runner's stderr → deploy log.
+FOLDERS_JSON=\$(curl -sS --config "\$CFG" --get \\
+    --connect-timeout 5 --max-time 15 \\
+    --data-urlencode "workspaceId=\$PID" \\
+    --data-urlencode "environment=\$INF_ENV" \\
+    "http://localhost:8070/api/v1/folders" || echo '{}')
+# '2>/dev/null' deliberately omitted — see jq presence check above.
+# If FOLDERS_JSON is unparseable jq prints to stderr and the result
+# is empty; we still try the "/" sentinel root path below, so the
+# only loss vs masking is one extra deploy-log line that points at
+# the actual cause. '|| true' keeps a parser-error from aborting
+# under 'set -euo pipefail' (top of heredoc) — empty FOLDERS plus
+# the "/" sentinel is a valid path forward and we'd rather emit
+# the warning than abort the whole sync.
+FOLDERS=\$(printf '%s' "\$FOLDERS_JSON" | jq -r '.folders[]?.name' | LC_ALL=C sort || true)
+# Append "/" sentinel for the root path. Slashes can't appear in folder
+# names so this is unambiguous.
+FOLDERS=\$(printf '%s\n/\n' "\$FOLDERS")
+
+while IFS= read -r FOLDER; do
+    [ -z "\$FOLDER" ] && continue
+    if [ "\$FOLDER" = "/" ]; then
+        SECRET_PATH="/"; FOLDER_LABEL="<root>"
+    else
+        SECRET_PATH="/\$FOLDER"; FOLDER_LABEL="\$FOLDER"
+    fi
+    # Stderr left attached for the same reason as the folder-discovery
+    # call above — '-sS' errors surface in the deploy log. '|| true'
+    # tolerates the curl exit code under 'set -euo pipefail'; a
+    # failed fetch lands an empty SECRETS_JSON which the
+    # '.secrets | type == "array"' jq check below correctly
+    # converts into a per-folder FAILED++.
+    SECRETS_JSON=\$(curl -sS --config "\$CFG" --get \\
+        --connect-timeout 5 --max-time 30 \\
+        --data-urlencode "workspaceId=\$PID" \\
+        --data-urlencode "environment=\$INF_ENV" \\
+        --data-urlencode "secretPath=\$SECRET_PATH" \\
+        "http://localhost:8070/api/v3/secrets/raw" || true)
+    # Two-stage validation: (1) is '.secrets' a JSON array, (2) does
+    # the TSV extraction itself succeed. SUCCEEDED is incremented
+    # ONLY after both pass — otherwise an unexpected 'secretValue'
+    # type or a malformed entry could let the script proceed with
+    # SUCCEEDED>0 and overwrite \'.infisical.env\' with an empty/
+    # partial block, silently wiping previously working secrets.
+    # jq stderr is left attached so the actual error is visible in
+    # the deploy log.
+    if ! printf '%s' "\$SECRETS_JSON" | jq -e '.secrets | type == "array"' >/dev/null; then
+        FAILED=\$((FAILED+1))
+        echo "  ⚠ Infisical fetch '\$FOLDER_LABEL' returned bad shape, skipping" >&2
+        continue
+    fi
+    if ! printf '%s' "\$SECRETS_JSON" | jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' > "\$TSV"; then
+        FAILED=\$((FAILED+1))
+        echo "  ⚠ jq TSV extraction failed for folder '\$FOLDER_LABEL' — skipping (folder is NOT counted as succeeded)" >&2
+        continue
+    fi
+    SUCCEEDED=\$((SUCCEEDED+1))
+    while IFS=\$'\t' read -r KEY VALUE_B64; do
+        [ -z "\$KEY" ] && continue
+        if ! printf '%s' "\$KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*\$'; then
+            SKIPPED_NAME=\$((SKIPPED_NAME+1)); continue
+        fi
+        # '|| true' so a single corrupt base64 value (very unlikely
+        # given that we encoded with @base64 from jq, but defensive)
+        # produces an empty VALUE rather than aborting the whole
+        # sync under 'set -euo pipefail'. Empty VALUE downstream
+        # just yields a 'KEY=' line which is a valid env-var with
+        # empty value — semantically distinguishable from "not
+        # present" if the operator ever needs to triage.
+        VALUE=\$(printf '%s' "\$VALUE_B64" | base64 -d || true)
+        # Multi-line guard: env-file can't carry newlines portably.
+        if printf '%s' "\$VALUE" | grep -q \$'\n'; then
+            SKIPPED_MULTI=\$((SKIPPED_MULTI+1))
+            echo "  ⚠ Skipping multi-line secret '\$KEY' (folder '\$FOLDER_LABEL') — env-file format can't carry newlines reliably" >&2
+            continue
+        fi
+        EXISTING=\$(awk -F'\t' -v k="\$KEY" '\$1 == k {print \$2; exit}' "\$SEEN")
+        if [ -n "\$EXISTING" ]; then
+            COLLISIONS=\$((COLLISIONS+1))
+            echo "  ⚠ Key collision: '\$KEY' in folder '\$FOLDER_LABEL' shadowed by earlier value from folder '\$EXISTING' (first-wins)" >&2
+            continue
+        fi
+        # Emit values double-quoted with '\' and '"' escaped, so
+        # arbitrary content round-trips through Compose's dotenv
+        # parser without surprises:
+        #   - Leading/trailing whitespace is preserved (an unquoted
+        #     value would have it stripped on parse).
+        #   - Embedded '"' and '\' survive (we backslash-escape them).
+        #   - Embedded '#' is harmless (Compose only treats '#' as
+        #     a comment delimiter at the start of a line, not
+        #     inline), but quoting still doesn't hurt.
+        # Multi-line values are already filtered out above, so we
+        # don't need to handle escape of literal newlines here.
+        ESCAPED_VALUE=\$(printf '%s' "\$VALUE" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+        printf '%s\t%s\n' "\$KEY" "\$FOLDER_LABEL" >> "\$SEEN"
+        printf '%s="%s"\n' "\$KEY" "\$ESCAPED_VALUE" >> "\$APPEND"
+        PUSHED=\$((PUSHED+1))
+    done < "\$TSV"
+done <<< "\$FOLDERS"
+
+# GITEA_TOKEN special case — generated by deploy.sh post-Gitea-bootstrap,
+# not in Infisical at the time of build_folder() pushes earlier in the
+# same run. Same handling as Kestra's secret-sync. Same escape rules
+# apply as the per-secret loop above.
+if [ -n "\$GTOKEN" ] && ! grep -qE '^GITEA_TOKEN=' "\$APPEND"; then
+    ESCAPED_GTOKEN=\$(printf '%s' "\$GTOKEN" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+    printf 'GITEA_TOKEN="%s"\n' "\$ESCAPED_GTOKEN" >> "\$APPEND"
+    PUSHED=\$((PUSHED+1))
+fi
+
+# Safety: two distinct "don't overwrite" gates, each guarding a
+# different failure mode that would otherwise wipe working creds.
+#
+# (1) No folder fetch succeeded — Infisical down, network broken,
+#     auth invalid. SUCCEEDED == 0.
+if [ "\$SUCCEEDED" -eq 0 ]; then
+    echo "  ⚠ No Infisical folder fetch succeeded — leaving existing \$ENV_FILE untouched" >&2
+    echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=0 wrote=0"
+    exit 0
+fi
+
+# (2) Folder fetches succeeded but returned zero usable secrets
+#     across the entire project. Most likely: wrong workspace
+#     environment slug, Infisical permissions misconfigured for
+#     the machine token, or a temporary backend bug returning
+#     empty arrays. Could also be a legitimate "user emptied
+#     Infisical" — but at that point the safe move is the same:
+#     leave the previous block in place and let a real change
+#     pick it up next run, with a warning the operator can read.
+if [ "\$PUSHED" -eq 0 ]; then
+    echo "  ⚠ Infisical returned \$SUCCEEDED folder(s) but zero usable secrets — leaving existing \$ENV_FILE untouched (check env slug + token permissions in Infisical)" >&2
+    echo "RESULT pushed=0 skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=0"
+    exit 0
+fi
+
+# Build the new block into a temp file first. Sort by key so the
+# output is deterministic across re-runs even if Infisical's API
+# returns secrets in a different order — otherwise compose's config
+# hash would change spuriously and we'd recreate Jupyter (killing
+# kernels) on every spin-up despite zero secret changes.
+# 'sort -t= -k1,1' splits at the first '=' (so values containing '='
+# don't break the sort) and orders by key only.
+{
+    echo "# === BEGIN nexus-secret-sync (Infisical → Jupyter env, plaintext, regenerated each spin-up — do not edit by hand) ==="
+    LC_ALL=C sort -t= -k1,1 "\$APPEND"
+    echo "# === END nexus-secret-sync ==="
+} > "\$NEW_BLOCK"
+
+# Past the SUCCEEDED guard — safe to mutate ENV_FILE and the legacy
+# '.env'. Both touched here (not earlier), so an Infisical outage
+# can't leak an empty '.infisical.env' on first install or strip
+# the legacy block before the new one is in place.
+[ -f "\$ENV_FILE" ] || touch "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+
+# Atomic replace: build the new file content with the old block
+# stripped and the new block appended, then 'mv' into place. The
+# temp file is created in the SAME directory as ENV_FILE so the
+# rename is guaranteed atomic (cross-filesystem mv falls back to
+# copy+unlink, which is not). A Ctrl-C / SIGKILL between the strip
+# and the write can't leave \$ENV_FILE in a half-state.
+TMP_OUT=\$(mktemp -p "\$(dirname "\$ENV_FILE")" .infisical.env.XXXXXX)
+chmod 600 "\$TMP_OUT"
+sed '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$ENV_FILE" > "\$TMP_OUT"
+cat "\$NEW_BLOCK" >> "\$TMP_OUT"
+mv "\$TMP_OUT" "\$ENV_FILE"
+chmod 600 "\$ENV_FILE"
+WROTE=1
+
+# One-time migration of the legacy '.env' location: an earlier
+# iteration of this script wrote the sync block to '.env' before
+# review feedback (#495) moved it to a dedicated file. We strip
+# any leftover block from '.env' ONLY now that the new
+# '.infisical.env' is successfully in place, so a transient
+# Infisical outage during upgrade can't end up with neither
+# location holding the secrets. Idempotent — no-op if absent.
+if [ -f "\$LEGACY_ENV" ]; then
+    sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "\$LEGACY_ENV"
+fi
+
+echo "RESULT pushed=\$PUSHED skipped_name=\$SKIPPED_NAME skipped_multi=\$SKIPPED_MULTI failed=\$FAILED collisions=\$COLLISIONS succeeded=\$SUCCEEDED wrote=\$WROTE"
+REMOTE_JUPYTER_SECRETS_EOF
+) || JUP_SYNC_OUT=""
+
+    # `awk` instead of `grep | head` — under `set -o pipefail` (top
+    # of script), a non-matching `grep` exits 1 and the whole `$()`
+    # subshell fails, which under `set -e` would abort the deploy
+    # before the warning path below can run. `awk '/.../{print;exit}'`
+    # always exits 0, so a missing RESULT line just leaves
+    # JUP_RESULT_LINE empty — falls into the explicit warning
+    # branch below.
+    JUP_RESULT_LINE=$(printf '%s\n' "$JUP_SYNC_OUT" | awk '/^RESULT/ {print; exit}')
+    JUP_PUSHED=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*pushed=\([0-9]*\).*/\1/p')
+    JUP_FAILED=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')
+    JUP_COLLISIONS=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*collisions=\([0-9]*\).*/\1/p')
+    JUP_WROTE=$(echo "$JUP_RESULT_LINE" | sed -n 's/.*wrote=\([0-9]*\).*/\1/p')
+
+    if [ -z "$JUP_PUSHED" ]; then
+        echo -e "${YELLOW}  ⚠ Jupyter Infisical sync produced no result — check Infisical reachability + jq presence on the VM${NC}"
+    elif [ "${JUP_WROTE:-0}" -eq 0 ]; then
+        # Sync ran but decided not to overwrite. Three reasons can
+        # produce wrote=0: (a) jq missing on the VM, (b) no folder
+        # fetch succeeded (Infisical unreachable / auth broken),
+        # (c) all folder fetches succeeded but returned zero
+        # secrets (likely wrong env slug or token permissions).
+        # The specific reason was already printed by the remote
+        # heredoc to the deploy log; here we just acknowledge the
+        # decision and skip the recreate so we don't bounce
+        # Jupyter for nothing.
+        echo -e "${YELLOW}  ⚠ Skipped Jupyter .infisical.env update — keeping previous secret set, no restart (see prior warning for cause)${NC}"
+    else
+        if [ "${JUP_FAILED:-0}" -gt 0 ]; then
+            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (${JUP_FAILED} folder fetches failed — secret set is incomplete)${NC}"
+        elif [ "${JUP_COLLISIONS:-0}" -gt 0 ]; then
+            echo -e "${YELLOW}  ⚠ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (${JUP_COLLISIONS} cross-folder collisions — first-wins applied)${NC}"
+        else
+            echo -e "${GREEN}  ✓ Wrote $JUP_PUSHED Infisical env-vars to Jupyter .infisical.env (plaintext, exact key names)${NC}"
+        fi
+
+        # Recreate-on-change. `docker compose up -d` recomputes the
+        # resolved-config hash (including env_file content) and only
+        # recreates the container when that hash differs. No-op when
+        # secrets are unchanged → avoids ADDING an extra recreate
+        # cycle on top of the unconditional Git-integration restart
+        # that runs earlier in deploy.sh (kernels are already gone
+        # from that path within a spin-up — the no-op here just
+        # prevents a second pointless bounce).
+        # Capture stdout+stderr so the operator sees actionable error
+        # output (network missing, compose syntax error, image pull
+        # failure, …) instead of a bare "failed" message.
+        # The `... || JUP_RESTART_RC=\$?` form is required: under
+        # `set -e` (top of script), a bare `$(ssh ...)` that exits
+        # non-zero would abort the deploy before the warning branch
+        # below runs. The `||` chain marks the failure as "handled",
+        # so set -e holds off and we can react.
+        JUP_RESTART_RC=0
+        JUP_RESTART_OUT=$(ssh nexus "cd $REMOTE_STACKS_DIR/jupyter && docker compose up -d jupyter" 2>&1) || JUP_RESTART_RC=$?
+        if [ "$JUP_RESTART_RC" -eq 0 ]; then
+            echo -e "${GREEN}  ✓ Jupyter restart-on-change applied${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ docker compose up -d jupyter failed (exit $JUP_RESTART_RC) — notebook may still be running with old secrets until next spin-up${NC}"
+            echo "$JUP_RESTART_OUT" | sed 's/^/      /' >&2
+        fi
+    fi
+fi
+
 # Configure Wiki.js admin (uses user_email, not admin)
 if echo "$ENABLED_SERVICES" | grep -qw "wikijs" && [ -n "$WIKIJS_ADMIN_PASS" ]; then
     (

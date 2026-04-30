@@ -39,7 +39,6 @@
 # - observability: Observability
 # - knowledge: Knowledge & Docs
 # - visual-tools: Visual Tools
-# - files: File Management
 # - server-access: Server Access
 # =============================================================================
 
@@ -191,7 +190,7 @@ services:
     subdomain: "filestash"
     port: 8334
     public: false
-    category: "files"
+    category: "storage"
     website: "https://www.filestash.app"
     description: "Web-based file manager with S3/FTP/SFTP/WebDAV backend support."
     long_description: "Filestash is a modern web file manager that connects to various storage backends including S3, FTP, SFTP, WebDAV, Git, and Dropbox. Features include file preview, image thumbnails, video streaming, full-text search, and a built-in text editor. Manage all your storage from one interface."
@@ -335,7 +334,7 @@ services:
     subdomain: "lakefs"
     port: 8000
     public: false
-    category: "db-management"
+    category: "storage"
     website: "https://lakefs.io"
     description: "Git-like version control for data lakes with S3-compatible gateway (Hetzner Object Storage backend)."
     long_description: "lakeFS provides Git-like version control for data lakes. Branch, commit, merge, and revert your data like code. Creates an S3-compatible gateway in front of your object storage, enabling isolated dev/test environments, reproducible data pipelines, and atomic data operations."
@@ -373,7 +372,7 @@ services:
     subdomain: "mailpit"
     port: 8025
     public: false
-    category: "knowledge"
+    category: "dev-tools"
     website: "https://mailpit.axllent.org"
     description: "Email testing tool that catches all outgoing emails for inspection and testing."
     long_description: "Mailpit is an email testing tool that acts as an SMTP server catching all outgoing emails. Inspect HTML and plain-text content, test email templates, verify attachments, and check spam scores. Perfect for development and staging environments where you need to test email sending without delivering to real recipients."
@@ -442,7 +441,7 @@ services:
     subdomain: "n8n"
     port: 5678
     public: false
-    category: "ci-cd"
+    category: "low-code"
     website: "https://n8n.io"
     description: "Workflow automation tool with 400+ integrations for connecting apps and services."
     long_description: "n8n is a workflow automation platform with 400+ integrations. Connect apps, automate tasks, and build complex workflows with a visual editor. Supports webhooks, scheduled triggers, conditional logic, and custom JavaScript/Python code nodes. Self-hosted for full data control."
@@ -504,7 +503,7 @@ services:
     subdomain: "s3manager"
     port: 8086
     public: false
-    category: "db-management"
+    category: "storage"
     website: "https://github.com/cloudlena/s3manager"
     description: "Web-based S3 bucket browser and manager for Hetzner Object Storage."
     long_description: "S3 Manager is a web-based interface for browsing and managing S3-compatible object storage. Upload, download, and delete objects, browse bucket contents, and manage bucket permissions. Pre-configured to connect to your Hetzner Object Storage."
@@ -571,7 +570,7 @@ services:
     subdomain: "quickwit"
     port: 8092
     public: false
-    category: "analytics"
+    category: "observability"
     website: "https://quickwit.io"
     description: "Cloud-native search engine for log management and analytics on object storage."
     long_description: "Quickwit is a cloud-native search engine optimized for log management and analytics. Indexes data directly on object storage (S3) for cost-effective log retention. Supports full-text search, aggregations, and OpenTelemetry-native trace search. Sub-second query latency with schemaless ingestion."
@@ -707,7 +706,7 @@ services:
     subdomain: "spark"
     port: 8088
     public: false
-    category: "orchestration"
+    category: "analytics"
     website: "https://spark.apache.org"
     description: "Distributed data processing engine with standalone cluster (Master + Worker)."
     long_description: "Apache Spark is a multi-language engine for large-scale data processing. Run batch and streaming workloads with SQL, Python, Scala, or R. This deployment includes a standalone cluster with Master and Worker nodes, accessible via the Spark Web UI and connected to Jupyter notebooks."
@@ -794,7 +793,7 @@ services:
     subdomain: "windmill"
     port: 8200
     public: false
-    category: "ci-cd"
+    category: "low-code"
     website: "https://www.windmill.dev"
     description: "Open-source workflow engine for scripts, workflows, and UIs with built-in code editor."
     long_description: "Windmill is an open-source workflow engine and developer platform. Build scripts in Python, TypeScript, Go, or SQL, chain them into workflows, and create UIs - all from a web-based IDE. Features include scheduling, webhooks, approval flows, and a marketplace of community scripts."
