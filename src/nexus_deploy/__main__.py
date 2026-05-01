@@ -1,16 +1,24 @@
 """Entry point for `python -m nexus_deploy ...` invocations.
 
-Phase 1 dispatch surface. Real subcommands land here as their modules
-ship; today only ``config dump-shell`` exists (#505 Modul 1.3).
+Phase 1 dispatch surface. Subcommands land here as their modules ship.
+Currently:
+- ``config dump-shell`` (#505 Modul 1.3)
+- ``infisical bootstrap`` (#505 Modul 1.1)
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from nexus_deploy import __version__, hello
 from nexus_deploy.config import ConfigError, NexusConfig
+from nexus_deploy.infisical import (
+    BootstrapEnv,
+    InfisicalClient,
+    compute_folders,
+)
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -63,8 +71,65 @@ def _config_dump_shell(args: list[str]) -> int:
     return 0
 
 
+def _infisical_bootstrap(args: list[str]) -> int:
+    """`nexus-deploy infisical bootstrap`.
+
+    Reads SECRETS_JSON from stdin, reads the additional ``BootstrapEnv``
+    fields (DOMAIN, ADMIN_EMAIL, GITEA_*, OM_PRINCIPAL_DOMAIN,
+    WOODPECKER_*, SSH_PRIVATE_KEY_BASE64) from environment variables,
+    plus PROJECT_ID + INFISICAL_TOKEN + INFISICAL_ENV from environment
+    variables. Computes the 41 folders, writes payloads, runs the
+    server-side curl loop. Mirrors deploy.sh:1996-2390.
+
+    Required env: ``PROJECT_ID``, ``INFISICAL_TOKEN``.
+    Optional env: ``INFISICAL_ENV`` (default ``dev``), the BootstrapEnv
+    fields above, ``PUSH_DIR`` (default ``/tmp/infisical-push``).
+    """
+    if args:
+        print(f"infisical bootstrap: unexpected arg {args[0]!r}", file=sys.stderr)
+        return 2
+    project_id = os.environ.get("PROJECT_ID", "").strip()
+    token = os.environ.get("INFISICAL_TOKEN", "").strip()
+    if not project_id or not token:
+        print(
+            "infisical bootstrap: PROJECT_ID and INFISICAL_TOKEN env vars required",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"infisical bootstrap: {exc}", file=sys.stderr)
+        return 1
+    bootstrap_env = BootstrapEnv(
+        domain=os.environ.get("DOMAIN") or None,
+        admin_email=os.environ.get("ADMIN_EMAIL") or None,
+        gitea_user_email=os.environ.get("GITEA_USER_EMAIL") or None,
+        gitea_user_username=os.environ.get("GITEA_USER_USERNAME") or None,
+        gitea_repo_owner=os.environ.get("GITEA_REPO_OWNER") or None,
+        repo_name=os.environ.get("REPO_NAME") or None,
+        om_principal_domain=os.environ.get("OM_PRINCIPAL_DOMAIN") or None,
+        woodpecker_gitea_client=os.environ.get("WOODPECKER_GITEA_CLIENT") or None,
+        woodpecker_gitea_secret=os.environ.get("WOODPECKER_GITEA_SECRET") or None,
+        ssh_private_key_base64=os.environ.get("SSH_KEY_BASE64") or None,
+    )
+    push_dir = Path(os.environ.get("PUSH_DIR") or "/tmp/infisical-push")  # noqa: S108
+    client = InfisicalClient(
+        project_id=project_id,
+        env=os.environ.get("INFISICAL_ENV") or "dev",
+        token=token,
+        push_dir=push_dir,
+    )
+    folders = compute_folders(config, bootstrap_env)
+    result = client.bootstrap(folders)
+    print(
+        f"infisical bootstrap: built={result.folders_built} pushed={result.pushed} failed={result.failed}",
+    )
+    return 0 if result.failed == 0 else 1
+
+
 def main() -> int:
-    """Phase-1 dispatcher. ``config dump-shell`` is the only subcommand today."""
+    """Phase-1 dispatcher. ``config`` and ``infisical`` subcommands shipped."""
     args = sys.argv[1:]
     if args == ["--version"]:
         print(__version__)
@@ -74,13 +139,16 @@ def main() -> int:
         return 0
     if args[:2] == ["config", "dump-shell"]:
         return _config_dump_shell(args[2:])
+    if args[:2] == ["infisical", "bootstrap"]:
+        return _infisical_bootstrap(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
     )
     print(
-        "Available: --version, hello, config dump-shell "
-        "[--tofu-dir PATH (default: tofu/stack) | --stdin]",
+        "Available: --version, hello, "
+        "config dump-shell [--tofu-dir PATH (default: tofu/stack) | --stdin], "
+        "infisical bootstrap (reads SECRETS_JSON from stdin + env vars)",
         file=sys.stderr,
     )
     return 2
