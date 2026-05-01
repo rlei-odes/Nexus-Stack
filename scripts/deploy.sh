@@ -2369,12 +2369,20 @@ EOF
             # src/nexus_deploy/infisical.py (#505 phase-1 migration).
             # Removed in phase 4 along with the rest of build_folder.
             #
-            # \`rm -rf\` first so re-runs don't nest the prior snapshot:
-            # \`cp -r src existing-dst\` copies into existing-dst rather
-            # than overwriting it, which on a second spin-up would yield
-            # \`dst/dst/...\`. Replace-then-copy is the simplest atomic-
-            # enough fix for one-writer scenarios.
-            mkdir -p /tmp/nexus-baselines && rm -rf /tmp/nexus-baselines/infisical-payloads-baseline && cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline 2>/dev/null || true
+            # Guarded on source dir existence so we skip cleanly when
+            # the bootstrap path was conditional (e.g. INFISICAL_TOKEN
+            # unset). Errors from mkdir/rm/cp itself surface — the
+            # outer set -euo pipefail will abort, which the deploy.sh-
+            # outer \`|| echo \"0:0\"\` then captures and reports. The
+            # snapshot contains secret values, so chmod 700 limits it
+            # to the deploy SSH user (root); the file is short-lived
+            # — capture-script scp's it down then we delete it below.
+            if [ -d /tmp/infisical-push ]; then
+                mkdir -p /tmp/nexus-baselines
+                rm -rf /tmp/nexus-baselines/infisical-payloads-baseline
+                cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline
+                chmod -R go-rwx /tmp/nexus-baselines/infisical-payloads-baseline
+            fi
             rm -rf /tmp/infisical-push
             echo \"\$OK:\$FAIL\"
         " 2>&1 || echo "0:0")

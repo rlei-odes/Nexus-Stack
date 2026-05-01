@@ -83,6 +83,12 @@ build/
 *.egg-info/
 *.egg
 
+# Phase-1 (#505) raw baseline captures from `scripts/capture-phase1-baselines.sh`.
+# These contain unredacted Infisical secrets (passwords, tokens, encryption
+# keys) and must never be committed. The Phase-1 module PRs will produce
+# redacted, committable fixtures from these raw captures.
+tests/fixtures/baselines/
+
 # Control Plane (Astro)
 control-plane/node_modules/
 control-plane/dist/

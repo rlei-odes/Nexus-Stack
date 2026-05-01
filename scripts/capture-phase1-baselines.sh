@@ -20,11 +20,19 @@
 # Usage:
 #   bash scripts/capture-phase1-baselines.sh
 #
-# Output is committed to tests/fixtures/baselines/. Re-running overwrites
-# the directory — safe to invoke after every spin-up that needs to refresh
-# the baselines (e.g. after deploy.sh's secret-set changes).
+# Output lands under tests/fixtures/baselines/, which is gitignored — the
+# captured files contain RAW SECRET VALUES (Infisical passwords, API
+# tokens, encryption keys). The Phase 1 module PRs are responsible for
+# producing redacted, committable versions; the raw capture stays local.
+# Re-running overwrites the directory — safe to invoke after every spin-
+# up that needs to refresh the baselines.
 # =============================================================================
 set -euo pipefail
+
+# Restrictive umask so any captured secret files (secrets.json,
+# .infisical.env, payload JSONs) are 600 / dirs 700 — owner-only —
+# even on shared workstations or if the repo dir has loose group perms.
+umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$REPO_ROOT/tests/fixtures/baselines"
@@ -55,12 +63,27 @@ echo "→ Running deploy.sh's SECRETS_JSON parser standalone…"
 PARSER_VARS=$(grep -oE '^[A-Z_]+=\$\(echo "\$SECRETS_JSON"' "$REPO_ROOT/scripts/deploy.sh" \
     | sed 's/=.*//' | sort -u)
 
+# Word-count (not line-count: `echo "" | wc -l` is 1 even for empty input).
+# Bail out if the grep pattern matched nothing — that's a deploy.sh refactor
+# we want to know about immediately, not silently produce an empty baseline.
+PARSER_VAR_COUNT=$(printf '%s\n' "$PARSER_VARS" | grep -c . || true)
+if [ "$PARSER_VAR_COUNT" -eq 0 ]; then
+    echo "ERROR: parser-var grep matched zero lines in deploy.sh — pattern drift?" >&2
+    echo "  Expected pattern: ^[A-Z_]+=\\\$(echo \"\\\$SECRETS_JSON\" | jq" >&2
+    exit 1
+fi
+
 mktemp_script=$(mktemp /tmp/parse-secrets-baseline.XXXXXX.sh)
 trap 'rm -f "$mktemp_script"' EXIT
 
 {
     echo '#!/usr/bin/env bash'
-    echo 'set -uo pipefail'
+    # `-e` so a missing/broken jq fails fast (with `-uo` only, a piped
+    # jq failure under pipefail leaves the var as "" silently, producing
+    # an incomplete baseline that compares-equal-to-empty). The
+    # `declare -p ... || true` lines below tolerate undefined vars
+    # explicitly so they don't trip set -e.
+    echo 'set -euo pipefail'
     echo 'SECRETS_JSON=$(cat)'
     grep -E '^[A-Z_]+=\$\(echo "\$SECRETS_JSON" \| jq' "$REPO_ROOT/scripts/deploy.sh"
     grep -E '^EXTERNAL_S3_(LABEL|REGION)=\$\{' "$REPO_ROOT/scripts/deploy.sh"
@@ -77,7 +100,7 @@ trap 'rm -f "$mktemp_script"' EXIT
 env -i PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin bash "$mktemp_script" \
     < "$DEST/secrets.json" \
     | sort > "$DEST/shell-vars.txt"
-echo "  ✓ shell-vars.txt ($(wc -l <"$DEST/shell-vars.txt") vars from $(echo "$PARSER_VARS" | wc -l | tr -d ' ') parser names)"
+echo "  ✓ shell-vars.txt ($(wc -l <"$DEST/shell-vars.txt") vars from $PARSER_VAR_COUNT parser names)"
 
 # -----------------------------------------------------------------------------
 # (2) build_folder JSON payloads baseline (infisical.py)
@@ -108,5 +131,9 @@ echo ""
 echo "=== Baseline capture complete ==="
 ls -la "$DEST"
 echo ""
-echo "Next: review the captured fixtures, redact any genuinely-secret values"
-echo "you don't want in git, then commit on the clean baselines branch."
+echo "⚠  These files contain RAW SECRET VALUES (passwords, API tokens,"
+echo "   encryption keys). \$DEST is gitignored, so \`git add\` won't pick"
+echo "   them up by accident. The Phase 1 module PRs (config.py,"
+echo "   infisical.py, secret_sync.py) are responsible for producing"
+echo "   redacted, committable fixture versions from these raw captures."
+echo "   DO NOT \`git add -f tests/fixtures/baselines/\`."
