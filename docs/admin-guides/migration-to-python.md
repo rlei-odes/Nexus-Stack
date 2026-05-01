@@ -4,7 +4,7 @@ title: "Migration: deploy.sh → Python (`nexus_deploy`)"
 
 ## Overview
 
-`scripts/deploy.sh` (5,539 lines of bash) is being incrementally replaced by a proper Python package, **`nexus_deploy`**, under `src/nexus_deploy/`. See [GitHub issue #505](https://github.com/stefanko-ch/Nexus-Stack/issues/505) for the full migration plan.
+`scripts/deploy.sh` (~5.5k lines of bash) is being incrementally replaced by a proper Python package, **`nexus_deploy`**, under `src/nexus_deploy/`. See [GitHub issue #505](https://github.com/stefanko-ch/Nexus-Stack/issues/505) for the full migration plan.
 
 ## Why
 

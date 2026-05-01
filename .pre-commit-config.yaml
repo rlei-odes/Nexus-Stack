@@ -5,7 +5,7 @@
 # in the loop so you don't push then wait for the runner to tell you
 # `ruff check` failed on whitespace.
 #
-# Setup:   `pip install pre-commit && pre-commit install`
+# Setup:   `uv sync` (installs pre-commit via dev-deps) + `uv run pre-commit install`
 # Run all: `pre-commit run --all-files`
 # Skip a hook for one commit (don't make this a habit):
 #          `SKIP=ruff git commit -m "..."`
