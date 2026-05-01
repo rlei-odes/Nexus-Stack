@@ -1,0 +1,88 @@
+# =============================================================================
+# Pre-commit hooks for Nexus-Stack
+# =============================================================================
+# Runs locally before every git commit. Same checks as CI, just earlier
+# in the loop so you don't push then wait for the runner to tell you
+# `ruff check` failed on whitespace.
+#
+# Setup:   `pip install pre-commit && pre-commit install`
+# Run all: `pre-commit run --all-files`
+# Skip a hook for one commit (don't make this a habit):
+#          `SKIP=ruff git commit -m "..."`
+# =============================================================================
+
+repos:
+  # ---------------------------------------------------------------------------
+  # Generic hygiene — file-format basics
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown's two-space-line-break is a real syntax — don't strip those.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # docker-compose & GH-Actions YAML allow document-fragments per file
+        args: [--allow-multiple-documents]
+        # Skip files with templating that confuses the parser
+        exclude: ^stacks/.+/docker-compose\.yml$
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ---------------------------------------------------------------------------
+  # Ruff — Python lint + format
+  # The `ruff-format` runs first to canonicalize, then `ruff` checks the rest.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff-format
+        files: ^(src|tests)/.*\.py$
+      - id: ruff
+        files: ^(src|tests)/.*\.py$
+        args: [--fix, --exit-non-zero-on-fix]
+
+  # ---------------------------------------------------------------------------
+  # Mypy — strict type checking
+  # Slow-ish (~1-3 sec on this codebase). Worth it.
+  # Pinned to match pyproject.toml's [dependency-groups].dev.mypy bound.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        files: ^(src|tests)/.*\.py$
+        # Bring deps so mypy can resolve imports
+        additional_dependencies:
+          - pydantic>=2.7
+          - types-paramiko
+          - types-requests
+          - types-pyyaml
+        args: [--config-file=pyproject.toml]
+
+  # ---------------------------------------------------------------------------
+  # Shellcheck — for the bash files we keep
+  # Only the bash helpers and (during migration) deploy.sh itself.
+  # Pre-commit installs shellcheck via the precommit-shfmt-shellcheck mirror.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        files: ^scripts/.*\.sh$
+        args:
+          # `--severity=error` only blocks real bugs. deploy.sh carries a
+          # long tail of pre-existing style/info nits that Phase 4 (#505)
+          # cleans up once deploy.sh is gone. Tighten to `warning` then.
+          - --severity=error
+          # SC1091: not following sourced files (we source ../backend.hcl
+          # which lives outside the repo at runtime — checkable only on VM).
+          # SC2001: prefer parameter expansion — too noisy, sed/regex
+          # readability often trumps perf savings here.
+          - --exclude=SC1091,SC2001

@@ -259,6 +259,7 @@ This setup achieves **zero open ports** after deployment:
 | [Control Plane Guide](docs/user-guides/control-plane.md) | How to use the Control Plane web interface |
 | [Stacks](docs/stacks/README.md) | Available services and how to add new ones |
 | [Contributing](docs/CONTRIBUTING.md) | How to contribute to the project |
+| [Migration to Python](docs/admin-guides/migration-to-python.md) | `scripts/deploy.sh` → `nexus_deploy` package (in progress, [issue #505](https://github.com/stefanko-ch/Nexus-Stack/issues/505)) |
 
 ## How It Works
 
