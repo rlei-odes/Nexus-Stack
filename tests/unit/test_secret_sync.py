@@ -509,6 +509,39 @@ def test_run_sync_no_result_returns_zero_struct() -> None:
     )
 
 
+def test_run_sync_forwards_remote_warnings_to_local_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Remote diagnostic lines reach local stderr; RESULT is stripped.
+
+    Operationally critical: when the remote script skips a multi-line
+    secret, drops a malformed folder, or fires an outage gate, the
+    operator sees the warning in the local workflow log. The legacy
+    deploy.sh heredoc had this for free (no capture); the migration
+    must replicate it explicitly because `_remote.ssh_run_script`
+    captures stdout/stderr.
+    """
+    target = StackTarget(name="jupyter")
+    remote_output = (
+        "  ⚠ Infisical fetch '<root>' returned bad shape, skipping\n"
+        "  ⚠ Skipping multi-line secret 'PEM_KEY' (folder 'storage')\n"
+        "RESULT pushed=3 skipped_name=0 skipped_multi=1 failed=1 collisions=0 succeeded=2 wrote=1\n"
+    )
+    run_sync_for_stack(
+        target,
+        project_id="p",
+        infisical_token="t",
+        script_runner=_ok_script_runner(remote_output),
+        command_runner=_no_op_command_runner(),
+    )
+    captured = capsys.readouterr()
+    assert "Infisical fetch '<root>' returned bad shape" in captured.err
+    assert "Skipping multi-line secret 'PEM_KEY'" in captured.err
+    # RESULT line is wire-format, not human-readable — must NOT pollute stderr
+    assert "RESULT pushed=" not in captured.err
+    assert "RESULT pushed=" not in captured.out
+
+
 # ---------------------------------------------------------------------------
 # Snapshot — full rendered script for both stacks (locks every detail)
 # ---------------------------------------------------------------------------

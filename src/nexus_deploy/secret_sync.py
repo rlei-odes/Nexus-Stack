@@ -442,6 +442,17 @@ def run_sync_for_stack(
     )
 
     completed = run_script(script)
+    # Forward remote diagnostics to the local terminal so the operator
+    # sees per-folder warnings (bad-shape, jq TSV failure, multi-line
+    # skips, key collisions, outage-gate explanations). The remote
+    # script writes these to stderr but `_remote.ssh_run_script` uses
+    # merge_stderr=True so they land in stdout alongside the RESULT
+    # line. We strip RESULT (it's wire-format, not human-readable) and
+    # forward everything else to local stderr — same UX as the legacy
+    # deploy.sh heredoc, where remote stderr was streamed directly.
+    for line in completed.stdout.splitlines():
+        if not line.startswith("RESULT "):
+            sys.stderr.write(line + "\n")
     result = parse_result(completed.stdout)
     if result is None:
         # No RESULT line — return all-zeros. Caller (CLI) maps this to
