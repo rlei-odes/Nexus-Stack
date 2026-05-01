@@ -247,9 +247,14 @@ SEEN=$(mktemp)
 APPEND=$(mktemp)
 NEW_BLOCK=$(mktemp)
 TSV=$(mktemp)
+# Optional tmpfiles — created later in conditional branches. Initialised
+# empty so the trap can safely reference them on early-exit paths
+# (jq-missing, outage-gates). Removal is guarded by a non-empty check
+# inside the trap so we don't `rm -f ""`.
 TMP_OUT=""
+LEGACY_TMP=""
 chmod 600 "$CFG" "$APPEND" "$NEW_BLOCK" "$TSV"
-trap 'rm -f "$CFG" "$SEEN" "$APPEND" "$NEW_BLOCK" "$TSV" "$TMP_OUT"' EXIT
+trap 'rm -f "$CFG" "$SEEN" "$APPEND" "$NEW_BLOCK" "$TSV"; [ -n "$TMP_OUT" ] && rm -f "$TMP_OUT"; [ -n "$LEGACY_TMP" ] && rm -f "$LEGACY_TMP"; true' EXIT
 printf 'header = "Authorization: Bearer %s"\\n' "$ITOK" > "$CFG"
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -359,6 +364,10 @@ if [ -f "$LEGACY_ENV" ]; then
     chmod 600 "$LEGACY_TMP"
     sed '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "$LEGACY_ENV" > "$LEGACY_TMP"
     mv "$LEGACY_TMP" "$LEGACY_ENV"
+    # Clear the variable so the trap doesn't try to rm a path that
+    # no longer exists (mv consumes the source). `rm -f` would tolerate
+    # this anyway, but explicit > implicit.
+    LEGACY_TMP=""
 fi
 
 echo "RESULT pushed=$PUSHED skipped_name=$SKIPPED_NAME skipped_multi=$SKIPPED_MULTI failed=$FAILED collisions=$COLLISIONS succeeded=$SUCCEEDED wrote=$WROTE"

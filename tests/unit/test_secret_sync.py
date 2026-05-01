@@ -169,14 +169,19 @@ def test_round_1_set_euo_pipefail_first_executable_line() -> None:
 def test_round_3_trap_cleans_all_tmpfiles() -> None:
     """Round 3 — trap on EXIT removes every tmpfile.
 
-    The 6 names below are the exact identifiers deploy.sh used. Any
-    addition/removal of tmpfiles must be reflected in the trap; test
-    ensures we don't drift.
+    Any addition/removal of tmpfiles must be reflected in the trap;
+    test ensures we don't drift. ``$TMP_OUT`` and ``$LEGACY_TMP`` are
+    optional (created later in conditional branches) and must be
+    guarded by a non-empty check inside the trap so an early-exit
+    doesn't `rm -f ""`.
     """
     script = _render_default()
     trap_line = next(line for line in script.splitlines() if line.startswith("trap"))
-    for var in ("$CFG", "$SEEN", "$APPEND", "$NEW_BLOCK", "$TSV", "$TMP_OUT"):
+    for var in ("$CFG", "$SEEN", "$APPEND", "$NEW_BLOCK", "$TSV", "$TMP_OUT", "$LEGACY_TMP"):
         assert var in trap_line, f"trap is missing {var}"
+    # Optional tmpfiles must be guarded by a non-empty check
+    assert '[ -n "$TMP_OUT" ]' in trap_line
+    assert '[ -n "$LEGACY_TMP" ]' in trap_line
 
 
 def test_round_4_two_stage_jq_validation() -> None:
