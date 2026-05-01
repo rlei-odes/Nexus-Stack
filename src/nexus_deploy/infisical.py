@@ -781,14 +781,24 @@ echo "$OK:$FAIL"
         )
 
         # 1. Write JSON payloads to local push_dir.
+        # Restrictive perms because the JSON contains secret values.
+        # Dir 0o700 + files 0o600 mean only the owner can read; rsync
+        # preserves perms by default, so the server-side mirror inherits
+        # the same protection. We explicitly chmod (instead of relying
+        # on umask) so the write is correct regardless of the calling
+        # process's umask — matters on shared CI runners where the
+        # default umask might be 0o022 (group/world readable).
         self.push_dir.mkdir(parents=True, exist_ok=True)
+        self.push_dir.chmod(0o700)
         # Clear stale files from prior runs so deleted folders don't
         # ship to the server (matches `rsync --delete` semantics on
         # the upload side).
         for stale in self.push_dir.glob("[fs]-*.json"):
             stale.unlink()
         for filename, body in self.encode_payloads(folders).items():
-            (self.push_dir / filename).write_text(body)
+            payload_path = self.push_dir / filename
+            payload_path.write_text(body)
+            payload_path.chmod(0o600)
 
         try:
             # 2. rsync to server.

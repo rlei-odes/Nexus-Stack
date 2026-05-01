@@ -327,6 +327,36 @@ def _ok_rsync() -> Any:
     return runner
 
 
+def test_bootstrap_writes_payloads_with_restrictive_perms(tmp_path: Path) -> None:
+    """Payload files contain secret values — must be 0600 / dir 0700.
+
+    Default umask on shared CI runners (0o022) would yield 0644 files,
+    which is group/world-readable. We explicitly chmod to override.
+    """
+    push_dir = tmp_path / "push"
+    client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
+
+    captured_modes: dict[str, int] = {}
+
+    def inspect_rsync(local: Path, _remote: str) -> subprocess.CompletedProcess[str]:
+        # Inspect modes inside the rsync callback — payloads are
+        # cleaned up by the finally block, so this is the only point
+        # where they're observable.
+        captured_modes["dir"] = local.stat().st_mode & 0o777
+        for f in sorted(local.glob("[fs]-*.json")):
+            captured_modes[f.name] = f.stat().st_mode & 0o777
+        return subprocess.CompletedProcess(args=["rsync"], returncode=0, stdout="", stderr="")
+
+    client.bootstrap(
+        [FolderSpec("kestra", {"K": "v"})],
+        ssh_runner=_ok_ssh(),
+        rsync_runner=inspect_rsync,
+    )
+    assert captured_modes["dir"] == 0o700
+    assert captured_modes["f-kestra.json"] == 0o600
+    assert captured_modes["s-kestra.json"] == 0o600
+
+
 def test_bootstrap_removes_local_payloads_on_success(tmp_path: Path) -> None:
     """After a successful bootstrap, the local f-/s-*.json files are gone.
 

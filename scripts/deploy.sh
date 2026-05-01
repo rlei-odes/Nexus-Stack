@@ -2009,15 +2009,21 @@ EOF
         # SSH_KEY_BASE64 must match the legacy `build_folder "ssh"`
         # encoding byte-for-byte: ``echo "$X" | base64`` (NOT
         # ``printf '%s'``). echo appends a trailing newline before
-        # the pipe, so the legacy bytes are base64(<key>+\n);
-        # printf '%s' would encode the key without that newline,
-        # producing a different (shorter) SSH_PRIVATE_KEY_BASE64
-        # value pushed to Infisical. The trailing-newline difference
-        # would silently change what consumers like jupyter/marimo
-        # see when they decode the key. Empty when no key is
-        # configured; nexus_deploy's BootstrapEnv treats the empty
-        # value as "no ssh folder".
-        SSH_KEY_BASE64=$(echo "${SSH_PRIVATE_KEY_CONTENT:-}" | base64 | tr -d '\n')
+        # the pipe, so the legacy bytes are base64(<key>+\n).
+        #
+        # Critically guarded on `[ -n "$SSH_PRIVATE_KEY_CONTENT" ]`:
+        # the legacy `build_folder "ssh"` was inside an `if [ -n …]`
+        # block (deploy.sh:2335 pre-migration), so when the key is
+        # unset, the "ssh" folder isn't pushed at all — preserving
+        # any operator-managed key already in Infisical. Without
+        # this guard, ``echo "" | base64`` produces ``Cg==`` (base64
+        # of a single newline), which BootstrapEnv would treat as a
+        # populated key and overwrite the operator's value.
+        if [ -n "${SSH_PRIVATE_KEY_CONTENT:-}" ]; then
+            SSH_KEY_BASE64=$(echo "$SSH_PRIVATE_KEY_CONTENT" | base64 | tr -d '\n')
+        else
+            SSH_KEY_BASE64=""
+        fi
         # Capture exit code instead of `if !` so we can distinguish
         # nexus_deploy's three exit modes:
         #   0 = success, all folders pushed
