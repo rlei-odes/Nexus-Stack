@@ -110,6 +110,11 @@ jobs:
     name: Test (pytest + coverage)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Job-scoped permissions — only the coverage-comment step needs write
+    # access to PRs, and we don't want it bleeding into other jobs.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -127,7 +132,29 @@ jobs:
         # and run via the same step (pytest discovers them via testpaths).
         # `--cov-fail-under=80` gates the run; pyproject.toml's
         # [tool.coverage.report] also has fail_under=80 so local + CI agree.
-        run: uv run pytest --cov --cov-report=term-missing
+        # `--cov-report=xml` + `tee` produce the inputs the next step uses
+        # to post a coverage comment on PRs. GitHub-Actions default shell
+        # is bash with `pipefail`, so a pytest failure still fails the step.
+        run: |
+          uv run pytest --cov --cov-report=term-missing --cov-report=xml \
+            | tee pytest-coverage.txt
+
+      - name: Coverage comment on PR
+        # Posts/updates a single markdown comment per PR with total
+        # coverage, badge, and per-file changed-lines breakdown. No
+        # external service, no token — just `pull-requests: write`
+        # scoped above. Skipped on push-to-main runs (no PR to comment on).
+        if: github.event_name == 'pull_request'
+        uses: MishaKav/pytest-coverage-comment@v1.1.54
+        with:
+          pytest-coverage-path: ./pytest-coverage.txt
+          pytest-xml-coverage-path: ./coverage.xml
+          title: "Coverage report — `nexus_deploy`"
+          badge-title: coverage
+          hide-badge: false
+          hide-report: false
+          create-new-comment: false
+          report-only-changed-files: false
 
       - name: Upload coverage artifact
         if: always()
