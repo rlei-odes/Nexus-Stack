@@ -82,7 +82,8 @@ def _infisical_bootstrap(args: list[str]) -> int:
     WOODPECKER_*, SSH_KEY_BASE64) from environment variables,
     plus PROJECT_ID + INFISICAL_TOKEN + INFISICAL_ENV from environment
     variables. Computes the 39 folders, writes payloads, runs the
-    server-side curl loop. Mirrors deploy.sh:1996-2390.
+    server-side curl loop. Mirrors the legacy deploy.sh build_folder
+    block (removed in #509).
 
     Note on env-var naming: the BootstrapEnv field is
     ``ssh_private_key_base64`` but the env var on the deploy.sh side
@@ -189,8 +190,8 @@ def _secret_sync(args: list[str]) -> int:
     Fetches Infisical secrets, filters/escapes them, and writes the
     result to ``/opt/docker-server/stacks/<stack>/.infisical.env`` on
     the server. On change, restarts the stack via ``docker compose
-    up -d <stack>``. Mirrors deploy.sh:4554-4911 (Jupyter) +
-    deploy.sh:4914-5092 (Marimo) — both blocks were byte-identical
+    up -d <stack>``. Mirrors the two legacy deploy.sh secret-sync
+    heredocs (one per stack, removed in #510) — both were byte-identical
     apart from stack-name + paths, so the migration collapses them
     to one rendering layer parametrised by :class:`StackTarget`.
 

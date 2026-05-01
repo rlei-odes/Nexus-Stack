@@ -50,7 +50,7 @@ def test_stack_target_marimo_paths() -> None:
 
 
 def test_stack_target_begin_marker_capitalised() -> None:
-    """Marker comment includes capitalised stack name (mirrors deploy.sh:4811/4925)."""
+    """Marker comment includes capitalised stack name (mirrors legacy deploy.sh wording)."""
     assert "Infisical → Jupyter env" in StackTarget(name="jupyter").begin_marker
     assert "Infisical → Marimo env" in StackTarget(name="marimo").begin_marker
 
@@ -77,7 +77,7 @@ def test_stack_target_begin_marker_capitalised() -> None:
     ],
 )
 def test_is_safe_envfile_key(key: str, ok: bool) -> None:
-    """Round 5 — POSIX shell-identifier rules. Mirror deploy.sh:4727."""
+    """Round 5 — POSIX shell-identifier rules. Mirror legacy deploy.sh secret-sync."""
     assert is_safe_envfile_key(key) is ok
 
 
@@ -99,7 +99,7 @@ def test_has_multiline_round_6() -> None:
 
 
 def test_escape_dotenv_value_basic() -> None:
-    """Round 6 escape rules — mirror deploy.sh:4761 sed."""
+    """Round 6 escape rules — mirror legacy deploy.sh secret-sync sed."""
     assert escape_dotenv_value("plain") == "plain"
     assert escape_dotenv_value('with"quote') == 'with\\"quote'
     assert escape_dotenv_value("with\\backslash") == "with\\\\backslash"

@@ -41,9 +41,9 @@ from dataclasses import dataclass
 
 from nexus_deploy import _remote
 
-# Marker block delimiters. Must match deploy.sh:4811-4813 (Jupyter) and
-# the equivalent Marimo lines BYTE-FOR-BYTE — operators expect the same
-# greppable marker, and the legacy-env strip step uses the same regex.
+# Marker block delimiters. Must match the legacy deploy.sh secret-sync
+# heredoc blocks BYTE-FOR-BYTE — operators rely on the same greppable
+# marker, and the legacy-env strip regex matches the literal prefix.
 _END_MARKER = "# === END nexus-secret-sync ==="
 
 
@@ -69,7 +69,7 @@ _RESULT_PATTERN = re.compile(
     re.MULTILINE,
 )
 
-# Same regex deploy.sh:4727 uses (POSIX shell-identifier rules).
+# Same regex the legacy deploy.sh secret-sync used (POSIX shell-identifier rules).
 _VALID_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -104,9 +104,9 @@ class StackTarget:
     def begin_marker(self) -> str:
         """Marker comment ABOVE the rendered block. Preserves the legacy wording.
 
-        deploy.sh used `Infisical → Jupyter env` / `Infisical → Marimo env`
-        (capitalised stack name) — same here so existing greps + the
-        sed-based legacy-strip continue to match.
+        The legacy deploy.sh heredocs used `Infisical → Jupyter env` /
+        `Infisical → Marimo env` (capitalised stack name) — same here so
+        existing greps + the sed-based legacy-strip continue to match.
         """
         friendly = self.name.capitalize()
         return (
@@ -150,7 +150,7 @@ class SyncResult:
 
 
 def is_safe_envfile_key(key: str) -> bool:
-    """Mirror deploy.sh:4727 — POSIX shell identifier rules.
+    """Mirror the legacy deploy.sh secret-sync — POSIX shell identifier rules.
 
     Keys that fail this are skipped with `SKIPPED_NAME++`. Examples:
     ``FOO_BAR`` ok, ``1FOO`` rejected (leading digit), ``FOO-BAR``
@@ -160,7 +160,7 @@ def is_safe_envfile_key(key: str) -> bool:
 
 
 def has_multiline(value: str) -> bool:
-    """Mirror deploy.sh:4739 — env-file format can't carry newlines portably.
+    """Mirror the legacy deploy.sh secret-sync — env-file format can't carry newlines portably.
 
     Values containing ``\\n`` are skipped with `SKIPPED_MULTI++`. The
     log line emitted server-side names the KEY only, never the value
@@ -170,7 +170,7 @@ def has_multiline(value: str) -> bool:
 
 
 def escape_dotenv_value(value: str) -> str:
-    r"""Mirror deploy.sh:4761 — dotenv-safe escape.
+    r"""Mirror the legacy deploy.sh secret-sync — dotenv-safe escape.
 
     Two replacements, in this order (order matters: backslash first
     so we don't double-escape the escapes from the quote-replacement):
@@ -215,7 +215,8 @@ def render_remote_script(
     folders_url_q = shlex.quote(f"{_INFISICAL_BASE_URL}/api/v1/folders")
     secrets_url_q = shlex.quote(f"{_INFISICAL_BASE_URL}/api/v3/secrets/raw")
 
-    # The bash below is deploy.sh:4616-4848 lifted near-verbatim.
+    # The bash below is the legacy deploy.sh secret-sync heredoc lifted
+    # near-verbatim (see git history pre-#510 for the original blocks).
     # Differences from the heredoc form:
     #   - Inputs come pre-decoded (shlex-quoted via stdin), no
     #     base64 transit step (R2).
@@ -456,9 +457,10 @@ def run_sync_for_stack(
         )
 
     if result.wrote:
-        # Restart on change. Mirrors deploy.sh:4904 — `docker compose up
-        # -d <stack>` recomputes the resolved-config hash and recreates
-        # only when env_file content changed. No --force-recreate.
+        # Restart on change. Mirrors the legacy deploy.sh restart step —
+        # `docker compose up -d <stack>` recomputes the resolved-config
+        # hash and recreates only when env_file content changed. No
+        # --force-recreate.
         # Restart failure does NOT alter result.wrote; we just emit the
         # error to stderr so the operator sees it.
         restart_cmd = f"cd {shlex.quote(target.compose_dir)} && docker compose up -d {shlex.quote(target.name)}"
@@ -467,8 +469,8 @@ def run_sync_for_stack(
         except subprocess.CalledProcessError as exc:
             # Forward the captured docker-compose output so the operator
             # can debug image pulls / compose syntax / network errors —
-            # mirrors deploy.sh:4909 which indented and printed stdout
-            # to stderr. exc.cmd is NOT printed (defence in depth: it
+            # mirrors the legacy deploy.sh restart step which indented
+            # and printed stdout to stderr. exc.cmd is NOT printed (defence in depth: it
             # carries the literal argv even though the restart command
             # doesn't include secrets).
             sys.stderr.write(

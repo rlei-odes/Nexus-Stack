@@ -4556,7 +4556,9 @@ fi
 # ==========================================================================
 # Migrated from a 358-line bash heredoc to nexus_deploy.secret_sync (#505).
 # Exit-code contract enforced by the Python CLI:
-#   0 = wrote new .infisical.env (or no-touch outage gate fired cleanly)
+#   0 = wrote new .infisical.env, OR no-touch outage gate fired cleanly,
+#       OR remote script produced no parseable RESULT line (soft no-op,
+#       inner script's own stderr is already in the workflow log)
 #   1 = wrote, but at least one folder fetch failed (partial success)
 #   2 = transport / unexpected error → abort the deploy
 if echo "$ENABLED_SERVICES" | grep -qw "jupyter" \
