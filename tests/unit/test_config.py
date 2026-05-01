@@ -164,13 +164,19 @@ def test_dump_shell_empty_string_treated_as_missing() -> None:
 def test_dump_shell_eval_injection_safe(tmp_path: Path) -> None:
     """Adversarial values must NOT execute when the output is bash-eval'd.
 
-    This is the security improvement over deploy.sh's `$()`-capture:
-    the shlex.quote wrapping guarantees no command-substitution or
-    variable-expansion can fire from a malicious secret value.
+    The strangler-fig handoff in deploy.sh is now ``eval "$(... | python
+    -m nexus_deploy config dump-shell --stdin)"``. Eval introduces a
+    command-execution surface that the legacy ``VAR=$(jq …)`` flow did
+    not have (jq's stdout was captured directly into bash variables, no
+    second evaluation pass). shlex.quote in :meth:`NexusConfig.dump_shell`
+    is what keeps the new eval path safe: this test proves it by feeding
+    payloads that WOULD execute under naive concatenation
+    (``$(touch …)``, backticks, ``;`` injection) and asserting that
+    nothing materialises in a per-test canary dir.
 
-    Marker files target ``tmp_path`` (a per-test pytest tmpdir) and use
-    a unique ``NEXUS_DEPLOY_INJECT_<pid>``-style prefix so a stray glob
-    can't ever delete unrelated files on a shared workstation.
+    Marker files target ``tmp_path`` (a per-test pytest tmpdir) plus a
+    unique ``NEXUS_DEPLOY_INJECT_*`` prefix so a stray glob can't ever
+    match unrelated files on a shared workstation.
     """
     canary_dir = tmp_path / "canaries"
     canary_dir.mkdir()
@@ -303,6 +309,23 @@ def test_cli_dump_shell_unknown_arg_returns_2(
     captured = capsys.readouterr()
     assert rc == 2
     assert "unknown arg" in captured.err
+
+
+def test_cli_dump_shell_stdin_and_tofu_dir_mutex(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--stdin` and `--tofu-dir` together is rejected with exit 2."""
+    from nexus_deploy.__main__ import main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nexus-deploy", "config", "dump-shell", "--stdin", "--tofu-dir", "/tmp"],  # noqa: S108
+    )
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "mutually exclusive" in captured.err
 
 
 def test_cli_unknown_command_returns_2(

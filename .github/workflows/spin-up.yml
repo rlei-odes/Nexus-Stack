@@ -133,6 +133,14 @@ jobs:
           version: "0.11.7"
           enable-cache: true
 
+      - name: Sync nexus_deploy runtime deps
+        # Pre-resolve the lockfile-pinned runtime deps now so deploy.sh's
+        # `uv run python -m nexus_deploy ...` calls don't hit the network
+        # mid-deploy. `--frozen` requires uv.lock to match pyproject.toml
+        # (which CI's python-tests already enforces); `--no-dev` skips
+        # ruff/mypy/pytest etc. since we only need runtime here.
+        run: uv sync --frozen --no-dev
+
       - name: Install cloudflared
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared

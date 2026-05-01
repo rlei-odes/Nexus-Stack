@@ -295,15 +295,28 @@ class NexusConfig(BaseModel):
         return cls.from_secrets_json(completed.stdout)
 
     def dump_shell(self) -> str:
-        """Render bash assignments matching deploy.sh:123-212 byte-for-byte.
+        """Render deploy.sh-compatible bash assignments for ``eval``.
+
+        The emitted lines are NOT a byte-for-byte copy of the legacy
+        deploy.sh:123-212 block: that block was a sequence of
+        ``VAR=$(echo "$SECRETS_JSON" | jq -r '.X // empty')`` command
+        substitutions, which don't roundtrip through string output.
+        What is guaranteed is that ``eval``ing this method's output
+        produces the same set of bash variables with the same VALUES
+        — that's the strangler-fig contract for the SECRETS_JSON
+        parsing handoff.
 
         Output is sorted by source-order (the order in :data:`_FIELDS`),
         not alphabetical, so a side-by-side review against the legacy
         deploy.sh block has no spurious reordering noise. Values are
-        passed through :func:`shlex.quote` so an embedded ``$``, ``"``,
-        backtick, or shell metacharacter can't trigger eval-injection
-        — a strict improvement over the legacy ``$()``-based capture
-        which was vulnerable to those.
+        passed through :func:`shlex.quote` because this emitted block
+        is consumed via ``eval``; without quoting, an embedded ``$``,
+        backtick, or ``;`` in a secret value would trigger command
+        substitution / variable expansion / command termination at
+        eval time. (Note: the legacy ``VAR=$(jq …)`` form didn't have
+        this specific risk because the captured stdout was assigned
+        directly, never re-evaluated. shlex.quote here is what keeps
+        the new eval-based handoff equally safe.)
         """
         lines: list[str] = []
         for bash_var, json_key, fallback in _FIELDS:

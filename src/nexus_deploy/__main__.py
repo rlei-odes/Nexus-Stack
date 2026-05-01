@@ -27,11 +27,13 @@ def _config_dump_shell(args: list[str]) -> int:
     ``eval "$(... | python -m nexus_deploy config dump-shell --stdin)"``.
     """
     tofu_dir = Path("tofu/stack")
+    tofu_dir_explicit = False
     use_stdin = False
     i = 0
     while i < len(args):
         if args[i] == "--tofu-dir" and i + 1 < len(args):
             tofu_dir = Path(args[i + 1])
+            tofu_dir_explicit = True
             i += 2
         elif args[i] == "--stdin":
             use_stdin = True
@@ -39,6 +41,12 @@ def _config_dump_shell(args: list[str]) -> int:
         else:
             print(f"config dump-shell: unknown arg {args[i]!r}", file=sys.stderr)
             return 2
+    if use_stdin and tofu_dir_explicit:
+        print(
+            "config dump-shell: --stdin and --tofu-dir are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
     try:
         config = (
             NexusConfig.from_secrets_json(sys.stdin.read())
