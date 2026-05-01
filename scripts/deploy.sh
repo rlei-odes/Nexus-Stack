@@ -2363,6 +2363,34 @@ EOF
                     OK=\$((OK+1))
                 fi
             done
+            # Snapshot build_folder JSON payloads BEFORE the cleanup
+            # below deletes /tmp/infisical-push. capture-phase1-baselines.sh
+            # scp's the snapshot dir down for the Phase-1 gold-master
+            # fixtures used by src/nexus_deploy/infisical.py (#505).
+            # Removed in phase 4 along with the rest of build_folder.
+            #
+            # Lifetime: the baseline dir persists at /tmp/nexus-baselines
+            # on the server across this run and any subsequent re-runs
+            # (each run replaces the dir contents via rm -rf + cp). It's
+            # only fully cleared by a teardown — that's intentional so
+            # capture-script can scp from a stable location. \`chmod\`
+            # restricts it to the deploy SSH user since the JSON
+            # payloads carry secret values.
+            #
+            # Error handling: the outer \`ssh \"...\"\` heredoc runs WITHOUT
+            # \`set -e\`, and the heredoc's final \`echo \"\$OK:\$FAIL\"\`
+            # always succeeds — so we have to chain the snapshot ops
+            # with \`&&\` and emit a stderr warning on failure ourselves.
+            # We don't \`exit 1\` because baseline capture is a Phase-1
+            # debugging aid; failure should be visible in the workflow
+            # log but must not block a deploy that's otherwise healthy.
+            if [ -d /tmp/infisical-push ]; then
+                mkdir -p /tmp/nexus-baselines \
+                    && rm -rf /tmp/nexus-baselines/infisical-payloads-baseline \
+                    && cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline \
+                    && chmod -R go-rwx /tmp/nexus-baselines/infisical-payloads-baseline \
+                    || echo \"WARN: phase-1 baseline capture to /tmp/nexus-baselines failed\" >&2
+            fi
             rm -rf /tmp/infisical-push
             echo \"\$OK:\$FAIL\"
         " 2>&1 || echo "0:0")
