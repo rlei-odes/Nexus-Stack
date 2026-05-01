@@ -304,11 +304,20 @@ while IFS= read -r FOLDER; do
             SKIPPED_NAME=$((SKIPPED_NAME+1)); continue
         fi
         VALUE=$(printf '%s' "$VALUE_B64" | base64 -d || true)
-        if printf '%s' "$VALUE" | grep -q $'\\n'; then
-            SKIPPED_MULTI=$((SKIPPED_MULTI+1))
-            echo "  ⚠ Skipping multi-line secret '$KEY' (folder '$FOLDER_LABEL')" >&2
-            continue
-        fi
+        # Multi-line guard: bash glob match, NOT `grep -q $'\\n'`. The
+        # legacy deploy.sh form processed input line-by-line where the
+        # implicit line-terminator could match the pattern, so EVERY
+        # non-empty single-line value falsely triggered the skip
+        # (resulting in only GITEA_TOKEN ever landing in .infisical.env).
+        # bash's case glob compares the variable's bytes directly and
+        # only matches genuine embedded newlines.
+        case "$VALUE" in
+            *$'\\n'*)
+                SKIPPED_MULTI=$((SKIPPED_MULTI+1))
+                echo "  ⚠ Skipping multi-line secret '$KEY' (folder '$FOLDER_LABEL')" >&2
+                continue
+                ;;
+        esac
         EXISTING=$(awk -F'\\t' -v k="$KEY" '$1 == k {{print $2; exit}}' "$SEEN")
         if [ -n "$EXISTING" ]; then
             COLLISIONS=$((COLLISIONS+1))
