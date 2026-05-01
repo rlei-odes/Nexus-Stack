@@ -138,8 +138,8 @@ def _infisical_bootstrap(args: list[str]) -> int:
         token=token,
         push_dir=push_dir,
     )
-    folders = compute_folders(config, bootstrap_env)
     try:
+        folders = compute_folders(config, bootstrap_env)
         result = client.bootstrap(folders)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         # Hard failure: rsync/ssh exited non-zero, hit the timeout, or
@@ -149,6 +149,23 @@ def _infisical_bootstrap(args: list[str]) -> int:
         # leaked into argv via a future bug) to land in the workflow log.
         print(
             f"infisical bootstrap: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        # Anything else is a programming error in compute_folders/
+        # bootstrap (KeyError, ValidationError, AttributeError, …).
+        # Python's default exit code for an unhandled exception is 1,
+        # which deploy.sh's rc-dispatch treats as "partial push" —
+        # exactly what this catch prevents. Force rc=2 so deploy.sh
+        # aborts instead of continuing past a broken bootstrap.
+        # We print only the exception CLASS name; ``str(exc)`` and
+        # ``repr(exc)`` can carry attribute values that might include
+        # secret-bearing fields from a NexusConfig or BootstrapEnv
+        # pydantic ValidationError.
+        print(
+            f"infisical bootstrap: unexpected error ({type(exc).__name__}); "
+            "see traceback above if any",
             file=sys.stderr,
         )
         return 2

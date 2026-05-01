@@ -597,6 +597,46 @@ def test_cli_infisical_bootstrap_partial_failure_returns_1(
     assert rc == 1
 
 
+def test_cli_infisical_bootstrap_unexpected_exception_returns_2(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-transport exception (e.g. KeyError from a bug in compute_folders)
+    must surface as rc=2, NOT rc=1.
+
+    Python's default unhandled-exception exit code is 1, which would
+    collide with the "partial push" semantic in deploy.sh and cause
+    the deploy to continue past a broken bootstrap. The broad
+    ``except Exception`` in the CLI re-routes that to rc=2.
+
+    Also asserts: the exception's ``str(exc)`` / ``repr(exc)`` contents
+    must NOT surface in stderr — those can carry attribute values from
+    pydantic ValidationError that include secret-bearing fields.
+    """
+    from nexus_deploy.__main__ import main
+
+    secret_payload = "very-secret-value-must-not-appear-in-output"
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise KeyError(secret_payload)
+
+    monkeypatch.setattr("nexus_deploy.__main__.compute_folders", boom)
+    monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
+    monkeypatch.setattr(sys, "stdin", _StubStdin("{}"))
+    monkeypatch.setenv("PROJECT_ID", "p")
+    monkeypatch.setenv("INFISICAL_TOKEN", "t")
+    monkeypatch.setenv("PUSH_DIR", str(tmp_path / "push"))
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "unexpected error (KeyError)" in captured.err
+    # Defence-in-depth: the exception's args must not leak — only the
+    # class name surfaces in the formatted message.
+    assert secret_payload not in captured.err
+    assert secret_payload not in captured.out
+
+
 def test_cli_infisical_bootstrap_transport_failure_returns_2(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
