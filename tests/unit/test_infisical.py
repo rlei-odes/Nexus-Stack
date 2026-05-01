@@ -507,7 +507,7 @@ def test_cli_infisical_bootstrap_failed_count_returns_1(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Any failed folder push → exit 1 (so deploy.sh aborts)."""
+    """Any failed folder push → exit 1 (deploy.sh's `if !` wrap then warns, doesn't abort)."""
     from nexus_deploy.__main__ import main
 
     def fake_ssh(_cmd: str) -> subprocess.CompletedProcess[str]:

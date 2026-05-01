@@ -48,13 +48,18 @@ def ssh_run(
     you want stderr to flow through to the local terminal (useful for
     interactive ops; rare in this codebase).
     """
+    # Don't use `capture_output=True` here: it sets stdout=PIPE+stderr=PIPE
+    # internally, and combining it with an explicit `stderr=...` raises
+    # ValueError("stderr and capture_output may not both be used"). We
+    # need explicit stderr control (STDOUT-merging in the default case)
+    # so we set both pipes ourselves.
     return subprocess.run(
         ["ssh", host, cmd],
         check=check,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if capture_stderr else subprocess.PIPE,
         text=True,
         timeout=timeout,
-        stderr=subprocess.STDOUT if capture_stderr else None,
     )
 
 

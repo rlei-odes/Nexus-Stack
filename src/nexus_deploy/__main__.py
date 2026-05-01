@@ -76,10 +76,17 @@ def _infisical_bootstrap(args: list[str]) -> int:
 
     Reads SECRETS_JSON from stdin, reads the additional ``BootstrapEnv``
     fields (DOMAIN, ADMIN_EMAIL, GITEA_*, OM_PRINCIPAL_DOMAIN,
-    WOODPECKER_*, SSH_PRIVATE_KEY_BASE64) from environment variables,
+    WOODPECKER_*, SSH_KEY_BASE64) from environment variables,
     plus PROJECT_ID + INFISICAL_TOKEN + INFISICAL_ENV from environment
     variables. Computes the 41 folders, writes payloads, runs the
     server-side curl loop. Mirrors deploy.sh:1996-2390.
+
+    Note on env-var naming: the BootstrapEnv field is
+    ``ssh_private_key_base64`` but the env var on the deploy.sh side
+    is the bash-style ``SSH_KEY_BASE64`` (computed from
+    ``SSH_PRIVATE_KEY_CONTENT`` via ``base64 | tr -d '\n'``). The
+    asymmetry mirrors the legacy bash naming so deploy.sh's existing
+    env-passing pattern doesn't need to be renamed in this PR.
 
     Required env: ``PROJECT_ID``, ``INFISICAL_TOKEN``.
     Optional env: ``INFISICAL_ENV`` (default ``dev``), the BootstrapEnv

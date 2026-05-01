@@ -27,7 +27,12 @@ def test_ssh_run_invokes_ssh_with_host_and_command(
     assert result.returncode == 0
     assert captured["args"][0] == ["ssh", "nexus", "echo hello"]
     assert captured["kwargs"]["check"] is True
-    assert captured["kwargs"]["capture_output"] is True
+    # stdout=PIPE + stderr=STDOUT (NOT capture_output=True; that combo
+    # raises ValueError when stderr is also explicit — see the docstring
+    # in _remote.ssh_run).
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.STDOUT
+    assert "capture_output" not in captured["kwargs"]
     assert captured["kwargs"]["text"] is True
 
 
@@ -104,6 +109,33 @@ def test_rsync_to_remote_delete_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nexus_deploy._remote.subprocess.run", fake_run)
     _remote.rsync_to_remote(Path("/src"), "nexus:/dst/", delete=True)
     assert "--delete" in captured["args"]
+
+
+def test_ssh_run_actually_invokes_subprocess(tmp_path: Path) -> None:
+    """End-to-end against a fake `ssh` on PATH — catches subprocess.run misuse.
+
+    The mocked tests above prove the call shape (args + kwargs), but
+    they can't catch combinations of subprocess.run kwargs that raise
+    ValueError before any subprocess is spawned (e.g., the historical
+    ``capture_output=True`` + ``stderr=...`` clash). This test puts a
+    minimal stand-in `ssh` script on PATH and exercises ``ssh_run``
+    against it.
+    """
+    fake_ssh = tmp_path / "ssh"
+    fake_ssh.write_text("#!/usr/bin/env bash\necho stdout-line\necho err-line >&2\n")
+    fake_ssh.chmod(0o755)
+    import os
+
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{tmp_path}:{old_path}"
+    try:
+        result = _remote.ssh_run("does-not-matter")
+    finally:
+        os.environ["PATH"] = old_path
+    assert result.returncode == 0
+    # capture_stderr=True (default) merges stderr into stdout
+    assert "stdout-line" in result.stdout
+    assert "err-line" in result.stdout
 
 
 def test_rsync_to_remote_no_delete_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
