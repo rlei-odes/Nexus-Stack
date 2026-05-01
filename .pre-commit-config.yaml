@@ -58,12 +58,16 @@ repos:
     hooks:
       - id: mypy
         files: ^(src|tests)/.*\.py$
-        # Bring deps so mypy can resolve imports
+        # Bring deps so mypy can resolve imports. Bounds match
+        # pyproject.toml's [project].dependencies / [dependency-groups].dev
+        # so pre-commit and CI never disagree (e.g. when pydantic 3.x ships).
+        # `pytest` is here because mypy also type-checks tests/.
         additional_dependencies:
-          - pydantic>=2.7
-          - types-paramiko
-          - types-requests
-          - types-pyyaml
+          - pydantic>=2.7,<3.0
+          - pytest>=8.3,<9.0
+          - types-paramiko>=3.4,<4.0
+          - types-requests>=2.32,<3.0
+          - types-pyyaml>=6.0,<7.0
         args: [--config-file=pyproject.toml]
 
   # ---------------------------------------------------------------------------

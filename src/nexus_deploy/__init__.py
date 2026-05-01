@@ -6,7 +6,14 @@ deploy.sh remains the entry point and shells out to
 `python -m nexus_deploy <command>` for migrated functionality.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("nexus-deploy")
+except PackageNotFoundError:  # pragma: no cover
+    # Package isn't installed (e.g. running from a source checkout without
+    # `uv sync`); keep a non-empty fallback so callers always get a string.
+    __version__ = "0.0.0+unknown"
 
 
 def hello() -> str:

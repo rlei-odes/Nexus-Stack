@@ -12,7 +12,7 @@ deployment logic yet; `scripts/deploy.sh` is still the entry point.
 ```bash
 uv sync                   # install deps + this package in editable mode
 uv run pytest             # run tests (unit only, ~5 sec)
-uv run mypy src/          # strict type-check
+uv run mypy               # strict type-check (covers src + tests)
 uv run ruff check .       # lint
 uv run ruff format .      # auto-format
 ```
