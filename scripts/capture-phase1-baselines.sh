@@ -10,19 +10,19 @@
 #                                              + tests/fixtures/baselines/marimo.infisical.env
 #
 # Prereqs:
-#   - scripts/deploy.sh has the BASELINE CAPTURE injection (added on the
-#     feat/python-migration-phase-1-baselines-capture branch only).
 #   - A successful spin-up has been run with enabled_services=jupyter,marimo
-#     against this branch — the server has /tmp/nexus-baselines/ populated
-#     and /opt/docker-server/stacks/{jupyter,marimo}/.infisical.env present.
-#   - Local R2 backend is configured (backend.hcl), so `tofu output` works
-#     against the just-applied state.
+#     so the server has /tmp/nexus-baselines/ populated by deploy.sh and
+#     /opt/docker-server/stacks/{jupyter,marimo}/.infisical.env present.
+#   - Local R2 backend configured (backend.hcl) so `tofu output` works
+#     against the current state.
 #   - `ssh nexus` works (Cloudflare Access service token in env).
 #
 # Usage:
 #   bash scripts/capture-phase1-baselines.sh
 #
-# Output: tests/fixtures/baselines/ committed to the *clean* baselines branch.
+# Output is committed to tests/fixtures/baselines/. Re-running overwrites
+# the directory — safe to invoke after every spin-up that needs to refresh
+# the baselines (e.g. after deploy.sh's secret-set changes).
 # =============================================================================
 set -euo pipefail
 
