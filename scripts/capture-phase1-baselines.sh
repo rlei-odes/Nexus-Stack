@@ -34,6 +34,12 @@ set -euo pipefail
 # even on shared workstations or if the repo dir has loose group perms.
 umask 077
 
+# C locale for every downstream `sort`, `grep`, `sed`. Without this the
+# baseline files would byte-differ between macOS (en_US.UTF-8 default)
+# and Linux runners (C.UTF-8 / LANG=C). The whole point of these
+# fixtures is byte-compare, so ambient locale variance is fatal.
+export LC_ALL=C
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$REPO_ROOT/tests/fixtures/baselines"
 TOFU_DIR="$REPO_ROOT/tofu/stack"
@@ -104,8 +110,10 @@ trap 'rm -f "$mktemp_script"' EXIT
 # `env -i` strips inherited env so PATH, HOME, CLOUDFLARE_*_TOKEN, etc.
 # can't pollute or leak into the fixture. We restore a minimal PATH that
 # resolves `cat`, `jq` (used by every parser line), and the bash built-
-# ins on both macOS (homebrew) and Linux runners.
-env -i PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin bash "$mktemp_script" \
+# ins on both macOS (homebrew) and Linux runners. LC_ALL=C must be
+# threaded through too since `env -i` strips the script-level export.
+env -i PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin LC_ALL=C \
+    bash "$mktemp_script" \
     < "$DEST/secrets.json" \
     | sort > "$DEST/shell-vars.txt"
 echo "  ✓ shell-vars.txt ($(wc -l <"$DEST/shell-vars.txt") vars from $PARSER_VAR_COUNT parser names)"
