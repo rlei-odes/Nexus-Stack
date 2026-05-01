@@ -371,6 +371,38 @@ def test_bootstrap_removes_local_payloads_on_success(tmp_path: Path) -> None:
     assert list(push_dir.glob("[fs]-*.json")) == []
 
 
+def test_bootstrap_cleans_up_when_write_fails_mid_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure during payload-writing must NOT leave half-written secrets behind.
+
+    The previous implementation only wrapped rsync+ssh in try/finally;
+    a disk-full / permission error during the write loop would leave
+    already-created f-/s-*.json files in push_dir with secret values.
+    Now the whole materialise+push path is inside the try/finally.
+    """
+    push_dir = tmp_path / "push"
+    client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
+
+    # Force os.open to fail on the SECOND payload — by which point the
+    # first one has already been written and contains secret values.
+    real_os_open = os.open
+    call_count = {"n": 0}
+
+    def flaky_open(*args: Any, **kwargs: Any) -> int:
+        call_count["n"] += 1
+        if call_count["n"] >= 2:
+            raise PermissionError("simulated mid-loop disk failure")
+        return real_os_open(*args, **kwargs)
+
+    monkeypatch.setattr("nexus_deploy.infisical.os.open", flaky_open)
+    folders = [FolderSpec("first", {"K": "v1"}), FolderSpec("second", {"K": "v2"})]
+    with pytest.raises(PermissionError):
+        client.bootstrap(folders, ssh_runner=_ok_ssh(), rsync_runner=_ok_rsync())
+    # finally clause must have removed the first-folder file
+    assert list(push_dir.glob("[fs]-*.json")) == []
+
+
 def test_bootstrap_removes_local_payloads_on_failure(tmp_path: Path) -> None:
     """Cleanup runs in `finally` — even when ssh raises, payloads are gone."""
     push_dir = tmp_path / "push"

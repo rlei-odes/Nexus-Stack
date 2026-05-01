@@ -33,6 +33,7 @@ wholesale. Faithful migration here, real refactor in Phase 3.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 from collections.abc import Callable, Mapping
@@ -780,27 +781,44 @@ echo "$OK:$FAIL"
             lambda local, remote: _remote.rsync_to_remote(local, remote, delete=True)
         )
 
-        # 1. Write JSON payloads to local push_dir.
         # Restrictive perms because the JSON contains secret values.
         # Dir 0o700 + files 0o600 mean only the owner can read; rsync
         # preserves perms by default, so the server-side mirror inherits
-        # the same protection. We explicitly chmod (instead of relying
-        # on umask) so the write is correct regardless of the calling
-        # process's umask — matters on shared CI runners where the
-        # default umask might be 0o022 (group/world readable).
-        self.push_dir.mkdir(parents=True, exist_ok=True)
+        # the same protection.
+        self.push_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Re-chmod in case the dir pre-existed with looser perms (mkdir's
+        # mode is only applied at creation, ignored when exist_ok=True
+        # and the dir is already there).
         self.push_dir.chmod(0o700)
-        # Clear stale files from prior runs so deleted folders don't
-        # ship to the server (matches `rsync --delete` semantics on
-        # the upload side).
-        for stale in self.push_dir.glob("[fs]-*.json"):
-            stale.unlink()
-        for filename, body in self.encode_payloads(folders).items():
-            payload_path = self.push_dir / filename
-            payload_path.write_text(body)
-            payload_path.chmod(0o600)
 
+        # ENTIRE materialise+push+execute path is wrapped in try/finally
+        # so the cleanup of secret-bearing files runs even if write_text
+        # / chmod / rsync / ssh fails mid-flight. The previous version
+        # only wrapped the rsync+ssh phase, leaving the write loop
+        # outside protection — a disk-full or permission error during
+        # writes would leave half-written f-/s-*.json files in push_dir
+        # with secret values still in them.
         try:
+            # 1a. Clear stale files from prior runs so deleted folders
+            #     don't ship to the server (matches `rsync --delete`
+            #     semantics on the upload side).
+            for stale in self.push_dir.glob("[fs]-*.json"):
+                stale.unlink()
+
+            # 1b. Atomic create-with-mode-0o600 via os.open. Avoids
+            #     the TOCTOU race of `write_text` then `chmod`, where
+            #     the file briefly exists with the umask-derived mode
+            #     (often 0o644) before the chmod tightens it.
+            for filename, body in self.encode_payloads(folders).items():
+                payload_path = self.push_dir / filename
+                fd = os.open(
+                    str(payload_path),
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    0o600,
+                )
+                with os.fdopen(fd, "w") as f:
+                    f.write(body)
+
             # 2. rsync to server.
             rsync(self.push_dir, f"nexus:{_REMOTE_PUSH_DIR}/")
 
