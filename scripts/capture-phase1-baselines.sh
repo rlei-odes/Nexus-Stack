@@ -2,15 +2,17 @@
 # =============================================================================
 # capture-phase1-baselines.sh — gold-master capture for #505 Phase 1
 # =============================================================================
-# Captures pre-migration outputs of two deploy.sh sections (the third
-# was section "1: SECRETS_JSON parsing" but Phase 1 Modul 1.3 has now
-# replaced it with src/nexus_deploy/config.py — the byte-compare for
-# that block lives at the unit-test layer, see
-# tests/unit/__snapshots__/test_config.ambr):
+# Captures pre-migration outputs of two deploy.sh sections:
 #
 #   1. build_folder JSON payloads (deploy.sh:2070–2340) → tests/fixtures/baselines/infisical-payloads/
 #   2. .infisical.env files (deploy.sh:4860–5520)       → tests/fixtures/baselines/jupyter.infisical.env
 #                                                       + tests/fixtures/baselines/marimo.infisical.env
+#
+# A third section ("SECRETS_JSON parsing", deploy.sh:115-212) was
+# captured by an earlier version of this script. Phase 1 Modul 1.3
+# replaced that block with src/nexus_deploy/config.py, so the
+# byte-compare for it now lives at the unit-test layer:
+# tests/unit/__snapshots__/test_config.ambr.
 #
 # Plus, for context, a copy of the live tofu secrets output:
 #   * tests/fixtures/baselines/secrets.json — usable as a real-world

@@ -311,6 +311,19 @@ def test_cli_dump_shell_unknown_arg_returns_2(
     assert "unknown arg" in captured.err
 
 
+def test_cli_dump_shell_tofu_dir_missing_path(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--tofu-dir` without a following PATH exits 2 with a clear message."""
+    from nexus_deploy.__main__ import main
+
+    monkeypatch.setattr(sys, "argv", ["nexus-deploy", "config", "dump-shell", "--tofu-dir"])
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "requires a PATH" in captured.err
+
+
 def test_cli_dump_shell_stdin_and_tofu_dir_mutex(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

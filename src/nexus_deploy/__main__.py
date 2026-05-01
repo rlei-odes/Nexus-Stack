@@ -31,7 +31,10 @@ def _config_dump_shell(args: list[str]) -> int:
     use_stdin = False
     i = 0
     while i < len(args):
-        if args[i] == "--tofu-dir" and i + 1 < len(args):
+        if args[i] == "--tofu-dir":
+            if i + 1 >= len(args):
+                print("config dump-shell: --tofu-dir requires a PATH", file=sys.stderr)
+                return 2
             tofu_dir = Path(args[i + 1])
             tofu_dir_explicit = True
             i += 2
