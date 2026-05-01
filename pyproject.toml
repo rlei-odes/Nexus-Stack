@@ -102,7 +102,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Tests are allowed assert (S101) and magic numbers; setup is shorter.
-"tests/**" = ["S101", "ANN", "D"]
+# S105/S106/S107 (hardcoded password / func arg / default) trigger on
+# any test fixture value with a `_password`/`_token`/`_secret`-ish name
+# even though they're synthetic test data — no real credential ever
+# lands in tests/, that's enforced by .gitignore'd raw baselines.
+"tests/**" = ["S101", "S105", "S106", "S107", "ANN", "D"]
 "src/nexus_deploy/__init__.py" = ["D104"]   # __init__.py docstring optional
 
 [tool.ruff.format]

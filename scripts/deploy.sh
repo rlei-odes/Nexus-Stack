@@ -119,97 +119,33 @@ if [ "$SECRETS_JSON" = "{}" ]; then
     exit 1
 fi
 
-# Extract secrets
-ADMIN_USERNAME=$(echo "$SECRETS_JSON" | jq -r '.admin_username // "admin"')
-INFISICAL_PASS=$(echo "$SECRETS_JSON" | jq -r '.infisical_admin_password // empty')
-INFISICAL_ENCRYPTION_KEY=$(echo "$SECRETS_JSON" | jq -r '.infisical_encryption_key // empty')
-INFISICAL_AUTH_SECRET=$(echo "$SECRETS_JSON" | jq -r '.infisical_auth_secret // empty')
-INFISICAL_DB_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.infisical_db_password // empty')
-PORTAINER_PASS=$(echo "$SECRETS_JSON" | jq -r '.portainer_admin_password // empty')
-KUMA_PASS=$(echo "$SECRETS_JSON" | jq -r '.kuma_admin_password // empty')
-GRAFANA_PASS=$(echo "$SECRETS_JSON" | jq -r '.grafana_admin_password // empty')
-DAGSTER_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.dagster_db_password // empty')
-KESTRA_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_admin_password // empty')
-KESTRA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.kestra_db_password // empty')
-N8N_PASS=$(echo "$SECRETS_JSON" | jq -r '.n8n_admin_password // empty')
-METABASE_PASS=$(echo "$SECRETS_JSON" | jq -r '.metabase_admin_password // empty')
-SUPERSET_PASS=$(echo "$SECRETS_JSON" | jq -r '.superset_admin_password // empty')
-SUPERSET_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.superset_db_password // empty')
-SUPERSET_SECRET=$(echo "$SECRETS_JSON" | jq -r '.superset_secret_key // empty')
-CLOUDBEAVER_PASS=$(echo "$SECRETS_JSON" | jq -r '.cloudbeaver_admin_password // empty')
-MAGE_PASS=$(echo "$SECRETS_JSON" | jq -r '.mage_admin_password // empty')
-MINIO_ROOT_PASS=$(echo "$SECRETS_JSON" | jq -r '.minio_root_password // empty')
-SFTPGO_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.sftpgo_admin_password // empty')
-SFTPGO_USER_PASS=$(echo "$SECRETS_JSON" | jq -r '.sftpgo_user_password // empty')
-HOPPSCOTCH_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_db_password // empty')
-HOPPSCOTCH_JWT=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_jwt_secret // empty')
-HOPPSCOTCH_SESSION=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_session_secret // empty')
-HOPPSCOTCH_ENCRYPTION=$(echo "$SECRETS_JSON" | jq -r '.hoppscotch_encryption_key // empty')
-MELTANO_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.meltano_db_password // empty')
-SODA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.soda_db_password // empty')
-REDPANDA_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.redpanda_admin_password // empty')
-POSTGRES_PASS=$(echo "$SECRETS_JSON" | jq -r '.postgres_password // empty')
-PG_DUCKLAKE_PASS=$(echo "$SECRETS_JSON" | jq -r '.pgducklake_password // empty')
-HETZNER_S3_BUCKET_PGDUCKLAKE=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_bucket_pgducklake // empty')
-PGADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.pgadmin_password // empty')
-PREFECT_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.prefect_db_password // empty')
-RUSTFS_ROOT_PASS=$(echo "$SECRETS_JSON" | jq -r '.rustfs_root_password // empty')
-SEAWEEDFS_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.seaweedfs_admin_password // empty')
-GARAGE_ADMIN_TOKEN=$(echo "$SECRETS_JSON" | jq -r '.garage_admin_token // empty')
-GARAGE_RPC_SECRET=$(echo "$SECRETS_JSON" | jq -r '.garage_rpc_secret // empty')
-LAKEFS_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.lakefs_db_password // empty')
-LAKEFS_ENCRYPT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.lakefs_encrypt_secret // empty')
-LAKEFS_ADMIN_ACCESS_KEY=$(echo "$SECRETS_JSON" | jq -r '.lakefs_admin_access_key // empty')
-LAKEFS_ADMIN_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.lakefs_admin_secret_key // empty')
-HETZNER_S3_SERVER=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_server // empty')
-HETZNER_S3_REGION=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_region // empty')
-HETZNER_S3_ACCESS_KEY=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_access_key // empty')
-HETZNER_S3_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_secret_key // empty')
-HETZNER_S3_BUCKET=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_bucket_lakefs // empty')
-HETZNER_S3_BUCKET_GENERAL=$(echo "$SECRETS_JSON" | jq -r '.hetzner_s3_bucket_general // empty')
-EXTERNAL_S3_ENDPOINT=$(echo "$SECRETS_JSON" | jq -r '.external_s3_endpoint // empty')
-EXTERNAL_S3_REGION=$(echo "$SECRETS_JSON" | jq -r '.external_s3_region // empty')
-EXTERNAL_S3_ACCESS_KEY=$(echo "$SECRETS_JSON" | jq -r '.external_s3_access_key // empty')
-EXTERNAL_S3_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.external_s3_secret_key // empty')
-EXTERNAL_S3_BUCKET=$(echo "$SECRETS_JSON" | jq -r '.external_s3_bucket // empty')
-EXTERNAL_S3_LABEL=$(echo "$SECRETS_JSON" | jq -r '.external_s3_label // empty')
-EXTERNAL_S3_LABEL=${EXTERNAL_S3_LABEL:-External Storage}
-EXTERNAL_S3_REGION=${EXTERNAL_S3_REGION:-auto}
-R2_DATA_ENDPOINT=$(echo "$SECRETS_JSON" | jq -r '.r2_data_endpoint // empty')
-R2_DATA_ACCESS_KEY=$(echo "$SECRETS_JSON" | jq -r '.r2_data_access_key // empty')
-R2_DATA_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.r2_data_secret_key // empty')
-R2_DATA_BUCKET=$(echo "$SECRETS_JSON" | jq -r '.r2_data_bucket // empty')
-FILESTASH_ADMIN_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.filestash_admin_password // empty')
-WINDMILL_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.windmill_admin_password // empty')
-WINDMILL_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.windmill_db_password // empty')
-WINDMILL_SUPERADMIN_SECRET=$(echo "$SECRETS_JSON" | jq -r '.windmill_superadmin_secret // empty')
-OPENMETADATA_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.openmetadata_admin_password // empty')
-OPENMETADATA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.openmetadata_db_password // empty')
-OPENMETADATA_AIRFLOW_PASS=$(echo "$SECRETS_JSON" | jq -r '.openmetadata_airflow_password // empty')
-OPENMETADATA_FERNET_KEY=$(echo "$SECRETS_JSON" | jq -r '.openmetadata_fernet_key // empty')
-GITEA_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.gitea_admin_password // empty')
-GITEA_USER_PASS=$(echo "$SECRETS_JSON" | jq -r '.gitea_user_password // empty')
-GITEA_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.gitea_db_password // empty')
-CLICKHOUSE_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.clickhouse_admin_password // empty')
-WIKIJS_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.wikijs_admin_password // empty')
-WIKIJS_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.wikijs_db_password // empty')
-WOODPECKER_AGENT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.woodpecker_agent_secret // empty')
-NOCODB_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_admin_password // empty')
-NOCODB_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.nocodb_db_password // empty')
-NOCODB_JWT_SECRET=$(echo "$SECRETS_JSON" | jq -r '.nocodb_jwt_secret // empty')
-DINKY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dinky_admin_password // empty')
-APPSMITH_ENCRYPTION_PASSWORD=$(echo "$SECRETS_JSON" | jq -r '.appsmith_encryption_password // empty')
-APPSMITH_ENCRYPTION_SALT=$(echo "$SECRETS_JSON" | jq -r '.appsmith_encryption_salt // empty')
-DIFY_ADMIN_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_admin_password // empty')
-DIFY_DB_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_db_password // empty')
-DIFY_REDIS_PASS=$(echo "$SECRETS_JSON" | jq -r '.dify_redis_password // empty')
-DIFY_SECRET_KEY=$(echo "$SECRETS_JSON" | jq -r '.dify_secret_key // empty')
-DIFY_WEAVIATE_API_KEY=$(echo "$SECRETS_JSON" | jq -r '.dify_weaviate_api_key // empty')
-DIFY_SANDBOX_API_KEY=$(echo "$SECRETS_JSON" | jq -r '.dify_sandbox_api_key // empty')
-DIFY_PLUGIN_DAEMON_KEY=$(echo "$SECRETS_JSON" | jq -r '.dify_plugin_daemon_key // empty')
-DIFY_PLUGIN_INNER_API_KEY=$(echo "$SECRETS_JSON" | jq -r '.dify_plugin_inner_api_key // empty')
-DOCKERHUB_USER=$(echo "$SECRETS_JSON" | jq -r '.dockerhub_username // empty')
-DOCKERHUB_TOKEN=$(echo "$SECRETS_JSON" | jq -r '.dockerhub_token // empty')
+# Extract secrets via nexus_deploy.config (Phase 1, #505 Modul 1.3).
+# Replaces the previous 88-line jq pipeline that lifted SECRETS_JSON
+# into bash globals. Same end-state — 88 named bash vars (one per
+# entry in src/nexus_deploy/config.py:_FIELDS) — but the schema lives
+# in Python and gets unit-tested instead of being eyeballed during
+# review. shlex.quote in dump_shell makes the eval injection-safe;
+# the legacy `$()`-capture was vulnerable to backtick / `$()` /
+# `; cmd` payloads in any secret value.
+#
+# Capture-then-eval (NOT `if ! eval "$(...)"; then`): if the python
+# subprocess fails, command-substitution still produces empty stdout
+# and `eval ""` returns 0 — silently masking the failure. The
+# `if ! VAR=$(pipeline)` form propagates the subshell's exit code
+# (with pipefail active per the script's `set -euo pipefail`) so a
+# python crash, missing uv binary, or invalid JSON all abort here.
+# Empty-output check guards the (unlikely but possible) case of a
+# zero-exit but blank rendering.
+if ! RENDERED_SECRETS=$(printf '%s' "$SECRETS_JSON" | uv run --quiet --project "$PROJECT_ROOT" python -m nexus_deploy config dump-shell --stdin); then
+    echo -e "${RED}Error: nexus_deploy.config dump-shell failed${NC}"
+    exit 1
+fi
+if [ -z "$RENDERED_SECRETS" ]; then
+    echo -e "${RED}Error: nexus_deploy.config dump-shell produced empty output${NC}"
+    exit 1
+fi
+eval "$RENDERED_SECRETS"
+unset RENDERED_SECRETS
 
 # Get SSH Service Token for headless authentication
 SSH_TOKEN_JSON=$(cd "$TOFU_DIR" && tofu output -json ssh_service_token 2>/dev/null || echo "{}")
