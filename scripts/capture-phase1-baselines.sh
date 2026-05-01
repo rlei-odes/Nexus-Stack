@@ -73,7 +73,7 @@ echo "→ Running deploy.sh's SECRETS_JSON parser standalone…"
 # below still triggers, and we emit a clean error message instead of
 # the cryptic shell-exit.
 PARSER_VARS=$(
-    { grep -oE '^[A-Z_]+=\$\(echo "\$SECRETS_JSON"' "$REPO_ROOT/scripts/deploy.sh" || true; } \
+    { grep -oE '^[A-Z0-9_]+=\$\(echo "\$SECRETS_JSON"' "$REPO_ROOT/scripts/deploy.sh" || true; } \
         | sed 's/=.*//' | sort -u
 )
 
@@ -99,7 +99,7 @@ trap 'rm -f "$mktemp_script"' EXIT
     # explicitly so they don't trip set -e.
     echo 'set -euo pipefail'
     echo 'SECRETS_JSON=$(cat)'
-    grep -E '^[A-Z_]+=\$\(echo "\$SECRETS_JSON" \| jq' "$REPO_ROOT/scripts/deploy.sh"
+    grep -E '^[A-Z0-9_]+=\$\(echo "\$SECRETS_JSON" \| jq' "$REPO_ROOT/scripts/deploy.sh"
     grep -E '^EXTERNAL_S3_(LABEL|REGION)=\$\{' "$REPO_ROOT/scripts/deploy.sh"
     # Dump only the parser-assigned vars (no ambient env)
     for v in $PARSER_VARS; do

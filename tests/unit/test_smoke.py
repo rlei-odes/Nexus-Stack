@@ -51,12 +51,12 @@ def test_main_version_flag(
 def test_main_unknown_command_returns_2(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unknown subcommand returns exit-code 2 (Phase 0 = no commands yet)."""
+    """Unknown subcommand returns exit-code 2."""
     monkeypatch.setattr(sys, "argv", ["nexus_deploy", "bootstrap"])
     rc = __main__.main()
     captured = capsys.readouterr()
     assert rc == 2
-    assert "no commands implemented yet" in captured.err
+    assert "unknown command" in captured.err
 
 
 def test_cli_main_delegates_to_main_module(
