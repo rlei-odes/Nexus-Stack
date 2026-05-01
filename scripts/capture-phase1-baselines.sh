@@ -59,9 +59,17 @@ echo "  ✓ secrets.json ($(wc -c <"$DEST/secrets.json") bytes)"
 echo "→ Running deploy.sh's SECRETS_JSON parser standalone…"
 
 # Names of every variable the parser assigns. Computed by grepping
-# deploy.sh, so a new field added there is auto-picked-up.
-PARSER_VARS=$(grep -oE '^[A-Z_]+=\$\(echo "\$SECRETS_JSON"' "$REPO_ROOT/scripts/deploy.sh" \
-    | sed 's/=.*//' | sort -u)
+# deploy.sh, so a new field added there is auto-picked-up. Wrapped in
+# `{ grep || true; }` because under `set -euo pipefail`, a zero-match
+# grep exits 1 and would kill the script BEFORE the explicit
+# `count==0` drift-detection check below ever ran. With the wrap the
+# pipeline yields empty stdout + exit 0 on no-match, the count check
+# below still triggers, and we emit a clean error message instead of
+# the cryptic shell-exit.
+PARSER_VARS=$(
+    { grep -oE '^[A-Z_]+=\$\(echo "\$SECRETS_JSON"' "$REPO_ROOT/scripts/deploy.sh" || true; } \
+        | sed 's/=.*//' | sort -u
+)
 
 # Word-count (not line-count: `echo "" | wc -l` is 1 even for empty input).
 # Bail out if the grep pattern matched nothing — that's a deploy.sh refactor
