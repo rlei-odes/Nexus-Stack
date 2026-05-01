@@ -202,13 +202,17 @@ def _secret_sync(args: list[str]) -> int:
     Exit codes (deploy.sh's case-block dispatches):
     - 0: success, OR sync correctly chose not to write (one of the
          two outage gates fired — operator sees a stderr warning,
-         existing file untouched, deploy.sh continues)
+         existing file untouched, deploy.sh continues), OR the remote
+         script produced no parseable RESULT line (treated as a soft
+         no-op: matches deploy.sh's pre-migration `[ -z "$JUP_PUSHED" ]`
+         warn-and-continue branch; the inner script's own stderr is
+         already in the workflow log for diagnosis)
     - 1: partial — file written but at least one folder fetch failed
          (deploy.sh-side: warn-and-continue; the operator can fix the
          offending folder via the Infisical UI without aborting)
     - 2: hard failure — invalid `--stack`, missing required env,
-         transport (ssh) failure, no parseable RESULT line from the
-         remote script, unexpected exception. deploy.sh-side: abort.
+         transport (ssh) failure, unexpected exception. deploy.sh-side:
+         abort.
     """
     stack: str | None = None
     i = 0
@@ -272,21 +276,20 @@ def _secret_sync(args: list[str]) -> int:
         )
         return 2
 
-    # No parseable RESULT line — remote script broke in an unhandled
-    # way. Treat as hard failure (rc=2) so deploy.sh aborts; the script
-    # stdout/stderr is already in the workflow log for diagnosis.
+    # All-zero counters with wrote=False: either the remote script
+    # printed no parseable RESULT line, OR it took the legitimate
+    # jq-missing path (which intentionally emits an all-zero RESULT).
+    # Both are warn-and-continue (rc=0), mirroring deploy.sh's
+    # pre-migration `[ -z "$JUP_PUSHED" ]` branch — the inner script
+    # already printed its own warning to stderr (workflow log).
+    # Distinguishing them would require a dedicated sentinel; not
+    # worth the wire-format churn given both demand the same response.
     if (
         result.pushed == 0
         and result.failed_folders == 0
         and result.succeeded_folders == 0
         and not result.wrote
     ):
-        # Note: this matches the genuine "all-zeros" outcome of an
-        # explicit no-RESULT parse OR the legitimate jq-missing path
-        # (which also emits all-zeros). Both should NOT abort the
-        # deploy; the inner script printed its own warning to stderr.
-        # We rely on the absence of `wrote=1` AND zero-counts as the
-        # signal — and return rc=0 so deploy.sh just continues.
         print(
             f"secret-sync: {stack} produced no usable result (see prior warnings)",
         )

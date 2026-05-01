@@ -460,7 +460,9 @@ def test_run_sync_restart_failure_does_not_alter_result(
     out = "RESULT pushed=5 skipped_name=0 skipped_multi=0 failed=0 collisions=0 succeeded=2 wrote=1"
 
     def failing_cmd(_cmd: str) -> subprocess.CompletedProcess[str]:
-        raise subprocess.CalledProcessError(1, ["ssh"])
+        raise subprocess.CalledProcessError(
+            1, ["ssh"], output="pull failed: image not found", stderr=""
+        )
 
     result = run_sync_for_stack(
         target,
@@ -471,9 +473,14 @@ def test_run_sync_restart_failure_does_not_alter_result(
     )
     assert result.wrote is True
     captured = capsys.readouterr()
-    assert "docker compose up -d jupyter failed" in captured.out
-    # Class name only; no exc.cmd/argv leak
+    # Warning goes to stderr (matches the docstring contract)
+    assert "docker compose up -d jupyter failed" in captured.err
+    assert "rc=1" in captured.err
+    # Captured docker-compose output is forwarded so the operator can debug
+    assert "pull failed: image not found" in captured.err
+    # exc.cmd/argv must NOT leak (defence in depth)
     assert "['ssh']" not in captured.out
+    assert "['ssh']" not in captured.err
 
 
 def test_run_sync_no_result_returns_zero_struct() -> None:

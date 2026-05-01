@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import re
 import shlex
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -217,11 +219,14 @@ def render_remote_script(
     # Differences from the heredoc form:
     #   - Inputs come pre-decoded (shlex-quoted via stdin), no
     #     base64 transit step (R2).
-    #   - Marker strings are interpolated as variables instead of
-    #     literal sed patterns, because sed-pattern-escaping the long
-    #     comment-style markers from Python is fragile. We use grep -F
-    #     + awk to find the marker line numbers and a one-pass cat
-    #     instead.
+    #   - The legacy-block strip uses the same anchored sed range
+    #     delete as deploy.sh (`/^# === BEGIN nexus-secret-sync/,
+    #     /^# === END nexus-secret-sync/d`). The match is on the
+    #     fixed `# === BEGIN/END nexus-secret-sync` prefix only —
+    #     no per-stack interpolation — so no Python-side regex
+    #     escaping is needed. The variable parts of the marker text
+    #     (Jupyter / Marimo wording) sit AFTER the matched prefix
+    #     and only matter for the `printf` that writes the new block.
     #   - The "BEGIN marker" comment text in the new block matches
     #     deploy.sh's wording exactly (target.begin_marker).
     return f"""set -euo pipefail
@@ -386,9 +391,7 @@ def parse_result(stdout: str) -> SyncResult | None:
 # ---------------------------------------------------------------------------
 
 
-# Type alias for runner injection in tests.
-import subprocess  # noqa: E402 — only needed for the type annotation below
-
+# Type aliases for runner injection in tests.
 ScriptRunner = Callable[[str], subprocess.CompletedProcess[str]]
 CommandRunner = Callable[[str], subprocess.CompletedProcess[str]]
 
@@ -453,9 +456,18 @@ def run_sync_for_stack(
         try:
             run_cmd(restart_cmd)
         except subprocess.CalledProcessError as exc:
-            # Class name only (no exc.cmd) — defence in depth: even
-            # though the restart command doesn't carry secrets, never
-            # let exception output reach the workflow log unfiltered.
-            print(f"  ⚠ docker compose up -d {target.name} failed ({type(exc).__name__})")
+            # Forward the captured docker-compose output so the operator
+            # can debug image pulls / compose syntax / network errors —
+            # mirrors deploy.sh:4909 which indented and printed stdout
+            # to stderr. exc.cmd is NOT printed (defence in depth: it
+            # carries the literal argv even though the restart command
+            # doesn't include secrets).
+            sys.stderr.write(
+                f"  ⚠ docker compose up -d {target.name} failed "
+                f"(rc={exc.returncode}) — output follows:\n"
+            )
+            captured = exc.stdout or exc.stderr or ""
+            for line in captured.splitlines():
+                sys.stderr.write(f"      {line}\n")
 
     return result
