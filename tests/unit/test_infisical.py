@@ -497,6 +497,7 @@ def test_bootstrap_runs_ssh_loop_with_token(tmp_path: Path) -> None:
 def test_cli_infisical_bootstrap_requires_project_id_and_token(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Missing required env → rc=2 (hard fail; deploy.sh aborts)."""
     from nexus_deploy.__main__ import main
 
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
@@ -506,7 +507,7 @@ def test_cli_infisical_bootstrap_requires_project_id_and_token(
     monkeypatch.delenv("INFISICAL_TOKEN", raising=False)
     rc = main()
     captured = capsys.readouterr()
-    assert rc == 1
+    assert rc == 2
     assert "PROJECT_ID and INFISICAL_TOKEN" in captured.err
 
 
@@ -522,9 +523,10 @@ def test_cli_infisical_bootstrap_unexpected_arg_returns_2(
     assert "unexpected arg" in captured.err
 
 
-def test_cli_infisical_bootstrap_invalid_json_exits_1(
+def test_cli_infisical_bootstrap_invalid_json_exits_2(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Invalid SECRETS_JSON on stdin → rc=2 (hard fail)."""
     from nexus_deploy.__main__ import main
 
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
@@ -533,7 +535,7 @@ def test_cli_infisical_bootstrap_invalid_json_exits_1(
     monkeypatch.setenv("INFISICAL_TOKEN", "t")
     rc = main()
     captured = capsys.readouterr()
-    assert rc == 1
+    assert rc == 2
     assert "not valid JSON" in captured.err
 
 
@@ -542,18 +544,18 @@ def test_cli_infisical_bootstrap_happy_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """End-to-end CLI exercise with mocked SSH/rsync."""
+    """End-to-end CLI exercise with mocked SSH/rsync — rc=0 on full success."""
     from nexus_deploy.__main__ import main
 
     push_dir = tmp_path / "push"
 
-    def fake_ssh(_cmd: str) -> subprocess.CompletedProcess[str]:
+    def fake_ssh(_script: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="3:0", stderr="")
 
     def fake_rsync(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["rsync"], returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("nexus_deploy._remote.ssh_run", fake_ssh)
+    monkeypatch.setattr("nexus_deploy._remote.ssh_run_script", fake_ssh)
     monkeypatch.setattr("nexus_deploy._remote.rsync_to_remote", fake_rsync)
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
     monkeypatch.setattr(sys, "stdin", _StubStdin('{"admin_username": "u"}'))
@@ -569,21 +571,21 @@ def test_cli_infisical_bootstrap_happy_path(
     assert "failed=0" in captured.out
 
 
-def test_cli_infisical_bootstrap_failed_count_returns_1(
+def test_cli_infisical_bootstrap_partial_failure_returns_1(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Any failed folder push → exit 1 (deploy.sh's `if !` wrap then warns, doesn't abort)."""
+    """API-reported partial failure (folder errors) → rc=1; deploy.sh warns + continues."""
     from nexus_deploy.__main__ import main
 
-    def fake_ssh(_cmd: str) -> subprocess.CompletedProcess[str]:
+    def fake_ssh(_script: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="2:1", stderr="")
 
     def fake_rsync(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["rsync"], returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("nexus_deploy._remote.ssh_run", fake_ssh)
+    monkeypatch.setattr("nexus_deploy._remote.ssh_run_script", fake_ssh)
     monkeypatch.setattr("nexus_deploy._remote.rsync_to_remote", fake_rsync)
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
     monkeypatch.setattr(sys, "stdin", _StubStdin("{}"))
@@ -593,6 +595,38 @@ def test_cli_infisical_bootstrap_failed_count_returns_1(
     rc = main()
     _ = capsys.readouterr()
     assert rc == 1
+
+
+def test_cli_infisical_bootstrap_transport_failure_returns_2(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rsync/ssh transport failure (CalledProcessError, etc.) → rc=2; deploy.sh aborts.
+
+    We must NOT pass through the underlying CalledProcessError because
+    its ``cmd`` attribute carries the full argv — and even though we
+    moved the token to stdin, defence-in-depth: never let
+    bootstrap-internal exceptions surface to the workflow log.
+    """
+    from nexus_deploy.__main__ import main
+
+    def fake_rsync(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(255, ["rsync", "secret-token-leak-attempt"])
+
+    monkeypatch.setattr("nexus_deploy._remote.rsync_to_remote", fake_rsync)
+    monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
+    monkeypatch.setattr(sys, "stdin", _StubStdin("{}"))
+    monkeypatch.setenv("PROJECT_ID", "p")
+    monkeypatch.setenv("INFISICAL_TOKEN", "t")
+    monkeypatch.setenv("PUSH_DIR", str(tmp_path / "push"))
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "transport failure" in captured.err
+    # Argv contents must not surface — the exc.cmd would carry it
+    assert "secret-token-leak-attempt" not in captured.err
+    assert "secret-token-leak-attempt" not in captured.out
 
 
 # ---------------------------------------------------------------------------

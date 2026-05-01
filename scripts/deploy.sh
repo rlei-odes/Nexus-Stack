@@ -2011,7 +2011,21 @@ EOF
         # nexus_deploy's BootstrapEnv treats the empty value as "no
         # ssh folder".
         SSH_KEY_BASE64=$(printf '%s' "${SSH_PRIVATE_KEY_CONTENT:-}" | base64 | tr -d '\n')
-        if ! printf '%s' "$SECRETS_JSON" | \
+        # Capture exit code instead of `if !` so we can distinguish
+        # nexus_deploy's three exit modes:
+        #   0 = success, all folders pushed
+        #   1 = partial — bootstrap completed but some folders reported
+        #       errors. Operator-fixable via the Infisical UI; we warn
+        #       and continue so the rest of the spin-up proceeds.
+        #   2 = hard failure (input validation, rsync/ssh transport,
+        #       missing uv, unexpected exception). Abort the deploy
+        #       — continuing here would push stale Infisical state to
+        #       services that read from it later in the spin-up.
+        # The `|| INFISICAL_RC=$?` form avoids tripping `set -e` on a
+        # non-zero return; the explicit case statement decides what
+        # to do with each code.
+        INFISICAL_RC=0
+        printf '%s' "$SECRETS_JSON" | \
             PROJECT_ID="$PROJECT_ID" \
             INFISICAL_TOKEN="$INFISICAL_TOKEN" \
             INFISICAL_ENV="$INFISICAL_ENV" \
@@ -2025,9 +2039,13 @@ EOF
             WOODPECKER_GITEA_CLIENT="${WOODPECKER_GITEA_CLIENT:-}" \
             WOODPECKER_GITEA_SECRET="${WOODPECKER_GITEA_SECRET:-}" \
             SSH_KEY_BASE64="$SSH_KEY_BASE64" \
-            uv run --quiet --project "$PROJECT_ROOT" python -m nexus_deploy infisical bootstrap; then
-            echo -e "${YELLOW}  ⚠ Infisical bootstrap reported failures (see output above)${NC}"
-        fi
+            uv run --quiet --project "$PROJECT_ROOT" python -m nexus_deploy infisical bootstrap \
+            || INFISICAL_RC=$?
+        case "$INFISICAL_RC" in
+            0) ;;
+            1) echo -e "${YELLOW}  ⚠ Infisical bootstrap had partial push failures (see output above)${NC}" ;;
+            *) echo -e "${RED}  ✗ Infisical bootstrap transport failure (rc=$INFISICAL_RC); aborting${NC}"; exit 1 ;;
+        esac
     fi
     fi  # End of INFISICAL_READY check
 fi

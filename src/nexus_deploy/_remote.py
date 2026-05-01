@@ -20,12 +20,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-# Default subprocess timeouts. The bash side has no timeouts at all,
-# but Python's subprocess is more forgiving about hung remote calls
-# when we add an upper bound. Generous defaults so a slow Hetzner
-# control-plane spin-up (creds rotation, first cold start) doesn't
-# trip them.
-_DEFAULT_TIMEOUT_S = 120
+# No subprocess timeout by default — strict parity with deploy.sh,
+# which never wrapped ssh/rsync calls in `timeout`. A slow Hetzner
+# control-plane spin-up (creds rotation, first cold start, big rsync
+# diff) can legitimately take several minutes; a Python-side cap
+# would convert "slow" into a hard failure with TimeoutExpired even
+# though the underlying op would have completed. Callers that DO
+# want a cap pass `timeout=<seconds>` explicitly.
+_DEFAULT_TIMEOUT_S: float | None = None
 
 
 def ssh_run(
@@ -33,7 +35,7 @@ def ssh_run(
     *,
     host: str = "nexus",
     check: bool = True,
-    timeout: float = _DEFAULT_TIMEOUT_S,
+    timeout: float | None = _DEFAULT_TIMEOUT_S,
     merge_stderr: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a single command on the nexus server via the local ssh-config alias.
@@ -51,6 +53,10 @@ def ssh_run(
     let them flow to the local terminal — long stderr tails on a
     failing curl loop would clutter the deploy log; callers that want
     that should print ``result.stderr`` themselves).
+
+    Note: arguments after ``host`` are passed via argv and visible in
+    ``ps``. For commands containing secret values, prefer
+    :func:`ssh_run_script` which feeds the script over stdin.
     """
     # Don't use `capture_output=True` here: it sets stdout=PIPE+stderr=PIPE
     # internally, and combining it with an explicit `stderr=...` raises
@@ -67,12 +73,45 @@ def ssh_run(
     )
 
 
+def ssh_run_script(
+    script: str,
+    *,
+    host: str = "nexus",
+    check: bool = True,
+    timeout: float | None = _DEFAULT_TIMEOUT_S,
+    merge_stderr: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a bash script on the nexus server via stdin, NOT argv.
+
+    Equivalent to::
+
+        ssh nexus bash -s <<<"<script>"
+
+    Why a separate function from :func:`ssh_run`: when a script
+    contains secret values (Infisical tokens, etc.), passing it via
+    argv exposes the secret to ``ps``, CI argv-logging, and
+    ``CalledProcessError.cmd`` / ``TimeoutExpired.cmd`` exception
+    messages. Feeding the script over stdin keeps it out of the
+    process command line entirely; only ``["ssh", "nexus", "bash",
+    "-s"]`` is visible.
+    """
+    return subprocess.run(
+        ["ssh", host, "bash", "-s"],
+        input=script,
+        check=check,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+    )
+
+
 def rsync_to_remote(
     local: Path,
     remote: str,
     *,
     delete: bool = False,
-    timeout: float = _DEFAULT_TIMEOUT_S,
+    timeout: float | None = _DEFAULT_TIMEOUT_S,
 ) -> subprocess.CompletedProcess[str]:
     """Push a local directory to the nexus server via rsync.
 

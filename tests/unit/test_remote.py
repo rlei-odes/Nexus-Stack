@@ -127,6 +127,25 @@ def test_ssh_run_merge_stderr_false_keeps_streams_separate(
     assert captured["kwargs"]["stderr"] == subprocess.PIPE  # NOT STDOUT
 
 
+def test_ssh_run_script_invokes_bash_s_with_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``ssh_run_script`` runs ``ssh nexus bash -s`` with the script on stdin (NOT argv)."""
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = args[0]
+        captured["input"] = kwargs.get("input")
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("nexus_deploy._remote.subprocess.run", fake_run)
+    secret_payload = "TOKEN=top-secret-do-not-leak\necho hi"
+    _remote.ssh_run_script(secret_payload)
+    # The script is on stdin, NOT argv — argv contains only the bash invocation
+    assert captured["argv"] == ["ssh", "nexus", "bash", "-s"]
+    assert captured["input"] == secret_payload
+    # And of course the secret must be on stdin and ONLY on stdin
+    assert "top-secret-do-not-leak" not in " ".join(captured["argv"])
+
+
 def test_ssh_run_actually_invokes_subprocess(tmp_path: Path) -> None:
     """End-to-end against a fake `ssh` on PATH — catches subprocess.run misuse.
 

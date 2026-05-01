@@ -767,8 +767,15 @@ echo "$OK:$FAIL"
         server-side ``/tmp/infisical-push`` is removed by the curl
         loop's last step. No secrets-at-rest on either end after a
         bootstrap call returns.
+
+        The remote bash script is fed to ``ssh nexus bash -s`` via
+        stdin (:func:`_remote.ssh_run_script`), NOT as an argv. The
+        script embeds the Infisical token (shlex-quoted), and stdin
+        keeps it out of ``ps``, CI argv-logging, and any
+        ``CalledProcessError`` / ``TimeoutExpired`` exception messages
+        that would otherwise dump the full argv.
         """
-        ssh = ssh_runner or (lambda cmd: _remote.ssh_run(cmd))
+        ssh = ssh_runner or (lambda script: _remote.ssh_run_script(script))
         rsync = rsync_runner or (
             lambda local, remote: _remote.rsync_to_remote(local, remote, delete=True)
         )

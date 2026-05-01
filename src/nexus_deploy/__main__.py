@@ -9,6 +9,7 @@ Currently:
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -91,6 +92,16 @@ def _infisical_bootstrap(args: list[str]) -> int:
     Required env: ``PROJECT_ID``, ``INFISICAL_TOKEN``.
     Optional env: ``INFISICAL_ENV`` (default ``dev``), the BootstrapEnv
     fields above, ``PUSH_DIR`` (default ``/tmp/infisical-push``).
+
+    Exit codes (deploy.sh distinguishes the three so it can decide
+    whether to abort):
+    - 0: success, all folders pushed
+    - 1: bootstrap completed but some folders reported errors
+         (deploy.sh-side: warn-and-continue; the operator can fix
+         partial pushes via the UI without aborting the rest of the
+         spin-up)
+    - 2: hard failure — input validation, transport (rsync/ssh),
+         unexpected exception. deploy.sh-side: abort.
     """
     if args:
         print(f"infisical bootstrap: unexpected arg {args[0]!r}", file=sys.stderr)
@@ -102,12 +113,12 @@ def _infisical_bootstrap(args: list[str]) -> int:
             "infisical bootstrap: PROJECT_ID and INFISICAL_TOKEN env vars required",
             file=sys.stderr,
         )
-        return 1
+        return 2
     try:
         config = NexusConfig.from_secrets_json(sys.stdin.read())
     except ConfigError as exc:
         print(f"infisical bootstrap: {exc}", file=sys.stderr)
-        return 1
+        return 2
     bootstrap_env = BootstrapEnv(
         domain=os.environ.get("DOMAIN") or None,
         admin_email=os.environ.get("ADMIN_EMAIL") or None,
@@ -128,7 +139,19 @@ def _infisical_bootstrap(args: list[str]) -> int:
         push_dir=push_dir,
     )
     folders = compute_folders(config, bootstrap_env)
-    result = client.bootstrap(folders)
+    try:
+        result = client.bootstrap(folders)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        # Hard failure: rsync/ssh exited non-zero, hit the timeout, or
+        # the binary wasn't on PATH. deploy.sh sees rc=2 and aborts.
+        # Avoid printing exc.cmd because TimeoutExpired/CalledProcessError
+        # carry the full argv — we don't want the token (if it ever
+        # leaked into argv via a future bug) to land in the workflow log.
+        print(
+            f"infisical bootstrap: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
     print(
         f"infisical bootstrap: built={result.folders_built} pushed={result.pushed} failed={result.failed}",
     )
