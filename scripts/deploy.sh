@@ -2363,6 +2363,13 @@ EOF
                     OK=\$((OK+1))
                 fi
             done
+            # === BASELINE CAPTURE (#505 phase-1) — DO NOT MERGE TO MAIN ===
+            # Snapshot build_folder JSON payloads so the Python rewrite in
+            # src/nexus_deploy/infisical.py can be byte-compared.
+            # scripts/capture-phase1-baselines.sh scp's this dir to local
+            # after spin-up completes; this branch is throwaway-only.
+            mkdir -p /tmp/nexus-baselines && cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline 2>/dev/null || true
+            # === END BASELINE CAPTURE ===
             rm -rf /tmp/infisical-push
             echo \"\$OK:\$FAIL\"
         " 2>&1 || echo "0:0")
