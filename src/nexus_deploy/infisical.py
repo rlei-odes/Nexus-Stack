@@ -725,6 +725,16 @@ class InfisicalClient:
         # the captured TOKEN if a token happens to start with one.
         # Infisical tokens are alphanumeric in practice, but the
         # printf form costs nothing and rules out the edge case.
+        # FAIL-detection: legacy bash counted a PATCH as failed only if
+        # the response body contained the literal substring '"error"'.
+        # That misclassified transport failures (curl: (7) Failed to
+        # connect, DNS errors, timeouts) as OK because curl's stderr
+        # message doesn't contain the JSON-quoted "error" token.
+        # Phase-1 strict-parity would keep that legacy bug; we deviate
+        # here because the fix is minimal (check curl's exit status)
+        # and STRICTLY MORE CORRECT — transport failures now count as
+        # FAIL, never as silent OK. The output format ("OK:FAIL") is
+        # unchanged, so the deploy.sh-side parsing is unaffected.
         return f"""
 TOKEN=$(cat {_REMOTE_TOKEN_FALLBACK_FILE} 2>/dev/null || printf '%s' {token_quoted})
 if [ -z "$TOKEN" ]; then echo '0:0'; exit 0; fi
@@ -740,7 +750,8 @@ for f in {_REMOTE_PUSH_DIR}/s-*.json; do
         -H "Authorization: Bearer $TOKEN" \\
         -H 'Content-Type: application/json' \\
         -d @"$f" 2>&1)
-    if echo "$RESULT" | grep -q '"error"'; then
+    CURL_RC=$?
+    if [ "$CURL_RC" -ne 0 ] || echo "$RESULT" | grep -q '"error"'; then
         FAIL=$((FAIL+1))
     else
         OK=$((OK+1))
@@ -816,7 +827,10 @@ echo "$OK:$FAIL"
                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                     0o600,
                 )
-                with os.fdopen(fd, "w") as f:
+                # Explicit encoding + newline so the bytes-on-disk match
+                # across macOS / Linux / CI runners regardless of locale.
+                # Same encoding the snapshot tests assume.
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                     f.write(body)
 
             # 2. rsync to server.

@@ -431,6 +431,22 @@ def test_bootstrap_cleanup_preserves_unrelated_files(tmp_path: Path) -> None:
     assert (push_dir / "operator-notes.txt").exists()
 
 
+def test_remote_loop_counts_curl_transport_failure_as_fail() -> None:
+    """Legacy bash miscounted curl transport failures (rc != 0) as OK.
+
+    The current loop checks ``CURL_RC`` after each PATCH and treats any
+    non-zero exit as FAIL — fixing a long-standing legacy bug while
+    keeping the OK:FAIL output format unchanged.
+    """
+    client = InfisicalClient("p", "dev", "tok")
+    loop = client._build_remote_loop()
+    # The relevant guard
+    assert "CURL_RC=$?" in loop
+    assert '[ "$CURL_RC" -ne 0 ]' in loop
+    # And the original error-substring check is still part of the OR
+    assert "grep -q '\"error\"'" in loop
+
+
 def test_remote_loop_uses_printf_not_echo_for_token() -> None:
     """`echo` would mangle tokens starting with `-n`/`-e`/`-E`. printf doesn't."""
     client = InfisicalClient("p", "dev", "tok-value")
