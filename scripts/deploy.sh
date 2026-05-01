@@ -1996,7 +1996,7 @@ EOF
     # ==========================================================================
     # Push secrets to Infisical (#505 Modul 1.1: nexus_deploy.infisical)
     # ==========================================================================
-    # The legacy build_folder helper + 41 callers + rsync + curl-loop
+    # The legacy build_folder helper + 39 callers + rsync + curl-loop
     # push (~395 lines of bash) lived here. Phase-1 strangler-fig:
     # deploy.sh now pipes SECRETS_JSON into `python -m nexus_deploy
     # infisical bootstrap`, which builds the same JSON payloads,
@@ -2006,11 +2006,18 @@ EOF
     if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
         echo "  Pushing secrets to Infisical (via nexus_deploy)..."
         INFISICAL_ENV="${INFISICAL_ENV:-dev}"
-        # SSH_KEY_BASE64 is the same base64-encoded key the legacy
-        # build_folder "ssh" call used. Empty when no key is configured;
-        # nexus_deploy's BootstrapEnv treats the empty value as "no
-        # ssh folder".
-        SSH_KEY_BASE64=$(printf '%s' "${SSH_PRIVATE_KEY_CONTENT:-}" | base64 | tr -d '\n')
+        # SSH_KEY_BASE64 must match the legacy `build_folder "ssh"`
+        # encoding byte-for-byte: ``echo "$X" | base64`` (NOT
+        # ``printf '%s'``). echo appends a trailing newline before
+        # the pipe, so the legacy bytes are base64(<key>+\n);
+        # printf '%s' would encode the key without that newline,
+        # producing a different (shorter) SSH_PRIVATE_KEY_BASE64
+        # value pushed to Infisical. The trailing-newline difference
+        # would silently change what consumers like jupyter/marimo
+        # see when they decode the key. Empty when no key is
+        # configured; nexus_deploy's BootstrapEnv treats the empty
+        # value as "no ssh folder".
+        SSH_KEY_BASE64=$(echo "${SSH_PRIVATE_KEY_CONTENT:-}" | base64 | tr -d '\n')
         # Capture exit code instead of `if !` so we can distinguish
         # nexus_deploy's three exit modes:
         #   0 = success, all folders pushed

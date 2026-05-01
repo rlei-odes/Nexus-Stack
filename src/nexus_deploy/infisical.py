@@ -1,6 +1,6 @@
 """Infisical bootstrap — folder creation + per-folder secret upsert.
 
-Replaces deploy.sh:1996-2390 (the ``build_folder`` helper plus its 41
+Replaces deploy.sh:1996-2390 (the ``build_folder`` helper plus its 39
 callers plus the rsync + ssh + curl-loop push, ~395 lines of bash) with
 typed Python. The migration is the strangler-fig of #505 Modul 1.1.
 
@@ -147,7 +147,7 @@ def _filter_empty(items: Mapping[str, str | None]) -> dict[str, str]:
 
 
 def compute_folders(config: NexusConfig, env: BootstrapEnv) -> list[FolderSpec]:
-    """Mirror of deploy.sh:2042-2335 — 41 ``build_folder`` calls in source order.
+    """Mirror of deploy.sh:2042-2335 — 39 ``build_folder`` calls in source order.
 
     Conditional folders (R2, Hetzner-S3, External-S3, SSH, Woodpecker
     OAuth) match the bash gates exactly so the resulting Infisical

@@ -79,7 +79,7 @@ def _infisical_bootstrap(args: list[str]) -> int:
     fields (DOMAIN, ADMIN_EMAIL, GITEA_*, OM_PRINCIPAL_DOMAIN,
     WOODPECKER_*, SSH_KEY_BASE64) from environment variables,
     plus PROJECT_ID + INFISICAL_TOKEN + INFISICAL_ENV from environment
-    variables. Computes the 41 folders, writes payloads, runs the
+    variables. Computes the 39 folders, writes payloads, runs the
     server-side curl loop. Mirrors deploy.sh:1996-2390.
 
     Note on env-var naming: the BootstrapEnv field is
@@ -163,9 +163,12 @@ def _infisical_bootstrap(args: list[str]) -> int:
         # ``repr(exc)`` can carry attribute values that might include
         # secret-bearing fields from a NexusConfig or BootstrapEnv
         # pydantic ValidationError.
+        # Class name only (no str/repr): exception args may carry
+        # secret-bearing fields from a NexusConfig/BootstrapEnv
+        # ValidationError. Operators reproducing locally without
+        # secret data will see the full traceback there.
         print(
-            f"infisical bootstrap: unexpected error ({type(exc).__name__}); "
-            "see traceback above if any",
+            f"infisical bootstrap: unexpected error ({type(exc).__name__})",
             file=sys.stderr,
         )
         return 2
