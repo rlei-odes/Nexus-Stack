@@ -718,8 +718,14 @@ class InfisicalClient:
         # the heredoc through a layer of bash before ssh saw it. We
         # send raw text directly to ssh, so the inner `$f` expands at
         # the remote bash, which is what we want.
+        #
+        # `printf '%s'` instead of `echo`: bash's built-in `echo` can
+        # eat a leading `-n` / `-e` / `-E` as an option flag, blanking
+        # the captured TOKEN if a token happens to start with one.
+        # Infisical tokens are alphanumeric in practice, but the
+        # printf form costs nothing and rules out the edge case.
         return f"""
-TOKEN=$(cat {_REMOTE_TOKEN_FALLBACK_FILE} 2>/dev/null || echo {token_quoted})
+TOKEN=$(cat {_REMOTE_TOKEN_FALLBACK_FILE} 2>/dev/null || printf '%s' {token_quoted})
 if [ -z "$TOKEN" ]; then echo '0:0'; exit 0; fi
 OK=0; FAIL=0
 for f in {_REMOTE_PUSH_DIR}/f-*.json; do
@@ -754,6 +760,13 @@ echo "$OK:$FAIL"
 
         Default runners come from :mod:`nexus_deploy._remote`; tests
         override both via the kwargs.
+
+        Local payload files (which contain secret values) are removed
+        in a ``finally`` block whether the rsync/ssh succeeds, fails,
+        or raises. Mirrors deploy.sh:2370 (`rm -rf "$PUSH_DIR"`); the
+        server-side ``/tmp/infisical-push`` is removed by the curl
+        loop's last step. No secrets-at-rest on either end after a
+        bootstrap call returns.
         """
         ssh = ssh_runner or (lambda cmd: _remote.ssh_run(cmd))
         rsync = rsync_runner or (
@@ -770,23 +783,31 @@ echo "$OK:$FAIL"
         for filename, body in self.encode_payloads(folders).items():
             (self.push_dir / filename).write_text(body)
 
-        # 2. rsync to server.
-        rsync(self.push_dir, f"nexus:{_REMOTE_PUSH_DIR}/")
-
-        # 3. Run the server-side curl loop.
-        completed = ssh(self._build_remote_loop())
-
-        # 4. Parse the final `OK:FAIL` line. The server's stdout may
-        #    include earlier echoes (warnings from the baseline-capture
-        #    step in deploy.sh); take the last line.
-        last_line = completed.stdout.strip().splitlines()[-1] if completed.stdout else "0:0"
         try:
-            ok_str, fail_str = last_line.split(":", 1)
-            pushed = int(ok_str)
-            failed = int(fail_str)
-        except (ValueError, IndexError):
-            # Unparseable output is itself a failure signal.
-            pushed = 0
-            failed = len(folders)
+            # 2. rsync to server.
+            rsync(self.push_dir, f"nexus:{_REMOTE_PUSH_DIR}/")
 
-        return BootstrapResult(folders_built=len(folders), pushed=pushed, failed=failed)
+            # 3. Run the server-side curl loop.
+            completed = ssh(self._build_remote_loop())
+
+            # 4. Parse the final `OK:FAIL` line. The server's stdout
+            #    may include earlier echoes (warnings from the
+            #    baseline-capture step in deploy.sh); take the last line.
+            last_line = completed.stdout.strip().splitlines()[-1] if completed.stdout else "0:0"
+            try:
+                ok_str, fail_str = last_line.split(":", 1)
+                pushed = int(ok_str)
+                failed = int(fail_str)
+            except (ValueError, IndexError):
+                # Unparseable output is itself a failure signal.
+                pushed = 0
+                failed = len(folders)
+
+            return BootstrapResult(folders_built=len(folders), pushed=pushed, failed=failed)
+        finally:
+            # Best-effort: secret-bearing payloads must not survive a
+            # bootstrap call (success OR failure). We delete only the
+            # f-/s-*.json files we wrote, not the directory itself —
+            # the dir may pre-exist with operator state we don't own.
+            for payload in self.push_dir.glob("[fs]-*.json"):
+                payload.unlink(missing_ok=True)

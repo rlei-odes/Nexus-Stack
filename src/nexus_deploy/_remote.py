@@ -34,19 +34,23 @@ def ssh_run(
     host: str = "nexus",
     check: bool = True,
     timeout: float = _DEFAULT_TIMEOUT_S,
-    capture_stderr: bool = True,
+    merge_stderr: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a single command on the nexus server via the local ssh-config alias.
 
     Equivalent to::
 
-        ssh nexus "<cmd>"
+        ssh nexus "<cmd>"        # merge_stderr=True (default)
+        ssh nexus "<cmd>" 2>&1   # bash equivalent of the default
 
-    Stderr is captured by default and combined with stdout in the
-    returned ``CompletedProcess`` for parity with deploy.sh's
-    ``ssh nexus "..." 2>&1`` pattern. Set ``capture_stderr=False`` when
-    you want stderr to flow through to the local terminal (useful for
-    interactive ops; rare in this codebase).
+    With ``merge_stderr=True`` (default) stderr is folded into stdout
+    in the returned ``CompletedProcess`` — parity with deploy.sh's
+    ``ssh nexus "..." 2>&1`` pattern. With ``merge_stderr=False``
+    stdout and stderr are captured into separate fields on the
+    CompletedProcess. Either way the streams are captured (we don't
+    let them flow to the local terminal — long stderr tails on a
+    failing curl loop would clutter the deploy log; callers that want
+    that should print ``result.stderr`` themselves).
     """
     # Don't use `capture_output=True` here: it sets stdout=PIPE+stderr=PIPE
     # internally, and combining it with an explicit `stderr=...` raises
@@ -57,7 +61,7 @@ def ssh_run(
         ["ssh", host, cmd],
         check=check,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT if capture_stderr else subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
         text=True,
         timeout=timeout,
     )

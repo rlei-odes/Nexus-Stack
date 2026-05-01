@@ -111,6 +111,22 @@ def test_rsync_to_remote_delete_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--delete" in captured["args"]
 
 
+def test_ssh_run_merge_stderr_false_keeps_streams_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``merge_stderr=False`` → stderr=PIPE (not STDOUT), stdout still captured."""
+    captured: dict[str, Any] = {}
+
+    def fake_run(*_args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("nexus_deploy._remote.subprocess.run", fake_run)
+    _remote.ssh_run("foo", merge_stderr=False)
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.PIPE  # NOT STDOUT
+
+
 def test_ssh_run_actually_invokes_subprocess(tmp_path: Path) -> None:
     """End-to-end against a fake `ssh` on PATH — catches subprocess.run misuse.
 
@@ -133,7 +149,7 @@ def test_ssh_run_actually_invokes_subprocess(tmp_path: Path) -> None:
     finally:
         os.environ["PATH"] = old_path
     assert result.returncode == 0
-    # capture_stderr=True (default) merges stderr into stdout
+    # merge_stderr=True (default) merges stderr into stdout
     assert "stdout-line" in result.stdout
     assert "err-line" in result.stdout
 

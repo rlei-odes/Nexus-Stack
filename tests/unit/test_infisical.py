@@ -327,16 +327,83 @@ def _ok_rsync() -> Any:
     return runner
 
 
-def test_bootstrap_writes_payloads(tmp_path: Path) -> None:
-    """bootstrap() materialises both f-NAME.json and s-NAME.json per folder."""
+def test_bootstrap_removes_local_payloads_on_success(tmp_path: Path) -> None:
+    """After a successful bootstrap, the local f-/s-*.json files are gone.
+
+    Mirrors deploy.sh's ``rm -rf "$PUSH_DIR"`` cleanup. Files contain
+    secret values; leaving them on the runner is a secrets-at-rest
+    leak.
+    """
+    push_dir = tmp_path / "push"
+    client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
+    folders = [FolderSpec("kestra", {"K": "v"})]
+    client.bootstrap(folders, ssh_runner=_ok_ssh(), rsync_runner=_ok_rsync())
+    assert list(push_dir.glob("[fs]-*.json")) == []
+
+
+def test_bootstrap_removes_local_payloads_on_failure(tmp_path: Path) -> None:
+    """Cleanup runs in `finally` — even when ssh raises, payloads are gone."""
+    push_dir = tmp_path / "push"
+    client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
+
+    def failing_ssh(_cmd: str) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(1, ["ssh"])
+
+    folders = [FolderSpec("kestra", {"K": "v"})]
+    with pytest.raises(subprocess.CalledProcessError):
+        client.bootstrap(folders, ssh_runner=failing_ssh, rsync_runner=_ok_rsync())
+    assert list(push_dir.glob("[fs]-*.json")) == []
+
+
+def test_bootstrap_cleanup_preserves_unrelated_files(tmp_path: Path) -> None:
+    """Only f-*.json + s-*.json get removed; unrelated files stay."""
+    push_dir = tmp_path / "push"
+    push_dir.mkdir()
+    (push_dir / "operator-notes.txt").write_text("keep me")
+    client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
+    client.bootstrap(
+        [FolderSpec("kestra", {"K": "v"})],
+        ssh_runner=_ok_ssh(),
+        rsync_runner=_ok_rsync(),
+    )
+    assert (push_dir / "operator-notes.txt").exists()
+
+
+def test_remote_loop_uses_printf_not_echo_for_token() -> None:
+    """`echo` would mangle tokens starting with `-n`/`-e`/`-E`. printf doesn't."""
+    client = InfisicalClient("p", "dev", "tok-value")
+    loop = client._build_remote_loop()
+    # Token comes via printf, never via echo
+    assert "printf '%s' " in loop
+    # Specifically, the fallback line uses printf
+    fallback_line = next(line for line in loop.splitlines() if "TOKEN=$(cat" in line)
+    assert "echo " not in fallback_line
+
+
+def test_bootstrap_writes_payloads_before_rsync(tmp_path: Path) -> None:
+    """bootstrap() materialises both f-NAME.json and s-NAME.json per folder.
+
+    Files are deleted in the finally block (secrets-at-rest cleanup),
+    so this test inspects the push_dir state INSIDE the mocked rsync
+    callback — the moment rsync would see them on a real run.
+    """
     push_dir = tmp_path / "push"
     client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
     folders = [FolderSpec("kestra", {"K": "v"}), FolderSpec("postgres", {"P": "1"})]
-    client.bootstrap(folders, ssh_runner=_ok_ssh(), rsync_runner=_ok_rsync())
-    assert (push_dir / "f-kestra.json").is_file()
-    assert (push_dir / "s-kestra.json").is_file()
-    assert (push_dir / "f-postgres.json").is_file()
-    assert (push_dir / "s-postgres.json").is_file()
+
+    seen: dict[str, list[str]] = {"files": []}
+
+    def inspect_rsync(local: Path, _remote: str) -> subprocess.CompletedProcess[str]:
+        seen["files"] = sorted(p.name for p in local.glob("*.json"))
+        return subprocess.CompletedProcess(args=["rsync"], returncode=0, stdout="", stderr="")
+
+    client.bootstrap(folders, ssh_runner=_ok_ssh(), rsync_runner=inspect_rsync)
+    assert seen["files"] == [
+        "f-kestra.json",
+        "f-postgres.json",
+        "s-kestra.json",
+        "s-postgres.json",
+    ]
 
 
 def test_bootstrap_clears_stale_payloads(tmp_path: Path) -> None:
