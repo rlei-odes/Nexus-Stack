@@ -261,17 +261,25 @@ class NexusConfig(BaseModel):
         ``None`` and :meth:`dump_shell` emits the per-field defaults
         from ``_FIELDS`` — which is exactly what deploy.sh does today.
         """
+        # ConfigError messages do NOT include the underlying exception's
+        # `str(exc)` even though Python lets us. pydantic ValidationError's
+        # default repr embeds the offending input values, and
+        # JSONDecodeError can include a snippet of the raw input near the
+        # parse failure — both can carry secret bytes from SECRETS_JSON.
+        # The original exception is still available via `__cause__` when
+        # operators reproduce locally with a debugger; the printed CLI
+        # error stays free of raw input.
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ConfigError(f"SECRETS_JSON is not valid JSON: {exc}") from exc
+            raise ConfigError("SECRETS_JSON is not valid JSON") from exc
         if not isinstance(payload, dict):
             raise ConfigError(f"SECRETS_JSON must be a JSON object, got {type(payload).__name__}")
         try:
             return cls.model_validate(payload)
         except ValidationError as exc:  # pragma: no cover — every field is Optional[str]
             # Reachable only if a future field gains stricter validation.
-            raise ConfigError(f"SECRETS_JSON failed validation: {exc}") from exc
+            raise ConfigError("SECRETS_JSON failed validation") from exc
 
     @classmethod
     def from_tofu_output(cls, tofu_dir: Path = Path("tofu/stack")) -> NexusConfig:

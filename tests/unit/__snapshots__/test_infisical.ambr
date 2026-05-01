@@ -1,0 +1,198 @@
+# serializer version: 1
+# name: test_compute_folders_full_snapshot
+  dict({
+    'appsmith': dict({
+      'APPSMITH_ENCRYPTION_PASSWORD': 'appsmith_encryption_password-VALUE',
+      'APPSMITH_ENCRYPTION_SALT': 'appsmith_encryption_salt-VALUE',
+    }),
+    'clickhouse': dict({
+      'CLICKHOUSE_PASSWORD': 'clickhouse_admin_password-VALUE',
+      'CLICKHOUSE_USERNAME': 'nexus-clickhouse',
+    }),
+    'cloudbeaver': dict({
+      'CLOUDBEAVER_PASSWORD': 'cloudbeaver_admin_password-VALUE',
+      'CLOUDBEAVER_USERNAME': 'nexus-cloudbeaver',
+    }),
+    'config': dict({
+      'ADMIN_EMAIL': 'admin@snapshot.test',
+      'ADMIN_USERNAME': 'nexus-test-user',
+      'DOMAIN': 'snapshot.test',
+    }),
+    'dagster': dict({
+      'DAGSTER_DB_PASSWORD': 'dagster_db_password-VALUE',
+    }),
+    'dify': dict({
+      'DIFY_DB_PASSWORD': 'dify_db_password-VALUE',
+      'DIFY_PASSWORD': 'dify_admin_password-VALUE',
+      'DIFY_PLUGIN_DAEMON_KEY': 'dify_plugin_daemon_key-VALUE',
+      'DIFY_PLUGIN_INNER_API_KEY': 'dify_plugin_inner_api_key-VALUE',
+      'DIFY_REDIS_PASSWORD': 'dify_redis_password-VALUE',
+      'DIFY_SANDBOX_API_KEY': 'dify_sandbox_api_key-VALUE',
+      'DIFY_SECRET_KEY': 'dify_secret_key-VALUE',
+      'DIFY_USERNAME': 'admin@snapshot.test',
+      'DIFY_WEAVIATE_API_KEY': 'dify_weaviate_api_key-VALUE',
+    }),
+    'dinky': dict({
+      'DINKY_PASSWORD': 'dinky_admin_password-VALUE',
+      'DINKY_USERNAME': 'admin',
+    }),
+    'external-s3': dict({
+      'EXTERNAL_S3_ACCESS_KEY': 'external_s3_access_key-VALUE',
+      'EXTERNAL_S3_BUCKET': 'external_s3_bucket-VALUE',
+      'EXTERNAL_S3_ENDPOINT': 'external_s3_endpoint-VALUE',
+      'EXTERNAL_S3_LABEL': 'external_s3_label-VALUE',
+      'EXTERNAL_S3_REGION': 'external_s3_region-VALUE',
+      'EXTERNAL_S3_SECRET_KEY': 'external_s3_secret_key-VALUE',
+    }),
+    'filestash': dict({
+      'FILESTASH_ADMIN_PASSWORD': 'filestash_admin_password-VALUE',
+      'FILESTASH_S3_BUCKET': 'hetzner_s3_bucket_general-VALUE',
+    }),
+    'garage': dict({
+      'GARAGE_ADMIN_TOKEN': 'garage_admin_token-VALUE',
+    }),
+    'gitea': dict({
+      'GITEA_ADMIN_PASSWORD': 'with"double"quotes',
+      'GITEA_ADMIN_USERNAME': 'nexus-test-user',
+      'GITEA_DB_PASSWORD': 'gitea_db_password-VALUE',
+      'GITEA_REPO_URL': 'https://git.snapshot.test/snapshot-org/snapshot-repo.git',
+      'GITEA_USER_PASSWORD': 'gitea_user_password-VALUE',
+      'GITEA_USER_USERNAME': 'snapshot-user',
+    }),
+    'grafana': dict({
+      'GRAFANA_PASSWORD': 'grafana_admin_password-VALUE',
+      'GRAFANA_USERNAME': 'nexus-test-user',
+    }),
+    'hetzner-s3': dict({
+      'HETZNER_S3_ACCESS_KEY': 'hetzner_s3_access_key-VALUE',
+      'HETZNER_S3_BUCKET': 'hetzner_s3_bucket_general-VALUE',
+      'HETZNER_S3_BUCKET_GENERAL': 'hetzner_s3_bucket_general-VALUE',
+      'HETZNER_S3_BUCKET_LAKEFS': 'hetzner_s3_bucket_lakefs-VALUE',
+      'HETZNER_S3_BUCKET_PGDUCKLAKE': 'hetzner_s3_bucket_pgducklake-VALUE',
+      'HETZNER_S3_ENDPOINT': 'https://hetzner_s3_server-VALUE',
+      'HETZNER_S3_REGION': 'hetzner_s3_region-VALUE',
+      'HETZNER_S3_SECRET_KEY': 'hetzner_s3_secret_key-VALUE',
+    }),
+    'infisical': dict({
+      'INFISICAL_PASSWORD': 'infisical_admin_password-VALUE',
+      'INFISICAL_USERNAME': 'admin@snapshot.test',
+    }),
+    'kestra': dict({
+      'KESTRA_PASSWORD': 'has spaces and\trabs',
+      'KESTRA_USERNAME': 'admin@snapshot.test',
+    }),
+    'lakefs': dict({
+      'LAKEFS_ACCESS_KEY_ID': 'lakefs_admin_access_key-VALUE',
+      'LAKEFS_DB_PASSWORD': 'lakefs_db_password-VALUE',
+      'LAKEFS_SECRET_ACCESS_KEY': 'lakefs_admin_secret_key-VALUE',
+    }),
+    'mage': dict({
+      'MAGE_PASSWORD': 'mage_admin_password-VALUE',
+      'MAGE_USERNAME': 'user@snapshot.test',
+    }),
+    'meltano': dict({
+      'MELTANO_DB_PASSWORD': 'meltano_db_password-VALUE',
+    }),
+    'metabase': dict({
+      'METABASE_PASSWORD': 'metabase_admin_password-VALUE',
+      'METABASE_USERNAME': 'admin@snapshot.test',
+    }),
+    'minio': dict({
+      'MINIO_ROOT_PASSWORD': 'minio_root_password-VALUE',
+      'MINIO_ROOT_USER': 'nexus-minio',
+    }),
+    'n8n': dict({
+      'N8N_PASSWORD': 'n8n_admin_password-VALUE',
+      'N8N_USERNAME': 'admin@snapshot.test',
+    }),
+    'nocodb': dict({
+      'NOCODB_DB_PASSWORD': 'nocodb_db_password-VALUE',
+      'NOCODB_JWT_SECRET': 'nocodb_jwt_secret-VALUE',
+      'NOCODB_PASSWORD': 'nocodb_admin_password-VALUE',
+      'NOCODB_USERNAME': 'admin@snapshot.test',
+    }),
+    'openmetadata': dict({
+      'OPENMETADATA_DB_PASSWORD': 'openmetadata_db_password-VALUE',
+      'OPENMETADATA_PASSWORD': 'openmetadata_admin_password-VALUE',
+      'OPENMETADATA_USERNAME': 'admin@snapshot.test',
+    }),
+    'pg-ducklake': dict({
+      'PG_DUCKLAKE_DATABASE': 'ducklake',
+      'PG_DUCKLAKE_PASSWORD': 'pgducklake_password-VALUE',
+      'PG_DUCKLAKE_S3_BUCKET': 'hetzner_s3_bucket_pgducklake-VALUE',
+      'PG_DUCKLAKE_USERNAME': 'nexus-pgducklake',
+    }),
+    'pgadmin': dict({
+      'PGADMIN_PASSWORD': 'pgadmin_password-VALUE',
+      'PGADMIN_USERNAME': 'admin@snapshot.test',
+    }),
+    'portainer': dict({
+      'PORTAINER_PASSWORD': 'portainer_admin_password-VALUE',
+      'PORTAINER_USERNAME': 'nexus-test-user',
+    }),
+    'postgres': dict({
+      'POSTGRES_PASSWORD': 'postgres_password-VALUE',
+      'POSTGRES_USERNAME': 'nexus-postgres',
+    }),
+    'prefect': dict({
+      'PREFECT_DB_PASSWORD': 'prefect_db_password-VALUE',
+    }),
+    'r2-datalake': dict({
+      'R2_ACCESS_KEY': 'r2_data_access_key-VALUE',
+      'R2_BUCKET': 'r2_data_bucket-VALUE',
+      'R2_ENDPOINT': 'r2_data_endpoint-VALUE',
+      'R2_SECRET_KEY': 'r2_data_secret_key-VALUE',
+    }),
+    'redpanda': dict({
+      'REDPANDA_ADMIN_PUBLIC_URL': 'redpanda-admin.snapshot.test:9644',
+      'REDPANDA_CONNECT_PUBLIC_URL': 'redpanda-connect-api.snapshot.test:4195',
+      'REDPANDA_KAFKA_PUBLIC_URL': 'redpanda-kafka.snapshot.test:9092',
+      'REDPANDA_SASL_PASSWORD': "single'apos",
+      'REDPANDA_SASL_USERNAME': 'nexus-redpanda',
+      'REDPANDA_SCHEMA_REGISTRY_PUBLIC_URL': 'redpanda-schema-registry.snapshot.test:18081',
+    }),
+    'rustfs': dict({
+      'RUSTFS_ACCESS_KEY': 'nexus-rustfs',
+      'RUSTFS_SECRET_KEY': 'rustfs_root_password-VALUE',
+    }),
+    'seaweedfs': dict({
+      'SEAWEEDFS_ACCESS_KEY': 'nexus-seaweedfs',
+      'SEAWEEDFS_SECRET_KEY': 'seaweedfs_admin_password-VALUE',
+    }),
+    'sftpgo': dict({
+      'SFTPGO_ADMIN_PASSWORD': 'sftpgo_admin_password-VALUE',
+      'SFTPGO_ADMIN_USERNAME': 'nexus-sftpgo',
+      'SFTPGO_USER_PASSWORD': 'sftpgo_user_password-VALUE',
+      'SFTPGO_USER_USERNAME': 'nexus-default',
+    }),
+    'ssh': dict({
+      'SSH_PRIVATE_KEY_BASE64': 'snapshot-ssh-base64',
+    }),
+    'superset': dict({
+      'SUPERSET_DB_PASSWORD': 'superset_db_password-VALUE',
+      'SUPERSET_PASSWORD': 'superset_admin_password-VALUE',
+      'SUPERSET_SECRET_KEY': 'superset_secret_key-VALUE',
+      'SUPERSET_USERNAME': 'admin',
+    }),
+    'uptime-kuma': dict({
+      'UPTIME_KUMA_PASSWORD': 'kuma_admin_password-VALUE',
+      'UPTIME_KUMA_USERNAME': 'nexus-test-user',
+    }),
+    'wikijs': dict({
+      'WIKIJS_DB_PASSWORD': 'wikijs_db_password-VALUE',
+      'WIKIJS_PASSWORD': 'wikijs_admin_password-VALUE',
+      'WIKIJS_USERNAME': 'user@snapshot.test',
+    }),
+    'windmill': dict({
+      'WINDMILL_ADMIN_EMAIL': 'admin@snapshot.test',
+      'WINDMILL_ADMIN_PASSWORD': 'windmill_admin_password-VALUE',
+      'WINDMILL_DB_PASSWORD': 'windmill_db_password-VALUE',
+      'WINDMILL_SUPERADMIN_SECRET': 'windmill_superadmin_secret-VALUE',
+    }),
+    'woodpecker': dict({
+      'WOODPECKER_AGENT_SECRET': 'woodpecker_agent_secret-VALUE',
+      'WOODPECKER_GITEA_CLIENT': 'cid',
+      'WOODPECKER_GITEA_SECRET': 'csec',
+    }),
+  })
+# ---

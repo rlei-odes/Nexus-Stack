@@ -1994,352 +1994,71 @@ EOF
     fi
 
     # ==========================================================================
-    # Push secrets to Infisical (folder-based, idempotent via upsert)
+    # Push secrets to Infisical (#505 Modul 1.1: nexus_deploy.infisical)
     # ==========================================================================
+    # The legacy build_folder helper + 39 callers + rsync + curl-loop
+    # push (~395 lines of bash) lived here. Phase-1 strangler-fig:
+    # deploy.sh now pipes SECRETS_JSON into `python -m nexus_deploy
+    # infisical bootstrap`, which builds the same JSON payloads,
+    # rsyncs them, and runs the same server-side curl loop. The
+    # remaining BootstrapEnv fields (DOMAIN, ADMIN_EMAIL, GITEA_*,
+    # WOODPECKER_*, etc.) are passed as env vars to the Python side.
     if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
-        echo "  Pushing secrets to Infisical (folder-based)..."
+        echo "  Pushing secrets to Infisical (via nexus_deploy)..."
         INFISICAL_ENV="${INFISICAL_ENV:-dev}"
-        PUSH_DIR="/tmp/infisical-push"
-        mkdir -p "$PUSH_DIR"
-
-        # Helper: build folder creation + secrets payload JSON files
-        # Usage: build_folder "folder-name" "KEY1" "val1" "KEY2" "val2" ...
+        # SSH_KEY_BASE64 must match the legacy `build_folder "ssh"`
+        # encoding byte-for-byte: ``echo "$X" | base64`` (NOT
+        # ``printf '%s'``). echo appends a trailing newline before
+        # the pipe, so the legacy bytes are base64(<key>+\n).
         #
-        # Pairs with an empty value are SKIPPED — neither sent to
-        # Infisical nor included in the upsert payload. This matters
-        # because the API call uses `mode: "upsert"`: passing
-        # KEY="" would overwrite an operator-edited non-empty value
-        # in the Infisical UI with empty, defeating the "user edits
-        # preserved across re-deploys" promise. With the skip, the
-        # caller can pass optional values like `${VAR:-}` without
-        # worrying that an unset VAR will silently wipe a UI-edit.
-        # Net effect: build_folder behaves like create-or-update for
-        # populated values, no-op for empty values. (Note: this
-        # also means rotating a secret to empty in source-of-truth
-        # is NOT propagated — but doing that is a manual operator
-        # action via the UI today, so this trade-off is fine.)
-        build_folder() {
-            local folder=$1; shift
-            # Folder creation payload
-            jq -n --arg pid "$PROJECT_ID" --arg env "$INFISICAL_ENV" --arg name "$folder" \
-                '{projectId: $pid, environment: $env, name: $name, path: "/"}' \
-                > "$PUSH_DIR/f-$folder.json"
-            # Secrets payload with upsert
-            local jq_args=("--arg" "pid" "$PROJECT_ID" "--arg" "env" "$INFISICAL_ENV")
-            local jq_filter='{projectId: $pid, environment: $env, secretPath: ("/'"$folder"'"), mode: "upsert", secrets: ['
-            local i=0
-            while [ $# -ge 2 ]; do
-                if [ -z "$2" ]; then
-                    shift 2
-                    continue
-                fi
-                jq_args+=("--arg" "k$i" "$1" "--arg" "v$i" "$2")
-                [ $i -gt 0 ] && jq_filter+=","
-                jq_filter+='{secretKey: $k'"$i"', secretValue: $v'"$i"'}'
-                shift 2; i=$((i+1))
-            done
-            jq_filter+=']}'
-            jq -n "${jq_args[@]}" "$jq_filter" > "$PUSH_DIR/s-$folder.json"
-        }
-
-        # Build payloads for each folder
-        build_folder "config" \
-            "DOMAIN" "$DOMAIN" \
-            "ADMIN_EMAIL" "$ADMIN_EMAIL" \
-            "ADMIN_USERNAME" "$ADMIN_USERNAME"
-
-        if [ -n "$R2_DATA_ENDPOINT" ] && [ -n "$R2_DATA_ACCESS_KEY" ] && [ -n "$R2_DATA_SECRET_KEY" ] && [ -n "$R2_DATA_BUCKET" ]; then
-            build_folder "r2-datalake" \
-                "R2_ENDPOINT" "$R2_DATA_ENDPOINT" \
-                "R2_ACCESS_KEY" "$R2_DATA_ACCESS_KEY" \
-                "R2_SECRET_KEY" "$R2_DATA_SECRET_KEY" \
-                "R2_BUCKET" "$R2_DATA_BUCKET"
-        fi
-
-        # Push Hetzner S3 secrets to Infisical whenever credentials are
-        # available, even if not all three bucket names (lakefs, general,
-        # pgducklake) are populated. The previous gate required
-        # $HETZNER_S3_BUCKET_GENERAL — but that's only created when
-        # the control-plane Tofu's `general` bucket resource exists,
-        # which isn't always the case (see #503). Result: notebook
-        # stacks (Marimo via .infisical.env, Jupyter, code-server)
-        # would silently miss all four HETZNER_S3_* env vars even
-        # though the credentials and at least one bucket are
-        # provisioned.
-        # Fallback chain for the canonical HETZNER_S3_BUCKET key
-        # (used by ad-hoc workloads): prefer _general (workloads
-        # bucket by convention), fall back to _lakefs (always
-        # populated when the LakeFS-aware path runs).
-        # Empty values from this call are NOT pushed (build_folder
-        # skips empty pairs — see helper definition above). So if
-        # neither _general nor _lakefs is populated, HETZNER_S3_BUCKET
-        # simply WILL NOT exist in Infisical for this run; the
-        # operator can add it via the UI later, and that UI-set
-        # value won't be clobbered on a subsequent spin-up that
-        # also has no source-of-truth value (skip-on-empty preserves
-        # it). Same applies to the explicit per-bucket keys
-        # (_LAKEFS / _GENERAL / _PGDUCKLAKE): they appear in the
-        # Infisical folder only if the corresponding bucket has
-        # actually been provisioned by control-plane Tofu.
-        if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ]; then
-            DEFAULT_HETZNER_BUCKET="${HETZNER_S3_BUCKET_GENERAL:-${HETZNER_S3_BUCKET:-}}"
-            build_folder "hetzner-s3" \
-                "HETZNER_S3_ENDPOINT" "https://$HETZNER_S3_SERVER" \
-                "HETZNER_S3_REGION" "$HETZNER_S3_REGION" \
-                "HETZNER_S3_ACCESS_KEY" "$HETZNER_S3_ACCESS_KEY" \
-                "HETZNER_S3_SECRET_KEY" "$HETZNER_S3_SECRET_KEY" \
-                "HETZNER_S3_BUCKET" "$DEFAULT_HETZNER_BUCKET" \
-                "HETZNER_S3_BUCKET_LAKEFS" "${HETZNER_S3_BUCKET:-}" \
-                "HETZNER_S3_BUCKET_GENERAL" "${HETZNER_S3_BUCKET_GENERAL:-}" \
-                "HETZNER_S3_BUCKET_PGDUCKLAKE" "${HETZNER_S3_BUCKET_PGDUCKLAKE:-}"
-        fi
-
-        if [ -n "$EXTERNAL_S3_ENDPOINT" ] && [ -n "$EXTERNAL_S3_ACCESS_KEY" ] && [ -n "$EXTERNAL_S3_SECRET_KEY" ] && [ -n "$EXTERNAL_S3_BUCKET" ]; then
-            build_folder "external-s3" \
-                "EXTERNAL_S3_ENDPOINT" "$EXTERNAL_S3_ENDPOINT" \
-                "EXTERNAL_S3_REGION" "$EXTERNAL_S3_REGION" \
-                "EXTERNAL_S3_ACCESS_KEY" "$EXTERNAL_S3_ACCESS_KEY" \
-                "EXTERNAL_S3_SECRET_KEY" "$EXTERNAL_S3_SECRET_KEY" \
-                "EXTERNAL_S3_BUCKET" "$EXTERNAL_S3_BUCKET" \
-                "EXTERNAL_S3_LABEL" "$EXTERNAL_S3_LABEL"
-        fi
-
-        build_folder "infisical" \
-            "INFISICAL_USERNAME" "$ADMIN_EMAIL" \
-            "INFISICAL_PASSWORD" "$INFISICAL_PASS"
-
-        build_folder "portainer" \
-            "PORTAINER_USERNAME" "$ADMIN_USERNAME" \
-            "PORTAINER_PASSWORD" "$PORTAINER_PASS"
-
-        build_folder "uptime-kuma" \
-            "UPTIME_KUMA_USERNAME" "$ADMIN_USERNAME" \
-            "UPTIME_KUMA_PASSWORD" "$KUMA_PASS"
-
-        build_folder "grafana" \
-            "GRAFANA_USERNAME" "$ADMIN_USERNAME" \
-            "GRAFANA_PASSWORD" "$GRAFANA_PASS"
-
-        build_folder "n8n" \
-            "N8N_USERNAME" "$ADMIN_EMAIL" \
-            "N8N_PASSWORD" "$N8N_PASS"
-
-        build_folder "dagster" \
-            "DAGSTER_DB_PASSWORD" "$DAGSTER_DB_PASS"
-
-        build_folder "kestra" \
-            "KESTRA_USERNAME" "$ADMIN_EMAIL" \
-            "KESTRA_PASSWORD" "$KESTRA_PASS"
-
-        build_folder "metabase" \
-            "METABASE_USERNAME" "$ADMIN_EMAIL" \
-            "METABASE_PASSWORD" "$METABASE_PASS"
-
-        build_folder "superset" \
-            "SUPERSET_USERNAME" "admin" \
-            "SUPERSET_PASSWORD" "$SUPERSET_PASS" \
-            "SUPERSET_DB_PASSWORD" "$SUPERSET_DB_PASS" \
-            "SUPERSET_SECRET_KEY" "$SUPERSET_SECRET"
-
-        build_folder "cloudbeaver" \
-            "CLOUDBEAVER_USERNAME" "nexus-cloudbeaver" \
-            "CLOUDBEAVER_PASSWORD" "$CLOUDBEAVER_PASS"
-
-        build_folder "mage" \
-            "MAGE_USERNAME" "${GITEA_USER_EMAIL:-$ADMIN_EMAIL}" \
-            "MAGE_PASSWORD" "$MAGE_PASS"
-
-        build_folder "minio" \
-            "MINIO_ROOT_USER" "nexus-minio" \
-            "MINIO_ROOT_PASSWORD" "$MINIO_ROOT_PASS"
-
-        # SFTPGo: admin (web UI / REST API) + nexus-default (SFTP login).
-        # SFTPGO_USER_PASSWORD is also synced to Kestra's secret store
-        # so flows can reference it via {{ secret('SFTPGO_USER_PASSWORD') }}.
-        build_folder "sftpgo" \
-            "SFTPGO_ADMIN_USERNAME" "nexus-sftpgo" \
-            "SFTPGO_ADMIN_PASSWORD" "$SFTPGO_ADMIN_PASS" \
-            "SFTPGO_USER_USERNAME" "nexus-default" \
-            "SFTPGO_USER_PASSWORD" "$SFTPGO_USER_PASS"
-
-        build_folder "nocodb" \
-            "NOCODB_USERNAME" "$ADMIN_EMAIL" \
-            "NOCODB_PASSWORD" "$NOCODB_ADMIN_PASS" \
-            "NOCODB_DB_PASSWORD" "$NOCODB_DB_PASS" \
-            "NOCODB_JWT_SECRET" "$NOCODB_JWT_SECRET"
-
-        build_folder "appsmith" \
-            "APPSMITH_ENCRYPTION_PASSWORD" "$APPSMITH_ENCRYPTION_PASSWORD" \
-            "APPSMITH_ENCRYPTION_SALT" "$APPSMITH_ENCRYPTION_SALT"
-
-        build_folder "dinky" \
-            "DINKY_USERNAME" "admin" \
-            "DINKY_PASSWORD" "$DINKY_ADMIN_PASS"
-
-        build_folder "dify" \
-            "DIFY_USERNAME" "$ADMIN_EMAIL" \
-            "DIFY_PASSWORD" "$DIFY_ADMIN_PASS" \
-            "DIFY_DB_PASSWORD" "$DIFY_DB_PASS" \
-            "DIFY_SECRET_KEY" "$DIFY_SECRET_KEY" \
-            "DIFY_REDIS_PASSWORD" "$DIFY_REDIS_PASS" \
-            "DIFY_WEAVIATE_API_KEY" "$DIFY_WEAVIATE_API_KEY" \
-            "DIFY_SANDBOX_API_KEY" "$DIFY_SANDBOX_API_KEY" \
-            "DIFY_PLUGIN_DAEMON_KEY" "$DIFY_PLUGIN_DAEMON_KEY" \
-            "DIFY_PLUGIN_INNER_API_KEY" "$DIFY_PLUGIN_INNER_API_KEY"
-
-        build_folder "rustfs" \
-            "RUSTFS_ACCESS_KEY" "nexus-rustfs" \
-            "RUSTFS_SECRET_KEY" "$RUSTFS_ROOT_PASS"
-
-        build_folder "seaweedfs" \
-            "SEAWEEDFS_ACCESS_KEY" "nexus-seaweedfs" \
-            "SEAWEEDFS_SECRET_KEY" "$SEAWEEDFS_ADMIN_PASS"
-
-        build_folder "garage" \
-            "GARAGE_ADMIN_TOKEN" "$GARAGE_ADMIN_TOKEN"
-
-        build_folder "lakefs" \
-            "LAKEFS_DB_PASSWORD" "$LAKEFS_DB_PASS" \
-            "LAKEFS_ACCESS_KEY_ID" "$LAKEFS_ADMIN_ACCESS_KEY" \
-            "LAKEFS_SECRET_ACCESS_KEY" "$LAKEFS_ADMIN_SECRET_KEY"
-
-        build_folder "filestash" \
-            "FILESTASH_S3_BUCKET" "$HETZNER_S3_BUCKET_GENERAL" \
-            "FILESTASH_ADMIN_PASSWORD" "$FILESTASH_ADMIN_PASSWORD"
-
-        build_folder "redpanda" \
-            "REDPANDA_SASL_USERNAME" "nexus-redpanda" \
-            "REDPANDA_SASL_PASSWORD" "$REDPANDA_ADMIN_PASS" \
-            "REDPANDA_KAFKA_PUBLIC_URL" "redpanda-kafka.${DOMAIN}:9092" \
-            "REDPANDA_SCHEMA_REGISTRY_PUBLIC_URL" "redpanda-schema-registry.${DOMAIN}:18081" \
-            "REDPANDA_ADMIN_PUBLIC_URL" "redpanda-admin.${DOMAIN}:9644" \
-            "REDPANDA_CONNECT_PUBLIC_URL" "redpanda-connect-api.${DOMAIN}:4195"
-
-        build_folder "meltano" \
-            "MELTANO_DB_PASSWORD" "$MELTANO_DB_PASS"
-
-        build_folder "postgres" \
-            "POSTGRES_USERNAME" "nexus-postgres" \
-            "POSTGRES_PASSWORD" "$POSTGRES_PASS"
-
-        build_folder "pg-ducklake" \
-            "PG_DUCKLAKE_USERNAME" "nexus-pgducklake" \
-            "PG_DUCKLAKE_PASSWORD" "$PG_DUCKLAKE_PASS" \
-            "PG_DUCKLAKE_DATABASE" "ducklake" \
-            "PG_DUCKLAKE_S3_BUCKET" "$HETZNER_S3_BUCKET_PGDUCKLAKE"
-
-        build_folder "pgadmin" \
-            "PGADMIN_USERNAME" "$ADMIN_EMAIL" \
-            "PGADMIN_PASSWORD" "$PGADMIN_PASS"
-
-        build_folder "prefect" \
-            "PREFECT_DB_PASSWORD" "$PREFECT_DB_PASS"
-
-        build_folder "windmill" \
-            "WINDMILL_ADMIN_EMAIL" "$ADMIN_EMAIL" \
-            "WINDMILL_ADMIN_PASSWORD" "$WINDMILL_ADMIN_PASS" \
-            "WINDMILL_DB_PASSWORD" "$WINDMILL_DB_PASS" \
-            "WINDMILL_SUPERADMIN_SECRET" "$WINDMILL_SUPERADMIN_SECRET"
-
-        build_folder "openmetadata" \
-            "OPENMETADATA_USERNAME" "admin@$OM_PRINCIPAL_DOMAIN" \
-            "OPENMETADATA_PASSWORD" "$OPENMETADATA_ADMIN_PASS" \
-            "OPENMETADATA_DB_PASSWORD" "$OPENMETADATA_DB_PASS"
-
-        build_folder "gitea" \
-            "GITEA_ADMIN_USERNAME" "$ADMIN_USERNAME" \
-            "GITEA_ADMIN_PASSWORD" "$GITEA_ADMIN_PASS" \
-            "GITEA_USER_USERNAME" "$GITEA_USER_USERNAME" \
-            "GITEA_USER_PASSWORD" "$GITEA_USER_PASS" \
-            "GITEA_REPO_URL" "https://git.${DOMAIN}/${GITEA_REPO_OWNER:-$ADMIN_USERNAME}/${REPO_NAME:-nexus-${DOMAIN//./-}-gitea}.git" \
-            "GITEA_DB_PASSWORD" "$GITEA_DB_PASS"
-
-        build_folder "clickhouse" \
-            "CLICKHOUSE_USERNAME" "nexus-clickhouse" \
-            "CLICKHOUSE_PASSWORD" "$CLICKHOUSE_ADMIN_PASS"
-
-        build_folder "wikijs" \
-            "WIKIJS_USERNAME" "${GITEA_USER_EMAIL:-$ADMIN_EMAIL}" \
-            "WIKIJS_PASSWORD" "$WIKIJS_ADMIN_PASS" \
-            "WIKIJS_DB_PASSWORD" "$WIKIJS_DB_PASS"
-
-        # Woodpecker (with optional Gitea OAuth secrets)
-        WOODPECKER_ARGS=("WOODPECKER_AGENT_SECRET" "$WOODPECKER_AGENT_SECRET")
-        [ -n "${WOODPECKER_GITEA_CLIENT:-}" ] && WOODPECKER_ARGS+=("WOODPECKER_GITEA_CLIENT" "$WOODPECKER_GITEA_CLIENT")
-        [ -n "${WOODPECKER_GITEA_SECRET:-}" ] && WOODPECKER_ARGS+=("WOODPECKER_GITEA_SECRET" "$WOODPECKER_GITEA_SECRET")
-        build_folder "woodpecker" "${WOODPECKER_ARGS[@]}"
-
-        # SSH (optional)
+        # Critically guarded on `[ -n "$SSH_PRIVATE_KEY_CONTENT" ]`:
+        # the legacy `build_folder "ssh"` was inside an `if [ -n …]`
+        # block (deploy.sh:2335 pre-migration), so when the key is
+        # unset, the "ssh" folder isn't pushed at all — preserving
+        # any operator-managed key already in Infisical. Without
+        # this guard, ``echo "" | base64`` produces ``Cg==`` (base64
+        # of a single newline), which BootstrapEnv would treat as a
+        # populated key and overwrite the operator's value.
         if [ -n "${SSH_PRIVATE_KEY_CONTENT:-}" ]; then
             SSH_KEY_BASE64=$(echo "$SSH_PRIVATE_KEY_CONTENT" | base64 | tr -d '\n')
-            build_folder "ssh" "SSH_PRIVATE_KEY_BASE64" "$SSH_KEY_BASE64"
-        fi
-
-        # Upload all payloads to server and process
-        rsync -aq --delete "$PUSH_DIR/" "nexus:/tmp/infisical-push/"
-
-        PUSH_RESULT=$(ssh nexus "
-            TOKEN=\$(cat /opt/docker-server/.infisical-token 2>/dev/null || echo '$INFISICAL_TOKEN')
-            if [ -z \"\$TOKEN\" ]; then echo '0:0'; exit 0; fi
-            OK=0; FAIL=0
-            for f in /tmp/infisical-push/f-*.json; do
-                curl -s -X POST 'http://localhost:8070/api/v2/folders' \
-                    -H \"Authorization: Bearer \$TOKEN\" \
-                    -H 'Content-Type: application/json' \
-                    -d @\$f >/dev/null 2>&1 || true
-            done
-            for f in /tmp/infisical-push/s-*.json; do
-                RESULT=\$(curl -s -X PATCH 'http://localhost:8070/api/v4/secrets/batch' \
-                    -H \"Authorization: Bearer \$TOKEN\" \
-                    -H 'Content-Type: application/json' \
-                    -d @\$f 2>&1)
-                if echo \"\$RESULT\" | grep -q '\"error\"'; then
-                    FAIL=\$((FAIL+1))
-                else
-                    OK=\$((OK+1))
-                fi
-            done
-            # Snapshot build_folder JSON payloads BEFORE the cleanup
-            # below deletes /tmp/infisical-push. capture-phase1-baselines.sh
-            # scp's the snapshot dir down for the Phase-1 gold-master
-            # fixtures used by src/nexus_deploy/infisical.py (#505).
-            # Removed in phase 4 along with the rest of build_folder.
-            #
-            # Lifetime: the baseline dir persists at /tmp/nexus-baselines
-            # on the server across this run and any subsequent re-runs
-            # (each run replaces the dir contents via rm -rf + cp). It's
-            # only fully cleared by a teardown — that's intentional so
-            # capture-script can scp from a stable location. \`chmod\`
-            # restricts it to the deploy SSH user since the JSON
-            # payloads carry secret values.
-            #
-            # Error handling: the outer \`ssh \"...\"\` heredoc runs WITHOUT
-            # \`set -e\`, and the heredoc's final \`echo \"\$OK:\$FAIL\"\`
-            # always succeeds — so we have to chain the snapshot ops
-            # with \`&&\` and emit a stderr warning on failure ourselves.
-            # We don't \`exit 1\` because baseline capture is a Phase-1
-            # debugging aid; failure should be visible in the workflow
-            # log but must not block a deploy that's otherwise healthy.
-            if [ -d /tmp/infisical-push ]; then
-                mkdir -p /tmp/nexus-baselines \
-                    && rm -rf /tmp/nexus-baselines/infisical-payloads-baseline \
-                    && cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline \
-                    && chmod -R go-rwx /tmp/nexus-baselines/infisical-payloads-baseline \
-                    || echo \"WARN: phase-1 baseline capture to /tmp/nexus-baselines failed\" >&2
-            fi
-            rm -rf /tmp/infisical-push
-            echo \"\$OK:\$FAIL\"
-        " 2>&1 || echo "0:0")
-
-        rm -rf "$PUSH_DIR"
-
-        PUSH_OK=$(echo "$PUSH_RESULT" | tail -1 | cut -d: -f1)
-        PUSH_FAIL=$(echo "$PUSH_RESULT" | tail -1 | cut -d: -f2)
-        if [ "$PUSH_FAIL" = "0" ] || [ -z "$PUSH_FAIL" ]; then
-            echo -e "${GREEN}  ✓ Secrets pushed to $PUSH_OK folders in Infisical${NC}"
         else
-            echo -e "${YELLOW}  ⚠ Pushed to $PUSH_OK folders, $PUSH_FAIL failed${NC}"
+            SSH_KEY_BASE64=""
         fi
+        # Capture exit code instead of `if !` so we can distinguish
+        # nexus_deploy's three exit modes:
+        #   0 = success, all folders pushed
+        #   1 = partial — bootstrap completed but some folders reported
+        #       errors. Operator-fixable via the Infisical UI; we warn
+        #       and continue so the rest of the spin-up proceeds.
+        #   2 = hard failure (input validation, rsync/ssh transport,
+        #       missing uv, unexpected exception). Abort the deploy
+        #       — continuing here would push stale Infisical state to
+        #       services that read from it later in the spin-up.
+        # The `|| INFISICAL_RC=$?` form avoids tripping `set -e` on a
+        # non-zero return; the explicit case statement decides what
+        # to do with each code.
+        INFISICAL_RC=0
+        printf '%s' "$SECRETS_JSON" | \
+            PROJECT_ID="$PROJECT_ID" \
+            INFISICAL_TOKEN="$INFISICAL_TOKEN" \
+            INFISICAL_ENV="$INFISICAL_ENV" \
+            DOMAIN="$DOMAIN" \
+            ADMIN_EMAIL="$ADMIN_EMAIL" \
+            GITEA_USER_EMAIL="${GITEA_USER_EMAIL:-}" \
+            GITEA_USER_USERNAME="${GITEA_USER_USERNAME:-}" \
+            GITEA_REPO_OWNER="${GITEA_REPO_OWNER:-}" \
+            REPO_NAME="${REPO_NAME:-}" \
+            OM_PRINCIPAL_DOMAIN="${OM_PRINCIPAL_DOMAIN:-}" \
+            WOODPECKER_GITEA_CLIENT="${WOODPECKER_GITEA_CLIENT:-}" \
+            WOODPECKER_GITEA_SECRET="${WOODPECKER_GITEA_SECRET:-}" \
+            SSH_KEY_BASE64="$SSH_KEY_BASE64" \
+            uv run --quiet --project "$PROJECT_ROOT" python -m nexus_deploy infisical bootstrap \
+            || INFISICAL_RC=$?
+        case "$INFISICAL_RC" in
+            0) ;;
+            1) echo -e "${YELLOW}  ⚠ Infisical bootstrap had partial push failures (see output above)${NC}" ;;
+            *) echo -e "${RED}  ✗ Infisical bootstrap transport failure (rc=$INFISICAL_RC); aborting${NC}"; exit 1 ;;
+        esac
     fi
     fi  # End of INFISICAL_READY check
 fi
