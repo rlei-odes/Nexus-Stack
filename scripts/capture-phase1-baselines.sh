@@ -39,24 +39,45 @@ echo "→ Capturing SECRETS_JSON via tofu output…"
 (cd "$TOFU_DIR" && tofu output -json secrets) > "$DEST/secrets.json"
 echo "  ✓ secrets.json ($(wc -c <"$DEST/secrets.json") bytes)"
 
-# Extract deploy.sh's L115–228 jq parsing block into a standalone
-# script and run it against the captured secrets.json. The output is
-# `set -o posix` — every shell var the deploy.sh produces, in a form
-# the Python `dump_shell()` test can byte-compare against.
+# Extract ONLY the jq-parsing lines from deploy.sh (not the surrounding
+# `tofu output` reassignment, $TOFU_DIR-dependent code, echos, or
+# known_hosts cleanup) and run them in a clean `env -i` shell. The
+# output is `declare -p` for exactly the parsed variables — no PATH,
+# HOME, BASHOPTS, or any ambient credentials leak into the fixture.
+#
+# The two `EXTERNAL_S3_*=${VAR:-default}` fallback lines (deploy.sh
+# L177–178) live right after the jq block and complete the parsed
+# state, so they're included.
 echo "→ Running deploy.sh's SECRETS_JSON parser standalone…"
+
+# Names of every variable the parser assigns. Computed by grepping
+# deploy.sh, so a new field added there is auto-picked-up.
+PARSER_VARS=$(grep -oE '^[A-Z_]+=\$\(echo "\$SECRETS_JSON"' "$REPO_ROOT/scripts/deploy.sh" \
+    | sed 's/=.*//' | sort -u)
+
+mktemp_script=$(mktemp /tmp/parse-secrets-baseline.XXXXXX.sh)
+trap 'rm -f "$mktemp_script"' EXIT
+
 {
-    # Lines 115–228 are the jq-parsing-into-globals block. The block
-    # itself reads $SECRETS_JSON, so we define it before sourcing.
-    echo "#!/usr/bin/env bash"
-    echo "set -uo pipefail"
-    echo "SECRETS_JSON=\$(cat \"\$1\")"
-    awk 'NR>=115 && NR<=228' "$REPO_ROOT/scripts/deploy.sh"
-    echo 'set -o posix; set | grep -E "^[A-Z][A-Z0-9_]*=" | sort'
-} > /tmp/parse-secrets-baseline.sh
-chmod +x /tmp/parse-secrets-baseline.sh
-bash /tmp/parse-secrets-baseline.sh "$DEST/secrets.json" > "$DEST/shell-vars.txt"
-rm /tmp/parse-secrets-baseline.sh
-echo "  ✓ shell-vars.txt ($(wc -l <"$DEST/shell-vars.txt") vars)"
+    echo '#!/usr/bin/env bash'
+    echo 'set -uo pipefail'
+    echo 'SECRETS_JSON=$(cat)'
+    grep -E '^[A-Z_]+=\$\(echo "\$SECRETS_JSON" \| jq' "$REPO_ROOT/scripts/deploy.sh"
+    grep -E '^EXTERNAL_S3_(LABEL|REGION)=\$\{' "$REPO_ROOT/scripts/deploy.sh"
+    # Dump only the parser-assigned vars (no ambient env)
+    for v in $PARSER_VARS; do
+        printf 'declare -p %s 2>/dev/null || true\n' "$v"
+    done
+} > "$mktemp_script"
+
+# `env -i` strips inherited env so PATH, HOME, CLOUDFLARE_*_TOKEN, etc.
+# can't pollute or leak into the fixture. We restore a minimal PATH that
+# resolves `cat`, `jq` (used by every parser line), and the bash built-
+# ins on both macOS (homebrew) and Linux runners.
+env -i PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin bash "$mktemp_script" \
+    < "$DEST/secrets.json" \
+    | sort > "$DEST/shell-vars.txt"
+echo "  ✓ shell-vars.txt ($(wc -l <"$DEST/shell-vars.txt") vars from $(echo "$PARSER_VARS" | wc -l | tr -d ' ') parser names)"
 
 # -----------------------------------------------------------------------------
 # (2) build_folder JSON payloads baseline (infisical.py)

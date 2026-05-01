@@ -2368,7 +2368,13 @@ EOF
             # scp's this dir down for the gold-master fixtures used by
             # src/nexus_deploy/infisical.py (#505 phase-1 migration).
             # Removed in phase 4 along with the rest of build_folder.
-            mkdir -p /tmp/nexus-baselines && cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline 2>/dev/null || true
+            #
+            # \`rm -rf\` first so re-runs don't nest the prior snapshot:
+            # \`cp -r src existing-dst\` copies into existing-dst rather
+            # than overwriting it, which on a second spin-up would yield
+            # \`dst/dst/...\`. Replace-then-copy is the simplest atomic-
+            # enough fix for one-writer scenarios.
+            mkdir -p /tmp/nexus-baselines && rm -rf /tmp/nexus-baselines/infisical-payloads-baseline && cp -r /tmp/infisical-push /tmp/nexus-baselines/infisical-payloads-baseline 2>/dev/null || true
             rm -rf /tmp/infisical-push
             echo \"\$OK:\$FAIL\"
         " 2>&1 || echo "0:0")
