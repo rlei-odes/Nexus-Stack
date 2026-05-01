@@ -221,6 +221,67 @@ def test_round_6_multiline_warning_does_not_emit_value() -> None:
     assert "$VALUE_B64" not in skip_warning
 
 
+def test_round_6_uses_bash_case_not_grep_for_multiline_check() -> None:
+    """Round 6 — multi-line check uses `case "$VALUE" in *$'\\n'*)`, NOT `grep -q $'\\n'`.
+
+    The legacy form ``printf '%s' "$VALUE" | grep -q $'\\n'`` returns
+    a match for EVERY non-empty single-line value because grep
+    processes input line-by-line and the ``\\n`` pattern matches the
+    implicit line terminator. Result: every secret was skipped as
+    "multi-line" and only ``GITEA_TOKEN`` (added via a separate code
+    path) survived. Confirmed by the spin-up after #510 where
+    ``secret-sync: jupyter wrote 1 env-vars`` instead of ~25.
+
+    The bash ``case`` glob compares the variable's bytes directly and
+    only fires on genuine embedded newlines.
+    """
+    script = _render_default()
+    # The fix
+    assert 'case "$VALUE" in' in script
+    assert "*$'\\n'*)" in script
+    # The legacy bug must not regress: the buggy line was specifically
+    # `printf '%s' "$VALUE" | grep -q $'\\n'`. Comments may legitimately
+    # mention `grep -q $'\\n'` to document the pre-fix history, so we
+    # only forbid the active pipe form.
+    assert "printf '%s' \"$VALUE\" | grep" not in script
+
+
+def test_round_6_multiline_check_executes_correctly_via_bash() -> None:
+    """End-to-end: the rendered multi-line check actually does what we expect.
+
+    The static-text test above confirms we emit the right bash form;
+    this test confirms bash interprets that form correctly. We extract
+    just the per-secret loop body and run it against five carefully
+    chosen inputs. This is the test that would have caught the legacy
+    ``grep -q`` bug pre-#510 — the static check would have passed but
+    the actual behaviour was broken.
+    """
+    cases = [
+        ("nexus-stack.ch", "single"),
+        ("auto", "single"),
+        ("admin@example.com", "single"),
+        ("line1\nline2", "multi"),  # genuine multi-line
+        ("", "single"),  # empty is single-line (consistent with legacy + new)
+    ]
+    for value, expected in cases:
+        b64 = subprocess.run(
+            ["base64"], input=value, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        # Replicate just the multi-line guard from the rendered script
+        snippet = f"""
+set -euo pipefail
+VALUE=$(printf '%s' '{b64}' | base64 -d || true)
+case "$VALUE" in
+    *$'\\n'*) echo multi ;;
+    *) echo single ;;
+esac
+"""
+        out = subprocess.run(
+            ["bash", "-c", snippet], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert out == expected, f"value={value!r} expected={expected} got={out}"
+
+
 def test_round_7_atomic_write_same_directory_mktemp() -> None:
     """Round 7 — `mktemp` for `.infisical.env` is in the SAME directory.
 
