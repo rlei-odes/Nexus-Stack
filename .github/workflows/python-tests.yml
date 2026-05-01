@@ -19,6 +19,7 @@ on:
       - "tests/**"
       - "pyproject.toml"
       - "uv.lock"
+      - ".python-version"
       - ".github/workflows/python-tests.yml"
       - "scripts/*.sh"
   push:
@@ -28,6 +29,7 @@ on:
       - "tests/**"
       - "pyproject.toml"
       - "uv.lock"
+      - ".python-version"
       - ".github/workflows/python-tests.yml"
       - "scripts/*.sh"
 
@@ -130,13 +132,17 @@ jobs:
       - name: pytest unit
         # Phase 0: only unit tests exist. Integration tests land in Phase 1
         # and run via the same step (pytest discovers them via testpaths).
-        # `--cov-fail-under=80` gates the run; pyproject.toml's
-        # [tool.coverage.report] also has fail_under=80 so local + CI agree.
-        # `--cov-report=xml` + `tee` produce the inputs the next step uses
-        # to post a coverage comment on PRs. GitHub-Actions default shell
-        # is bash with `pipefail`, so a pytest failure still fails the step.
+        # `--cov-fail-under=80` makes the gate explicit on the CLI;
+        # pyproject.toml's [tool.coverage.report] also has fail_under=80
+        # so local + CI agree even if someone runs `coverage report` directly.
+        # `--cov-report=xml` feeds the PR coverage-comment step, `=html`
+        # feeds the artifact upload, and `tee` keeps the step's stdout
+        # readable. GitHub-Actions default shell is bash with `pipefail`,
+        # so a pytest failure still fails the step.
         run: |
-          uv run pytest --cov --cov-report=term-missing --cov-report=xml \
+          uv run pytest \
+            --cov=src/nexus_deploy --cov-fail-under=80 \
+            --cov-report=term-missing --cov-report=xml --cov-report=html \
             | tee pytest-coverage.txt
 
       - name: Coverage comment on PR

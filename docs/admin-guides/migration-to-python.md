@@ -94,5 +94,5 @@ While both code paths coexist (Phase 0-3):
 ## See also
 
 - [GitHub issue #505](https://github.com/stefanko-ch/Nexus-Stack/issues/505) — full migration plan, 59 sub-tasks
-- [`src/nexus_deploy/README.md`](../../src/nexus_deploy/README.md) — package-level usage notes
+- [`src/nexus_deploy/README.md`](https://github.com/stefanko-ch/Nexus-Stack/blob/main/src/nexus_deploy/README.md) — package-level usage notes (lives outside the `docs/` tree synced to nexus-stack.ch, hence the absolute GitHub link)
 - Related deploy.sh PRs that informed this migration: #495, #499, #500, #504 (each surfaced specific bug classes that pytest+mypy would catch automatically)

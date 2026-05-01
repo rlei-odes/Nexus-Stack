@@ -150,7 +150,10 @@ markers = [
     "e2e: tests that drive a real spin-up via gh workflow",
     "slow: tests >1 sec; can be skipped during quick local iteration",
 ]
-# By default run only unit tests locally; CI runs all explicitly.
+# pytest discovers and runs every test under `testpaths`. To narrow a run
+# (e.g. only fast unit tests during local iteration), pass `-m unit` or
+# another marker expression on the command line; markers are declared
+# above but no implicit filter is configured here.
 filterwarnings = [
     "error",
     # Allow specific known warnings from deps

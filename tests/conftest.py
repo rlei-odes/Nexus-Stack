@@ -37,5 +37,8 @@ def fake_secrets_json() -> dict[str, str]:
     return {
         "domain": "example.com",
         "admin_email": "admin@example.com",
-        "admin_username": "admin",
+        # Match the production default in tofu/stack/variables.tf — never
+        # bake "admin"/"root"/"postgres" into examples (CLAUDE.md service-
+        # account naming rule).
+        "admin_username": "nexus",
     }
