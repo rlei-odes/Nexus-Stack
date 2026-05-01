@@ -1,0 +1,172 @@
+# =============================================================================
+# python-tests — quality gates for the nexus_deploy package
+# =============================================================================
+# Runs on every push and PR. Three jobs:
+#   - lint:        ruff format check + ruff lint + shellcheck (fast, ~30s)
+#   - typecheck:   mypy --strict (~1-2 min, depends on cache hit)
+#   - test:        pytest unit + integration with coverage gate (≥80%)
+#
+# Tests run only when Python or workflow files change — to keep CI cheap
+# during pure docs/stack PRs.
+# =============================================================================
+
+name: Python Tests
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - ".github/workflows/python-tests.yml"
+      - "scripts/*.sh"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - ".github/workflows/python-tests.yml"
+      - "scripts/*.sh"
+
+# Cancel previous runs of this workflow on the same ref. The CI is fast
+# but no point burning minutes on a force-push that obsoletes the prior
+# attempt.
+concurrency:
+  group: python-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint — ruff (Python) + shellcheck (bash helpers)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (ruff + shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.7"
+          enable-cache: true
+
+      - name: Sync dev deps
+        run: uv sync --frozen --group dev
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: ruff lint
+        run: uv run ruff check .
+
+      - name: shellcheck remaining bash
+        run: |
+          # The remaining bash scripts (deploy.sh shrinks phase-by-phase
+          # but is here through Phase 3; the small helpers stay bash).
+          # `find -print0 | xargs -0` is portable to macOS bash 3.2 too.
+          #
+          # `--severity=error` only blocks on real bugs. Existing scripts
+          # (deploy.sh in particular) carry a long tail of style/info nits
+          # (SC2029, SC2086, SC2087, etc.) that are out of scope for Phase 0
+          # — Phase 4 (#505) tightens this to `--severity=warning` once
+          # deploy.sh is gone and only the small helpers remain.
+          find scripts -maxdepth 2 -name '*.sh' -type f -print0 \
+            | xargs -0 uv run shellcheck --severity=error --exclude=SC1091,SC2001
+
+  # ---------------------------------------------------------------------------
+  # Typecheck — mypy --strict
+  # ---------------------------------------------------------------------------
+  typecheck:
+    name: Typecheck (mypy --strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.7"
+          enable-cache: true
+
+      - name: Sync deps (incl. type stubs)
+        run: uv sync --frozen --group dev
+
+      - name: mypy strict
+        run: uv run mypy
+
+  # ---------------------------------------------------------------------------
+  # Test — pytest unit + integration, coverage gate ≥80%
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (pytest + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-scoped permissions — only the coverage-comment step needs write
+    # access to PRs, and we don't want it bleeding into other jobs.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.7"
+          enable-cache: true
+
+      - name: Sync deps
+        run: uv sync --frozen --group dev
+
+      - name: pytest unit
+        # Phase 0: only unit tests exist. Integration tests land in Phase 1
+        # and run via the same step (pytest discovers them via testpaths).
+        # `--cov-fail-under=80` makes the gate explicit on the CLI;
+        # pyproject.toml's [tool.coverage.report] also has fail_under=80
+        # so local + CI agree even if someone runs `coverage report` directly.
+        # `--cov-report=xml` feeds the PR coverage-comment step, `=html`
+        # feeds the artifact upload, and `tee` keeps the step's stdout
+        # readable. GitHub-Actions default shell is bash with `pipefail`,
+        # so a pytest failure still fails the step.
+        run: |
+          uv run pytest \
+            --cov=src/nexus_deploy --cov-fail-under=80 \
+            --cov-report=term-missing --cov-report=xml --cov-report=html \
+            | tee pytest-coverage.txt
+
+      - name: Coverage comment on PR
+        # Posts/updates a single markdown comment per PR with total
+        # coverage, badge, and per-file changed-lines breakdown. No
+        # external service, no token — just `pull-requests: write`
+        # scoped above. Skipped on push-to-main runs (no PR to comment on).
+        if: github.event_name == 'pull_request'
+        uses: MishaKav/pytest-coverage-comment@v1.1.54
+        with:
+          pytest-coverage-path: ./pytest-coverage.txt
+          pytest-xml-coverage-path: ./coverage.xml
+          title: "Coverage report — `nexus_deploy`"
+          badge-title: coverage
+          hide-badge: false
+          hide-report: false
+          create-new-comment: false
+          report-only-changed-files: false
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -65,6 +65,24 @@ stacks/*/.infisical.env
 # Generated firewall override files (created by deploy.sh)
 stacks/*/docker-compose.firewall.yml
 
+# Python (nexus_deploy package, see docs/admin-guides/migration-to-python.md)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+.hypothesis/
+.venv/
+dist/
+build/
+*.egg-info/
+*.egg
+
 # Control Plane (Astro)
 control-plane/node_modules/
 control-plane/dist/

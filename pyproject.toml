@@ -1,0 +1,186 @@
+# =============================================================================
+# nexus_deploy — Python package replacing scripts/deploy.sh
+# =============================================================================
+# Strangler-fig migration in progress (issue #505). This package coexists
+# with scripts/deploy.sh; modules take over piece-by-piece. Until Phase 4,
+# the bash deploy.sh remains the entry point and shells out to
+# `python -m nexus_deploy <command>` for migrated functionality.
+# =============================================================================
+
+[project]
+name = "nexus-deploy"
+version = "0.1.0"
+description = "Python orchestration for Nexus-Stack deployment (replaces scripts/deploy.sh)"
+readme = "src/nexus_deploy/README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Nexus-Stack Contributors" }]
+
+# Runtime dependencies. Pinned ranges reflect Python 3.13 compat as of 2026-05.
+# Lower bounds are minimums tested; upper bounds prevent silent major bumps.
+dependencies = [
+    "paramiko>=3.4,<4.0",        # SSH client for Module 3.1 (replaces `ssh nexus`)
+    "requests>=2.32,<3.0",       # HTTP client for Infisical/Gitea/Kestra APIs
+    "pydantic>=2.7,<3.0",        # Typed config (replaces SECRETS_JSON jq parsing)
+    "structlog>=24.1,<26.0",     # Structured logging
+    "click>=8.1,<9.0",           # CLI framework
+    "pyyaml>=6.0,<7.0",          # services.yaml + Kestra flow templates
+]
+
+[project.scripts]
+# `nexus-deploy run-all` works after `uv sync` — same as `python -m nexus_deploy run-all`.
+nexus-deploy = "nexus_deploy.cli:main"
+
+[dependency-groups]
+# Dev-deps installed via `uv sync` (uv treats this group as default-on).
+dev = [
+    "ruff>=0.7,<1.0",                  # Linter + formatter
+    "mypy>=1.13,<2.0",                 # Static type-check, --strict mode
+    "pytest>=8.3,<9.0",                # Test runner
+    "pytest-cov>=5.0,<7.0",            # Coverage reports
+    "pytest-mock>=3.14,<4.0",          # Mock helpers (subprocess, etc.)
+    "pytest-asyncio>=0.24,<1.0",       # Phase 2 async parallel deploys
+    "responses>=0.25,<1.0",            # HTTP mocking for `requests`
+    "syrupy>=4.7,<5.0",                # Snapshot tests (gold-master)
+    "hypothesis>=6.115,<7.0",          # Property-based tests
+    "testcontainers>=4.8,<5.0",        # Phase 1+ integration tests (real Docker)
+    "pre-commit>=4.0,<5.0",            # Git hook runner (`uv run pre-commit install`)
+    "types-paramiko>=3.4,<4.0",        # paramiko stubs for mypy
+    "types-requests>=2.32,<3.0",       # requests stubs for mypy
+    "types-pyyaml>=6.0,<7.0",          # PyYAML stubs for mypy
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nexus_deploy"]
+
+# =============================================================================
+# Ruff — linter + formatter
+# Replaces black, isort, flake8, pyflakes, pyupgrade in one tool.
+# =============================================================================
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [
+    "stacks/",                # Stack content (Dockerfiles, compose, seeds) not deploy code
+    "examples/",              # Workspace seeds — user content, not deploy code
+    "tofu/",                  # OpenTofu/HCL
+    "control-plane/",         # TypeScript/Astro frontend
+    # Pre-existing Python scripts under .github/scripts/ are out of scope
+    # for the Phase 0 quality bar — they predate the Python package, lint
+    # cleanup is a follow-up under issue #505. ruff and mypy ignore them
+    # for now; shellcheck still runs over scripts/*.sh as before.
+    ".github/scripts/",
+]
+
+[tool.ruff.lint]
+# Aggressive ruleset; we want failures to stop the PR.
+# E/W:    pycodestyle errors and warnings
+# F:      pyflakes (unused imports, undefined names)
+# I:      isort (import sorting)
+# B:      flake8-bugbear (likely-bug patterns)
+# UP:     pyupgrade (modern syntax)
+# SIM:    flake8-simplify
+# RUF:    Ruff-specific
+# S:      flake8-bandit (security)
+# N:      pep8-naming
+# D:      pydocstyle (docstring style — selective)
+# ANN:    flake8-annotations (type-hint enforcement; mypy --strict catches more, but ANN gives early signal)
+# PT:     flake8-pytest-style
+# RET:    flake8-return
+# PTH:    flake8-use-pathlib (prefer pathlib over os.path)
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S", "N", "PT", "RET", "PTH"]
+ignore = [
+    "E501",   # line-too-long — formatter handles, occasional comment overruns are ok
+    "S603",   # subprocess — we INTENTIONALLY shell out to ssh/tofu/docker, can't avoid
+    "S607",   # subprocess + partial path — same; we trust PATH for system tools
+    "B008",   # function call in default arg — pydantic/click/typer use this idiomatically
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are allowed assert (S101) and magic numbers; setup is shorter.
+"tests/**" = ["S101", "ANN", "D"]
+"src/nexus_deploy/__init__.py" = ["D104"]   # __init__.py docstring optional
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# =============================================================================
+# Mypy — static type checking
+# Strict mode from day 1. Per-module relaxations only with justification.
+# =============================================================================
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+disallow_any_generics = true
+disallow_untyped_decorators = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+files = ["src/nexus_deploy", "tests"]
+
+[[tool.mypy.overrides]]
+# testcontainers and a few other libs lag on type stubs — allow untyped imports
+# only here, not in our own code.
+module = ["testcontainers.*", "syrupy.*"]
+ignore_missing_imports = true
+
+# =============================================================================
+# Pytest — test runner
+# =============================================================================
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",                    # show summary of all but passed
+    "--strict-markers",       # unknown markers fail the run
+    "--strict-config",        # unknown config keys fail
+    "--showlocals",           # tracebacks include locals
+]
+markers = [
+    "unit: fast pure-Python tests with everything mocked",
+    "integration: tests that spin up real Docker containers or processes",
+    "e2e: tests that drive a real spin-up via gh workflow",
+    "slow: tests >1 sec; can be skipped during quick local iteration",
+]
+# pytest discovers and runs every test under `testpaths`. To narrow a run
+# (e.g. only fast unit tests during local iteration), pass `-m unit` or
+# another marker expression on the command line; markers are declared
+# above but no implicit filter is configured here.
+filterwarnings = [
+    "error",
+    # Allow specific known warnings from deps
+    "ignore::DeprecationWarning:paramiko.*",
+]
+asyncio_mode = "auto"
+
+# =============================================================================
+# Coverage — gate at 80% line coverage on src/nexus_deploy
+# =============================================================================
+[tool.coverage.run]
+source = ["src/nexus_deploy"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__main__.py",          # CLI entry; covered via integration tests
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+]
