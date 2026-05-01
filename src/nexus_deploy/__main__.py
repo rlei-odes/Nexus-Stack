@@ -68,7 +68,8 @@ def main() -> int:
         file=sys.stderr,
     )
     print(
-        "Available: --version, hello, config dump-shell [--tofu-dir PATH]",
+        "Available: --version, hello, config dump-shell "
+        "[--tofu-dir PATH (default: tofu/stack) | --stdin]",
         file=sys.stderr,
     )
     return 2

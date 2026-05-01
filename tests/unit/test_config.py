@@ -161,32 +161,39 @@ def test_dump_shell_empty_string_treated_as_missing() -> None:
     assert parsed["EXTERNAL_S3_LABEL"] == "External Storage"
 
 
-def test_dump_shell_eval_injection_safe() -> None:
+def test_dump_shell_eval_injection_safe(tmp_path: Path) -> None:
     """Adversarial values must NOT execute when the output is bash-eval'd.
 
     This is the security improvement over deploy.sh's `$()`-capture:
     the shlex.quote wrapping guarantees no command-substitution or
     variable-expansion can fire from a malicious secret value.
+
+    Marker files target ``tmp_path`` (a per-test pytest tmpdir) and use
+    a unique ``NEXUS_DEPLOY_INJECT_<pid>``-style prefix so a stray glob
+    can't ever delete unrelated files on a shared workstation.
     """
+    canary_dir = tmp_path / "canaries"
+    canary_dir.mkdir()
+    payload_dir = shlex.quote(str(canary_dir))
     raw = json.dumps(
         {
-            "kestra_admin_password": "$(touch /tmp/INJECTED-$$)",
-            "infisical_admin_password": "`touch /tmp/INJECTED-bt-$$`",
-            "gitea_admin_password": '"; touch /tmp/INJECTED-semi-$$; echo "',
+            "kestra_admin_password": f"$(touch {payload_dir}/NEXUS_DEPLOY_INJECT_dollar)",
+            "infisical_admin_password": f"`touch {payload_dir}/NEXUS_DEPLOY_INJECT_backtick`",
+            "gitea_admin_password": (f'"; touch {payload_dir}/NEXUS_DEPLOY_INJECT_semi; echo "'),
         }
     )
     config = NexusConfig.from_secrets_json(raw)
     parsed = _parse_dump(config.dump_shell())
-    assert parsed["KESTRA_PASS"] == "$(touch /tmp/INJECTED-$$)"
-    assert parsed["INFISICAL_PASS"] == "`touch /tmp/INJECTED-bt-$$`"
-    assert parsed["GITEA_ADMIN_PASS"] == '"; touch /tmp/INJECTED-semi-$$; echo "'
-    # Side-channel check: no tmpfile materialised. We deliberately use a
-    # known fixed location matching the injection payload above; ruff's
-    # S108 (insecure tmp) is the wrong call for an injection-detection
-    # canary that needs the EXACT path the attacker would write to.
-    for marker in Path("/tmp").glob("INJECTED-*"):  # noqa: S108
-        marker.unlink()
-        pytest.fail(f"eval-injection got through: {marker}")
+    # Values come back through bash-eval verbatim — proving they were
+    # treated as opaque strings, not interpolated.
+    assert parsed["KESTRA_PASS"] == f"$(touch {payload_dir}/NEXUS_DEPLOY_INJECT_dollar)"
+    assert parsed["INFISICAL_PASS"] == f"`touch {payload_dir}/NEXUS_DEPLOY_INJECT_backtick`"
+    assert parsed["GITEA_ADMIN_PASS"] == (
+        f'"; touch {payload_dir}/NEXUS_DEPLOY_INJECT_semi; echo "'
+    )
+    # Side-channel: glob the per-test canary dir (NOT shared /tmp).
+    materialised = sorted(canary_dir.glob("NEXUS_DEPLOY_INJECT_*"))
+    assert materialised == [], f"eval-injection got through: {materialised}"
 
 
 # ---------------------------------------------------------------------------

@@ -123,6 +123,16 @@ jobs:
         with:
           tofu_version: 1.10.0
 
+      - name: Install uv
+        # Required by `scripts/deploy.sh` for the `nexus_deploy` Python
+        # package (#505 phase-1: config.py replaces deploy.sh's
+        # SECRETS_JSON jq pipeline). Pinned to the same version the
+        # python-tests CI uses so behaviour matches across workflows.
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.7"
+          enable-cache: true
+
       - name: Install cloudflared
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared

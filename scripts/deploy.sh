@@ -121,17 +121,31 @@ fi
 
 # Extract secrets via nexus_deploy.config (Phase 1, #505 Modul 1.3).
 # Replaces the previous 88-line jq pipeline that lifted SECRETS_JSON
-# into bash globals. Same end-state — same ~70 named bash vars (the
-# 88 jq calls collapsed to 70 unique LHS targets, see
-# src/nexus_deploy/config.py _FIELDS) — but the schema lives in
-# Python and gets unit-tested instead of being eyeballed during
+# into bash globals. Same end-state — 88 named bash vars (one per
+# entry in src/nexus_deploy/config.py:_FIELDS) — but the schema lives
+# in Python and gets unit-tested instead of being eyeballed during
 # review. shlex.quote in dump_shell makes the eval injection-safe;
 # the legacy `$()`-capture was vulnerable to backtick / `$()` /
 # `; cmd` payloads in any secret value.
-if ! eval "$(printf '%s' "$SECRETS_JSON" | uv run --quiet --project "$PROJECT_ROOT" python -m nexus_deploy config dump-shell --stdin)"; then
+#
+# Capture-then-eval (NOT `if ! eval "$(...)"; then`): if the python
+# subprocess fails, command-substitution still produces empty stdout
+# and `eval ""` returns 0 — silently masking the failure. The
+# `if ! VAR=$(pipeline)` form propagates the subshell's exit code
+# (with pipefail active per the script's `set -euo pipefail`) so a
+# python crash, missing uv binary, or invalid JSON all abort here.
+# Empty-output check guards the (unlikely but possible) case of a
+# zero-exit but blank rendering.
+if ! RENDERED_SECRETS=$(printf '%s' "$SECRETS_JSON" | uv run --quiet --project "$PROJECT_ROOT" python -m nexus_deploy config dump-shell --stdin); then
     echo -e "${RED}Error: nexus_deploy.config dump-shell failed${NC}"
     exit 1
 fi
+if [ -z "$RENDERED_SECRETS" ]; then
+    echo -e "${RED}Error: nexus_deploy.config dump-shell produced empty output${NC}"
+    exit 1
+fi
+eval "$RENDERED_SECRETS"
+unset RENDERED_SECRETS
 
 # Get SSH Service Token for headless authentication
 SSH_TOKEN_JSON=$(cd "$TOFU_DIR" && tofu output -json ssh_service_token 2>/dev/null || echo "{}")

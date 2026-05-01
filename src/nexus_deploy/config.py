@@ -1,16 +1,16 @@
 """Typed parsing of `tofu output -json secrets` (Phase 1, #505).
 
-Replaces the 70-field jq-pipeline block in `scripts/deploy.sh:115-212`
-that lifts SECRETS_JSON into bash globals. The migration uses the
+Replaces the 88-field jq-pipeline block in `scripts/deploy.sh:115-212`
+that lifted SECRETS_JSON into bash globals. The migration uses the
 strangler-fig pattern: deploy.sh keeps running, but instead of running
 its own jq pipeline it `eval`s the output of `python -m nexus_deploy
 config dump-shell`. Same bash globals after eval, single Python source
 of truth for the secret schema.
 
-Field-mapping ground truth: every entry in ``_FIELDS`` corresponds 1:1
-to a line in deploy.sh between L123 and L212. Adding a new secret means
-editing ``_FIELDS`` here AND adding the matching tofu variable; the
-deploy.sh jq line is removed in the same PR.
+Field-mapping ground truth: every entry in ``_FIELDS`` (88 tuples)
+corresponds 1:1 to a jq line in the legacy deploy.sh block (L123-212).
+Adding a new secret means editing ``_FIELDS`` here AND adding the
+matching tofu variable.
 
 Out of scope (these stay in deploy.sh):
 - ``DOMAIN`` / ``ADMIN_EMAIL`` — read from ``config.tfvars`` (L60-61),
