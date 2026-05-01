@@ -4,6 +4,7 @@ Phase 1 dispatch surface. Subcommands land here as their modules ship.
 Currently:
 - ``config dump-shell`` (#505 Modul 1.3)
 - ``infisical bootstrap`` (#505 Modul 1.1)
+- ``secret-sync --stack <jupyter|marimo>`` (#505 Modul 1.2)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from nexus_deploy.infisical import (
     InfisicalClient,
     compute_folders,
 )
+from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -178,8 +180,146 @@ def _infisical_bootstrap(args: list[str]) -> int:
     return 0 if result.failed == 0 else 1
 
 
+_VALID_STACKS = ("jupyter", "marimo")
+
+
+def _secret_sync(args: list[str]) -> int:
+    """`nexus-deploy secret-sync --stack <jupyter|marimo>`.
+
+    Fetches Infisical secrets, filters/escapes them, and writes the
+    result to ``/opt/docker-server/stacks/<stack>/.infisical.env`` on
+    the server. On change, restarts the stack via ``docker compose
+    up -d <stack>``. Mirrors deploy.sh:4554-4911 (Jupyter) +
+    deploy.sh:4914-5092 (Marimo) — both blocks were byte-identical
+    apart from stack-name + paths, so the migration collapses them
+    to one rendering layer parametrised by :class:`StackTarget`.
+
+    Required env: ``PROJECT_ID``, ``INFISICAL_TOKEN``.
+    Optional env: ``INFISICAL_ENV`` (default ``dev``), ``GITEA_TOKEN``
+    (special-case append — auto-generated post-Gitea-bootstrap, not
+    in Infisical at sync time).
+
+    Exit codes (deploy.sh's case-block dispatches):
+    - 0: success, OR sync correctly chose not to write (one of the
+         two outage gates fired — operator sees a stderr warning,
+         existing file untouched, deploy.sh continues)
+    - 1: partial — file written but at least one folder fetch failed
+         (deploy.sh-side: warn-and-continue; the operator can fix the
+         offending folder via the Infisical UI without aborting)
+    - 2: hard failure — invalid `--stack`, missing required env,
+         transport (ssh) failure, no parseable RESULT line from the
+         remote script, unexpected exception. deploy.sh-side: abort.
+    """
+    stack: str | None = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--stack":
+            if i + 1 >= len(args):
+                print("secret-sync: --stack requires a value", file=sys.stderr)
+                return 2
+            stack = args[i + 1]
+            i += 2
+        else:
+            print(f"secret-sync: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+    if stack is None:
+        print("secret-sync: --stack <jupyter|marimo> is required", file=sys.stderr)
+        return 2
+    if stack not in _VALID_STACKS:
+        print(
+            f"secret-sync: unknown stack {stack!r} (expected one of {_VALID_STACKS})",
+            file=sys.stderr,
+        )
+        return 2
+
+    project_id = os.environ.get("PROJECT_ID", "").strip()
+    token = os.environ.get("INFISICAL_TOKEN", "").strip()
+    if not project_id or not token:
+        print(
+            "secret-sync: PROJECT_ID and INFISICAL_TOKEN env vars required",
+            file=sys.stderr,
+        )
+        return 2
+    infisical_env = os.environ.get("INFISICAL_ENV") or "dev"
+    gitea_token = os.environ.get("GITEA_TOKEN") or ""
+
+    target = StackTarget(name=stack)
+    try:
+        result = run_sync_for_stack(
+            target,
+            project_id=project_id,
+            infisical_token=token,
+            infisical_env=infisical_env,
+            gitea_token=gitea_token,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        # Same defence-in-depth as `infisical bootstrap`: never print
+        # exc.cmd (carries argv that COULD include secrets if a future
+        # bug regressed _remote.ssh_run_script's stdin contract).
+        print(
+            f"secret-sync: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        # Programming errors (KeyError, AttributeError, etc.) — Python's
+        # default rc=1 would collide with the partial-failure semantic
+        # in deploy.sh, so force rc=2. Class name only — no str/repr,
+        # which could embed secret-bearing values.
+        print(
+            f"secret-sync: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # No parseable RESULT line — remote script broke in an unhandled
+    # way. Treat as hard failure (rc=2) so deploy.sh aborts; the script
+    # stdout/stderr is already in the workflow log for diagnosis.
+    if (
+        result.pushed == 0
+        and result.failed_folders == 0
+        and result.succeeded_folders == 0
+        and not result.wrote
+    ):
+        # Note: this matches the genuine "all-zeros" outcome of an
+        # explicit no-RESULT parse OR the legitimate jq-missing path
+        # (which also emits all-zeros). Both should NOT abort the
+        # deploy; the inner script printed its own warning to stderr.
+        # We rely on the absence of `wrote=1` AND zero-counts as the
+        # signal — and return rc=0 so deploy.sh just continues.
+        print(
+            f"secret-sync: {stack} produced no usable result (see prior warnings)",
+        )
+        return 0
+
+    if result.wrote and result.failed_folders == 0 and result.collisions == 0:
+        print(
+            f"secret-sync: {stack} wrote {result.pushed} env-vars (plaintext, exact key names)",
+        )
+        return 0
+    if result.wrote and result.failed_folders > 0:
+        print(
+            f"secret-sync: {stack} wrote {result.pushed} env-vars "
+            f"({result.failed_folders} folder fetch(es) failed — secret set is incomplete)",
+        )
+        return 1
+    if result.wrote and result.collisions > 0:
+        print(
+            f"secret-sync: {stack} wrote {result.pushed} env-vars "
+            f"({result.collisions} cross-folder collision(s) — first-wins applied)",
+        )
+        return 0
+    # wrote=False with non-zero counters — one of the two outage gates
+    # fired (succeeded==0 or pushed==0). Existing file untouched.
+    # Operator already saw the cause from the inner script's stderr.
+    print(
+        f"secret-sync: {stack} skipped .infisical.env update (kept previous; see prior warning)",
+    )
+    return 0
+
+
 def main() -> int:
-    """Phase-1 dispatcher. ``config`` and ``infisical`` subcommands shipped."""
+    """Phase-1 dispatcher. ``config``, ``infisical``, and ``secret-sync`` shipped."""
     args = sys.argv[1:]
     if args == ["--version"]:
         print(__version__)
@@ -191,6 +331,8 @@ def main() -> int:
         return _config_dump_shell(args[2:])
     if args[:2] == ["infisical", "bootstrap"]:
         return _infisical_bootstrap(args[2:])
+    if args[:1] == ["secret-sync"]:
+        return _secret_sync(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -198,7 +340,8 @@ def main() -> int:
     print(
         "Available: --version, hello, "
         "config dump-shell [--tofu-dir PATH (default: tofu/stack) | --stdin], "
-        "infisical bootstrap (reads SECRETS_JSON from stdin + env vars)",
+        "infisical bootstrap (reads SECRETS_JSON from stdin + env vars), "
+        "secret-sync --stack <jupyter|marimo>",
         file=sys.stderr,
     )
     return 2
