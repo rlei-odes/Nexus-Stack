@@ -49,11 +49,11 @@ brew install uv          # macOS
 # Sync dependencies (creates .venv, installs all deps + this package)
 uv sync
 
-# Run the same checks CI runs
+# Run the same checks CI runs (same flags as .github/workflows/python-tests.yml)
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy
-uv run pytest
+uv run pytest --cov=src/nexus_deploy --cov-fail-under=80 --cov-report=term-missing
 
 # Auto-format / auto-fix
 uv run ruff format .
