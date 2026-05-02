@@ -107,7 +107,18 @@ def test_escape_dotenv_value_basic() -> None:
     assert escape_dotenv_value('mix"\\') == 'mix\\"\\\\'
 
 
-@given(st.text(alphabet=st.characters(exclude_characters="\n\r\x00$`"), max_size=40))
+@given(
+    st.text(
+        alphabet=st.characters(
+            exclude_characters="\n\r\x00$`",
+            # Surrogates can't round-trip through UTF-8 → bash subprocess
+            # — exclude them at the strategy level. Real Infisical values
+            # don't carry lone surrogates either.
+            exclude_categories=("Cs",),
+        ),
+        max_size=40,
+    )
+)
 @settings(max_examples=50, deadline=None)
 def test_escape_dotenv_roundtrip_via_bash_eval(value: str) -> None:
     """Property: escape → embed in `K="..."` → bash-eval-parse → original.

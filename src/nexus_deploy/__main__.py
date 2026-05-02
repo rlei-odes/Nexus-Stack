@@ -24,7 +24,7 @@ from nexus_deploy.infisical import (
     compute_folders,
 )
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
-from nexus_deploy.seeder import run_seed_for_repo
+from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -390,6 +390,23 @@ def _seed(args: list[str]) -> int:
         )
         return 2
 
+    # Validate --prefix: must be empty (seed into repo root) OR end
+    # with `/` AND only contain chars from the safe filename set.
+    # Rationale: prefix is concatenated with the relative path
+    # (``f"{prefix}{rel.as_posix()}"``); without the trailing slash
+    # we'd get ``nexus_seedskestra/...``; without the safe-char check
+    # the resulting repo_path would fail _VALID_REPO_PATH_RE and every
+    # file would be silently dropped — surfacing this at CLI parse
+    # time instead lets the operator fix the typo without a wasted
+    # spin-up roundtrip.
+    if prefix and (not prefix.endswith("/") or not _is_safe_repo_path(prefix)):
+        print(
+            f"seed: invalid --prefix {prefix!r} — must be empty or end "
+            "with '/' and contain only [A-Za-z0-9._/-]",
+            file=sys.stderr,
+        )
+        return 2
+
     token = os.environ.get("GITEA_TOKEN", "").strip()
     if not token:
         print("seed: GITEA_TOKEN env var required", file=sys.stderr)
@@ -435,7 +452,14 @@ def _seed(args: list[str]) -> int:
 
 
 def main() -> int:
-    """Phase-1 dispatcher. ``config``, ``infisical``, ``secret-sync``, ``seed`` shipped."""
+    """Subcommand dispatcher. Shipped subcommands by phase:
+
+    - Phase 1: ``config dump-shell``, ``infisical bootstrap``,
+      ``secret-sync``
+    - Phase 2: ``seed``
+
+    More land as the migration progresses; see #505.
+    """
     args = sys.argv[1:]
     if args == ["--version"]:
         print(__version__)

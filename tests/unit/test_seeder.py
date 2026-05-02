@@ -729,3 +729,37 @@ def test_cli_seed_unknown_arg_returns_2() -> None:
     rc, _, err = _run_cli(["--repo", "admin/ws", "--bogus"], env={"GITEA_TOKEN": "t"})
     assert rc == 2
     assert "unknown arg" in err
+
+
+@pytest.mark.parametrize(
+    ("prefix", "valid"),
+    [
+        ("nexus_seeds/", True),
+        ("custom/", True),
+        ("", True),  # empty = seed into repo root
+        ("nexus_seeds", False),  # missing trailing slash
+        ("nexus seeds/", False),  # space (fails safe-char check)
+        ("nexus_seeds`/", False),  # backtick (fails safe-char check)
+        ("nexus_seeds$/", False),  # dollar (fails safe-char check)
+    ],
+)
+def test_cli_seed_prefix_validation(prefix: str, valid: bool) -> None:
+    """`--prefix` must be empty or end with `/` and contain only safe chars.
+
+    Regression for the round-2 finding: without trailing slash, the
+    naive concatenation produced repo_paths like `nexus_seedskestra/...`
+    and seeded into the wrong location. With unsafe chars, the safety
+    regex silently dropped every file.
+    """
+    rc, _, err = _run_cli(
+        ["--repo", "admin/ws", "--root", "/does/not/exist", "--prefix", prefix],
+        env={"GITEA_TOKEN": "t"},
+    )
+    if valid:
+        # rc=0 because --root doesn't exist (non-fatal early-return),
+        # NOT because of the prefix. We're only checking the prefix
+        # validation didn't reject. So rc != 2 is the assertion.
+        assert rc != 2, f"prefix={prefix!r} should validate, got err={err!r}"
+    else:
+        assert rc == 2
+        assert "invalid --prefix" in err

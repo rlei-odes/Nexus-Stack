@@ -58,8 +58,10 @@ _REMOTE_PUSH_DIR = "/tmp/seed-push"  # noqa: S108 — server path, not credentia
 # Path-safety regex from deploy.sh:3384. Restricts file paths to a
 # safe filesystem subset (ASCII alphanumerics + dot/dash/underscore/
 # slash). Any character outside this set causes the file to be
-# rejected and counted as failed. Defence in depth against shell-
-# injection via filenames AND against directory-traversal.
+# dropped from the SeedFile list with a stderr warning — it does NOT
+# reach the remote loop and therefore does NOT show up in the remote
+# RESULT failed= count. Defence in depth against shell-injection via
+# filenames AND against directory-traversal.
 _VALID_REPO_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 # RESULT-line format. Same wire-format shape as Modul 1.2's secret-sync
@@ -99,8 +101,15 @@ class SeedResult:
     Mirrors the bash counters one-to-one. ``created`` includes both
     HTTP 201 (new file) and HTTP 200 (some Gitea versions). ``skipped``
     is HTTP 422 (file already exists; user edits persist — #501
-    contract). ``failed`` is anything else, including transport
-    failures, 401/403 (bad token), 5xx, and unsafe-path rejections.
+    contract). ``failed`` is anything the remote loop saw and could
+    not classify as 200/201/422 — transport failures, 401/403 (bad
+    token), 5xx, etc.
+
+    Unsafe-path rejections happen LOCALLY in :func:`list_seed_files`
+    before payloads are generated, so they never reach the remote loop
+    and are NOT reflected here. Operators see those as ``⚠ Skipping
+    seed with unsafe path:`` warnings on stderr alongside the bash
+    warnings.
     """
 
     created: int
