@@ -51,23 +51,24 @@ FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "workspace_
         ("nexus_seeds/with`backtick`.txt", False),
         ("nexus_seeds/non-ascii-é.txt", False),
         ("nexus_seeds/with;semi.txt", False),
-        ("../escape.txt", False),  # `..` is rejected by Path.resolve(), not regex —
-        # but the regex also rejects via `.` being only allowed within segments
-        # (path itself starts with .. → contains `..`-substring → still passes regex
-        # but Path.resolve() catches it). Path-safety is two-layer.
+        # `..` and `/` are both in the safe-char set, so this passes
+        # the regex layer. The actual escape protection is two-layer
+        # (regex + Path.resolve() relative_to) — see
+        # ``test_round_5_path_safety_rejects_dotdot_escape`` for the
+        # second layer.
+        ("../escape.txt", True),
         ("", False),
     ],
 )
 def test_is_safe_repo_path_parameterized(path: str, ok: bool) -> None:
-    """R5 — repo-path safety regex matches deploy.sh:3384."""
-    if path == "../escape.txt":
-        # The regex alone allows this (only checks chars, not structure).
-        # The full safety story is: regex + Path.resolve() relative_to check.
-        # This row is here to document that — the actual escape protection
-        # lives in list_seed_files's resolve() check (R5 invariant test).
-        assert _is_safe_repo_path(path) is True
-    else:
-        assert _is_safe_repo_path(path) is ok
+    """R5 — repo-path safety regex matches deploy.sh:3384.
+
+    This test only covers the char-level regex. Structural escape
+    protection (``..`` segments, leading ``/``, empty segments) is
+    enforced separately in ``list_seed_files`` via Path.resolve()
+    + relative_to() and in ``_seed`` via per-segment validation.
+    """
+    assert _is_safe_repo_path(path) is ok
 
 
 @given(st.text(min_size=1, max_size=30))
@@ -237,7 +238,13 @@ def test_encode_payloads_filename_format() -> None:
 
 
 def test_encode_payloads_json_shape() -> None:
-    """JSON has url_path, content, message — all in stable order."""
+    """JSON carries the three expected keys (url_path, content, message).
+
+    Key ordering on disk is alphabetical (``encode_payloads`` uses
+    ``sort_keys=True`` for byte-stable serialisation), but ordering
+    isn't semantically meaningful after json.loads() — this test
+    asserts on the parsed dict, not the byte form.
+    """
     files = [
         SeedFile(
             repo_path="nexus_seeds/x.txt",
