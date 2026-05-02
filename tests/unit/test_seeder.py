@@ -734,22 +734,33 @@ def test_cli_seed_unknown_arg_returns_2() -> None:
 @pytest.mark.parametrize(
     ("prefix", "valid"),
     [
+        # Valid: empty (seed into root) or safe relative dir ending with /
         ("nexus_seeds/", True),
         ("custom/", True),
+        ("a/b/c/", True),  # nested OK
         ("", True),  # empty = seed into repo root
+        # Invalid — char-level
         ("nexus_seeds", False),  # missing trailing slash
-        ("nexus seeds/", False),  # space (fails safe-char check)
-        ("nexus_seeds`/", False),  # backtick (fails safe-char check)
-        ("nexus_seeds$/", False),  # dollar (fails safe-char check)
+        ("nexus seeds/", False),  # space (fails per-segment safe-char check)
+        ("nexus_seeds`/", False),  # backtick
+        ("nexus_seeds$/", False),  # dollar
+        # Invalid — path-traversal / structural (round-3 finding)
+        ("../", False),  # parent-dir escape
+        ("a/../b/", False),  # parent-dir mid-path
+        ("./", False),  # current-dir token
+        ("/foo/", False),  # leading slash → absolute-looking
+        ("a//b/", False),  # empty segment (double slash)
+        ("//", False),  # only empty segments
+        ("/", False),  # bare slash → empty body segments
     ],
 )
 def test_cli_seed_prefix_validation(prefix: str, valid: bool) -> None:
-    """`--prefix` must be empty or end with `/` and contain only safe chars.
+    """`--prefix` must be empty or a safe relative dir ending with `/`.
 
-    Regression for the round-2 finding: without trailing slash, the
-    naive concatenation produced repo_paths like `nexus_seedskestra/...`
-    and seeded into the wrong location. With unsafe chars, the safety
-    regex silently dropped every file.
+    Round-2 caught char-level issues (missing trailing slash, unsafe chars).
+    Round-3 caught path-traversal vectors (`..`, leading `/`, empty
+    segments) that the char-level regex alone permitted because `..`
+    and `/` are both in the safe-char set.
     """
     rc, _, err = _run_cli(
         ["--repo", "admin/ws", "--root", "/does/not/exist", "--prefix", prefix],

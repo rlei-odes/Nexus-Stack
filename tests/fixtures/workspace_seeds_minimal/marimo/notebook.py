@@ -1,4 +1,4 @@
 import marimo as mo
 
-# zero ASCII content
+# zero non-ASCII content (contrasts with non_ascii.py fixture)
 print("hi")

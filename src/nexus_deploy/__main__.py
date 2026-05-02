@@ -390,22 +390,36 @@ def _seed(args: list[str]) -> int:
         )
         return 2
 
-    # Validate --prefix: must be empty (seed into repo root) OR end
-    # with `/` AND only contain chars from the safe filename set.
-    # Rationale: prefix is concatenated with the relative path
-    # (``f"{prefix}{rel.as_posix()}"``); without the trailing slash
-    # we'd get ``nexus_seedskestra/...``; without the safe-char check
-    # the resulting repo_path would fail _VALID_REPO_PATH_RE and every
-    # file would be silently dropped — surfacing this at CLI parse
-    # time instead lets the operator fix the typo without a wasted
-    # spin-up roundtrip.
-    if prefix and (not prefix.endswith("/") or not _is_safe_repo_path(prefix)):
-        print(
-            f"seed: invalid --prefix {prefix!r} — must be empty or end "
-            "with '/' and contain only [A-Za-z0-9._/-]",
-            file=sys.stderr,
-        )
-        return 2
+    # Validate --prefix: must be empty (seed into repo root) OR a
+    # safe relative directory ending with `/`. The safe-char regex
+    # alone is not enough because it permits ``..``, leading ``/``,
+    # and empty segments (``//``) — all of which produce dangerous
+    # repo_paths when concatenated with the relative file path:
+    #   ``../`` + ``kestra/x.yaml`` → ``../kestra/x.yaml``  (escape)
+    #   ``/foo/`` + ``kestra/x.yaml`` → ``/foo/kestra/x.yaml`` (absolute)
+    #   ``a//b/`` + ``...``           → ``a//b/...`` (empty segment)
+    # Surfacing this at CLI parse time saves a wasted spin-up roundtrip.
+    if prefix:
+        prefix_segments = prefix.split("/")
+        # Trailing "/" → last segment is empty; that's the required form.
+        # We slice it off before per-segment validation.
+        if prefix_segments[-1] != "":
+            print(
+                f"seed: invalid --prefix {prefix!r} — must end with '/'",
+                file=sys.stderr,
+            )
+            return 2
+        body_segments = prefix_segments[:-1]
+        if not body_segments or any(
+            seg in ("", ".", "..") or not _is_safe_repo_path(seg) for seg in body_segments
+        ):
+            print(
+                f"seed: invalid --prefix {prefix!r} — must be empty or a "
+                "safe relative path ending with '/' (no '..', no leading "
+                "'/', no empty segments, only [A-Za-z0-9._-] per segment)",
+                file=sys.stderr,
+            )
+            return 2
 
     token = os.environ.get("GITEA_TOKEN", "").strip()
     if not token:
