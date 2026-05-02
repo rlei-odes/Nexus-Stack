@@ -5,6 +5,8 @@ Currently:
 - ``config dump-shell`` (#505 Modul 1.3)
 - ``infisical bootstrap`` (#505 Modul 1.1)
 - ``secret-sync --stack <jupyter|marimo>`` (#505 Modul 1.2)
+- ``seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]``
+  (#505 Modul 2.1)
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from nexus_deploy.infisical import (
     compute_folders,
 )
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
+from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -322,8 +325,155 @@ def _secret_sync(args: list[str]) -> int:
     return 0
 
 
+def _seed(args: list[str]) -> int:
+    """`nexus-deploy seed --repo <owner>/<name> [--root PATH] [--prefix STR]`.
+
+    Walks the local seed tree (default ``examples/workspace-seeds/``),
+    base64-encodes each file, rsyncs the JSON payloads to the server,
+    and POSTs each one to Gitea's Contents API under the prefix
+    (default ``nexus_seeds/``). Mirrors the legacy
+    ``seed_workspace_files`` deploy.sh function (removed in #505 Modul
+    2.1) which had two call-sites — non-mirror mode (admin-owned repo)
+    and mirror+user mode (user's fork). Both call-sites now invoke
+    this CLI with the appropriate ``--repo`` arg.
+
+    Required env: ``GITEA_TOKEN``.
+
+    Exit codes (deploy.sh's case-block dispatches):
+    - 0: all seeds either created (HTTP 201/200) or correctly skipped
+         (HTTP 422 = file already exists, user edits persist — #501
+         contract).
+    - 1: partial — some files failed but at least one succeeded.
+         deploy.sh-side: yellow warning, continue.
+    - 2: hard failure — bad ``--repo`` format, missing token, transport
+         (ssh/rsync) failure, no parseable RESULT line, unexpected
+         exception. deploy.sh-side: abort.
+    """
+    repo: str | None = None
+    root_arg: str | None = None
+    prefix = "nexus_seeds/"
+    i = 0
+    while i < len(args):
+        if args[i] == "--repo":
+            if i + 1 >= len(args):
+                print("seed: --repo requires a value", file=sys.stderr)
+                return 2
+            repo = args[i + 1]
+            i += 2
+        elif args[i] == "--root":
+            if i + 1 >= len(args):
+                print("seed: --root requires a value", file=sys.stderr)
+                return 2
+            root_arg = args[i + 1]
+            i += 2
+        elif args[i] == "--prefix":
+            if i + 1 >= len(args):
+                print("seed: --prefix requires a value", file=sys.stderr)
+                return 2
+            prefix = args[i + 1]
+            i += 2
+        else:
+            print(f"seed: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+
+    if repo is None or "/" not in repo:
+        print(
+            "seed: --repo <owner>/<name> is required (must contain '/')",
+            file=sys.stderr,
+        )
+        return 2
+    repo_owner, _, repo_name = repo.partition("/")
+    if not repo_owner or not repo_name:
+        print(
+            f"seed: invalid --repo {repo!r} — both owner and name required",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Validate --prefix: must be empty (seed into repo root) OR a
+    # safe relative directory ending with `/`. The safe-char regex
+    # alone is not enough because it permits ``..``, leading ``/``,
+    # and empty segments (``//``) — all of which produce dangerous
+    # repo_paths when concatenated with the relative file path:
+    #   ``../`` + ``kestra/x.yaml`` → ``../kestra/x.yaml``  (escape)
+    #   ``/foo/`` + ``kestra/x.yaml`` → ``/foo/kestra/x.yaml`` (absolute)
+    #   ``a//b/`` + ``...``           → ``a//b/...`` (empty segment)
+    # Surfacing this at CLI parse time saves a wasted spin-up roundtrip.
+    if prefix:
+        prefix_segments = prefix.split("/")
+        # Trailing "/" → last segment is empty; that's the required form.
+        # We slice it off before per-segment validation.
+        if prefix_segments[-1] != "":
+            print(
+                f"seed: invalid --prefix {prefix!r} — must end with '/'",
+                file=sys.stderr,
+            )
+            return 2
+        body_segments = prefix_segments[:-1]
+        if not body_segments or any(
+            seg in ("", ".", "..") or not _is_safe_repo_path(seg) for seg in body_segments
+        ):
+            print(
+                f"seed: invalid --prefix {prefix!r} — must be empty or a "
+                "safe relative path ending with '/' (no '..', no leading "
+                "'/', no empty segments, only [A-Za-z0-9._-] per segment)",
+                file=sys.stderr,
+            )
+            return 2
+
+    token = os.environ.get("GITEA_TOKEN", "").strip()
+    if not token:
+        print("seed: GITEA_TOKEN env var required", file=sys.stderr)
+        return 2
+
+    root = Path(root_arg) if root_arg else Path("examples/workspace-seeds")
+    if not root.is_dir():
+        print(
+            f"seed: root {root!s} is not a directory (skipping with rc=0)",
+            file=sys.stderr,
+        )
+        # Mirror deploy.sh:3340 — missing seed dir is non-fatal.
+        return 0
+
+    try:
+        result = run_seed_for_repo(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            root=root,
+            token=token,
+            prefix=prefix,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        # Same defence-in-depth as `secret-sync`: never print exc.cmd /
+        # str(exc) / repr(exc) — they may carry the token.
+        print(f"seed: transport failure ({type(exc).__name__})", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        # Force rc=2 (Python's default rc=1 collides with our
+        # partial-failure semantic).
+        print(f"seed: unexpected error ({type(exc).__name__})", file=sys.stderr)
+        return 2
+
+    print(
+        f"seed: {repo_owner}/{repo_name} — created={result.created} "
+        f"skipped={result.skipped} failed={result.failed}"
+    )
+    if result.failed > 0:
+        if result.created + result.skipped == 0:
+            return 2
+        return 1
+    return 0
+
+
 def main() -> int:
-    """Phase-1 dispatcher. ``config``, ``infisical``, and ``secret-sync`` shipped."""
+    """Subcommand dispatcher. Shipped subcommands by phase:
+
+    - Phase 1: ``config dump-shell``, ``infisical bootstrap``,
+      ``secret-sync``
+    - Phase 2: ``seed``
+
+    More land as the migration progresses; see #505.
+    """
     args = sys.argv[1:]
     if args == ["--version"]:
         print(__version__)
@@ -337,6 +487,8 @@ def main() -> int:
         return _infisical_bootstrap(args[2:])
     if args[:1] == ["secret-sync"]:
         return _secret_sync(args[1:])
+    if args[:1] == ["seed"]:
+        return _seed(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -345,7 +497,8 @@ def main() -> int:
         "Available: --version, hello, "
         "config dump-shell [--tofu-dir PATH (default: tofu/stack) | --stdin], "
         "infisical bootstrap (reads SECRETS_JSON from stdin + env vars), "
-        "secret-sync --stack <jupyter|marimo>",
+        "secret-sync --stack <jupyter|marimo>, "
+        "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]",
         file=sys.stderr,
     )
     return 2

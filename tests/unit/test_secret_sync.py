@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from hypothesis import given, settings
@@ -29,6 +29,13 @@ from nexus_deploy.secret_sync import (
     render_remote_script,
     run_sync_for_stack,
 )
+
+# Surrogate Unicode category for the dotenv-escape property test. Pulled
+# out as a typed constant so mypy --strict picks up the Literal type;
+# an inline ``("Cs",)`` infers as ``tuple[str]`` which doesn't satisfy
+# hypothesis's ``Collection[Literal["L", "Lu", …]]`` parameter type.
+_SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
+
 
 # ---------------------------------------------------------------------------
 # StackTarget — per-stack divergences match deploy.sh's path conventions
@@ -107,7 +114,26 @@ def test_escape_dotenv_value_basic() -> None:
     assert escape_dotenv_value('mix"\\') == 'mix\\"\\\\'
 
 
-@given(st.text(alphabet=st.characters(exclude_characters="\n\r\x00$`"), max_size=40))
+@given(
+    # Surrogates ("Cs") can't round-trip through UTF-8 → bash subprocess
+    # — exclude them at the strategy level. Real Infisical values don't
+    # carry lone surrogates either. The exclude list also drops:
+    # newlines / CR (filtered upstream by has_multiline), NUL (env-var
+    # values can't carry NUL), $ and backtick (deploy.sh's sed escape
+    # doesn't neutralise either — parity choice, see docstring).
+    #
+    # ``_SURROGATE_CATEGORY`` is hoisted to a module-level constant
+    # with an explicit Literal annotation; an inline ``("Cs",)`` infers
+    # as ``tuple[str]`` and mypy --strict rejects that against
+    # hypothesis's typed ``Collection[Literal["L", "Lu", …]]``.
+    st.text(
+        alphabet=st.characters(
+            exclude_characters="\n\r\x00$`",
+            exclude_categories=_SURROGATE_CATEGORY,
+        ),
+        max_size=40,
+    )
+)
 @settings(max_examples=50, deadline=None)
 def test_escape_dotenv_roundtrip_via_bash_eval(value: str) -> None:
     """Property: escape → embed in `K="..."` → bash-eval-parse → original.
