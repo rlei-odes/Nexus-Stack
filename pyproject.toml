@@ -69,6 +69,7 @@ extend-exclude = [
     "examples/",              # Workspace seeds — user content, not deploy code
     "tofu/",                  # OpenTofu/HCL
     "control-plane/",         # TypeScript/Astro frontend
+    "tests/fixtures/",        # Synthetic test fixtures — not Python source
     # Pre-existing Python scripts under .github/scripts/ are out of scope
     # for the Phase 0 quality bar — they predate the Python package, lint
     # cleanup is a follow-up under issue #505. ruff and mypy ignore them
@@ -130,6 +131,9 @@ no_implicit_reexport = true
 show_error_codes = true
 pretty = true
 files = ["src/nexus_deploy", "tests"]
+# Synthetic test fixtures may contain non-Python content (emojis,
+# malformed bytes for adversarial encoding tests, etc.) — skip them.
+exclude = "tests/fixtures/"
 
 [[tool.mypy.overrides]]
 # testcontainers and a few other libs lag on type stubs — allow untyped imports
