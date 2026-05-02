@@ -146,8 +146,13 @@ def list_seed_files(root: Path, prefix: str = "nexus_seeds/") -> list[SeedFile]:
       intentionally seeded).
     - ``..``-escape rejection via ``Path.resolve()`` comparison (R5).
     - Files whose computed ``repo_path`` violates
-      ``_VALID_REPO_PATH_RE`` are dropped silently here; the remote
-      bash counts them as failed via a separate path.
+      ``_VALID_REPO_PATH_RE`` are dropped with a stderr warning. They
+      do NOT appear in the SeedFile list and therefore don't show up
+      in the remote ``RESULT failed=`` count — operators should
+      cross-reference the warning lines if the deploy log shows fewer
+      ``created`` than expected. (deploy.sh:3385 counted these as
+      failed; we surface them via stderr instead, which the workflow
+      log shows alongside the bash warnings.)
 
     Output is sorted by ``repo_path`` for deterministic ordering (R7).
     """
@@ -175,6 +180,7 @@ def list_seed_files(root: Path, prefix: str = "nexus_seeds/") -> list[SeedFile]:
         rel = local_resolved.relative_to(root_resolved)
         repo_path = f"{prefix}{rel.as_posix()}"
         if not _is_safe_repo_path(repo_path):
+            sys.stderr.write(f"  ⚠ Skipping seed with unsafe path: {repo_path}\n")
             continue
 
         content = base64.b64encode(local_path.read_bytes()).decode("ascii")
@@ -338,11 +344,18 @@ RsyncRunner = Callable[[Path, str], subprocess.CompletedProcess[str]]
 def write_payloads(push_dir: Path, payloads: dict[str, str]) -> None:
     """Write each filename → JSON-text mapping into push_dir.
 
-    push_dir is created if missing. Existing payload files in push_dir
-    are NOT cleared by this function — callers should pass a fresh
-    tmpdir per invocation to avoid stale-file leaks.
+    Stale ``seed-*.json`` files from previous invocations are removed
+    first — without this, a run that produces fewer files than its
+    predecessor (or renames them) would leave orphan payloads behind
+    that get rsynced + POSTed on the next run. The rsync ``--delete``
+    flag handles the remote side; we handle the local side here.
+
+    Other files in push_dir (anything not matching ``seed-*.json``)
+    are left alone in case the operator parks unrelated state there.
     """
     push_dir.mkdir(parents=True, exist_ok=True)
+    for stale in push_dir.glob("seed-*.json"):
+        stale.unlink()
     for name, body in payloads.items():
         (push_dir / name).write_text(body, encoding="utf-8")
 
@@ -360,8 +373,13 @@ def run_seed_for_repo(
 ) -> SeedResult:
     """Render → write payloads → rsync → exec → parse.
 
-    Returns all-zeros + failed=1 if the remote script produced no
-    parseable RESULT line (mirrors secret_sync.py's defensive parse).
+    On a missing/malformed RESULT line, returns ``SeedResult(created=0,
+    skipped=0, failed=N)`` where N is the number of files we attempted
+    to seed — the assumption being that none of them landed and the
+    operator needs every file accounted for in the failure count.
+    Diverges from secret_sync.py's defensive parse (which returns
+    all-zeros) because here we have a known file count to attribute
+    the failure to.
 
     ``script_runner`` / ``rsync_runner`` are dependency-injection
     seams for tests; production callers leave them None.

@@ -394,15 +394,23 @@ def test_round_5_path_safety_via_resolve_check_in_module() -> None:
     assert "relative_to(" in src
 
 
-def test_round_8_token_never_leaks_on_render_or_runtime_failure() -> None:
-    """R8 — token doesn't appear in stderr/stdout when rsync/ssh fail.
+def test_round_8_token_never_leaks_on_runtime_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R8 — token doesn't appear in stdout/stderr when rsync/ssh fail.
 
-    Force rsync to raise CalledProcessError; assert the captured stderr
-    NEVER contains the token, even if the exception's exc.cmd carried
-    it (defence-in-depth). Same approach as Modul 1.2 round-8.
+    Force rsync to raise CalledProcessError whose exc.cmd embeds the
+    token (worst-case argv leak); assert nothing the seeder code path
+    PRINTS contains the token. The exception object itself may still
+    carry exc.cmd unfiltered — the CLI wrapper (``_seed`` in __main__)
+    is responsible for rendering exceptions safely (``type(exc).__name__``
+    only). Same approach as Modul 1.2 round-8.
+
+    Previously this test populated a private list that was never
+    written to, so the assertion was vacuously true (Copilot finding).
+    Now uses pytest's ``capsys`` to capture both streams.
     """
-    secret_token = "TOK-SHOULD-NEVER-APPEAR-IN-STDERR-12345"
-    captured_err: list[str] = []
+    secret_token = "TOK-SHOULD-NEVER-APPEAR-IN-OUTPUT-12345"
 
     def explode_rsync(_src: Path, _dst: str) -> subprocess.CompletedProcess[str]:
         # exc.cmd embeds the token to simulate a rsync invocation that
@@ -421,16 +429,13 @@ def test_round_8_token_never_leaks_on_render_or_runtime_failure() -> None:
             repo_name="repo",
             root=FIXTURE_ROOT,
             token=secret_token,
-            push_dir=Path("/tmp/seed-push-test-r8"),  # noqa: S108
+            push_dir=tmp_path / "seed-push-test-r8",
             script_runner=noop_script,
             rsync_runner=explode_rsync,
         )
-    # The exception itself MAY carry the token (its exc.cmd does). The
-    # contract is: NOTHING the seeder code path PRINTS contains the
-    # token. capsys captures local prints; we don't assert on the
-    # exception object itself (caller decides how to render it; CLI
-    # _seed wraps with type(exc).__name__).
-    assert all(secret_token not in line for line in captured_err)
+    captured = capsys.readouterr()
+    assert secret_token not in captured.out
+    assert secret_token not in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +595,64 @@ def test_list_seed_files_handles_relative_to_valueerror(
     repo_paths = {f.repo_path for f in files}
     assert "nexus_seeds/good.txt" in repo_paths
     assert not any("bad" in rp for rp in repo_paths)
+
+
+def test_run_seed_clears_stale_payloads_from_push_dir(tmp_path: Path) -> None:
+    """Stale ``seed-*.json`` from a previous run must not leak into the next.
+
+    Without cleanup, a previous run that produced 10 files leaves
+    seed-0009.json behind; the next run produces 4 files (overwriting
+    seed-0000..0003) and orphan seed-0004..0009 get rsynced + POSTed.
+    Result: phantom seeds in the workspace repo. Regression test for
+    the Copilot finding on PR #512.
+    """
+    push_dir = tmp_path / "push"
+    push_dir.mkdir()
+    # Stale files from a hypothetical earlier run
+    (push_dir / "seed-0009.json").write_text('{"stale": "from previous run"}', encoding="utf-8")
+    (push_dir / "seed-0010.json").write_text('{"stale": "also previous"}', encoding="utf-8")
+    # Operator-parked file should NOT be touched (only seed-*.json)
+    (push_dir / "operator-state.txt").write_text("hands off", encoding="utf-8")
+
+    run_seed_for_repo(
+        repo_owner="admin",
+        repo_name="ws",
+        root=FIXTURE_ROOT,
+        token="t",
+        push_dir=push_dir,
+        script_runner=_ok_script_runner("RESULT created=4 skipped=0 failed=0"),
+        rsync_runner=_noop_rsync,
+    )
+    # Fixture has 4 files → seed-0000..0003. Stale 0009/0010 must be gone.
+    seed_files = sorted(push_dir.glob("seed-*.json"))
+    assert [f.name for f in seed_files] == [
+        "seed-0000.json",
+        "seed-0001.json",
+        "seed-0002.json",
+        "seed-0003.json",
+    ]
+    # Operator's parked file is preserved
+    assert (push_dir / "operator-state.txt").read_text(encoding="utf-8") == "hands off"
+
+
+def test_list_seed_files_unsafe_path_emits_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unsafe-path drops emit a stderr warning so operators can see them.
+
+    Previously the comment claimed these were "counted as failed" but
+    the implementation silently dropped them. Now we surface them via
+    stderr (same workflow-log surface as the bash warnings), keeping
+    the SeedResult shape stable but giving operators visibility.
+    """
+    seed_root = tmp_path / "seeds"
+    seed_root.mkdir()
+    (seed_root / "ok.txt").write_text("ok", encoding="utf-8")
+    (seed_root / "with space.txt").write_text("space", encoding="utf-8")
+    list_seed_files(seed_root)
+    captured = capsys.readouterr()
+    assert "Skipping seed with unsafe path" in captured.err
+    assert "with space" in captured.err
 
 
 def test_run_seed_writes_payloads_to_push_dir(tmp_path: Path) -> None:
