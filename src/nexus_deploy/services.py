@@ -40,9 +40,15 @@ R3. Per-hook tmpfile cleanup. LakeFS + OpenMetadata create mode-600
     Metabase don't need a tmpfile — their POST endpoints are
     auth-free, only the body is sensitive, and that travels via
     --data-binary @- stdin.)
-R4. JSON setup-body built via jq with shell-injection-safe ``--arg``
-    (NOT string interpolation), and the body is fed to curl via
-    stdin (``--data-binary @-``) so admin passwords don't reach argv.
+R4. JSON setup-body built via jq with secrets injected as env vars
+    (``NEXUS_P=value jq -n 'env.NEXUS_P'``), NOT positional
+    ``--arg`` values that would land in jq's argv (visible via
+    ``ps``). The body is then fed to curl via stdin
+    (``--data-binary @-``) so neither jq nor curl carry secrets in
+    argv. Auth headers / basic-auth go via ``curl --config <tmpfile>``
+    (mode 600, RETURN-trap cleanup) — never via ``-H`` / ``-u``
+    argv either. Together: no fork visible via ``ps -ef`` carries
+    a credential value.
 R5. Idempotent skip when ``already_configured_substring`` appears in
     the pre-setup probe response (deploy.sh's ``[ -z "$SETUP_TOKEN" ]``
     / ``"setup_complete":true`` / etc. branches).
@@ -211,9 +217,11 @@ portainer_hook
 def render_n8n_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """n8n owner-setup: ``POST /rest/owner/setup`` (no auth, idempotent via /rest/settings).
 
-    Body built via ``jq -n --arg`` and piped to curl via stdin
-    (``--data-binary @-``) so the admin password never appears in
-    the curl process argv on the remote host (R4).
+    Body built with secrets injected via env vars (``NEXUS_E`` /
+    ``NEXUS_P``), referenced in jq's filter as ``env.NEXUS_E`` /
+    ``env.NEXUS_P``. The body is then piped to curl via stdin
+    (``--data-binary @-``). Neither jq nor curl carry the password
+    in argv (R4).
     """
     email = env.admin_email or ""
     password = config.n8n_admin_password or ""

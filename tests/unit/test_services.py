@@ -270,61 +270,76 @@ def test_no_credential_leaks_into_subprocess_argv_per_hook(
                     )
 
 
-def test_round_4_setup_body_via_jq_no_argv_leak() -> None:
-    """R4 — admin password is shlex-quoted into the rendered bash AND
-    fed to curl via stdin (--data-binary @-), never via argv.
+def test_round_4_setup_body_via_env_no_argv_leak() -> None:
+    """R4 — admin password is injected to jq via env var (NOT --arg
+    positional argv) and fed to curl via stdin (--data-binary @-),
+    never via argv.
 
-    Critical: a future bug that put the password into curl's argv
-    would leak it via `ps`. We assert that:
-      1. The password value appears in the script (it's quoted into
-         the jq --arg pipeline — that's expected and bash-safe)
-      2. The password value does NOT appear on any line that also
-         contains a curl invocation (which would mean it's in argv)
+    Critical: a future bug that put the password into curl's OR
+    jq's argv would leak it via `ps` on the remote host. We assert
+    that:
+      1. The password value appears in the rendered script (it's
+         the value of an env-var assignment — that's expected and
+         bash-safe; bash builtins / env-var-to-cmd assignments don't
+         fork).
+      2. The password value does NOT appear AFTER a forking-command
+         token (curl, jq) on any line — meaning it's never in argv.
+
+    The detailed cross-hook version of this check lives in
+    ``test_no_credential_leaks_into_subprocess_argv_per_hook``;
+    this test pins the Metabase-specific shape.
     """
     canary = "UNIQUE-METABASE-PWD-LEAK-CANARY"
     config = _make_config(metabase_admin_password=canary)
     script = render_metabase_hook(config, _make_env())
-    # The password reaches the bash via shlex-quoted positional arg to jq
-    assert canary in script
-    # No curl line carries the literal password (would mean it's in argv)
+    assert canary in script, "Canary must appear (as env-var value)"
+    # Canary must NOT appear AFTER curl/jq on any line (= not in argv)
     for line in script.splitlines():
-        if "curl " in line:
-            assert canary not in line, f"Password leaked into curl argv: {line!r}"
-    # AND the orchestrator rendered script does use --data-binary @- for
-    # the POST body (sanity check — global, not per-line)
+        for cmd_token in ("curl ", "jq "):
+            idx_cmd = line.find(cmd_token)
+            idx_canary = line.find(canary)
+            if idx_cmd >= 0 and idx_canary > idx_cmd:
+                raise AssertionError(f"Password leaked into {cmd_token.strip()} argv: {line!r}")
+    # And the rendered script uses --data-binary @- for the POST body
     assert "--data-binary @-" in script
 
 
-def test_round_4_setup_body_jq_build_via_bash_exec() -> None:
-    """R4 exec — verify the rendered jq pipeline actually builds valid JSON.
+def test_round_4_setup_body_built_correctly_against_rendered_script() -> None:
+    """R4 exec — drive the ACTUAL rendered jq pipeline against a known
+    config and assert the resulting JSON parses + has expected
+    fields, even with shell-meta characters in the password.
 
-    Modul-2.0 lesson: pin bash semantics, not just static text. The
-    Metabase setup body uses jq with --arg for safe quoting; this
-    test runs the jq invocation against a known config and asserts
-    the resulting JSON parses + has the expected fields + the
-    password is escaped correctly even when it contains shell
-    metacharacters.
+    Earlier this test built a hand-coded jq snippet that was decoupled
+    from the renderer — it could pass even if the real renderer drifted.
+    Now we extract the BODY=$(...) line from the rendered script,
+    execute it via bash -c, and parse the captured JSON. This pins
+    the renderer's actual jq form against shell-meta-character
+    payloads.
     """
-    # Password with shell-special chars to stress-test the quoting
     nasty_password = 'evil"$(date)`whoami`'
-    snippet = f"""
-set -euo pipefail
-SETUP_TOKEN=tok123
-BODY=$(jq -n \\
-    --arg token "$SETUP_TOKEN" \\
-    --arg email "ops@example.com" \\
-    --arg password {
-        repr(nasty_password).replace("'", "'\\''")
-        if "'" in nasty_password
-        else "'" + nasty_password + "'"
-    } \\
-    '{{token: $token, user: {{email: $email, password: $password}}}}')
-printf '%s' "$BODY"
-"""
+    config = _make_config(metabase_admin_password=nasty_password)
+    full_script = render_metabase_hook(config, _make_env())
+    # Extract the BODY=$(...) jq-build block from the rendered script.
+    # It's a multi-line continuation: BODY=$(NEXUS_TOKEN=... NEXUS_E=...
+    # NEXUS_P=... jq -n '{...}')
+    lines = full_script.splitlines()
+    body_start = next(i for i, line in enumerate(lines) if line.strip().startswith("BODY=$(NEXUS_"))
+    body_end = body_start
+    while not lines[body_end].rstrip().endswith(")"):
+        body_end += 1
+    body_lines = lines[body_start : body_end + 1]
+    # The rendered version uses an implicit SETUP_TOKEN runtime-shell var
+    # (captured from /api/session/properties); inject it explicitly.
+    snippet = (
+        "set -euo pipefail\nSETUP_TOKEN=tok123\n"
+        + "\n".join(body_lines)
+        + '\nprintf "%s" "$BODY"\n'
+    )
     out = subprocess.run(["bash", "-c", snippet], capture_output=True, text=True, check=True).stdout
     parsed = json.loads(out)
     assert parsed["user"]["password"] == nasty_password
     assert parsed["token"] == "tok123"
+    assert parsed["user"]["email"] == "ops@example.com"
 
 
 def test_round_5_idempotent_skip_via_substring_match() -> None:
