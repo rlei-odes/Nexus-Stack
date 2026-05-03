@@ -289,9 +289,14 @@ def render_lakefs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
         return 'echo "RESULT hook=lakefs status=skipped-not-ready"\n'
     access_q = shlex.quote(access_key)
     secret_q = shlex.quote(secret_key)
-    # Storage namespace selection mirrors deploy.sh:2762-2770. We let
-    # the rendered bash decide based on the env vars on the server, so
-    # the Python doesn't need to read them — keeps the renderer pure.
+    # Storage namespace selection mirrors deploy.sh:2762-2770. The
+    # bucket name comes from `config.hetzner_s3_bucket_lakefs` (a
+    # NexusConfig field parsed from `tofu output -json secrets`) and
+    # is shlex-quoted into the rendered bash as a literal — NOT read
+    # from a remote env var. This keeps the renderer pure (no
+    # round-trip needed to discover it on the server) at the cost of
+    # making the namespace tied to deploy-time tofu state instead of
+    # post-deploy server state. In practice the two are identical.
     hetzner_bucket = config.hetzner_s3_bucket_lakefs or ""
     hetzner_q = shlex.quote(hetzner_bucket)
     wait = _render_wait_healthy(
@@ -334,10 +339,18 @@ lakefs_hook() {{
         --arg name "$REPO_NAME" \\
         --arg ns "$STORAGE_NS" \\
         '{{name: $name, storage_namespace: $ns, default_branch: "main", sample_data: false}}')
+    # R4: basic-auth via curl --config tmpfile, NOT -u user:secret
+    # in argv. The tmpfile is mode 600 + cleaned up by the trap.
+    LFS_CFG=$(mktemp)
+    chmod 600 "$LFS_CFG"
+    trap 'rm -f "$LFS_CFG"' RETURN
+    printf 'user = "%s:%s"\\n' {access_q} {secret_q} > "$LFS_CFG"
     REPO_RESP=$(printf '%s' "$REPO_BODY" | curl -s -X POST 'http://localhost:8000/api/v1/repositories' \\
-        -u {access_q}:{secret_q} \\
+        --config "$LFS_CFG" \\
         -H 'Content-Type: application/json' \\
         --data-binary @- 2>/dev/null || echo "")
+    rm -f "$LFS_CFG"
+    trap - RETURN
     if echo "$REPO_RESP" | grep -q '"id"'; then
         echo "RESULT hook=lakefs status=configured"
     elif echo "$REPO_RESP" | grep -q 'already exists'; then
@@ -403,10 +416,18 @@ openmetadata_hook() {{
     fi
     PW_BODY=$(jq -n --arg new {new_pw_q} \\
         '{{username: "admin", oldPassword: "admin", newPassword: $new, confirmPassword: $new, requestType: "SELF"}}')
+    # R4: Bearer token via curl --config tmpfile, NOT -H argv. The
+    # tmpfile is mode 600 + cleaned up by the EXIT trap.
+    OM_CFG=$(mktemp)
+    chmod 600 "$OM_CFG"
+    trap 'rm -f "$OM_CFG"' RETURN
+    printf 'header = "Authorization: Bearer %s"\\n' "$TOKEN" > "$OM_CFG"
     printf '%s' "$PW_BODY" | curl -s -X PUT 'http://localhost:8585/api/v1/users/changePassword' \\
-        -H "Authorization: Bearer $TOKEN" \\
+        --config "$OM_CFG" \\
         -H 'Content-Type: application/json' \\
         --data-binary @- >/dev/null 2>&1 || true
+    rm -f "$OM_CFG"
+    trap - RETURN
     NEW_PW_B64=$(printf '%s' {new_pw_q} | base64 | tr -d '\\n')
     VERIFY_BODY=$(jq -n --arg email "admin@${{DOMAIN}}" --arg pw "$NEW_PW_B64" \\
         '{{email: $email, password: $pw}}')

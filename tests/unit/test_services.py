@@ -221,6 +221,38 @@ def test_round_2_per_spec_healthcheck_timeouts() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("renderer", "canary_field", "canary_value"),
+    [
+        # Each hook is tested with a unique canary substituted for the
+        # credential field that's most likely to land in argv.
+        (render_portainer_hook, "portainer_admin_password", "PORTAINER-CANARY-X1Y2"),
+        (render_n8n_hook, "n8n_admin_password", "N8N-CANARY-X1Y2"),
+        (render_metabase_hook, "metabase_admin_password", "METABASE-CANARY-X1Y2"),
+        (render_lakefs_hook, "lakefs_admin_secret_key", "LAKEFS-SECRET-CANARY-X1Y2"),
+        (render_openmetadata_hook, "openmetadata_admin_password", "OM-CANARY-X1Y2"),
+    ],
+)
+def test_no_credential_leaks_into_curl_line_per_hook(
+    renderer: Any, canary_field: str, canary_value: str
+) -> None:
+    """R4 (per-hook generalisation): no credential ever lands on a line
+    containing a curl invocation.
+
+    Round-2 finding on PR #514: previous tests caught Metabase only;
+    Portainer + n8n + LakeFS basic-auth + OpenMetadata Bearer all
+    leaked credentials into curl argv. This parameterized test pins
+    the invariant for ALL 5 hooks: the canary value must appear
+    SOMEWHERE in the rendered script (it's a credential we need to
+    use) but NEVER on a line that contains the literal token ``curl``.
+    """
+    script = renderer(_make_config(**{canary_field: canary_value}), _make_env())
+    assert canary_value in script, "Canary must appear somewhere in the script"
+    for line in script.splitlines():
+        if "curl " in line or "curl\n" in line:
+            assert canary_value not in line, f"Credential leaked into curl line: {line!r}"
+
+
 def test_round_4_setup_body_via_jq_no_argv_leak() -> None:
     """R4 — admin password is shlex-quoted into the rendered bash AND
     fed to curl via stdin (--data-binary @-), never via argv.
