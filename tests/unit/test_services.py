@@ -388,6 +388,44 @@ def test_round_7_hook_execution_order_matches_enabled_arg() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "$(rm -rf /)",
+        "x; rm -rf /",
+        "x`whoami`",
+        "x|cat /etc/passwd",
+        "x with space",
+        "x'single'",
+        'x"double"',
+        "../etc/passwd",
+        "x\\backslash",
+        "",
+    ],
+)
+def test_render_remote_script_drops_unsafe_hook_names(
+    unsafe_name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-4 finding: hook names with shell-meta chars must NOT be
+    interpolated into the rendered bash. Each unsafe name is dropped
+    with a stderr warning; the rendered script must NOT contain the
+    unsafe substring at all (no echo, no comment, nothing).
+    """
+    script = render_remote_script(
+        config=_make_config(),
+        env=_make_env(),
+        enabled_hooks=["portainer", unsafe_name],
+    )
+    # Unsafe name must NOT reach the rendered bash
+    if unsafe_name:  # empty string isn't a substring of anything useful
+        assert unsafe_name not in script
+    # Portainer (the safe entry) still rendered
+    assert "portainer_hook" in script
+    # Stderr warning emitted
+    captured = capsys.readouterr()
+    assert "Dropped hook with unsafe name" in captured.err
+
+
 def test_render_remote_script_unknown_hook_emits_skip() -> None:
     """An enabled service with no renderer → emit skip line so counts stay consistent."""
     script = render_remote_script(

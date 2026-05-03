@@ -77,6 +77,16 @@ _RESULT_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# Same alphabet as the RESULT line's `name` group. Used to validate
+# hook names from the caller-provided `enabled_hooks` list before
+# interpolating into the rendered bash — prevents shell injection
+# via $(), backticks, semicolons, etc. if a buggy or adversarial
+# caller ever passes a name with shell metacharacters. In production
+# `enabled_hooks` comes from deploy.sh's $ENABLED_SERVICES (which
+# itself comes from `tofu output -json` keys, all alphanumeric +
+# dash), so this is defence in depth.
+_VALID_HOOK_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 HookStatus = Literal["configured", "already-configured", "failed", "skipped-not-ready"]
 
 
@@ -347,7 +357,9 @@ lakefs_hook() {{
         --arg ns "$STORAGE_NS" \\
         '{{name: $name, storage_namespace: $ns, default_branch: "main", sample_data: false}}')
     # R4: basic-auth via curl --config tmpfile, NOT -u user:secret
-    # in argv. The tmpfile is mode 600 + cleaned up by the trap.
+    # in argv. The tmpfile is mode 600 + cleaned up by a function-
+    # scoped RETURN trap (fires when lakefs_hook returns) plus an
+    # explicit `rm -f` after the curl call.
     LFS_CFG=$(mktemp)
     chmod 600 "$LFS_CFG"
     trap 'rm -f "$LFS_CFG"' RETURN
@@ -426,7 +438,9 @@ openmetadata_hook() {{
     PW_BODY=$(jq -n --arg new {new_pw_q} \\
         '{{username: "admin", oldPassword: "admin", newPassword: $new, confirmPassword: $new, requestType: "SELF"}}')
     # R4: Bearer token via curl --config tmpfile, NOT -H argv. The
-    # tmpfile is mode 600 + cleaned up by the EXIT trap.
+    # tmpfile is mode 600 + cleaned up by a function-scoped RETURN
+    # trap (fires when openmetadata_hook returns) plus an explicit
+    # `rm -f` after the curl call.
     OM_CFG=$(mktemp)
     chmod 600 "$OM_CFG"
     trap 'rm -f "$OM_CFG"' RETURN
@@ -507,9 +521,19 @@ def render_remote_script(
     """
     parts: list[str] = ["set -u  # -e omitted: hook failures must not abort the orchestrator\n"]
     for name in enabled_hooks:
+        # Defence in depth: drop any hook name with shell-meta chars
+        # before interpolating into the rendered bash. Logged to local
+        # stderr (NOT into the rendered script — we cannot trust the
+        # value enough to embed it). Production callers should never
+        # hit this path; deploy.sh's $ENABLED_SERVICES is alphanumeric
+        # + dash by tofu-output construction.
+        if not _VALID_HOOK_NAME_RE.fullmatch(name):
+            sys.stderr.write(f"  ⚠ Dropped hook with unsafe name: {name!r}\n")
+            continue
         renderer = _HOOK_REGISTRY.get(name)
         if renderer is None:
-            # Unknown hook → emit a skip line so the count stays consistent
+            # Unknown but well-formed hook → emit a skip line so the
+            # operator can see the name in the workflow log.
             parts.append(f'echo "RESULT hook={name} status=skipped-not-ready"\n')
             continue
         parts.append(renderer(config, env))
