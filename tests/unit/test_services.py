@@ -27,14 +27,16 @@ from nexus_deploy.services import (
     render_n8n_hook,
     render_openmetadata_hook,
     render_portainer_hook,
+    render_redpanda_hook,
     render_remote_script,
+    render_superset_hook,
     run_admin_setups,
     supported_hooks,
 )
 
 
 def _make_config(**overrides: Any) -> NexusConfig:
-    """Build a NexusConfig with minimal admin passwords for all 5 hooks."""
+    """Build a NexusConfig with minimal admin passwords for all 7 hooks."""
     defaults: dict[str, Any] = {
         "admin_username": "admin",
         "portainer_admin_password": "p-pass",
@@ -46,6 +48,9 @@ def _make_config(**overrides: Any) -> NexusConfig:
         "lakefs_admin_secret_key": "secret-lakefs-key",
         "openmetadata_admin_password": "om-pass-Complex1!",
         "hetzner_s3_bucket_lakefs": "my-bucket",
+        # Modul 2.2c
+        "redpanda_admin_password": "rp-pass",
+        "superset_admin_password": "su-pass",
     }
     defaults.update(overrides)
     return NexusConfig.from_secrets_json(json.dumps(defaults))
@@ -60,14 +65,18 @@ def _make_env(admin_email: str = "ops@example.com") -> BootstrapEnv:
 # ---------------------------------------------------------------------------
 
 
-def test_supported_hooks_contains_5_specs() -> None:
-    """Modul 2.2b ships exactly the 5 REST first-init hooks."""
+def test_supported_hooks_contains_all_2_2b_and_2_2c_specs() -> None:
+    """Modul 2.2b (5 REST hooks) + Modul 2.2c (2 docker-exec hooks)."""
     assert set(supported_hooks()) == {
+        # 2.2b — REST first-init
         "portainer",
         "n8n",
         "metabase",
         "lakefs",
         "openmetadata",
+        # 2.2c — docker-exec CLI
+        "redpanda",
+        "superset",
     }
 
 
@@ -182,6 +191,104 @@ def test_render_openmetadata_hook_3_step_flow() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Modul 2.2c — docker-exec hooks (RedPanda, Superset)
+# ---------------------------------------------------------------------------
+
+
+def test_render_redpanda_hook_basic() -> None:
+    script = render_redpanda_hook(_make_config(), _make_env())
+    assert "redpanda_hook()" in script
+    # Wait via docker exec curl (admin API not exposed externally)
+    assert "docker exec redpanda curl" in script
+    # rpk SASL user create + cluster config
+    assert "rpk acl user create nexus-redpanda" in script
+    assert "rpk cluster config set superusers" in script
+    # Verify via /v1/security/users
+    assert "/v1/security/users" in script
+    assert "RESULT hook=redpanda" in script
+
+
+def test_render_redpanda_hook_skips_when_password_empty() -> None:
+    script = render_redpanda_hook(_make_config(redpanda_admin_password=""), _make_env())
+    assert script.strip() == 'echo "RESULT hook=redpanda status=skipped-not-ready"'
+
+
+def test_render_redpanda_hook_password_via_stdin_not_argv() -> None:
+    """R4 — RedPanda password reaches docker exec via stdin, NOT
+    via ``-e RPK_PASS=value`` (which would put it in docker's argv
+    on the host). Mirrors the legacy deploy.sh acknowledged-leak
+    pattern but strictly more correct.
+    """
+    canary = "RP-CANARY-X1Y2Z3"
+    script = render_redpanda_hook(_make_config(redpanda_admin_password=canary), _make_env())
+    assert canary in script  # appears as bash var assignment
+    # No `docker exec -e <var>=<canary>` form (would leak via host ps)
+    for line in script.splitlines():
+        if "docker exec -e" in line:
+            assert canary not in line, f"Password leaked into docker exec -e argv: {line!r}"
+    # Pipe-to-stdin form must be present
+    assert "printf '%s' \"$REDPANDA_PASSWORD\" |" in script
+    assert "docker exec -i redpanda" in script
+
+
+def test_render_redpanda_hook_restart_with_firewall_override() -> None:
+    """RedPanda restart honours docker-compose.firewall.yml when present."""
+    script = render_redpanda_hook(_make_config(), _make_env())
+    assert "docker-compose.firewall.yml" in script
+    # Both branches: with-firewall and without-firewall
+    assert "-f docker-compose.yml -f docker-compose.firewall.yml restart" in script
+
+
+def test_render_superset_hook_basic() -> None:
+    script = render_superset_hook(_make_config(), _make_env())
+    assert "superset_hook()" in script
+    assert "/health" in script
+    assert "fab create-admin" in script
+    assert "fab reset-password" in script  # idempotent fallback
+    assert "RESULT hook=superset" in script
+
+
+def test_render_superset_hook_skips_when_password_empty() -> None:
+    script = render_superset_hook(_make_config(superset_admin_password=""), _make_env())
+    assert script.strip() == 'echo "RESULT hook=superset status=skipped-not-ready"'
+
+
+def test_render_superset_hook_skips_when_email_empty() -> None:
+    script = render_superset_hook(_make_config(), _make_env(admin_email=""))
+    assert script.strip() == 'echo "RESULT hook=superset status=skipped-not-ready"'
+
+
+def test_render_superset_hook_password_via_stdin_not_argv() -> None:
+    """R4 — Superset password piped via stdin to ``docker exec -i``.
+
+    Both ``fab create-admin`` and ``fab reset-password`` get the
+    password via the in-container ``PASS`` shell var; the host-
+    visible argv is just ``docker exec -i superset sh -c '...'``.
+    """
+    canary = "SU-CANARY-A1B2C3"
+    script = render_superset_hook(_make_config(superset_admin_password=canary), _make_env())
+    assert canary in script  # appears as bash var assignment
+    # The literal canary must NOT appear after `docker exec` on any line
+    for line in script.splitlines():
+        idx_docker = line.find("docker exec")
+        if idx_docker >= 0:
+            idx_canary = line.find(canary)
+            if idx_canary > idx_docker:
+                raise AssertionError(f"Password leaked into docker exec argv: {line!r}")
+    # Pipe-to-stdin form must be present (twice — create-admin + reset-password)
+    assert script.count("printf '%s' \"$SUPERSET_PASSWORD\" |") == 2
+
+
+def test_render_superset_hook_email_via_dash_e_not_argv() -> None:
+    """admin_email is non-secret → ``-e ADMIN_EMAIL=`` (host argv
+    visible but harmless). This pin documents the deliberate split:
+    only secrets go via stdin; non-secrets stay readable in the
+    rendered bash for debug-ability."""
+    script = render_superset_hook(_make_config(), _make_env(admin_email="ops@example.com"))
+    assert '-e ADMIN_EMAIL="$ADMIN_EMAIL"' in script
+
+
+# ---------------------------------------------------------------------------
 # Round-tagged invariants on the rendered bash
 # ---------------------------------------------------------------------------
 
@@ -228,29 +335,39 @@ def test_round_2_per_spec_healthcheck_timeouts() -> None:
     """R2 — each hook has its own healthcheck timeout, NOT a global default.
 
     Pin the timeouts so a future contributor doesn't accidentally
-    unify them and break Metabase (Java app, 120s) or OpenMetadata
-    (180s, slow boot).
+    unify them and break Metabase (Java app, 120s), OpenMetadata
+    (180s, slow boot), or Superset (300s = 5min, db upgrade + init).
     """
     timeouts = {
+        # 2.2b — REST hooks
         "portainer": 5,
         "n8n": 60,
         "metabase": 120,
         "lakefs": 60,
         "openmetadata": 180,
+        # 2.2c — docker-exec hooks
+        "redpanda": 60,
+        "superset": 300,
+    }
+    renderers = {
+        "portainer": render_portainer_hook,
+        "n8n": render_n8n_hook,
+        "metabase": render_metabase_hook,
+        "lakefs": render_lakefs_hook,
+        "openmetadata": render_openmetadata_hook,
+        "redpanda": render_redpanda_hook,
+        "superset": render_superset_hook,
     }
     for hook_name, expected_timeout in timeouts.items():
-        renderer = {
-            "portainer": render_portainer_hook,
-            "n8n": render_n8n_hook,
-            "metabase": render_metabase_hook,
-            "lakefs": render_lakefs_hook,
-            "openmetadata": render_openmetadata_hook,
-        }[hook_name]
-        script = renderer(_make_config(), _make_env())
-        # Look for the human-readable warning that names the timeout
-        assert f"after {expected_timeout}s" in script, (
-            f"Expected '{expected_timeout}s' in {hook_name} script"
-        )
+        script = renderers[hook_name](_make_config(), _make_env())
+        # Look for the human-readable warning that names the timeout.
+        # Superset's warning uses '5min' instead of '300s' for readability.
+        if hook_name == "superset":
+            assert "after 5min" in script, "Expected '5min' in superset script"
+        else:
+            assert f"after {expected_timeout}s" in script, (
+                f"Expected '{expected_timeout}s' in {hook_name} script"
+            )
 
 
 @pytest.mark.parametrize(
@@ -258,46 +375,49 @@ def test_round_2_per_spec_healthcheck_timeouts() -> None:
     [
         # Each hook is tested with a unique canary substituted for the
         # credential field that's most likely to land in argv.
+        # 2.2b — REST hooks
         (render_portainer_hook, "portainer_admin_password", "PORTAINER-CANARY-X1Y2"),
         (render_n8n_hook, "n8n_admin_password", "N8N-CANARY-X1Y2"),
         (render_metabase_hook, "metabase_admin_password", "METABASE-CANARY-X1Y2"),
         (render_lakefs_hook, "lakefs_admin_secret_key", "LAKEFS-SECRET-CANARY-X1Y2"),
         (render_openmetadata_hook, "openmetadata_admin_password", "OM-CANARY-X1Y2"),
+        # 2.2c — docker-exec hooks. Same R4 invariant via stdin pipe.
+        (render_redpanda_hook, "redpanda_admin_password", "RP-CANARY-X1Y2"),
+        (render_superset_hook, "superset_admin_password", "SU-CANARY-X1Y2"),
     ],
 )
 def test_no_credential_leaks_into_subprocess_argv_per_hook(
     renderer: Any, canary_field: str, canary_value: str
 ) -> None:
     """R4 (per-hook generalisation): no credential ever lands on a line
-    that invokes a non-builtin subprocess (``curl`` or ``jq``) — both
-    leak via ``ps`` on the remote host.
+    that invokes a non-builtin subprocess (``curl``, ``jq``, ``docker``)
+    — all leak via ``ps`` on the remote host.
 
     Round-2 PR #514: caught Portainer + n8n curl-argv leaks.
     Round-5 PR #514: caught the SAME class on jq's argv (``jq -n
-    --arg pw <secret>`` puts secret in jq's argv). This test now
-    checks BOTH curl AND jq invocation lines.
+    --arg pw <secret>`` puts secret in jq's argv).
+    Modul 2.2c: docker-exec hooks add a third leak surface
+    (``docker exec -e VAR=value`` or ``docker exec ... cmd $secret``).
 
     Bash builtins (printf, env-var assignments via ``VAR=value cmd``)
     don't fork — values can safely appear on those lines without
     reaching ``ps``.
 
-    Scope of THIS test: ``curl`` + ``jq`` only — the two non-builtins
-    that currently consume credentials in this module. Other forking
+    Scope of THIS test: ``curl``, ``jq``, ``docker``. Other forking
     commands the rendered scripts use (``base64``, ``tr``, ``mktemp``,
     ``chmod``) all read from stdin or operate on tmpfile paths
     rather than taking secrets as positional args, so they're not
-    on the leak-path here. Future hooks adding a new credential-
-    handling fork-tool should extend this test's command list.
+    on the leak-path here.
     """
     script = renderer(_make_config(**{canary_field: canary_value}), _make_env())
     assert canary_value in script, "Canary must appear somewhere in the script"
     for line in script.splitlines():
         # Skip lines that ONLY contain `VAR=value cmd ...` env-var
         # assignment for the next non-builtin (e.g. `NEXUS_P=secret jq -n`):
-        # the value is set as an env var, NOT as positional argv to jq.
+        # the value is set as an env var, NOT as positional argv.
         # We detect this pattern by checking whether the canary appears
         # before any forking-command token on the line.
-        for forking_command in ("curl ", "curl\n", "jq ", "jq\n"):
+        for forking_command in ("curl ", "curl\n", "jq ", "jq\n", "docker ", "docker\n"):
             if forking_command in line:
                 idx_canary = line.find(canary_value)
                 idx_cmd = line.find(forking_command)

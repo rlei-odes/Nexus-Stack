@@ -1,18 +1,31 @@
-"""Per-service admin-setup hooks (Phase 2 Modul 2.2b, #505).
+"""Per-service admin-setup hooks (Phase 2 Moduls 2.2b + 2.2c, #505).
 
-Replaces 5 REST first-init admin-setup blocks in ``scripts/deploy.sh``
-(the [7/7] Auto-configuring services section): Portainer, n8n,
-Metabase, LakeFS, OpenMetadata. Each hook:
+Replaces admin-setup blocks in ``scripts/deploy.sh`` (the [7/7]
+Auto-configuring services section). Two hook families:
+
+**REST first-init** (Modul 2.2b — Portainer, n8n, Metabase, LakeFS,
+OpenMetadata):
 
   1. Waits for the service container to be HTTP-ready
   2. Optionally checks "already configured" (idempotent skip)
   3. POSTs the admin-init / first-setup payload
   4. Yellow-warns on failure, never aborts
 
-Three other admin-setup families are scoped to follow-up modules:
-- 2.2c: docker-exec hooks (Filestash file-mutation, RedPanda rpk CLI,
-  Superset fab CLI)
-- 2.2d: Gitea (synchronous, depends on Postgres + seeder)
+**docker-exec CLI** (Modul 2.2c — RedPanda, Superset):
+
+  1. Waits for the service container to be HTTP-ready
+  2. Runs an in-container CLI (``rpk`` for RedPanda, ``superset
+     fab`` for Superset) via ``docker exec -i``, with passwords
+     piped via stdin to keep them out of docker's argv on the
+     remote host
+  3. Idempotent re-runs: RedPanda's ``rpk acl user create`` errors
+     harmlessly if user exists; Superset falls back to ``fab
+     reset-password`` if ``fab create-admin`` reports user-exists
+
+Two other admin-setup families are scoped to follow-up modules:
+- 2.2d: Filestash (file-mutation via ``docker exec sed`` + S3
+  backend config, double restart, complex jq-built JSON)
+- 2.2e: Gitea (synchronous, depends on Postgres + seeder)
 - Future: SFTPGo, Garage, Windmill, Wikijs, Dify (each has its own
   pattern; migrating piecemeal as time allows)
 
@@ -509,6 +522,169 @@ openmetadata_hook
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Modul 2.2c — docker-exec hooks: RedPanda, Superset.
+#
+# Different family from the 5 REST hooks above. Pattern:
+#   1. Wait for HTTP healthcheck (mostly via ``docker exec curl`` from
+#      inside the container, since some endpoints aren't exposed
+#      externally).
+#   2. Run an in-container CLI (``rpk`` / ``superset fab``) via
+#      ``docker exec -i``, with passwords piped via stdin so they
+#      never reach docker's argv on the remote host.
+#   3. Idempotent re-runs handled per-hook (RedPanda: rpk's "user
+#      exists" error is treated as already-configured; Superset:
+#      fab create-admin → fab reset-password fallback).
+#
+# Why argv-vs-stdin matters for docker exec: the legacy deploy.sh
+# acknowledged it didn't hide passwords, using ``docker exec -e
+# RPK_PASS='$pass'`` — the env-var literal lands in docker's argv
+# on the host. Our migration takes the strictly-more-correct path:
+# ``printf '%s' "$pass" | docker exec -i <container> sh -c 'PASS=$(cat); ...'``
+# keeps the password on stdin only. The inner CLI ``rpk acl user
+# create --password "$PASS"`` still has the password in its argv
+# inside the container (visible to other processes in the same
+# container), but the OUTER host-level ``ps -ef`` shows just the
+# benign sh -c invocation.
+# ---------------------------------------------------------------------------
+
+
+def render_redpanda_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """RedPanda SASL: ``rpk acl user create`` + ``rpk cluster config set superusers``.
+
+    Wait via ``docker exec redpanda curl /v1/status/ready`` (the admin
+    API isn't exposed outside the container). Password reaches the
+    container via stdin → in-container shell var → rpk's ``--password``
+    argv (visible only inside the container, not via host ``ps``).
+
+    After SASL setup, restart RedPanda to apply the SASL listener
+    config, then verify the user is visible via ``/v1/security/users``.
+    Re-runs are safe: rpk's "user exists" error is detected via
+    response substring → status=already-configured.
+    """
+    del env  # not used; signature uniform across hooks
+    password = config.redpanda_admin_password or ""
+    if not password:
+        return 'echo "RESULT hook=redpanda status=skipped-not-ready"\n'
+    password_q = shlex.quote(password)
+    return f"""
+redpanda_hook() {{
+    # Wall-clock-bounded readiness wait (matches Modul 2.2b R2 pattern).
+    READY=false
+    SECONDS=0
+    while [ "$SECONDS" -lt 60 ]; do
+        if docker exec redpanda curl -s --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then
+            READY=true; break
+        fi
+        sleep 2
+    done
+    if [ "$READY" != "true" ]; then
+        echo "  ⚠ redpanda admin API not ready after 60s — skipping SASL setup" >&2
+        echo "RESULT hook=redpanda status=skipped-not-ready"
+        return 0
+    fi
+    # Pipe password via stdin so it never reaches docker exec's argv
+    # on the host. Inside the container, `cat` consumes the full
+    # stdin into RPK_PASS; rpk then receives it via shell var
+    # expansion (still in argv inside the container — different
+    # threat model).
+    REDPANDA_PASSWORD={password_q}
+    USER_RESULT=$(printf '%s' "$REDPANDA_PASSWORD" | \\
+        docker exec -i redpanda sh -c 'RPK_PASS=$(cat); rpk acl user create nexus-redpanda --password "$RPK_PASS" --mechanism SCRAM-SHA-256' 2>&1 || echo "")
+    # rpk cluster config set: superusers list. Argv-safe (no secrets).
+    docker exec redpanda rpk cluster config set superusers '["nexus-redpanda"]' >/dev/null 2>&1 || true
+    # Restart to apply SASL listener config. Honors the firewall
+    # override compose file when present (matches deploy.sh).
+    if docker exec redpanda test -f /opt/docker-server/stacks/redpanda/docker-compose.firewall.yml 2>/dev/null \\
+        || [ -f /opt/docker-server/stacks/redpanda/docker-compose.firewall.yml ]; then
+        ( cd /opt/docker-server/stacks/redpanda && docker compose -f docker-compose.yml -f docker-compose.firewall.yml restart >/dev/null 2>&1 ) || true
+    else
+        ( cd /opt/docker-server/stacks/redpanda && docker compose restart >/dev/null 2>&1 ) || true
+    fi
+    sleep 5
+    # Wait for restart-readiness. Wall-clock-bounded.
+    SECONDS=0
+    while [ "$SECONDS" -lt 30 ]; do
+        if docker exec redpanda curl -s --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then break; fi
+        sleep 2
+    done
+    # Verify user landed (handles the idempotent re-run case where
+    # rpk reported "already exists" earlier).
+    USERS=$(docker exec redpanda curl -s --max-time 10 'http://localhost:9644/v1/security/users' 2>/dev/null || echo "[]")
+    if echo "$USERS" | grep -q 'nexus-redpanda'; then
+        # Distinguish first-run from re-run via the create-result substring.
+        if echo "$USER_RESULT" | grep -qi 'already exists\\|user already\\|already in use'; then
+            echo "RESULT hook=redpanda status=already-configured"
+        else
+            echo "RESULT hook=redpanda status=configured"
+        fi
+    else
+        echo "RESULT hook=redpanda status=failed"
+    fi
+}}
+redpanda_hook
+"""
+
+
+def render_superset_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """Superset admin setup: ``superset fab create-admin`` (with reset-password fallback).
+
+    Wait via ``/health`` substring grep ('OK'). Both ``fab create-admin``
+    and ``fab reset-password`` accept ``--password "$VAR"`` — the
+    password reaches the in-container shell via stdin, then is
+    expanded as the inner argv (visible inside the container only,
+    not via host ``ps``). Idempotent re-run: if create-admin reports
+    user-exists, fall back to reset-password.
+    """
+    password = config.superset_admin_password or ""
+    email = env.admin_email or ""
+    if not password or not email:
+        return 'echo "RESULT hook=superset status=skipped-not-ready"\n'
+    password_q = shlex.quote(password)
+    email_q = shlex.quote(email)
+    return f"""
+superset_hook() {{
+    # Wall-clock-bounded readiness wait. Superset is slow on first
+    # boot (db upgrade + init) — generous 5min timeout.
+    READY=false
+    SECONDS=0
+    while [ "$SECONDS" -lt 300 ]; do
+        if curl -s --connect-timeout 2 --max-time 5 'http://localhost:8089/health' 2>/dev/null | grep -q 'OK'; then
+            READY=true; break
+        fi
+        sleep 5
+    done
+    if [ "$READY" != "true" ]; then
+        echo "  ⚠ superset not ready after 5min — skipping admin setup" >&2
+        echo "RESULT hook=superset status=skipped-not-ready"
+        return 0
+    fi
+    # Pass password via stdin → in-container PASS var → fab argv. The
+    # email is non-secret, so it goes via -e (host argv, but harmless).
+    SUPERSET_PASSWORD={password_q}
+    ADMIN_EMAIL={email_q}
+    CREATE_RESULT=$(printf '%s' "$SUPERSET_PASSWORD" | \\
+        docker exec -i -e ADMIN_EMAIL="$ADMIN_EMAIL" superset \\
+        sh -c 'PASS=$(cat); superset fab create-admin --username admin --email "$ADMIN_EMAIL" --firstname Superset --lastname Admin --password "$PASS"' 2>&1 || echo "")
+    if echo "$CREATE_RESULT" | grep -qi 'created\\|added'; then
+        echo "RESULT hook=superset status=configured"
+        return 0
+    fi
+    # Fallback: fab reset-password for the existing admin user.
+    RESET_RESULT=$(printf '%s' "$SUPERSET_PASSWORD" | \\
+        docker exec -i superset \\
+        sh -c 'PASS=$(cat); superset fab reset-password --username admin --password "$PASS"' 2>&1 || echo "")
+    if echo "$RESET_RESULT" | grep -qi 'reset\\|changed\\|success'; then
+        echo "RESULT hook=superset status=already-configured"
+    else
+        echo "RESULT hook=superset status=failed"
+    fi
+}}
+superset_hook
+"""
+
+
+# ---------------------------------------------------------------------------
 # Hook registry — maps service name → renderer function. NOT the
 # execution-order source of truth — render_remote_script iterates the
 # caller-provided ``enabled_hooks`` list, so the operator (or the CLI
@@ -519,11 +695,15 @@ openmetadata_hook
 HookRenderer = Callable[[NexusConfig, BootstrapEnv], str]
 
 _HOOK_REGISTRY: dict[str, HookRenderer] = {
+    # Modul 2.2b — REST first-init hooks
     "portainer": render_portainer_hook,
     "n8n": render_n8n_hook,
     "metabase": render_metabase_hook,
     "lakefs": render_lakefs_hook,
     "openmetadata": render_openmetadata_hook,
+    # Modul 2.2c — docker-exec CLI hooks
+    "redpanda": render_redpanda_hook,
+    "superset": render_superset_hook,
 }
 
 
