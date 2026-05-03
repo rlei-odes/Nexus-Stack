@@ -239,6 +239,66 @@ def test_render_redpanda_hook_restart_with_firewall_override() -> None:
     assert "-f docker-compose.yml -f docker-compose.firewall.yml restart" in script
 
 
+def test_render_redpanda_hook_uses_curl_dash_f_for_status_check() -> None:
+    """Round-1 finding on PR #515: `curl -s` returns 0 even on 5xx, so
+    the wait loop could break on a 503 response and run SASL setup
+    too early. Switched to `curl -sf` which fails on 4xx/5xx —
+    enforces a true 200-OK before proceeding.
+    """
+    script = render_redpanda_hook(_make_config(), _make_env())
+    # No bare `curl -s` invocations against the readiness endpoint
+    for line in script.splitlines():
+        if "/v1/status/ready" in line and "curl -s " in line:
+            raise AssertionError(
+                f"Use 'curl -sf' for HTTP-status check on /v1/status/ready: {line!r}"
+            )
+    # Both wait loops use -sf
+    assert script.count("curl -sf") >= 3  # initial wait + post-restart wait + verify
+
+
+def test_render_redpanda_hook_password_rotation_via_delete_recreate() -> None:
+    """Round-1 finding: legacy deploy.sh never sync'd the password on
+    a second run — Infisical could rotate the password without the
+    broker ever seeing the new one. STRICTLY-MORE-CORRECT divergence:
+    detect existing user → delete → recreate with current password.
+    """
+    script = render_redpanda_hook(_make_config(), _make_env())
+    # Existence probe BEFORE create
+    assert "EXISTING_USERS=$(docker exec redpanda curl -sf --max-time 10" in script
+    # Delete-then-recreate path
+    assert "rpk acl user delete nexus-redpanda" in script
+    # Tracked via USER_EXISTED so restart can be skipped on rotation
+    assert "USER_EXISTED=true" in script
+    assert "USER_EXISTED=false" in script
+
+
+def test_render_redpanda_hook_cluster_config_set_failure_propagates() -> None:
+    """Round-1 finding: legacy deploy.sh swallowed `rpk cluster config
+    set superusers` failures — could mark hook `configured` while the
+    user had no permissions. Now: capture the result, fail loudly.
+    """
+    script = render_redpanda_hook(_make_config(), _make_env())
+    # The result is captured (NOT discarded via >/dev/null)
+    assert "SUPER_RESULT=$(docker exec redpanda rpk cluster config set superusers" in script
+    # And checked for success
+    assert "if ! echo \"$SUPER_RESULT\" | grep -qi 'success\\|updated\\|set'" in script
+
+
+def test_render_redpanda_hook_restart_only_on_first_setup() -> None:
+    """Round-1 finding: legacy restarted unconditionally on every
+    spin-up, briefly interrupting clients for no benefit on re-runs.
+    Now: restart only when USER_EXISTED=false (= first setup).
+    """
+    script = render_redpanda_hook(_make_config(), _make_env())
+    # The restart is gated on USER_EXISTED
+    assert 'if [ "$USER_EXISTED" = "false" ]; then' in script
+    # And the restart commands are inside that gate (one of them at least)
+    restart_idx = script.find("docker compose restart")
+    gate_idx = script.find('if [ "$USER_EXISTED" = "false" ]')
+    assert gate_idx >= 0, "USER_EXISTED gate must be present"
+    assert restart_idx > gate_idx, "Restart must be inside the USER_EXISTED=false branch"
+
+
 def test_render_superset_hook_basic() -> None:
     script = render_superset_hook(_make_config(), _make_env())
     assert "superset_hook()" in script

@@ -570,10 +570,14 @@ def render_redpanda_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     return f"""
 redpanda_hook() {{
     # Wall-clock-bounded readiness wait (matches Modul 2.2b R2 pattern).
+    # `curl -sf` returns non-zero on 4xx/5xx responses (NOT just on
+    # transport failures), so the loop only breaks on a true 200 OK
+    # — earlier `curl -s` would have broken on a 503 too, letting the
+    # SASL setup run while RedPanda was still "not ready".
     READY=false
     SECONDS=0
     while [ "$SECONDS" -lt 60 ]; do
-        if docker exec redpanda curl -s --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then
+        if docker exec redpanda curl -sf --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then
             READY=true; break
         fi
         sleep 2
@@ -583,6 +587,20 @@ redpanda_hook() {{
         echo "RESULT hook=redpanda status=skipped-not-ready"
         return 0
     fi
+    # Detect rotation case: if the user already exists, we DELETE then
+    # recreate so the password always matches the current Infisical
+    # value. Legacy deploy.sh skipped this — Infisical could rotate
+    # the password without the broker ever seeing the new one,
+    # silently breaking external clients. STRICTLY-MORE-CORRECT
+    # divergence from legacy. ACLs assigned to the user (if any) are
+    # lost on delete, but in this stack ACLs are configured per-topic
+    # by separate tooling and re-apply on next operator action.
+    EXISTING_USERS=$(docker exec redpanda curl -sf --max-time 10 'http://localhost:9644/v1/security/users' 2>/dev/null || echo "[]")
+    USER_EXISTED=false
+    if echo "$EXISTING_USERS" | grep -q 'nexus-redpanda'; then
+        USER_EXISTED=true
+        docker exec redpanda rpk acl user delete nexus-redpanda >/dev/null 2>&1 || true
+    fi
     # Pipe password via stdin so it never reaches docker exec's argv
     # on the host. Inside the container, `cat` consumes the full
     # stdin into RPK_PASS; rpk then receives it via shell var
@@ -591,33 +609,49 @@ redpanda_hook() {{
     REDPANDA_PASSWORD={password_q}
     USER_RESULT=$(printf '%s' "$REDPANDA_PASSWORD" | \\
         docker exec -i redpanda sh -c 'RPK_PASS=$(cat); rpk acl user create nexus-redpanda --password "$RPK_PASS" --mechanism SCRAM-SHA-256' 2>&1 || echo "")
-    # rpk cluster config set: superusers list. Argv-safe (no secrets).
-    docker exec redpanda rpk cluster config set superusers '["nexus-redpanda"]' >/dev/null 2>&1 || true
-    # Restart to apply SASL listener config. Honors the firewall
-    # override compose file when present (matches deploy.sh).
-    if docker exec redpanda test -f /opt/docker-server/stacks/redpanda/docker-compose.firewall.yml 2>/dev/null \\
-        || [ -f /opt/docker-server/stacks/redpanda/docker-compose.firewall.yml ]; then
-        ( cd /opt/docker-server/stacks/redpanda && docker compose -f docker-compose.yml -f docker-compose.firewall.yml restart >/dev/null 2>&1 ) || true
-    else
-        ( cd /opt/docker-server/stacks/redpanda && docker compose restart >/dev/null 2>&1 ) || true
+    if ! echo "$USER_RESULT" | grep -qi 'created\\|added\\|success'; then
+        echo "  ⚠ rpk acl user create failed: $USER_RESULT" >&2
+        echo "RESULT hook=redpanda status=failed"
+        return 0
     fi
-    sleep 5
-    # Wait for restart-readiness. Wall-clock-bounded.
-    SECONDS=0
-    while [ "$SECONDS" -lt 30 ]; do
-        if docker exec redpanda curl -s --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then break; fi
-        sleep 2
-    done
-    # Verify user landed (handles the idempotent re-run case where
-    # rpk reported "already exists" earlier).
-    USERS=$(docker exec redpanda curl -s --max-time 10 'http://localhost:9644/v1/security/users' 2>/dev/null || echo "[]")
-    if echo "$USERS" | grep -q 'nexus-redpanda'; then
-        # Distinguish first-run from re-run via the create-result substring.
-        if echo "$USER_RESULT" | grep -qi 'already exists\\|user already\\|already in use'; then
-            echo "RESULT hook=redpanda status=already-configured"
+    # rpk cluster config set: superusers list. Capture the result so
+    # we can fail loudly — without this, the user has no permissions
+    # and the broker rejects every ACL-protected operation. Legacy
+    # deploy.sh swallowed errors here, which could mark the hook
+    # `configured` even when the cluster config update failed.
+    SUPER_RESULT=$(docker exec redpanda rpk cluster config set superusers '["nexus-redpanda"]' 2>&1 || echo "")
+    if ! echo "$SUPER_RESULT" | grep -qi 'success\\|updated\\|set'; then
+        echo "  ⚠ rpk cluster config set superusers failed: $SUPER_RESULT" >&2
+        echo "RESULT hook=redpanda status=failed"
+        return 0
+    fi
+    # Restart only on FIRST setup. SASL listener config is set on the
+    # broker side once and stays applied across rotations, so a
+    # password-only change doesn't need a restart. Legacy deploy.sh
+    # restarted unconditionally on every spin-up — harmless when the
+    # broker had no traffic but introduces a multi-second window
+    # where producers/consumers reconnect for no reason.
+    if [ "$USER_EXISTED" = "false" ]; then
+        if [ -f /opt/docker-server/stacks/redpanda/docker-compose.firewall.yml ]; then
+            ( cd /opt/docker-server/stacks/redpanda && docker compose -f docker-compose.yml -f docker-compose.firewall.yml restart >/dev/null 2>&1 ) || true
         else
-            echo "RESULT hook=redpanda status=configured"
+            ( cd /opt/docker-server/stacks/redpanda && docker compose restart >/dev/null 2>&1 ) || true
         fi
+        sleep 5
+        # Wait for restart-readiness. `curl -sf` again for proper
+        # status check.
+        SECONDS=0
+        while [ "$SECONDS" -lt 30 ]; do
+            if docker exec redpanda curl -sf --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then break; fi
+            sleep 2
+        done
+    fi
+    # Verify the user is in place after all state changes. `curl -sf`
+    # → if the admin API is still not-ready, the verify probe fails
+    # and we report `failed` (NOT a false-positive `configured`).
+    USERS=$(docker exec redpanda curl -sf --max-time 10 'http://localhost:9644/v1/security/users' 2>/dev/null || echo "[]")
+    if echo "$USERS" | grep -q 'nexus-redpanda'; then
+        echo "RESULT hook=redpanda status=configured"
     else
         echo "RESULT hook=redpanda status=failed"
     fi

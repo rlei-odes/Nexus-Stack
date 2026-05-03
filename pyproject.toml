@@ -99,6 +99,11 @@ ignore = [
     "S603",   # subprocess — we INTENTIONALLY shell out to ssh/tofu/docker, can't avoid
     "S607",   # subprocess + partial path — same; we trust PATH for system tools
     "B008",   # function call in default arg — pydantic/click/typer use this idiomatically
+    "S608",   # SQL injection via f-strings — false-positive: this codebase
+              # renders BASH scripts, not SQL. Trigger words like "delete"
+              # / "update" appear as bash subcommands (`rpk acl user delete`,
+              # `docker exec ... update ...`). Bash escaping is handled by
+              # shlex.quote at the input boundary, not parameterized SQL.
 ]
 
 [tool.ruff.lint.per-file-ignores]
