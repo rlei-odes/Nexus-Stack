@@ -549,9 +549,12 @@ def _services_configure(args: list[str]) -> int:
     ADMIN_EMAIL, etc.) from environment variables — same handoff
     pattern as ``infisical bootstrap``.
 
-    Currently shipped (Modul 2.2b): Portainer, n8n, Metabase, LakeFS,
-    OpenMetadata. Other admin-setup hooks (Filestash, RedPanda,
-    Superset, Gitea) ship in 2.2c/d follow-up PRs.
+    Currently shipped:
+    - Modul 2.2b — Portainer, n8n, Metabase, LakeFS, OpenMetadata
+    - Modul 2.2c — RedPanda, Superset
+    - Modul 2.2d — Filestash (python-side JSON mutation)
+    Remaining admin-setup hooks (Gitea, SFTPGo, Garage, Windmill,
+    Wikijs, Dify) ship in follow-up modules.
 
     Exit codes:
     - 0: all enabled+supported hooks ended in configured /
