@@ -1,7 +1,7 @@
-"""Per-service admin-setup hooks (Phase 2 Moduls 2.2b + 2.2c, #505).
+"""Per-service admin-setup hooks (Phase 2 Moduls 2.2b + 2.2c + 2.2d, #505).
 
 Replaces admin-setup blocks in ``scripts/deploy.sh`` (the [7/7]
-Auto-configuring services section). Two hook families:
+Auto-configuring services section). Three hook families:
 
 **REST first-init** (Modul 2.2b — Portainer, n8n, Metabase, LakeFS,
 OpenMetadata):
@@ -22,9 +22,21 @@ OpenMetadata):
      harmlessly if user exists; Superset falls back to ``fab
      reset-password`` if ``fab create-admin`` reports user-exists
 
-Two other admin-setup families are scoped to follow-up modules:
-- 2.2d: Filestash (file-mutation via ``docker exec sed`` + S3
-  backend config, double restart, complex jq-built JSON)
+**Python-side file mutation** (Modul 2.2d — Filestash):
+
+  1. Stage 1: rendered bash pulls the container's config.json via
+     ``docker exec cat``, base64-encoded over the wire
+  2. Python locally mutates the JSON (Pydantic-typed config →
+     dict transformations: strip protocol from host, force_ssl=true,
+     inject S3 backend connections + middleware)
+  3. Stage 2: rendered bash pipes the new config via base64 →
+     ``docker exec -i sh -c 'cat > …'`` → ``docker restart`` →
+     wait for /healthz again
+  This pattern uses TWO ssh round-trips (vs. one for the bash-render
+  family). The win: JSON mutation is pure-Python testable, replacing
+  a 100-line jq chain with a typed dict transform.
+
+Future admin-setup families:
 - 2.2e: Gitea (synchronous, depends on Postgres + seeder)
 - Future: SFTPGo, Garage, Windmill, Wikijs, Dify (each has its own
   pattern; migrating piecemeal as time allows)
@@ -78,13 +90,15 @@ R8. RESULT-line-per-hook: ``RESULT hook=<name> status=<configured|
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 import shlex
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from nexus_deploy import _remote
 from nexus_deploy.config import NexusConfig
@@ -762,6 +776,413 @@ superset_hook
 
 
 # ---------------------------------------------------------------------------
+# Modul 2.2d — Filestash (Python-side file mutation).
+#
+# Filestash stores its admin-side state in a JSON file inside the
+# container at ``/app/data/state/config/config.json``. Three things
+# need fixing post-startup:
+# 1. ``general.host`` defaults to the public URL with ``https://``
+#    prefix — but Filestash treats that as a literal protocol marker
+#    and breaks signed URLs unless we strip the prefix.
+# 2. ``general.force_ssl`` defaults to ``null``/``false`` — must be
+#    ``true`` to honour the Cloudflare-Access-only access pattern.
+# 3. S3 backends (R2 / Hetzner / external) need to be injected as
+#    pre-configured connections so admins don't need to re-enter
+#    credentials in Filestash's web UI on first login.
+#
+# Legacy deploy.sh did all three via a chain of jq invocations
+# server-side. The Python migration pulls the JSON, mutates with
+# typed Python dict transforms, and pushes back. Two ssh round-trips,
+# pure mutation logic, fully testable without any I/O.
+# ---------------------------------------------------------------------------
+
+
+_FILESTASH_CONFIG_PATH = "/app/data/state/config/config.json"
+
+# Marker tokens emitted by the pull-stage script. Both are
+# distinct prefixes so no JSON content can collide with them
+# (JSON can't start with whitespace-followed-by-uppercase-RESULT).
+_FILESTASH_PULL_OK = "RESULT_PULL_OK"
+_FILESTASH_PULL_NOT_READY = "RESULT_PULL_NOT_READY"
+_FILESTASH_PULL_NO_CONFIG = "RESULT_PULL_NO_CONFIG"
+
+
+def _filestash_has_r2(config: NexusConfig) -> bool:
+    """All four R2 fields populated."""
+    return bool(
+        config.r2_data_endpoint
+        and config.r2_data_access_key
+        and config.r2_data_secret_key
+        and config.r2_data_bucket,
+    )
+
+
+def _filestash_has_hetzner(config: NexusConfig) -> bool:
+    return bool(
+        config.hetzner_s3_server
+        and config.hetzner_s3_access_key
+        and config.hetzner_s3_secret_key
+        and config.hetzner_s3_bucket_general,
+    )
+
+
+def _filestash_has_external(config: NexusConfig) -> bool:
+    return bool(
+        config.external_s3_endpoint
+        and config.external_s3_access_key
+        and config.external_s3_secret_key
+        and config.external_s3_bucket,
+    )
+
+
+def _filestash_s3_connections(config: NexusConfig) -> list[dict[str, str]]:
+    """Build the ``connections`` array.
+
+    Order matches deploy.sh: R2 → Hetzner → External. The first one
+    becomes the primary backend (see :func:`_filestash_primary_backend`).
+    """
+    out: list[dict[str, str]] = []
+    if _filestash_has_r2(config):
+        out.append({"type": "s3", "label": "R2 Datalake"})
+    if _filestash_has_hetzner(config):
+        out.append({"type": "s3", "label": "Hetzner Storage"})
+    if _filestash_has_external(config):
+        out.append({"type": "s3", "label": config.external_s3_label or "External Storage"})
+    return out
+
+
+def _filestash_s3_params(config: NexusConfig) -> dict[str, dict[str, str]]:
+    """Build the per-backend params map keyed by label.
+
+    Endpoints are normalised: deploy.sh stores ``$HETZNER_S3_SERVER``
+    without scheme but Filestash needs a full URL, so we prefix
+    ``https://``. R2 + external endpoints already include scheme.
+    """
+    out: dict[str, dict[str, str]] = {}
+    if _filestash_has_r2(config):
+        out["R2 Datalake"] = {
+            "type": "s3",
+            "access_key_id": config.r2_data_access_key or "",
+            "secret_access_key": config.r2_data_secret_key or "",
+            "endpoint": config.r2_data_endpoint or "",
+            "region": "auto",
+            "path": f"/{config.r2_data_bucket}/",
+        }
+    if _filestash_has_hetzner(config):
+        out["Hetzner Storage"] = {
+            "type": "s3",
+            "access_key_id": config.hetzner_s3_access_key or "",
+            "secret_access_key": config.hetzner_s3_secret_key or "",
+            "endpoint": f"https://{config.hetzner_s3_server}",
+            "region": config.hetzner_s3_region or "",
+            "path": f"/{config.hetzner_s3_bucket_general}/",
+        }
+    if _filestash_has_external(config):
+        label = config.external_s3_label or "External Storage"
+        out[label] = {
+            "type": "s3",
+            "access_key_id": config.external_s3_access_key or "",
+            "secret_access_key": config.external_s3_secret_key or "",
+            "endpoint": config.external_s3_endpoint or "",
+            "region": config.external_s3_region or "auto",
+            "path": f"/{config.external_s3_bucket}/",
+        }
+    return out
+
+
+def _filestash_primary_backend(config: NexusConfig) -> str | None:
+    """First populated backend label, or None if no S3 backend is set up."""
+    if _filestash_has_r2(config):
+        return "R2 Datalake"
+    if _filestash_has_hetzner(config):
+        return "Hetzner Storage"
+    if _filestash_has_external(config):
+        return config.external_s3_label or "External Storage"
+    return None
+
+
+def _filestash_mutate_config(
+    existing: dict[str, Any],
+    *,
+    config: NexusConfig,
+) -> dict[str, Any]:
+    """Apply the three transforms to a parsed config.json dict.
+
+    Returns a NEW dict (does not mutate ``existing``) so callers can
+    snapshot pre/post for diffing. Legacy deploy.sh used in-place
+    ``sed`` + ``jq`` and could leave half-written state on jq
+    failures; the Python path's all-or-nothing semantics are stricter.
+    """
+    out: dict[str, Any] = json.loads(json.dumps(existing))  # deep copy
+
+    general = out.setdefault("general", {})
+    if isinstance(general, dict):
+        host = general.get("host")
+        if isinstance(host, str) and host.startswith("https://"):
+            general["host"] = host[len("https://") :]
+        general["force_ssl"] = True
+
+    primary = _filestash_primary_backend(config)
+    if primary is not None:
+        out["connections"] = _filestash_s3_connections(config)
+        params = _filestash_s3_params(config)
+        # Filestash wants the middleware param values as JSON STRINGS,
+        # not nested objects. This is the source of one of the original
+        # PR's bug-classes — a missing tojson would parse but break the
+        # admin UI on render. Pin via test snapshots.
+        middleware = out.setdefault("middleware", {})
+        if isinstance(middleware, dict):
+            middleware["identity_provider"] = {
+                "type": "passthrough",
+                "params": json.dumps({"strategy": "direct"}),
+            }
+            middleware["attribute_mapping"] = {
+                "related_backend": primary,
+                "params": json.dumps(params),
+            }
+
+    return out
+
+
+def _render_filestash_pull_script() -> str:
+    """Stage 1: wait for filestash → wait for config.json → pull as base64.
+
+    Emits exactly one of three marker lines so the Python-side parser
+    knows what happened:
+    - ``RESULT_PULL_NOT_READY`` — service never came up in 45s
+    - ``RESULT_PULL_NO_CONFIG`` — service up but config.json absent
+    - ``RESULT_PULL_OK <base64>`` — config.json captured
+
+    The base64-encoding step keeps any binary bytes / newlines /
+    quotes in config.json from breaking the line-based wire format
+    on stdout.
+    """
+    return f"""
+set -u
+READY=false
+SECONDS=0
+while [ "$SECONDS" -lt 45 ]; do
+    if curl -sf --connect-timeout 2 --max-time 5 \\
+        'http://localhost:8334/healthz' >/dev/null 2>&1; then
+        READY=true; break
+    fi
+    sleep 3
+done
+if [ "$READY" != "true" ]; then
+    echo "  ⚠ filestash not ready after 45s — skipping setup" >&2
+    echo "{_FILESTASH_PULL_NOT_READY}"
+    exit 0
+fi
+
+CONFIG_PRESENT=false
+SECONDS=0
+while [ "$SECONDS" -lt 30 ]; do
+    if docker exec filestash test -f {shlex.quote(_FILESTASH_CONFIG_PATH)} \\
+        >/dev/null 2>&1; then
+        CONFIG_PRESENT=true; break
+    fi
+    sleep 3
+done
+if [ "$CONFIG_PRESENT" != "true" ]; then
+    echo "  ⚠ filestash config.json absent after 30s — skipping" >&2
+    echo "{_FILESTASH_PULL_NO_CONFIG}"
+    exit 0
+fi
+
+# base64 with -w0 (no-wrap) isn't on macOS / Alpine; pipe through `tr` instead.
+CONFIG_B64=$(docker exec filestash cat {shlex.quote(_FILESTASH_CONFIG_PATH)} \\
+    2>/dev/null | base64 | tr -d '\\n' || echo "")
+if [ -z "$CONFIG_B64" ]; then
+    echo "  ⚠ filestash config.json empty / unreadable" >&2
+    echo "{_FILESTASH_PULL_NO_CONFIG}"
+    exit 0
+fi
+echo "{_FILESTASH_PULL_OK} $CONFIG_B64"
+"""
+
+
+def _render_filestash_push_script(*, new_config_b64: str) -> str:
+    """Stage 2: push base64'd config → restart → wait for /healthz.
+
+    R4 — keep the base64 (and therefore the encoded S3 secret material)
+    OUT of argv on the remote host. We feed the base64 string into
+    ``base64 -d`` via heredoc on stdin (``cat << 'NEXUS_FS_PUSH_EOF'
+    | base64 -d | docker exec -i …``), NOT as a positional argument to
+    ``printf``. Heredoc bodies are written to the child's stdin by the
+    bash shell directly; no fork in the pipeline carries the secret in
+    argv visible to ``ps -ef`` on the nexus host.
+
+    The single-quoted heredoc delimiter (``'NEXUS_FS_PUSH_EOF'``)
+    disables variable expansion inside, so any ``$``-shaped bytes that
+    coincidentally appear in base64 are not interpreted. The base64
+    alphabet is ``[A-Za-z0-9+/=]`` — no underscores, no E-O-F sequence
+    on its own line is reachable from a continuous (newline-stripped)
+    base64 string — but we still defensively assert the delimiter
+    doesn't appear inside the payload as a defence-in-depth check.
+
+    pipefail is ON: a failure anywhere in the pipeline (missing
+    ``base64`` binary, corrupt input, ``docker exec -i`` rejecting
+    stdin) propagates to the if-branch's exit status. Without it the
+    pipeline's status is just the last command's, which would mask a
+    silent empty-write into config.json.
+
+    Emits ``RESULT hook=filestash status=configured`` on success or
+    ``status=failed`` if either the write or the post-restart
+    healthcheck fails.
+    """
+    # Defensive guard: base64 alphabet check. If a future caller
+    # supplies non-base64 content we want to fail loudly here, not
+    # ship a broken script that the operator has to debug remotely.
+    if not re.fullmatch(r"[A-Za-z0-9+/=]+", new_config_b64):
+        raise ValueError("new_config_b64 contains characters outside the base64 alphabet")
+    # Defence in depth — unreachable as long as the base64 alphabet
+    # check above stands (b64 alphabet excludes underscores, the
+    # delimiter contains them). Kept as a tripwire for any future
+    # widening of the accepted alphabet that would invalidate the
+    # collision-impossibility argument.
+    delimiter = "NEXUS_FS_PUSH_EOF"
+    if delimiter in new_config_b64:  # pragma: no cover
+        raise ValueError(f"heredoc delimiter {delimiter!r} appears inside the payload")
+
+    return f"""
+set -u
+set -o pipefail  # ANY pipeline-stage failure → non-zero exit, NOT just the last
+cat <<'{delimiter}' 2>/dev/null | base64 -d 2>/dev/null | \\
+    docker exec -i filestash sh -c 'cat > {shlex.quote(_FILESTASH_CONFIG_PATH)}' \\
+    2>/dev/null
+{new_config_b64}
+{delimiter}
+WRITE_RC=$?
+if [ "$WRITE_RC" -ne 0 ]; then
+    echo "  ✗ filestash config write failed (rc=$WRITE_RC)" >&2
+    echo "RESULT hook=filestash status=failed"
+    exit 0
+fi
+
+if ! docker restart filestash >/dev/null 2>&1; then
+    echo "  ✗ filestash restart failed" >&2
+    echo "RESULT hook=filestash status=failed"
+    exit 0
+fi
+
+# Wait for /healthz after restart. Bounded at 30s — restart is
+# typically <10s on cax31; longer than that means something is wrong.
+RESTARTED=false
+SECONDS=0
+while [ "$SECONDS" -lt 30 ]; do
+    if curl -sf --connect-timeout 2 --max-time 5 \\
+        'http://localhost:8334/healthz' >/dev/null 2>&1; then
+        RESTARTED=true; break
+    fi
+    sleep 2
+done
+if [ "$RESTARTED" != "true" ]; then
+    echo "  ✗ filestash not ready 30s after restart" >&2
+    echo "RESULT hook=filestash status=failed"
+    exit 0
+fi
+echo "RESULT hook=filestash status=configured"
+"""
+
+
+def _parse_filestash_pull_output(stdout: str) -> dict[str, Any] | None | Literal["not-ready"]:
+    """Decode the pull-stage marker line into one of three states.
+
+    Return value:
+    - ``"not-ready"`` — readiness probe didn't pass in time, OR
+      config.json is absent (treated identically as ``skipped-not-ready``).
+    - ``None`` — pull marker line malformed (parse error, treat as failure).
+    - ``dict`` — successfully decoded config.json content.
+    """
+    for line in stdout.splitlines():
+        if line in (_FILESTASH_PULL_NOT_READY, _FILESTASH_PULL_NO_CONFIG):
+            return "not-ready"
+        if line.startswith(_FILESTASH_PULL_OK + " "):
+            b64 = line[len(_FILESTASH_PULL_OK) + 1 :].strip()
+            try:
+                raw = base64.b64decode(b64, validate=True)
+                parsed = json.loads(raw.decode("utf-8"))
+            except (ValueError, json.JSONDecodeError):
+                return None
+            if not isinstance(parsed, dict):
+                return None
+            return parsed
+    return None
+
+
+_FILESTASH_MARKER_PREFIXES = (
+    _FILESTASH_PULL_OK,
+    _FILESTASH_PULL_NOT_READY,
+    _FILESTASH_PULL_NO_CONFIG,
+    "RESULT hook=filestash",
+)
+
+
+def _forward_non_marker_stderr(stdout: str) -> None:
+    """Forward remote diagnostic lines (``  ⚠ …``, ``  ✗ …``) to local stderr.
+
+    Mirrors the bash-hook orchestrator's pattern (Modul-1.2 Round-4):
+    the rendered script writes warnings to its stderr, ``merge_stderr=True``
+    folds them into stdout, we strip the wire-format marker lines and
+    forward the rest so operators see WHY a setup failed instead of
+    just ``status=failed``.
+    """
+    for line in stdout.splitlines():
+        if any(line.startswith(p) for p in _FILESTASH_MARKER_PREFIXES):
+            continue
+        sys.stderr.write(line + "\n")
+
+
+def configure_filestash(
+    config: NexusConfig,
+    *,
+    script_runner: ScriptRunner | None = None,
+) -> HookResult:
+    """End-to-end Filestash admin setup.
+
+    Two SSH round-trips, with Python-side JSON mutation between them.
+    Failure at any stage maps to ``status=failed`` (NOT ``not-ready``)
+    EXCEPT for the explicit "not ready" / "no config" markers from
+    stage 1 which are pre-setup states, not failures.
+
+    Remote diagnostic lines (``  ⚠ …``, ``  ✗ …``) from both stages
+    are forwarded to local stderr so failures are debuggable from the
+    deploy log, not just visible as ``status=failed``.
+
+    ``script_runner`` defaults to :func:`_remote.ssh_run_script` so
+    tests can substitute a mock; the production caller
+    (``run_admin_setups``) passes the same callable through.
+    """
+    runner = script_runner or _remote.ssh_run_script
+
+    # Stage 1: pull
+    out1 = runner(_render_filestash_pull_script())
+    _forward_non_marker_stderr(out1.stdout)
+    pulled = _parse_filestash_pull_output(out1.stdout)
+    if pulled == "not-ready":
+        return HookResult(name="filestash", status="skipped-not-ready")
+    if pulled is None:
+        sys.stderr.write("  ✗ filestash pull stage produced no parseable result\n")
+        return HookResult(name="filestash", status="failed")
+
+    # Stage 2: mutate locally
+    new_config = _filestash_mutate_config(pulled, config=config)
+    new_b64 = base64.b64encode(json.dumps(new_config).encode("utf-8")).decode("ascii")
+
+    # Stage 3: push + restart + wait
+    out2 = runner(_render_filestash_push_script(new_config_b64=new_b64))
+    _forward_non_marker_stderr(out2.stdout)
+    if "RESULT hook=filestash status=configured" in out2.stdout:
+        return HookResult(name="filestash", status="configured")
+    return HookResult(name="filestash", status="failed")
+
+
+# ScriptRunner forward reference for type hints above (defined in
+# the orchestration section below; the runtime alias is set there).
+ScriptRunner = Callable[[str], "subprocess.CompletedProcess[str]"]
+
+
+# ---------------------------------------------------------------------------
 # Hook registry — maps service name → renderer function. NOT the
 # execution-order source of truth — render_remote_script iterates the
 # caller-provided ``enabled_hooks`` list, so the operator (or the CLI
@@ -784,9 +1205,40 @@ _HOOK_REGISTRY: dict[str, HookRenderer] = {
 }
 
 
+# Modul 2.2d Python-side hooks — separate registry because their
+# orchestration shape differs from bash renderers: they need to issue
+# multiple SSH round-trips with Python-side mutation in between.
+PythonHookFn = Callable[[NexusConfig, ScriptRunner], HookResult]
+
+
+def _filestash_python_hook(config: NexusConfig, runner: ScriptRunner) -> HookResult:
+    """Adapter: pin the (config, runner) signature for the registry."""
+    return configure_filestash(config, script_runner=runner)
+
+
+_PYTHON_HOOK_REGISTRY: dict[str, PythonHookFn] = {
+    "filestash": _filestash_python_hook,
+}
+
+# Single-source-of-truth invariant: a name lives in exactly one registry.
+# A name in both would silently double-dispatch in run_admin_setups (one
+# bash run + one python run). Checked at import time so any future
+# refactor that violates the invariant fails the test suite, not
+# production. If you genuinely need cross-registry routing, route via a
+# wrapper function that lives in only one registry.
+if _overlap := set(_HOOK_REGISTRY) & set(_PYTHON_HOOK_REGISTRY):
+    raise RuntimeError(f"hook names in both registries: {sorted(_overlap)}")
+
+
 def supported_hooks() -> tuple[str, ...]:
-    """Service names with admin-setup hooks shipped in this module."""
-    return tuple(_HOOK_REGISTRY.keys())
+    """All service names with admin-setup hooks (bash + python families).
+
+    Order: bash-registry insertion order, then python-registry insertion
+    order. ``dict.fromkeys`` preserves order while de-duplicating —
+    redundant given the import-time invariant above, but defence in depth
+    if a future refactor weakens that assertion.
+    """
+    return tuple(dict.fromkeys((*_HOOK_REGISTRY, *_PYTHON_HOOK_REGISTRY)))
 
 
 # ---------------------------------------------------------------------------
@@ -868,9 +1320,6 @@ def parse_results(stdout: str) -> tuple[HookResult, ...]:
 # ---------------------------------------------------------------------------
 
 
-ScriptRunner = Callable[[str], subprocess.CompletedProcess[str]]
-
-
 def run_admin_setups(
     config: NexusConfig,
     env: BootstrapEnv,
@@ -878,40 +1327,50 @@ def run_admin_setups(
     *,
     script_runner: ScriptRunner | None = None,
 ) -> SetupResult:
-    """Render → exec → parse.
+    """Render → exec → parse, dispatching to bash or python hook family.
 
     ``enabled`` is the full enabled-services list (same shape as
-    deploy.sh's ``$ENABLED_SERVICES``). Hooks are filtered to only
-    those that have a renderer in ``_HOOK_REGISTRY``; unknown
-    services are dropped silently (they belong to other modules:
-    seeder, compose_runner, future 2.2c/d).
+    deploy.sh's ``$ENABLED_SERVICES``). Hooks are filtered to those
+    that have an entry in either ``_HOOK_REGISTRY`` (bash-rendered)
+    or ``_PYTHON_HOOK_REGISTRY`` (Python-side, e.g. Filestash);
+    unknown services are dropped silently (they belong to other
+    modules: seeder, compose_runner, future hooks).
 
     Returns :class:`SetupResult` with one :class:`HookResult` per
-    enabled+supported hook. Hooks reporting no RESULT line (e.g.
-    a server-side ssh failure mid-script) are reflected as
+    enabled+supported hook. Bash hooks that report no RESULT line
+    (e.g. a server-side ssh failure mid-script) are reflected as
     ``status=failed`` for accountability.
     """
-    enabled_hooks = [s for s in enabled if s in _HOOK_REGISTRY]
-    if not enabled_hooks:
+    bash_hooks = [s for s in enabled if s in _HOOK_REGISTRY]
+    py_hooks = [s for s in enabled if s in _PYTHON_HOOK_REGISTRY]
+    if not bash_hooks and not py_hooks:
         return SetupResult(hooks=())
 
-    script = render_remote_script(config=config, env=env, enabled_hooks=enabled_hooks)
+    runner = script_runner or (lambda s: _remote.ssh_run_script(s))
 
-    run_script = script_runner or (lambda s: _remote.ssh_run_script(s))
-    completed = run_script(script)
+    bash_results: tuple[HookResult, ...] = ()
+    if bash_hooks:
+        script = render_remote_script(config=config, env=env, enabled_hooks=bash_hooks)
+        completed = runner(script)
+        # Forward remote ⚠ warnings + "  ✓/✗" lines to local stderr
+        # (Modul-1.2 Round-4 pattern); strip the RESULT wire-format lines.
+        for line in completed.stdout.splitlines():
+            if not line.startswith("RESULT hook="):
+                sys.stderr.write(line + "\n")
+        parsed = parse_results(completed.stdout)
+        parsed_names = {r.name for r in parsed}
+        # Any enabled bash-hook with no RESULT line counts as failed.
+        missing = tuple(
+            HookResult(name=h, status="failed") for h in bash_hooks if h not in parsed_names
+        )
+        bash_results = tuple(parsed) + missing
 
-    # Forward remote ⚠ warnings + "  ✓/✗" lines to local stderr
-    # (Modul-1.2 Round-4 pattern); strip the RESULT wire-format lines.
-    for line in completed.stdout.splitlines():
-        if not line.startswith("RESULT hook="):
-            sys.stderr.write(line + "\n")
+    py_results: list[HookResult] = []
+    for name in py_hooks:
+        hook_fn = _PYTHON_HOOK_REGISTRY[name]
+        py_results.append(hook_fn(config, runner))
 
-    parsed = parse_results(completed.stdout)
-    parsed_names = {r.name for r in parsed}
-
-    # Any enabled hook that did NOT produce a RESULT line counts as failed.
-    missing = [HookResult(name=h, status="failed") for h in enabled_hooks if h not in parsed_names]
-    return SetupResult(hooks=tuple(parsed) + tuple(missing))
+    return SetupResult(hooks=bash_results + tuple(py_results))
 
 
 # Re-export the keys for tests that want to discover them programmatically.
@@ -919,13 +1378,16 @@ __all__ = [
     "HookResult",
     "HookStatus",
     "SetupResult",
+    "configure_filestash",
     "parse_results",
     "render_lakefs_hook",
     "render_metabase_hook",
     "render_n8n_hook",
     "render_openmetadata_hook",
     "render_portainer_hook",
+    "render_redpanda_hook",
     "render_remote_script",
+    "render_superset_hook",
     "run_admin_setups",
     "supported_hooks",
 ]

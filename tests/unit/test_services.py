@@ -7,11 +7,14 @@ build + idempotent-skip dispatch, and CLI integration covering rc=0/1/2.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,6 +24,17 @@ from nexus_deploy.infisical import BootstrapEnv
 from nexus_deploy.services import (
     HookResult,
     SetupResult,
+    _filestash_has_external,
+    _filestash_has_hetzner,
+    _filestash_has_r2,
+    _filestash_mutate_config,
+    _filestash_primary_backend,
+    _filestash_s3_connections,
+    _filestash_s3_params,
+    _parse_filestash_pull_output,
+    _render_filestash_pull_script,
+    _render_filestash_push_script,
+    configure_filestash,
     parse_results,
     render_lakefs_hook,
     render_metabase_hook,
@@ -65,8 +79,8 @@ def _make_env(admin_email: str = "ops@example.com") -> BootstrapEnv:
 # ---------------------------------------------------------------------------
 
 
-def test_supported_hooks_contains_all_2_2b_and_2_2c_specs() -> None:
-    """Modul 2.2b (5 REST hooks) + Modul 2.2c (2 docker-exec hooks)."""
+def test_supported_hooks_contains_all_2_2b_and_2_2c_and_2_2d_specs() -> None:
+    """Modul 2.2b (5 REST hooks) + 2.2c (2 docker-exec) + 2.2d (Filestash, python-side)."""
     assert set(supported_hooks()) == {
         # 2.2b — REST first-init
         "portainer",
@@ -77,6 +91,8 @@ def test_supported_hooks_contains_all_2_2b_and_2_2c_specs() -> None:
         # 2.2c — docker-exec CLI
         "redpanda",
         "superset",
+        # 2.2d — python-side mutation
+        "filestash",
     }
 
 
@@ -817,12 +833,13 @@ def test_run_admin_setups_filters_unknown_services() -> None:
     run_admin_setups(
         _make_config(),
         _make_env(),
-        ["portainer", "filestash", "gitea"],
+        # gitea + dify are not yet in any registry (bash or python)
+        ["portainer", "gitea", "dify"],
         script_runner=capture,
     )
-    # filestash + gitea (not in 2.2b registry) must NOT reach the script
-    assert "filestash_hook" not in captured["script"]
+    # gitea + dify (not in any registry) must NOT reach the script
     assert "gitea_hook" not in captured["script"]
+    assert "dify_hook" not in captured["script"]
     assert "portainer_hook" in captured["script"]
 
 
@@ -837,7 +854,8 @@ def test_run_admin_setups_all_unknown_returns_empty_result() -> None:
     result = run_admin_setups(
         _make_config(),
         _make_env(),
-        ["filestash", "gitea"],
+        # neither gitea nor dify are in any registry
+        ["gitea", "dify"],
         script_runner=runner,
     )
     assert result == SetupResult(hooks=())
@@ -1012,3 +1030,547 @@ def test_services_configure_cli_rc2_on_transport_failure(
     captured = capsys.readouterr()
     assert "transport failure" in captured.err
     assert "with-secret-arg" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Modul 2.2d — Filestash (Python-side JSON mutation)
+# ---------------------------------------------------------------------------
+
+
+def _config_no_s3() -> NexusConfig:
+    return NexusConfig.from_secrets_json("{}")
+
+
+def _config_with_r2() -> NexusConfig:
+    return NexusConfig.from_secrets_json(
+        json.dumps(
+            {
+                "r2_data_endpoint": "https://r2.example.com",
+                "r2_data_access_key": "r2-fake-access",
+                "r2_data_secret_key": "r2-fake-secret",
+                "r2_data_bucket": "datalake",
+            }
+        )
+    )
+
+
+def _config_with_hetzner() -> NexusConfig:
+    return NexusConfig.from_secrets_json(
+        json.dumps(
+            {
+                "hetzner_s3_server": "hetzner-s3-fake-host",
+                "hetzner_s3_region": "fsn1",
+                "hetzner_s3_access_key": "hz-fake-access",
+                "hetzner_s3_secret_key": "hz-fake-secret",
+                "hetzner_s3_bucket_general": "general",
+            }
+        )
+    )
+
+
+def _config_with_external() -> NexusConfig:
+    return NexusConfig.from_secrets_json(
+        json.dumps(
+            {
+                "external_s3_endpoint": "https://external.example.com",
+                "external_s3_region": "us-east-1",
+                "external_s3_access_key": "ext-fake-access",
+                "external_s3_secret_key": "ext-fake-secret",
+                "external_s3_bucket": "ext-bucket",
+                "external_s3_label": "Acme S3",
+            }
+        )
+    )
+
+
+def _config_all_three() -> NexusConfig:
+    fields: dict[str, Any] = {}
+    for cfg in (_config_with_r2(), _config_with_hetzner(), _config_with_external()):
+        for k, v in cfg.model_dump().items():
+            if v is not None and v != "":
+                fields[k] = v
+    return NexusConfig.from_secrets_json(json.dumps(fields))
+
+
+# -- has_* predicates -----------------------------------------------
+
+
+def test_filestash_has_r2_requires_all_four_fields() -> None:
+    cfg = _config_with_r2()
+    assert _filestash_has_r2(cfg) is True
+    # Missing any one field → false. Mutate by setting one to empty.
+    partial = NexusConfig.from_secrets_json(
+        json.dumps({**cfg.model_dump(exclude_none=True), "r2_data_secret_key": ""})
+    )
+    assert _filestash_has_r2(partial) is False
+
+
+def test_filestash_has_hetzner_requires_general_bucket() -> None:
+    cfg = _config_with_hetzner()
+    assert _filestash_has_hetzner(cfg) is True
+
+
+def test_filestash_has_external_requires_all_fields() -> None:
+    cfg = _config_with_external()
+    assert _filestash_has_external(cfg) is True
+
+
+def test_filestash_no_s3_returns_no_predicates() -> None:
+    cfg = _config_no_s3()
+    assert _filestash_has_r2(cfg) is False
+    assert _filestash_has_hetzner(cfg) is False
+    assert _filestash_has_external(cfg) is False
+    assert _filestash_primary_backend(cfg) is None
+
+
+# -- connections + params + primary_backend -------------------------
+
+
+def test_filestash_connections_order_r2_then_hetzner_then_external() -> None:
+    """deploy.sh's iteration order: R2 first, Hetzner second, External third."""
+    conns = _filestash_s3_connections(_config_all_three())
+    labels = [c["label"] for c in conns]
+    assert labels == ["R2 Datalake", "Hetzner Storage", "Acme S3"]
+
+
+def test_filestash_connections_only_r2() -> None:
+    conns = _filestash_s3_connections(_config_with_r2())
+    assert conns == [{"type": "s3", "label": "R2 Datalake"}]
+
+
+def test_filestash_external_label_default_when_unset() -> None:
+    """external_s3_label defaults to 'External Storage' (deploy.sh fallback)."""
+    cfg = NexusConfig.from_secrets_json(
+        json.dumps(
+            {
+                "external_s3_endpoint": "https://e.example.com",
+                "external_s3_access_key": "x-fake",
+                "external_s3_secret_key": "y-fake",
+                "external_s3_bucket": "b",
+                # external_s3_label omitted
+            }
+        )
+    )
+    conns = _filestash_s3_connections(cfg)
+    assert conns == [{"type": "s3", "label": "External Storage"}]
+
+
+def test_filestash_primary_backend_r2_wins() -> None:
+    assert _filestash_primary_backend(_config_all_three()) == "R2 Datalake"
+
+
+def test_filestash_primary_backend_hetzner_when_no_r2() -> None:
+    cfg = _config_with_hetzner()
+    assert _filestash_primary_backend(cfg) == "Hetzner Storage"
+
+
+def test_filestash_primary_backend_external_with_label() -> None:
+    cfg = _config_with_external()
+    assert _filestash_primary_backend(cfg) == "Acme S3"
+
+
+def test_filestash_params_external_only() -> None:
+    """External-only config produces full params under its custom label."""
+    params = _filestash_s3_params(_config_with_external())
+    assert "Acme S3" in params
+    assert params["Acme S3"]["endpoint"] == "https://external.example.com"
+    assert params["Acme S3"]["region"] == "us-east-1"
+    assert params["Acme S3"]["path"] == "/ext-bucket/"
+
+
+def test_filestash_params_hetzner_endpoint_prefixed_with_https() -> None:
+    """deploy.sh stores HETZNER_S3_SERVER bare; Filestash needs full URL."""
+    params = _filestash_s3_params(_config_with_hetzner())
+    assert params["Hetzner Storage"]["endpoint"] == "https://hetzner-s3-fake-host"
+
+
+def test_filestash_params_r2_path_uses_bucket() -> None:
+    params = _filestash_s3_params(_config_with_r2())
+    assert params["R2 Datalake"]["path"] == "/datalake/"
+    assert params["R2 Datalake"]["region"] == "auto"
+
+
+# -- _filestash_mutate_config ---------------------------------------
+
+
+def test_filestash_mutate_strips_https_from_host() -> None:
+    """A pre-existing https:// prefix on .general.host gets removed."""
+    pre = {"general": {"host": "https://files.example.com"}}
+    post = _filestash_mutate_config(pre, config=_config_no_s3())
+    assert post["general"]["host"] == "files.example.com"
+
+
+def test_filestash_mutate_does_not_double_strip() -> None:
+    """A bare host (no scheme) is left alone — never accidentally truncated."""
+    pre = {"general": {"host": "files.example.com"}}
+    post = _filestash_mutate_config(pre, config=_config_no_s3())
+    assert post["general"]["host"] == "files.example.com"
+
+
+def test_filestash_mutate_force_ssl_set_to_true_when_null() -> None:
+    """deploy.sh: 'force_ssl': null → 'force_ssl': true."""
+    pre = {"general": {"host": "x.example.com", "force_ssl": None}}
+    post = _filestash_mutate_config(pre, config=_config_no_s3())
+    assert post["general"]["force_ssl"] is True
+
+
+def test_filestash_mutate_force_ssl_set_to_true_when_false() -> None:
+    pre = {"general": {"host": "x.example.com", "force_ssl": False}}
+    post = _filestash_mutate_config(pre, config=_config_no_s3())
+    assert post["general"]["force_ssl"] is True
+
+
+def test_filestash_mutate_no_s3_leaves_connections_untouched() -> None:
+    """If no backend is configured, .connections must NOT be overwritten."""
+    pre = {"general": {"host": "x"}, "connections": [{"label": "manual"}]}
+    post = _filestash_mutate_config(pre, config=_config_no_s3())
+    assert post["connections"] == [{"label": "manual"}]
+    assert "middleware" not in post or "attribute_mapping" not in post.get("middleware", {})
+
+
+def test_filestash_mutate_with_r2_overwrites_connections_and_middleware() -> None:
+    pre = {"general": {"host": "x"}, "connections": []}
+    post = _filestash_mutate_config(pre, config=_config_with_r2())
+    assert len(post["connections"]) == 1
+    assert post["connections"][0]["label"] == "R2 Datalake"
+
+    # Middleware params are JSON STRINGS (Filestash quirk — not nested dicts)
+    assert isinstance(post["middleware"]["identity_provider"]["params"], str)
+    assert isinstance(post["middleware"]["attribute_mapping"]["params"], str)
+    assert post["middleware"]["attribute_mapping"]["related_backend"] == "R2 Datalake"
+    decoded = json.loads(post["middleware"]["attribute_mapping"]["params"])
+    assert "R2 Datalake" in decoded
+
+
+def test_filestash_mutate_does_not_modify_input() -> None:
+    """Pure function — input dict must remain unchanged."""
+    pre = {"general": {"host": "https://x.example.com"}, "connections": []}
+    pre_copy = json.loads(json.dumps(pre))
+    _filestash_mutate_config(pre, config=_config_with_r2())
+    assert pre == pre_copy
+
+
+# -- _render_filestash_pull_script ----------------------------------
+
+
+def test_render_filestash_pull_script_starts_with_set_u() -> None:
+    """R1: rendered bash must begin with `set -u` (set -e omitted by design)."""
+    script = _render_filestash_pull_script()
+    assert script.lstrip().startswith("set -u")
+
+
+def test_render_filestash_pull_script_uses_curl_dash_f() -> None:
+    """R2.2c lesson: -sf, not bare -s — bare -s accepts any HTTP code."""
+    script = _render_filestash_pull_script()
+    assert "curl -sf" in script
+
+
+def test_render_filestash_pull_script_emits_three_distinct_markers() -> None:
+    script = _render_filestash_pull_script()
+    assert "RESULT_PULL_NOT_READY" in script
+    assert "RESULT_PULL_NO_CONFIG" in script
+    assert "RESULT_PULL_OK" in script
+
+
+def test_render_filestash_pull_script_base64_no_dash_w() -> None:
+    """`base64 -w0` is GNU-only; we use `base64 | tr -d '\\n'` for BSD/Alpine."""
+    script = _render_filestash_pull_script()
+    assert "base64 -w0" not in script
+    assert "tr -d" in script
+
+
+def test_render_filestash_pull_script_executable_via_bash_n(tmp_path: Path) -> None:
+    """`bash -n` parses the rendered script — catches shell-syntax errors."""
+    script = _render_filestash_pull_script()
+    f = tmp_path / "pull.sh"
+    f.write_text(script)
+    rc = subprocess.run(
+        ["bash", "-n", str(f)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rc.returncode == 0, rc.stderr
+
+
+# -- _render_filestash_push_script ----------------------------------
+
+
+def test_render_filestash_push_script_uses_heredoc_not_argv_for_b64() -> None:
+    """R4: base64 (encoding S3 secrets) must NOT appear in argv on the
+    remote host. Even encoded the b64 is recoverable; ``ps -ef`` on
+    nexus during the brief command window would expose it. The b64
+    travels via heredoc on stdin to ``base64 -d``, NOT as a positional
+    arg to ``printf`` / ``echo``."""
+    fake_b64 = base64.b64encode(b'{"x":"secret-do-not-leak"}').decode()
+    script = _render_filestash_push_script(new_config_b64=fake_b64)
+    # The b64 string IS in the rendered script body (it's the only way
+    # to get the bytes onto the server) — but the DECODED secret is not.
+    assert "secret-do-not-leak" not in script
+    # Heredoc form: cat <<'NEXUS_FS_PUSH_EOF' | base64 -d | docker exec -i ...
+    assert "<<'NEXUS_FS_PUSH_EOF'" in script
+    # The b64 must NOT appear after `printf` / `echo` / argv-style invocations
+    # — that would leak it to remote `ps`.
+    for line in script.splitlines():
+        if fake_b64 in line:
+            # Only allowed: the heredoc body line (just the b64, nothing else)
+            assert line.strip() == fake_b64, f"b64 leaked into argv-bearing line: {line!r}"
+    assert "base64 -d" in script
+    assert "docker exec -i filestash" in script
+
+
+def test_render_filestash_push_script_pipefail_enabled() -> None:
+    """Without `set -o pipefail`, a base64 -d failure would be masked
+    by docker exec's exit status. Pin the option in the rendered script."""
+    fake_b64 = base64.b64encode(b"{}").decode()
+    script = _render_filestash_push_script(new_config_b64=fake_b64)
+    assert "set -o pipefail" in script
+
+
+def test_render_filestash_push_script_rejects_non_b64_input() -> None:
+    """Defensive guard: non-base64 alphabet → ValueError immediately."""
+    with pytest.raises(ValueError, match="base64 alphabet"):
+        _render_filestash_push_script(new_config_b64="not!base64!")
+
+
+def test_render_filestash_push_script_emits_result_lines() -> None:
+    script = _render_filestash_push_script(new_config_b64=base64.b64encode(b"{}").decode())
+    assert "RESULT hook=filestash status=configured" in script
+    assert "RESULT hook=filestash status=failed" in script
+
+
+def test_render_filestash_push_script_executable_via_bash_n(tmp_path: Path) -> None:
+    fake_b64 = base64.b64encode(b'{"general":{"host":"x"}}').decode()
+    script = _render_filestash_push_script(new_config_b64=fake_b64)
+    f = tmp_path / "push.sh"
+    f.write_text(script)
+    rc = subprocess.run(
+        ["bash", "-n", str(f)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rc.returncode == 0, rc.stderr
+
+
+# -- _parse_filestash_pull_output -----------------------------------
+
+
+def test_parse_pull_output_not_ready() -> None:
+    assert _parse_filestash_pull_output("RESULT_PULL_NOT_READY\n") == "not-ready"
+
+
+def test_parse_pull_output_no_config() -> None:
+    assert _parse_filestash_pull_output("RESULT_PULL_NO_CONFIG\n") == "not-ready"
+
+
+def test_parse_pull_output_valid_b64_returns_dict() -> None:
+    b64 = base64.b64encode(b'{"general": {"host": "files.example.com"}}').decode()
+    out = _parse_filestash_pull_output(f"RESULT_PULL_OK {b64}\n")
+    assert isinstance(out, dict)
+    assert out["general"]["host"] == "files.example.com"
+
+
+def test_parse_pull_output_invalid_b64_returns_none() -> None:
+    """Marker present but base64 bad → parse-fail signal, callers treat as failed."""
+    out = _parse_filestash_pull_output("RESULT_PULL_OK !!!not-base64!!!\n")
+    assert out is None
+
+
+def test_parse_pull_output_valid_b64_but_not_json() -> None:
+    b64 = base64.b64encode(b"not json").decode()
+    out = _parse_filestash_pull_output(f"RESULT_PULL_OK {b64}\n")
+    assert out is None
+
+
+def test_parse_pull_output_valid_json_but_not_dict() -> None:
+    """A JSON list at top level isn't a config — reject."""
+    b64 = base64.b64encode(b"[1, 2, 3]").decode()
+    out = _parse_filestash_pull_output(f"RESULT_PULL_OK {b64}\n")
+    assert out is None
+
+
+def test_parse_pull_output_no_marker_returns_none() -> None:
+    assert _parse_filestash_pull_output("random unrelated stdout\n") is None
+
+
+# -- configure_filestash end-to-end ---------------------------------
+
+
+def _runner_returning(
+    stdouts: list[str],
+) -> Callable[[str], subprocess.CompletedProcess[str]]:
+    """Stateful runner: returns each stdout in order on successive calls."""
+    state = {"i": 0}
+
+    def runner(_script: str) -> subprocess.CompletedProcess[str]:
+        out = stdouts[state["i"]]
+        state["i"] += 1
+        return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=out, stderr="")
+
+    return runner
+
+
+def test_configure_filestash_happy_path_writes_configured() -> None:
+    initial = {"general": {"host": "https://files.example.com", "force_ssl": None}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    runner = _runner_returning(
+        [
+            f"RESULT_PULL_OK {pull_b64}\n",
+            "RESULT hook=filestash status=configured\n",
+        ]
+    )
+    result = configure_filestash(_config_with_r2(), script_runner=runner)
+    assert result == HookResult(name="filestash", status="configured")
+
+
+def test_configure_filestash_skipped_not_ready_short_circuits() -> None:
+    """When stage 1 reports not-ready we don't even render stage 2."""
+    runner_call_count = {"n": 0}
+
+    def runner(_script: str) -> subprocess.CompletedProcess[str]:
+        runner_call_count["n"] += 1
+        return subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="RESULT_PULL_NOT_READY\n",
+            stderr="",
+        )
+
+    result = configure_filestash(_config_no_s3(), script_runner=runner)
+    assert result == HookResult(name="filestash", status="skipped-not-ready")
+    assert runner_call_count["n"] == 1  # No stage 2 invocation
+
+
+def test_configure_filestash_no_config_marker_short_circuits() -> None:
+    runner_call_count = {"n": 0}
+
+    def runner(_script: str) -> subprocess.CompletedProcess[str]:
+        runner_call_count["n"] += 1
+        return subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="RESULT_PULL_NO_CONFIG\n", stderr=""
+        )
+
+    result = configure_filestash(_config_no_s3(), script_runner=runner)
+    assert result == HookResult(name="filestash", status="skipped-not-ready")
+    assert runner_call_count["n"] == 1
+
+
+def test_configure_filestash_pull_unparseable_returns_failed() -> None:
+    """Marker line malformed → failed, not skipped (we couldn't read state)."""
+    runner = _runner_returning(["nothing useful here\n"])
+    result = configure_filestash(_config_no_s3(), script_runner=runner)
+    assert result == HookResult(name="filestash", status="failed")
+
+
+def test_configure_filestash_forwards_remote_diagnostics_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Remote ``  ⚠ …`` / ``  ✗ …`` lines must reach local stderr so
+    operators can debug failures from the deploy log, not just see
+    ``status=failed``. Mirrors the bash-hook orchestrator's pattern.
+    """
+    initial = {"general": {"host": "x"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    # Pull stage emits a warning + the OK marker; push stage emits a
+    # warning + the failed RESULT.
+    runner = _runner_returning(
+        [
+            f"  ⚠ pull-stage diagnostic warning\nRESULT_PULL_OK {pull_b64}\n",
+            "  ✗ push-stage diagnostic\nRESULT hook=filestash status=failed\n",
+        ]
+    )
+    configure_filestash(_config_no_s3(), script_runner=runner)
+    captured = capsys.readouterr()
+    assert "pull-stage diagnostic warning" in captured.err
+    assert "push-stage diagnostic" in captured.err
+    # Marker lines must NOT be forwarded (those are wire-format only)
+    assert "RESULT_PULL_OK" not in captured.err
+    assert "RESULT hook=filestash" not in captured.err
+
+
+def test_configure_filestash_push_failed_returns_failed() -> None:
+    initial = {"general": {"host": "x.example.com"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    runner = _runner_returning(
+        [
+            f"RESULT_PULL_OK {pull_b64}\n",
+            "RESULT hook=filestash status=failed\n",
+        ]
+    )
+    result = configure_filestash(_config_no_s3(), script_runner=runner)
+    assert result == HookResult(name="filestash", status="failed")
+
+
+def test_configure_filestash_push_no_result_line_counts_as_failed() -> None:
+    """Stage 2 returns stdout but no parseable RESULT line → failed."""
+    initial = {"general": {"host": "x"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    runner = _runner_returning([f"RESULT_PULL_OK {pull_b64}\n", "ssh died mid-restart\n"])
+    result = configure_filestash(_config_no_s3(), script_runner=runner)
+    assert result == HookResult(name="filestash", status="failed")
+
+
+def test_configure_filestash_secrets_not_in_rendered_push_script() -> None:
+    """End-to-end R4: S3 secret key should never reach a rendered argv.
+
+    The mutated config contains the R2 secret key. We capture stage 2's
+    rendered script and assert the secret string is NOT present in
+    plaintext (it's base64-encoded inside the rendered script, which
+    is on stdin to ssh, NOT argv).
+    """
+    initial = {"general": {"host": "x"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    captured: list[str] = []
+
+    def runner(script: str) -> subprocess.CompletedProcess[str]:
+        captured.append(script)
+        if len(captured) == 1:
+            return subprocess.CompletedProcess(
+                args=["ssh"], returncode=0, stdout=f"RESULT_PULL_OK {pull_b64}\n", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="RESULT hook=filestash status=configured\n",
+            stderr="",
+        )
+
+    configure_filestash(_config_with_r2(), script_runner=runner)
+    # Stage 2 script — assert plaintext secret absent
+    assert len(captured) == 2
+    assert "r2-fake-secret" not in captured[1]
+    assert "r2-fake-access" not in captured[1]
+
+
+def test_run_admin_setups_dispatches_filestash_via_python_path() -> None:
+    """run_admin_setups routes 'filestash' through configure_filestash."""
+    initial = {"general": {"host": "x"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    runner = _runner_returning(
+        [
+            f"RESULT_PULL_OK {pull_b64}\n",
+            "RESULT hook=filestash status=configured\n",
+        ]
+    )
+    result = run_admin_setups(_make_config(), _make_env(), ["filestash"], script_runner=runner)
+    assert result.hooks == (HookResult(name="filestash", status="configured"),)
+
+
+def test_run_admin_setups_dispatches_bash_and_python_hooks_together() -> None:
+    """Both registries dispatched in one call. Bash runs first, then Python."""
+    initial = {"general": {"host": "x"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    runner = _runner_returning(
+        [
+            "RESULT hook=portainer status=configured\n",
+            f"RESULT_PULL_OK {pull_b64}\n",
+            "RESULT hook=filestash status=configured\n",
+        ]
+    )
+    result = run_admin_setups(
+        _make_config(), _make_env(), ["portainer", "filestash"], script_runner=runner
+    )
+    names = {h.name for h in result.hooks}
+    assert names == {"portainer", "filestash"}
+    assert result.is_success
