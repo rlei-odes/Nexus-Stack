@@ -109,6 +109,14 @@ ignore = [
 # lands in tests/, that's enforced by .gitignore'd raw baselines.
 "tests/**" = ["S101", "S105", "S106", "S107", "ANN", "D"]
 "src/nexus_deploy/__init__.py" = ["D104"]   # __init__.py docstring optional
+# services.py renders bash scripts via f-strings. Ruff's S608 rule
+# (SQL-injection via string-based query construction) false-positives
+# on f-strings containing SQL-like keywords ("delete", "update") that
+# are actually bash subcommands (`rpk acl user delete`, `rpk security
+# user update`). Bash escaping is handled at the input boundary via
+# `shlex.quote`. Scoped to this one module so future code that
+# really does build SQL strings still gets linted.
+"src/nexus_deploy/services.py" = ["S608"]
 
 [tool.ruff.format]
 quote-style = "double"
