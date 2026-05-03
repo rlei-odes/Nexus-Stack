@@ -7,6 +7,7 @@ Currently:
 - ``secret-sync --stack <jupyter|marimo>`` (#505 Modul 1.2)
 - ``seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]``
   (#505 Modul 2.1)
+- ``compose up --enabled <comma-list>`` (#505 Modul 2.2a)
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import sys
 from pathlib import Path
 
 from nexus_deploy import __version__, hello
+from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
 from nexus_deploy.infisical import (
     BootstrapEnv,
@@ -465,12 +467,82 @@ def _seed(args: list[str]) -> int:
     return 0
 
 
+def _compose_up(args: list[str]) -> int:
+    """`nexus-deploy compose up --enabled <comma-list>`.
+
+    Renders the parallel ``docker compose up -d --build`` loop for
+    every enabled service, runs it server-side via ssh, parses the
+    RESULT line. Replaces the legacy 130-line ssh heredoc in
+    ``scripts/deploy.sh`` (the [6/7] step). Per-service admin-setup
+    hooks (Wikijs, Dify, etc.) are scoped to Modul 2.2b.
+
+    The comma-list maps directly to deploy.sh's ``$ENABLED_SERVICES``;
+    callers pass it as-is. Virtual-service expansion + parent-stack
+    deduplication + deferred-services skipping happen inside the
+    compose_runner module.
+
+    Exit codes:
+    - 0: all enabled services started + verified running.
+    - 1: at least one service failed but at least one succeeded
+         (deploy.sh continues — the operator sees the per-service
+         ✗ line for diagnosis).
+    - 2: hard failure — invalid args, transport (ssh) failure, no
+         parseable RESULT line. deploy.sh aborts.
+    """
+    if not args or args[0] != "up":
+        print("compose: only 'up' subcommand is supported", file=sys.stderr)
+        return 2
+
+    enabled_str: str | None = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--enabled":
+            if i + 1 >= len(args):
+                print("compose up: --enabled requires a value", file=sys.stderr)
+                return 2
+            enabled_str = args[i + 1]
+            i += 2
+        else:
+            print(f"compose up: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+
+    if enabled_str is None:
+        print(
+            "compose up: --enabled <comma-separated-services> is required",
+            file=sys.stderr,
+        )
+        return 2
+
+    enabled = [s.strip() for s in enabled_str.split(",") if s.strip()]
+    if not enabled:
+        # Empty list = nothing to do = success (mirrors deploy.sh's
+        # behaviour when ENABLED_SERVICES is empty).
+        print("compose up: no services enabled, nothing to do")
+        return 0
+
+    try:
+        result = run_compose_up(enabled)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f"compose up: transport failure ({type(exc).__name__})", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"compose up: unexpected error ({type(exc).__name__})", file=sys.stderr)
+        return 2
+
+    print(f"compose up: started={result.started} failed={result.failed}")
+    if result.failed > 0:
+        if result.started == 0:
+            return 2
+        return 1
+    return 0
+
+
 def main() -> int:
     """Subcommand dispatcher. Shipped subcommands by phase:
 
     - Phase 1: ``config dump-shell``, ``infisical bootstrap``,
       ``secret-sync``
-    - Phase 2: ``seed``
+    - Phase 2: ``seed``, ``compose up``
 
     More land as the migration progresses; see #505.
     """
@@ -489,6 +561,8 @@ def main() -> int:
         return _secret_sync(args[1:])
     if args[:1] == ["seed"]:
         return _seed(args[1:])
+    if args[:1] == ["compose"]:
+        return _compose_up(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -498,7 +572,8 @@ def main() -> int:
         "config dump-shell [--tofu-dir PATH (default: tofu/stack) | --stdin], "
         "infisical bootstrap (reads SECRETS_JSON from stdin + env vars), "
         "secret-sync --stack <jupyter|marimo>, "
-        "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]",
+        "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/], "
+        "compose up --enabled <comma-list>",
         file=sys.stderr,
     )
     return 2
