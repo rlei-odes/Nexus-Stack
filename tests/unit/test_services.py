@@ -256,17 +256,28 @@ def test_render_redpanda_hook_uses_curl_dash_f_for_status_check() -> None:
     assert script.count("curl -sf") >= 3  # initial wait + post-restart wait + verify
 
 
-def test_render_redpanda_hook_password_rotation_via_delete_recreate() -> None:
-    """Round-1 finding: legacy deploy.sh never sync'd the password on
-    a second run — Infisical could rotate the password without the
-    broker ever seeing the new one. STRICTLY-MORE-CORRECT divergence:
-    detect existing user → delete → recreate with current password.
+def test_render_redpanda_hook_password_rotation_via_create_first_then_delete() -> None:
+    """Round-1 + round-2 findings: legacy deploy.sh never sync'd the
+    password on a second run — Infisical rotation silently broke
+    clients. STRICTLY-MORE-CORRECT divergence: try-create-first;
+    only delete + recreate IF create reports "already exists" (the
+    rotation case). The delete is gated on the broker proving it's
+    responsive — a transient broker glitch on the first create
+    returns failed without touching state. Round-2 specifically
+    flagged delete-before-prove as a real bug — broker could be
+    left with no SASL user if create failed transiently.
     """
     script = render_redpanda_hook(_make_config(), _make_env())
-    # Existence probe BEFORE create
-    assert "EXISTING_USERS=$(docker exec redpanda curl -sf --max-time 10" in script
-    # Delete-then-recreate path
-    assert "rpk acl user delete nexus-redpanda" in script
+    # Try-create-first happens BEFORE any delete
+    create_idx = script.find("rpk acl user create nexus-redpanda")
+    delete_idx = script.find("rpk acl user delete nexus-redpanda")
+    assert create_idx >= 0, "rpk acl user create must be in script"
+    assert delete_idx >= 0, "rpk acl user delete must be in script"
+    assert create_idx < delete_idx, (
+        "create-attempt must come BEFORE delete (no delete-before-prove)"
+    )
+    # The delete is gated on "already exists" branch
+    assert "already exists" in script
     # Tracked via USER_EXISTED so restart can be skipped on rotation
     assert "USER_EXISTED=true" in script
     assert "USER_EXISTED=false" in script
@@ -297,6 +308,27 @@ def test_render_redpanda_hook_restart_only_on_first_setup() -> None:
     gate_idx = script.find('if [ "$USER_EXISTED" = "false" ]')
     assert gate_idx >= 0, "USER_EXISTED gate must be present"
     assert restart_idx > gate_idx, "Restart must be inside the USER_EXISTED=false branch"
+
+
+def test_render_redpanda_hook_restart_failure_propagates_to_failed() -> None:
+    """Round-2 finding: legacy `|| true` swallowed restart failures
+    — if `docker compose restart` returned non-zero, the SASL
+    listener config never picked up the change but the hook still
+    reported success. Now: capture restart's exit code, mark hook
+    as failed if restart returned non-zero.
+    """
+    script = render_redpanda_hook(_make_config(), _make_env())
+    # Restart command captures exit code
+    assert "RESTART_RC=0" in script
+    assert "|| RESTART_RC=$?" in script
+    # And checks for non-zero before continuing
+    assert 'if [ "$RESTART_RC" -ne 0 ]; then' in script
+    # No bare `|| true` after `docker compose restart` (would hide failures)
+    for line in script.splitlines():
+        if "docker compose" in line and "restart" in line and "|| true" in line:
+            raise AssertionError(
+                f"docker compose restart must capture exit code, not || true: {line!r}"
+            )
 
 
 def test_render_superset_hook_basic() -> None:

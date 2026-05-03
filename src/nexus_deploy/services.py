@@ -552,15 +552,38 @@ openmetadata_hook
 def render_redpanda_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """RedPanda SASL: ``rpk acl user create`` + ``rpk cluster config set superusers``.
 
-    Wait via ``docker exec redpanda curl /v1/status/ready`` (the admin
-    API isn't exposed outside the container). Password reaches the
-    container via stdin → in-container shell var → rpk's ``--password``
-    argv (visible only inside the container, not via host ``ps``).
+    Wait via ``docker exec redpanda curl -sf /v1/status/ready`` (the
+    admin API isn't exposed outside the container; ``-sf`` requires
+    a true 2xx status, not just a transport-level success). Password
+    reaches the container via stdin → in-container shell var → rpk's
+    ``--password`` argv (visible only inside the container, not via
+    host ``ps``).
 
-    After SASL setup, restart RedPanda to apply the SASL listener
-    config, then verify the user is visible via ``/v1/security/users``.
-    Re-runs are safe: rpk's "user exists" error is detected via
-    response substring → status=already-configured.
+    Idempotency contract — always converges to ``configured``
+    (or ``failed`` / ``skipped-not-ready``); NO ``already-configured``
+    path. Reasoning:
+    - First run: create user → cluster config → restart → verify ✓
+    - Re-run with same Infisical password: rpk reports "already exists"
+      → delete + recreate (no broker restart, since SASL listener is
+      already on) → verify ✓ — ends in ``configured``, not
+      ``already-configured``, because we DID re-write state (the
+      password was rotated to its current value, even if that
+      happens to equal the previous value).
+    - Re-run with rotated password: same path as above, password
+      now genuinely differs → external clients pick up new credential
+      via Infisical sync.
+
+    The delete is gated on the first create-attempt returning
+    "already exists" — we never delete a user we haven't proven the
+    broker can recreate. A transient broker glitch on the first
+    create returns ``failed`` without touching existing state.
+
+    Restart of the broker happens ONLY on first setup
+    (``USER_EXISTED=false``). Subsequent rotations don't need it
+    because the SASL listener config is a one-time broker-side
+    setting; only the credentials change. Restart failure is
+    surfaced as ``failed`` (legacy ``|| true`` hid this — listener
+    not picking up the SASL change is broken-but-silent).
     """
     del env  # not used; signature uniform across hooks
     password = config.redpanda_admin_password or ""
@@ -587,29 +610,38 @@ redpanda_hook() {{
         echo "RESULT hook=redpanda status=skipped-not-ready"
         return 0
     fi
-    # Detect rotation case: if the user already exists, we DELETE then
-    # recreate so the password always matches the current Infisical
-    # value. Legacy deploy.sh skipped this — Infisical could rotate
-    # the password without the broker ever seeing the new one,
-    # silently breaking external clients. STRICTLY-MORE-CORRECT
-    # divergence from legacy. ACLs assigned to the user (if any) are
-    # lost on delete, but in this stack ACLs are configured per-topic
-    # by separate tooling and re-apply on next operator action.
-    EXISTING_USERS=$(docker exec redpanda curl -sf --max-time 10 'http://localhost:9644/v1/security/users' 2>/dev/null || echo "[]")
-    USER_EXISTED=false
-    if echo "$EXISTING_USERS" | grep -q 'nexus-redpanda'; then
-        USER_EXISTED=true
-        docker exec redpanda rpk acl user delete nexus-redpanda >/dev/null 2>&1 || true
-    fi
+    # Try create-first. Three outcomes:
+    #   1. SUCCESS → fresh install, USER_EXISTED stays false (→ restart needed below)
+    #   2. "already exists" → rotation case: delete the current user
+    #      and recreate with the current Infisical password. We only
+    #      open the no-user window AFTER the first create proved the
+    #      broker accepts our request, so a transient broker glitch
+    #      can't leave us userless mid-flight.
+    #   3. Other error → bail with failed.
     # Pipe password via stdin so it never reaches docker exec's argv
     # on the host. Inside the container, `cat` consumes the full
     # stdin into RPK_PASS; rpk then receives it via shell var
     # expansion (still in argv inside the container — different
     # threat model).
     REDPANDA_PASSWORD={password_q}
+    USER_EXISTED=false
     USER_RESULT=$(printf '%s' "$REDPANDA_PASSWORD" | \\
         docker exec -i redpanda sh -c 'RPK_PASS=$(cat); rpk acl user create nexus-redpanda --password "$RPK_PASS" --mechanism SCRAM-SHA-256' 2>&1 || echo "")
-    if ! echo "$USER_RESULT" | grep -qi 'created\\|added\\|success'; then
+    if echo "$USER_RESULT" | grep -qi 'already exists\\|user already\\|already in use'; then
+        # Rotation path: delete + recreate. Brief no-user window —
+        # acceptable because we just proved the broker is responsive.
+        # Legacy deploy.sh skipped this entirely, leaving Infisical
+        # rotation silently broken.
+        USER_EXISTED=true
+        docker exec redpanda rpk acl user delete nexus-redpanda >/dev/null 2>&1 || true
+        USER_RESULT=$(printf '%s' "$REDPANDA_PASSWORD" | \\
+            docker exec -i redpanda sh -c 'RPK_PASS=$(cat); rpk acl user create nexus-redpanda --password "$RPK_PASS" --mechanism SCRAM-SHA-256' 2>&1 || echo "")
+        if ! echo "$USER_RESULT" | grep -qi 'created\\|added\\|success'; then
+            echo "  ⚠ rpk acl user create failed after delete (no SASL user — broker is now in a broken state): $USER_RESULT" >&2
+            echo "RESULT hook=redpanda status=failed"
+            return 0
+        fi
+    elif ! echo "$USER_RESULT" | grep -qi 'created\\|added\\|success'; then
         echo "  ⚠ rpk acl user create failed: $USER_RESULT" >&2
         echo "RESULT hook=redpanda status=failed"
         return 0
@@ -632,14 +664,25 @@ redpanda_hook() {{
     # broker had no traffic but introduces a multi-second window
     # where producers/consumers reconnect for no reason.
     if [ "$USER_EXISTED" = "false" ]; then
+        # First-setup restart: the SASL listener config takes effect
+        # only after a broker restart. Capture the exit code — if the
+        # restart fails (network/disk/compose issue), the listener
+        # never picks up the SASL change and external clients can't
+        # authenticate, even though the user exists. Legacy `|| true`
+        # would have hidden this.
+        RESTART_RC=0
         if [ -f /opt/docker-server/stacks/redpanda/docker-compose.firewall.yml ]; then
-            ( cd /opt/docker-server/stacks/redpanda && docker compose -f docker-compose.yml -f docker-compose.firewall.yml restart >/dev/null 2>&1 ) || true
+            ( cd /opt/docker-server/stacks/redpanda && docker compose -f docker-compose.yml -f docker-compose.firewall.yml restart >/dev/null 2>&1 ) || RESTART_RC=$?
         else
-            ( cd /opt/docker-server/stacks/redpanda && docker compose restart >/dev/null 2>&1 ) || true
+            ( cd /opt/docker-server/stacks/redpanda && docker compose restart >/dev/null 2>&1 ) || RESTART_RC=$?
+        fi
+        if [ "$RESTART_RC" -ne 0 ]; then
+            echo "  ⚠ docker compose restart redpanda failed (rc=$RESTART_RC) — SASL listener config not applied" >&2
+            echo "RESULT hook=redpanda status=failed"
+            return 0
         fi
         sleep 5
-        # Wait for restart-readiness. `curl -sf` again for proper
-        # status check.
+        # Wait for restart-readiness. `curl -sf` for proper status check.
         SECONDS=0
         while [ "$SECONDS" -lt 30 ]; do
             if docker exec redpanda curl -sf --connect-timeout 2 --max-time 5 'http://localhost:9644/v1/status/ready' >/dev/null 2>&1; then break; fi
