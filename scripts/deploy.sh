@@ -1963,10 +1963,10 @@ fi
 # parses RESULT lines per hook. Other admin-setup hooks (Filestash,
 # RedPanda, Superset, Gitea, Wiki.js, Dify, etc.) ship in 2.2c/d.
 SERVICES_RC=0
-echo "$SECRETS_JSON" | DOMAIN="$DOMAIN" ADMIN_EMAIL="$ADMIN_EMAIL" \
+printf '%s' "$SECRETS_JSON" | DOMAIN="$DOMAIN" ADMIN_EMAIL="$ADMIN_EMAIL" \
     uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy services configure \
-    --enabled "$(echo "$ENABLED_SERVICES" | tr '\n ' ',,')" \
+    --enabled "$(printf '%s' "$ENABLED_SERVICES" | tr '\n ' ',,')" \
     || SERVICES_RC=$?
 case "$SERVICES_RC" in
     0) ;;
