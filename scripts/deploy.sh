@@ -1779,133 +1779,22 @@ fi
 echo ""
 echo -e "${YELLOW}[6/7] Starting enabled containers (parallel)...${NC}"
 
-ssh nexus "
-set -euo pipefail
-# Export image versions from global .env
-if [ -f /opt/docker-server/stacks/.env ]; then
-    set -a
-    source /opt/docker-server/stacks/.env
-    set +a
-fi
-
-STARTED_SERVICES=()
-FAILED_SERVICES=()
-PIDS=()
-
-# Virtual services that use a parent stack (defined via 'stack' field in services.yaml)
-VIRTUAL_SERVICES=\"seaweedfs-filer seaweedfs-manager\"
-
-# Map virtual services to their parent stack
-declare -A STACK_PARENTS
-STACK_PARENTS[\"seaweedfs-filer\"]=\"seaweedfs\"
-STACK_PARENTS[\"seaweedfs-manager\"]=\"seaweedfs\"
-
-# Ensure parent stacks are started when virtual services are enabled
-PARENT_STACKS_STARTED=\"\"
-for service in $ENABLED_LIST; do
-    PARENT=\"\${STACK_PARENTS[\$service]:-}\"
-    if [ -n \"\$PARENT\" ] && ! echo \"\$PARENT_STACKS_STARTED\" | grep -qw \"\$PARENT\"; then
-        if [ -f /opt/docker-server/stacks/\$PARENT/docker-compose.yml ]; then
-            echo \"  Starting parent stack: \$PARENT (required by \$service)...\"
-            (cd /opt/docker-server/stacks/\$PARENT && docker compose up -d --build 2>&1) &
-            PID=\$!
-            PIDS+=(\$PID)
-            STARTED_SERVICES+=(\"\$PARENT:\$PID\")
-            PARENT_STACKS_STARTED=\"\$PARENT_STACKS_STARTED \$PARENT\"
-        fi
-    fi
-done
-
-# Services that are started later after their dependencies are ready
-# Woodpecker requires Gitea OAuth credentials, so it starts after Gitea setup
-DEFERRED_SERVICES=\"woodpecker\"
-
-# Fix Dify storage permissions (API/worker run as uid 1001)
-if echo \"$ENABLED_LIST\" | grep -qw \"dify\"; then
-    mkdir -p /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
-    chown -R 1001:1001 /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
-fi
-
-for service in $ENABLED_LIST; do
-    echo \"[DEBUG] Checking service: \$service\" >&2
-
-    # Skip virtual services (they're covered by their parent stack)
-    if echo \"\$VIRTUAL_SERVICES\" | grep -qw \"\$service\"; then
-        echo \"[DEBUG] Skipping virtual service \$service (uses parent stack)\" >&2
-        continue
-    fi
-
-    # Skip parent stacks that were already started
-    if echo \"\$PARENT_STACKS_STARTED\" | grep -qw \"\$service\"; then
-        echo \"[DEBUG] Skipping \$service (already started as parent stack)\" >&2
-        continue
-    fi
-
-    # Skip deferred services (started later after dependencies are ready)
-    if echo \"\$DEFERRED_SERVICES\" | grep -qw \"\$service\"; then
-        echo \"[DEBUG] Deferring \$service (started after dependency setup)\" >&2
-        continue
-    fi
-
-    if [ -f /opt/docker-server/stacks/\$service/docker-compose.yml ]; then
-        echo \"  Starting \$service...\"
-        if [ -f /opt/docker-server/stacks/\$service/docker-compose.firewall.yml ]; then
-            echo \"    (with firewall port overrides)\"
-            (cd /opt/docker-server/stacks/\$service && docker compose -f docker-compose.yml -f docker-compose.firewall.yml up -d --build 2>&1) &
-        else
-            (cd /opt/docker-server/stacks/\$service && docker compose up -d --build 2>&1) &
-        fi
-        PID=\$!
-        PIDS+=(\$PID)
-        STARTED_SERVICES+=(\"\$service:\$PID\")
-    else
-        echo \"[DEBUG] docker-compose.yml not found for \$service\" >&2
-        FAILED_SERVICES+=(\"\$service (no docker-compose.yml)\")
-    fi
-done
-
-# Wait for all background jobs and collect exit codes
-FAILED_COUNT=0
-for i in \"\${!PIDS[@]}\"; do
-    PID=\${PIDS[\$i]}
-    SERVICE_PID_PAIR=\${STARTED_SERVICES[\$i]}
-    SERVICE_NAME=\$(echo \"\$SERVICE_PID_PAIR\" | cut -d: -f1)
-    
-    if wait \$PID; then
-        # Verify container is actually running
-        if docker ps --format '{{.Names}}' | grep -q \"^\${SERVICE_NAME}\$\"; then
-            echo \"  ✓ \$SERVICE_NAME started and running\"
-        else
-            echo \"  ⚠️  \$SERVICE_NAME started but container not found in 'docker ps'\" >&2
-            FAILED_SERVICES+=(\"\$SERVICE_NAME (container not running)\")
-            FAILED_COUNT=\$((FAILED_COUNT + 1))
-        fi
-    else
-        EXIT_CODE=\$?
-        echo \"  ✗ \$SERVICE_NAME failed to start (exit code: \$EXIT_CODE)\" >&2
-        FAILED_SERVICES+=(\"\$SERVICE_NAME (exit code: \$EXIT_CODE)\")
-        FAILED_COUNT=\$((FAILED_COUNT + 1))
-    fi
-done
-
-echo ''
-if [ \$FAILED_COUNT -eq 0 ] && [ \${#FAILED_SERVICES[@]} -eq 0 ]; then
-    echo '  ✓ All enabled stacks started successfully'
-else
-    echo \"  ⚠️  Started \${#STARTED_SERVICES[@]} services, \$FAILED_COUNT failed\" >&2
-    echo \"  Failed services: \${FAILED_SERVICES[*]}\" >&2
-    exit 1
-fi
-" 2>&1 | tee /tmp/docker-start.log
-
-DOCKER_EXIT_CODE=${PIPESTATUS[0]}
-if [ $DOCKER_EXIT_CODE -eq 0 ]; then
-    echo -e "${GREEN}  ✓ All containers started successfully${NC}"
-else
-    echo -e "${RED}  ✗ Some containers failed to start${NC}"
-    echo -e "${YELLOW}  Check /tmp/docker-start.log for details${NC}"
-    exit $DOCKER_EXIT_CODE
-fi
+# Migrated from a 130-line ssh heredoc (Phase 2 Modul 2.2a, #505).
+# nexus_deploy.compose_runner expands virtual services to parents,
+# de-dupes, skips deferred services, and runs the parallel
+# docker-compose-up + docker-ps verify loop server-side. Per-service
+# admin-setup hooks (Wikijs/Dify/Metabase/Superset/LakeFS/OpenMetadata/
+# Gitea/Filestash/RedPanda) ship in Modul 2.2b.
+COMPOSE_RC=0
+uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy compose up \
+    --enabled "$(echo "$ENABLED_SERVICES" | tr ' ' ',')" \
+    || COMPOSE_RC=$?
+case "$COMPOSE_RC" in
+    0) echo -e "${GREEN}  ✓ All containers started successfully${NC}" ;;
+    1) echo -e "${YELLOW}  ⚠ Compose-up had partial failures (continuing)${NC}" ;;
+    *) echo -e "${RED}  ✗ Compose-up transport failure (rc=$COMPOSE_RC); aborting${NC}"; exit "$COMPOSE_RC" ;;
+esac
 
 # -----------------------------------------------------------------------------
 # Auto-configure services
