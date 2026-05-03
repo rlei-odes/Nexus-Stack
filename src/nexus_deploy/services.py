@@ -25,10 +25,18 @@ with paramiko + ``requests``.
 Eight rounds of hardening preserved (one regression test per round
 in ``tests/unit/test_services.py``):
 
-R1. ``set -euo pipefail`` first executable line.
+R1. Orchestrator script begins with ``set -u`` (unset-var detection)
+    but **NOT** ``set -e`` — a failed hook MUST not abort the rest
+    (see R6). Per-hook bodies stay safe via explicit branches +
+    ``|| echo ""`` capture patterns; no ``set -e`` reliance inside
+    hooks either. R3 below is the corollary on tmpfile cleanup.
 R2. Per-spec healthcheck timeout (Metabase 120s, OpenMetadata 180s,
     LakeFS 60s, Portainer 5s, n8n 60s — NOT a global default).
-R3. EXIT trap cleans the curl-config tmpfile and any scratch tmpfiles.
+R3. Per-hook bodies are self-contained — no shared tmpfiles, no
+    cross-hook EXIT trap. Each curl invocation captures its own
+    response into a local-variable string; nothing on disk to clean
+    up. (Future hooks that DO write to disk — e.g. Filestash file
+    mutation in 2.2c — get their own per-hook cleanup.)
 R4. JSON setup-body built via jq with shell-injection-safe ``--arg``
     (NOT string interpolation), and the body is fed to curl via
     stdin (``--data-binary @-``) so admin passwords don't reach argv.
@@ -38,8 +46,9 @@ R5. Idempotent skip when ``already_configured_substring`` appears in
 R6. error_strategy=continue: a failed hook NEVER aborts the orchestrator;
     the next hook still runs. Mirrors deploy.sh's ``yellow-warn,
     continue`` pattern.
-R7. Hook execution order is deterministic — operators rely on it for
-    log-debug and the integration with deploy.sh's [7/7] sequence.
+R7. Hook execution order matches the caller-provided ``enabled_hooks``
+    argument (NOT registry insertion order). Operators get the order
+    they typed.
 R8. RESULT-line-per-hook: ``RESULT hook=<name> status=<configured|
     already-configured|failed|skipped-not-ready>``. The orchestrator
     parses one line per hook, never grepping for emoji.
@@ -47,7 +56,6 @@ R8. RESULT-line-per-hook: ``RESULT hook=<name> status=<configured|
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 import subprocess
@@ -144,14 +152,19 @@ fi
 
 
 def render_portainer_hook(config: NexusConfig, env: BootstrapEnv) -> str:
-    """Portainer first-init: ``POST /api/users/admin/init`` (no auth)."""
+    """Portainer first-init: ``POST /api/users/admin/init`` (no auth).
+
+    Body built via ``jq -n --arg`` and piped to curl via stdin
+    (``--data-binary @-``) so the admin password never appears in
+    the curl process argv on the remote host (R4).
+    """
     del env  # not used; signature uniform across hooks
     username = config.admin_username or "admin"
     password = config.portainer_admin_password or ""
     if not password:
         return 'echo "RESULT hook=portainer status=skipped-not-ready"\n'
-    body = json.dumps({"Username": username, "Password": password}, separators=(",", ":"))
-    body_q = shlex.quote(body)
+    username_q = shlex.quote(username)
+    password_q = shlex.quote(password)
     wait = _render_wait_healthy(
         name="portainer",
         url="http://localhost:9090/api/system/status",
@@ -161,9 +174,11 @@ def render_portainer_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     return f"""
 portainer_hook() {{
     {wait}
-    RESP=$(curl -s -X POST 'http://localhost:9090/api/users/admin/init' \\
+    BODY=$(jq -n --arg u {username_q} --arg p {password_q} \\
+        '{{Username: $u, Password: $p}}')
+    RESP=$(printf '%s' "$BODY" | curl -s -X POST 'http://localhost:9090/api/users/admin/init' \\
         -H 'Content-Type: application/json' \\
-        --data-binary {body_q} 2>/dev/null || echo "")
+        --data-binary @- 2>/dev/null || echo "")
     if echo "$RESP" | grep -q '"Id"'; then
         echo "RESULT hook=portainer status=configured"
     elif echo "$RESP" | grep -q 'already initialized'; then
@@ -177,21 +192,18 @@ portainer_hook
 
 
 def render_n8n_hook(config: NexusConfig, env: BootstrapEnv) -> str:
-    """n8n owner-setup: ``POST /rest/owner/setup`` (no auth, idempotent via /rest/settings)."""
+    """n8n owner-setup: ``POST /rest/owner/setup`` (no auth, idempotent via /rest/settings).
+
+    Body built via ``jq -n --arg`` and piped to curl via stdin
+    (``--data-binary @-``) so the admin password never appears in
+    the curl process argv on the remote host (R4).
+    """
     email = env.admin_email or ""
     password = config.n8n_admin_password or ""
     if not password or not email:
         return 'echo "RESULT hook=n8n status=skipped-not-ready"\n'
-    body = json.dumps(
-        {
-            "email": email,
-            "firstName": "Admin",
-            "lastName": "User",
-            "password": password,
-        },
-        separators=(",", ":"),
-    )
-    body_q = shlex.quote(body)
+    email_q = shlex.quote(email)
+    password_q = shlex.quote(password)
     wait = _render_wait_healthy(
         name="n8n",
         url="http://localhost:5678/healthz",
@@ -206,9 +218,11 @@ n8n_hook() {{
         echo "RESULT hook=n8n status=already-configured"
         return 0
     fi
-    RESP=$(curl -s -X POST 'http://localhost:5678/rest/owner/setup' \\
+    BODY=$(jq -n --arg email {email_q} --arg pw {password_q} \\
+        '{{email: $email, firstName: "Admin", lastName: "User", password: $pw}}')
+    RESP=$(printf '%s' "$BODY" | curl -s -X POST 'http://localhost:5678/rest/owner/setup' \\
         -H 'Content-Type: application/json' \\
-        --data-binary {body_q} 2>/dev/null || echo "")
+        --data-binary @- 2>/dev/null || echo "")
     if echo "$RESP" | grep -q '"id"'; then
         echo "RESULT hook=n8n status=configured"
     else
@@ -410,9 +424,11 @@ openmetadata_hook
 
 
 # ---------------------------------------------------------------------------
-# Hook registry — maps service name → renderer function. Order is
-# the order operators see in the workflow log; matches deploy.sh's
-# original sequence.
+# Hook registry — maps service name → renderer function. NOT the
+# execution-order source of truth — render_remote_script iterates the
+# caller-provided ``enabled_hooks`` list, so the operator (or the CLI
+# parser) controls the order. The dict insertion order here is only a
+# debugging convenience (``supported_hooks()`` returns it).
 # ---------------------------------------------------------------------------
 
 HookRenderer = Callable[[NexusConfig, BootstrapEnv], str]
@@ -448,12 +464,14 @@ def render_remote_script(
     exactly one ``RESULT hook=<name> status=<...>`` line. A failure in
     one hook does NOT propagate (each hook function uses ``return 0``
     on its bail-out paths and the orchestrator script has no
-    ``set -e`` in the outer scope — only inside the per-hook
-    ``set -euo pipefail`` blocks that the helpers establish).
+    ``set -e`` in the outer scope).
 
     Hook execution is sequential (NOT parallel — different hooks may
     target the same backing services like Postgres, and sequential
-    keeps the workflow log readable). Order matches ``_HOOK_REGISTRY``.
+    keeps the workflow log readable). **Order matches the caller-
+    provided ``enabled_hooks`` argument** — NOT ``_HOOK_REGISTRY``
+    insertion order. Callers (the CLI in ``__main__._services_configure``)
+    determine the order; the registry is only a name → renderer map.
     """
     parts: list[str] = ["set -u  # -e omitted: hook failures must not abort the orchestrator\n"]
     for name in enabled_hooks:

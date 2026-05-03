@@ -40,7 +40,9 @@ def _make_config(**overrides: Any) -> NexusConfig:
         "portainer_admin_password": "p-pass",
         "n8n_admin_password": "n-pass",
         "metabase_admin_password": "m-pass",
-        "lakefs_admin_access_key": "AKIA-LAKEFS-1234",
+        # Deliberately NOT shaped like an AWS access key (AKIA prefix)
+        # to avoid false-positive secret-scanner alerts in CI/GitHub.
+        "lakefs_admin_access_key": "FAKE-LAKEFS-ACCESS-KEY-1234",
         "lakefs_admin_secret_key": "secret-lakefs-key",
         "openmetadata_admin_password": "om-pass-Complex1!",
         "hetzner_s3_bucket_lakefs": "my-bucket",
@@ -322,12 +324,19 @@ def test_round_6_hook_failure_does_not_abort_orchestrator() -> None:
         )
 
 
-def test_round_7_hook_execution_order_deterministic() -> None:
-    """R7 — orchestrator emits hooks in registry order, not enabled-list order."""
+def test_round_7_hook_execution_order_matches_enabled_arg() -> None:
+    """R7 — orchestrator emits hooks in the caller-provided
+    ``enabled_hooks`` argument order, NOT registry order.
+
+    Operators rely on this for log debug + the integration with
+    deploy.sh's [7/7] sequence — the CLI passes the comma-list as
+    typed, and deploy.sh's $ENABLED_SERVICES is built from
+    services.yaml in source order via tofu output.
+    """
     script = render_remote_script(
         config=_make_config(),
         env=_make_env(),
-        # Pass in reverse-alphabetical order to verify registry order wins
+        # Pass in reverse-registry order to verify caller-order wins
         enabled_hooks=["openmetadata", "portainer", "lakefs"],
     )
     # The order in which hook functions are called must follow the
