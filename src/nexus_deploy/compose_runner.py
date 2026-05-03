@@ -164,15 +164,22 @@ def render_remote_script(
     The script:
       1. ``set -euo pipefail``, ``set -a``+source the global env
          (image-version pins).
-      2. Start each parent stack in parallel (``docker compose up -d
-         --build &``), wait for all to finish.
-      3. Pre-deploy hooks (e.g. Dify storage perms) gated on flags.
-      4. Start each leaf stack in parallel, applying the firewall
-         override file (``-f docker-compose.firewall.yml``) when
-         present on disk.
-      5. Wait for all leaf PIDs, verify each container is in
-         ``docker ps``, emit per-service ✓/✗ to stdout.
-      6. Emit the RESULT line.
+      2. Pre-deploy hooks (e.g. Dify storage perms) gated on flags.
+      3. Spawn ``docker compose up -d --build`` in the background
+         for every parent stack AND every leaf stack — PIDs from
+         both tiers accumulate in a single ``PIDS`` array, no
+         barrier between them. (Acceptable because parents and
+         leaves don't share docker-compose YAML or container
+         dependencies in practice — the parent/leaf split is just
+         a virtual-service-mapping convention, not a startup-order
+         constraint.) Each leaf invocation also applies
+         ``-f docker-compose.firewall.yml`` when present on disk.
+      4. ``wait`` each PID, then verify the container is in
+         ``docker ps`` (R4 — exact-anchor grep). Per-service ✓
+         lines go to stdout; ✗ lines go to stderr (so workflow-
+         log filtering can split happy-path noise from real
+         errors).
+      5. Emit the RESULT line on stdout.
     """
     stacks_q = shlex.quote(stacks_dir)
     env_q = shlex.quote(global_env)

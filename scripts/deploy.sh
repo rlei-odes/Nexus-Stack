@@ -1786,9 +1786,14 @@ echo -e "${YELLOW}[6/7] Starting enabled containers (parallel)...${NC}"
 # admin-setup hooks (Wikijs/Dify/Metabase/Superset/LakeFS/OpenMetadata/
 # Gitea/Filestash/RedPanda) ship in Modul 2.2b.
 COMPOSE_RC=0
+# $ENABLED_SERVICES is newline-separated (`jq -r '.[]'` at L479); we
+# need a comma-list. `tr '\n ' ',,'` converts both newlines AND
+# stray spaces to commas; the Python CLI's `--enabled` parser
+# filters empty entries from leading/trailing/consecutive commas,
+# so trailing `\n` from echo is harmless.
 uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy compose up \
-    --enabled "$(echo "$ENABLED_SERVICES" | tr ' ' ',')" \
+    --enabled "$(echo "$ENABLED_SERVICES" | tr '\n ' ',,')" \
     || COMPOSE_RC=$?
 case "$COMPOSE_RC" in
     0) echo -e "${GREEN}  ✓ All containers started successfully${NC}" ;;
