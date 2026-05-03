@@ -1,6 +1,6 @@
 """Entry point for `python -m nexus_deploy ...` invocations.
 
-Phase 1 dispatch surface. Subcommands land here as their modules ship.
+Subcommand dispatcher. Subcommands land here as their modules ship.
 Currently:
 - ``config dump-shell`` (#505 Modul 1.3)
 - ``infisical bootstrap`` (#505 Modul 1.1)
@@ -8,7 +8,8 @@ Currently:
 - ``seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]``
   (#505 Modul 2.1)
 - ``compose up --enabled <comma-list>`` (#505 Modul 2.2a)
-- ``services configure --enabled <comma-list>`` (#505 Modul 2.2b)
+- ``services configure --enabled <comma-list>`` (#505 Modul 2.2b/c/d)
+- ``kestra register-system-flows`` (#505 Modul 2.3)
 """
 
 from __future__ import annotations
@@ -26,9 +27,11 @@ from nexus_deploy.infisical import (
     InfisicalClient,
     compute_folders,
 )
+from nexus_deploy.kestra import run_register_system_flows
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 from nexus_deploy.services import run_admin_setups
+from nexus_deploy.ssh import SSHClient, SSHError
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -642,12 +645,128 @@ def _services_configure(args: list[str]) -> int:
     return 0
 
 
+def _kestra_register_system_flows(args: list[str]) -> int:
+    """`nexus-deploy kestra register-system-flows`.
+
+    Opens an SSH port-forward to the nexus host (Kestra binds
+    127.0.0.1:8085 inside the server's bridge network), then registers
+    ``system.git-sync`` + ``system.flow-sync`` via local HTTP and
+    triggers a one-shot ``flow-sync`` execution to onboard
+    user-seeded flows immediately.
+
+    Reads ``NexusConfig`` from stdin (SECRETS_JSON) and the per-deploy
+    repo coordinates from environment variables — same handoff pattern
+    as ``services configure``:
+
+    - ``ADMIN_EMAIL`` — Kestra basic-auth username
+    - ``GITEA_REPO_OWNER`` — owner of the workspace repo (admin in
+      non-mirror, the user in mirror+user mode)
+    - ``REPO_NAME`` — workspace repo name
+    - ``WORKSPACE_BRANCH`` — git branch (default ``main``)
+    - ``KESTRA_HOST`` — SSH host alias (default ``nexus``); exposed
+      so a future test deploy can target a different alias
+
+    Exit codes:
+    - 0: both flows registered (or already-up-to-date) AND the
+         onboarding execute settled in SUCCESS within timeout.
+    - 1: at least one flow registration / execution did NOT succeed
+         (deploy.sh: yellow warning, continue — the cron tick will
+         catch user flows later).
+    - 2: bad args, ssh tunnel setup failure, or unexpected exception
+         (deploy.sh: red, abort).
+    """
+    if args:
+        print(f"kestra register-system-flows: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    repo_owner = os.environ.get("GITEA_REPO_OWNER") or ""
+    repo_name = os.environ.get("REPO_NAME") or ""
+    branch = os.environ.get("WORKSPACE_BRANCH") or "main"
+    admin_email = os.environ.get("ADMIN_EMAIL") or ""
+    ssh_host = os.environ.get("KESTRA_HOST") or "nexus"
+
+    missing = [
+        name
+        for name, val in (
+            ("GITEA_REPO_OWNER", repo_owner),
+            ("REPO_NAME", repo_name),
+            ("ADMIN_EMAIL", admin_email),
+        )
+        if not val
+    ]
+    if missing:
+        print(
+            f"kestra register-system-flows: missing required env: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"kestra register-system-flows: {exc}", file=sys.stderr)
+        return 2
+
+    if not config.kestra_admin_password:
+        print(
+            "kestra register-system-flows: KESTRA_PASS missing from SECRETS_JSON — "
+            "skipping (Kestra basic-auth would 401 on every call)",
+            file=sys.stderr,
+        )
+        return 0
+
+    try:
+        with SSHClient(ssh_host) as ssh, ssh.port_forward(8085, "localhost", 8085) as port:
+            result = run_register_system_flows(
+                config,
+                base_url=f"http://localhost:{port}",
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                branch=branch,
+                admin_email=admin_email,
+            )
+    except SSHError as exc:
+        # SSHError is the typed transport-failure path from ssh.py.
+        # str(exc) is intentional here — SSHError messages are fixed
+        # format strings (no subprocess output), see ssh.py docstring.
+        print(f"kestra register-system-flows: ssh tunnel failed: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"kestra register-system-flows: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"kestra register-system-flows: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Per-flow result lines so the operator sees the POST/PUT detail
+    # (e.g. "system.git-sync: created (POST 201)") in the deploy log.
+    for flow in result.flows:
+        sys.stderr.write(f"  • {flow.name}: {flow.status} ({flow.detail})\n")
+    if result.execution_state is not None:
+        sys.stderr.write(f"  • system.flow-sync onboarding execution: {result.execution_state}\n")
+    print(
+        f"kestra register-system-flows: "
+        f"created={sum(1 for f in result.flows if f.status == 'created')} "
+        f"updated={sum(1 for f in result.flows if f.status == 'updated')} "
+        f"failed={sum(1 for f in result.flows if f.status == 'failed')} "
+        f"execution={result.execution_state or 'skipped'}",
+    )
+    return 0 if result.is_success else 1
+
+
 def main() -> int:
     """Subcommand dispatcher. Shipped subcommands by phase:
 
     - Phase 1: ``config dump-shell``, ``infisical bootstrap``,
       ``secret-sync``
-    - Phase 2: ``seed``, ``compose up``, ``services configure``
+    - Phase 2: ``seed``, ``compose up``, ``services configure``,
+      ``kestra register-system-flows``
 
     More land as the migration progresses; see #505.
     """
@@ -670,6 +789,8 @@ def main() -> int:
         return _compose_up(args[1:])
     if args[:1] == ["services"]:
         return _services_configure(args[1:])
+    if args[:2] == ["kestra", "register-system-flows"]:
+        return _kestra_register_system_flows(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -681,7 +802,8 @@ def main() -> int:
         "secret-sync --stack <jupyter|marimo>, "
         "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/], "
         "compose up --enabled <comma-list>, "
-        "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin)",
+        "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin), "
+        "kestra register-system-flows (reads SECRETS_JSON from stdin + env vars)",
         file=sys.stderr,
     )
     return 2

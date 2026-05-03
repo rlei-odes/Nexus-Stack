@@ -3338,175 +3338,27 @@ REMOTE_KESTRA_PROBE_EOF
                     #   anything else           → real failure, surfaced as
                     #                              warning
                     # ----------------------------------------------------------
-                    REGISTER_USER_B64=$(printf '%s' "$ADMIN_EMAIL" | base64 | tr -d '\n')
-                    REGISTER_PW_B64=$(printf '%s' "$KESTRA_PASS" | base64 | tr -d '\n')
-                    if ssh nexus "bash -s" <<REMOTE_REGISTER_EOF
-set -o pipefail
-KESTRA_USER=\$(printf '%s' '$REGISTER_USER_B64' | base64 -d)
-KESTRA_PW=\$(printf '%s' '$REGISTER_PW_B64' | base64 -d)
-
-KCFG=\$(mktemp)
-chmod 600 "\$KCFG"
-trap 'rm -f "\$KCFG"' EXIT
-printf 'user = "%s:%s"\n' "\$KESTRA_USER" "\$KESTRA_PW" > "\$KCFG"
-
-# Kestra v1.0 has split create/update semantics:
-#   POST /api/v1/flows               → creates new; returns 422 with
-#                                       body "Flow id already exists"
-#                                       when the flow is already there.
-#   PUT  /api/v1/flows/{ns}/{id}     → updates existing; returns 404
-#                                       if the flow doesn't exist yet.
-# Neither verb alone is upsert. So: try POST first; on 422, fall back to PUT.
-# This is what makes the registration idempotent across re-runs AND lets
-# us push schema changes (e.g. adding \`targetNamespace\` to flow-sync)
-# without having to manually delete the old flow first.
-register_flow() {
-    local FLOW_NAME="\$1"
-    local FLOW_BODY="\$2"
-    local STATUS
-    # \`|| true\` instead of \`|| echo "000"\` — see SEED_STATUS comment
-    # in the runner-side block; the latter would concatenate a second
-    # "000" onto curl's own "000" when the connection fails.
-    STATUS=\$(printf '%s' "\$FLOW_BODY" | curl -s -o /dev/null -w '%{http_code}' \\
-        -X POST 'http://localhost:8085/api/v1/flows' \\
-        --config "\$KCFG" \\
-        -H 'Content-Type: application/x-yaml' \\
-        --data-binary @- 2>/dev/null) || true
-    STATUS="\${STATUS:-000}"
-    case "\$STATUS" in
-        200|201)
-            echo "    ✓ \$FLOW_NAME registered (HTTP \$STATUS)" >&2
-            return 0
-            ;;
-        422)
-            # "Flow id already exists" is the idempotent re-run case.
-            # Update with PUT instead. FLOW_NAME format is "ns.id".
-            local NS="\${FLOW_NAME%.*}" ID="\${FLOW_NAME##*.}" PUT_STATUS
-            PUT_STATUS=\$(printf '%s' "\$FLOW_BODY" | curl -s -o /dev/null -w '%{http_code}' \\
-                -X PUT "http://localhost:8085/api/v1/flows/\$NS/\$ID" \\
-                --config "\$KCFG" \\
-                -H 'Content-Type: application/x-yaml' \\
-                --data-binary @- 2>/dev/null) || true
-            PUT_STATUS="\${PUT_STATUS:-000}"
-            case "\$PUT_STATUS" in
-                200|201)
-                    echo "    ✓ \$FLOW_NAME updated (POST 422 → PUT \$PUT_STATUS, idempotent re-run)" >&2
-                    return 0
-                    ;;
-                *)
-                    echo "    ⚠ \$FLOW_NAME update failed (POST 422 → PUT \$PUT_STATUS)" >&2
-                    return 1
-                    ;;
-            esac
-            ;;
-        *)
-            echo "    ⚠ \$FLOW_NAME registration failed (HTTP \$STATUS)" >&2
-            return 1
-            ;;
-    esac
-}
-
-REGISTER_FAILED=0
-register_flow "system.git-sync" 'id: git-sync
-namespace: system
-tasks:
-  - id: sync
-    type: io.kestra.plugin.git.SyncNamespaceFiles
-    url: http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git
-    branch: ${WORKSPACE_BRANCH}
-    username: ${ADMIN_USERNAME}
-    password: "{{ secret('\''GITEA_TOKEN'\'') }}"
-    namespace: "{{ flow.namespace }}"
-    gitDirectory: nexus_seeds/kestra/workflows
-triggers:
-  - id: schedule
-    type: io.kestra.core.models.triggers.types.Schedule
-    cron: "*/15 * * * *"' || REGISTER_FAILED=\$((REGISTER_FAILED+1))
-
-register_flow "system.flow-sync" 'id: flow-sync
-namespace: system
-description: Pull flow definitions from internal Gitea, register them in Kestra. Git is source of truth.
-tasks:
-  - id: sync
-    type: io.kestra.plugin.git.SyncFlows
-    url: http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git
-    branch: ${WORKSPACE_BRANCH}
-    username: ${ADMIN_USERNAME}
-    password: "{{ secret('\''GITEA_TOKEN'\'') }}"
-    gitDirectory: nexus_seeds/kestra/flows
-    targetNamespace: nexus-tutorials
-    includeChildNamespaces: true
-    delete: true
-triggers:
-  - id: schedule
-    type: io.kestra.core.models.triggers.types.Schedule
-    cron: "*/15 * * * *"' || REGISTER_FAILED=\$((REGISTER_FAILED+1))
-
-# ----------------------------------------------------------------
-# Verify the seeded flow actually lands in Kestra.
-#
-# Without this, system.flow-sync only runs on its 15-min cron, so
-# the nexus-tutorials.r2-taxi-pipeline flow doesn't appear in Kestra until
-# the next tick — long after deploy.sh prints "Deployment Complete".
-# Operators reasonably expect the flow to be there immediately and
-# we've already burned cycles debugging "where's the flow?" twice
-# this PR. So: kick one manual execution of system.flow-sync, poll
-# its state up to 60 s, then GET the seeded flow's path. Each step
-# warns clearly if it didn't pan out instead of failing the deploy
-# (the operator can always Execute system.flow-sync manually from
-# the UI as a fallback).
-if [ "\$REGISTER_FAILED" -eq 0 ]; then
-    EXEC_RESP=\$(curl -s --config "\$KCFG" \\
-        -X POST 'http://localhost:8085/api/v1/executions/system/flow-sync' 2>/dev/null) || EXEC_RESP=""
-    EXEC_ID=\$(echo "\$EXEC_RESP" | jq -r '.id // empty' 2>/dev/null)
-
-    if [ -z "\$EXEC_ID" ]; then
-        echo "    ⚠ Could not trigger system.flow-sync execution — first sync will run on the next 15-min cron tick" >&2
-    else
-        # flow-sync = git clone of the workspace repo + a handful of
-        # API calls; usually ~5–10 s. Cap at 30 × 2 s = 60 s.
-        SYNC_STATE=""
-        for poll in \$(seq 1 30); do
-            SYNC_STATE=\$(curl -s --config "\$KCFG" \\
-                "http://localhost:8085/api/v1/executions/\$EXEC_ID" 2>/dev/null \\
-                | jq -r '.state.current // empty' 2>/dev/null)
-            case "\$SYNC_STATE" in
-                SUCCESS|FAILED|KILLED) break ;;
-            esac
-            sleep 2
-        done
-
-        case "\$SYNC_STATE" in
-            SUCCESS)
-                # The flow should now be in Kestra under namespace nexus-tutorials.
-                SEED_FLOW_STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \\
-                    --config "\$KCFG" \\
-                    'http://localhost:8085/api/v1/flows/nexus-tutorials/r2-taxi-pipeline' 2>/dev/null) || true
-                SEED_FLOW_STATUS="\${SEED_FLOW_STATUS:-000}"
-                if [ "\$SEED_FLOW_STATUS" = "200" ]; then
-                    echo "    ✓ Seeded flow nexus-tutorials.r2-taxi-pipeline registered in Kestra" >&2
-                else
-                    echo "    ⚠ system.flow-sync ran but nexus-tutorials.r2-taxi-pipeline is not visible (HTTP \$SEED_FLOW_STATUS) — check that nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo and re-execute system.flow-sync from the Kestra UI" >&2
-                fi
-                ;;
-            FAILED|KILLED)
-                echo "    ⚠ system.flow-sync execution \$SYNC_STATE — open the execution in the Kestra UI for the error log" >&2
-                ;;
-            *)
-                echo "    ⚠ system.flow-sync did not complete within 60 s (state=\$SYNC_STATE) — first regular cron tick will retry within 15 min" >&2
-                ;;
-        esac
-    fi
-fi
-
-[ "\$REGISTER_FAILED" -eq 0 ] || exit 1
-exit 0
-REMOTE_REGISTER_EOF
-                    then
-                        echo -e "${GREEN}  ✓ Kestra Git sync flows created (workflows + flows)${NC}"
-                    else
-                        echo -e "${YELLOW}  ⚠ Kestra Git sync flow registration had failures (check log above)${NC}"
-                    fi
+                    # Phase 2 Modul 2.3 (#505) — moved from a 165-line
+                    # remote bash heredoc (POST/PUT register_flow function +
+                    # 2 inline YAML templates + flow-sync execute/poll) to
+                    # nexus_deploy.kestra. Same idempotent POST-then-PUT
+                    # semantics; same one-shot flow-sync trigger to onboard
+                    # user-seeded flows immediately. The Python path opens
+                    # an SSH port-forward (8085→8085) and talks to Kestra
+                    # via local HTTP, no rendered server-side bash.
+                    KESTRA_RC=0
+                    GITEA_REPO_OWNER="$GITEA_REPO_OWNER" \
+                        REPO_NAME="$REPO_NAME" \
+                        WORKSPACE_BRANCH="$WORKSPACE_BRANCH" \
+                        ADMIN_EMAIL="$ADMIN_EMAIL" \
+                        echo "$SECRETS_JSON" | uv run --quiet --project "$PROJECT_ROOT" \
+                        python -m nexus_deploy kestra register-system-flows \
+                        || KESTRA_RC=$?
+                    case "$KESTRA_RC" in
+                        0) echo -e "${GREEN}  ✓ Kestra Git sync flows registered (workflows + flows)${NC}" ;;
+                        1) echo -e "${YELLOW}  ⚠ Kestra Git sync flow registration had partial failures (continuing)${NC}" ;;
+                        *) echo -e "${RED}  ✗ Kestra Git sync flow registration hard failure (rc=$KESTRA_RC); aborting${NC}"; exit "$KESTRA_RC" ;;
+                    esac
                 else
                     echo -e "${YELLOW}  ⚠ Kestra not ready - skipping Git sync flow${NC}"
                 fi
