@@ -257,11 +257,16 @@ for i in "${{!PIDS[@]}}"; do
     pid=${{PIDS[$i]}}
     name=${{NAMES[$i]}}
     if wait "$pid"; then
-        # `docker ps --format '{{{{.Names}}}}' | grep -q "^name$"`:
-        # the anchored grep regex avoids substring false-matches
-        # (`foo` would otherwise match `foo-bar`). Verified by R4
-        # exec'd-bash test against the substring-trap input.
-        if docker ps --format '{{{{.Names}}}}' | grep -q "^${{name}}$"; then
+        # `docker ps --format '{{{{.Names}}}}' | grep -qFx -- "$name"`:
+        # -F treats $name as a fixed string (so a hypothetical future
+        # stack name with regex metacharacters like `.`, `[`, `*`
+        # can't false-match), -x requires the entire line to match,
+        # and `--` terminates options so a name starting with `-`
+        # doesn't get parsed as a flag. Equivalent semantic to
+        # `^name$` regex but safe for arbitrary inputs. Verified by
+        # R4 exec'd-bash test against substring-trap + regex-meta
+        # inputs.
+        if docker ps --format '{{{{.Names}}}}' | grep -qFx -- "$name"; then
             STARTED=$((STARTED+1))
             echo "  ✓ $name started and running"
         else

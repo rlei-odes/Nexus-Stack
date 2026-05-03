@@ -120,8 +120,13 @@ def test_round_4_docker_ps_verification_via_bash_exec() -> None:
     Modul-2.0 lesson: dispatch logic that LOOKS right but behaves
     wrong (e.g. grep matching substrings instead of exact names) is
     a real risk. We extract the verification snippet and run it
-    against four scenarios. This is the test that would have caught
-    a substring-match bug in production where 'foo' matched 'foo-bar'.
+    against six scenarios.
+
+    Round-3 finding: switched from `grep -q "^name$"` (regex anchors)
+    to `grep -qFx -- "name"` (fixed-string + line-exact + arg-end
+    sentinel) so that container names containing regex metacharacters
+    (`.`, `[`, `*`) can't false-match. The two new cases at the bottom
+    pin this — they would have failed under the old regex form.
     """
     cases = [
         # (docker_ps_output, target_name, expected_match)
@@ -129,11 +134,17 @@ def test_round_4_docker_ps_verification_via_bash_exec() -> None:
         ("foo-bar\nfoo-baz\n", "foo", False),  # substring → must NOT match
         ("\n", "foo", False),
         ("foo\n", "FOO", False),  # case-sensitive
+        # Regex-metachar safety (round-3 fix). Under the old
+        # `^name$` regex, `foo.bar` as a pattern would match `fooXbar`
+        # because `.` is "any char". Fixed-string `grep -F` rejects.
+        ("fooXbar\n", "foo.bar", False),
+        # Exact-match still works with fixed-string + metachar in name
+        ("foo.bar\n", "foo.bar", True),
     ]
     for ps_output, name, expected in cases:
         snippet = f"""
 set -euo pipefail
-echo {shlex_quote(ps_output)} | grep -q "^{name}$" && echo match || echo nomatch
+printf '%s' {shlex_quote(ps_output)} | grep -qFx -- {shlex_quote(name)} && echo match || echo nomatch
 """
         out = subprocess.run(
             ["bash", "-c", snippet], capture_output=True, text=True, check=False
