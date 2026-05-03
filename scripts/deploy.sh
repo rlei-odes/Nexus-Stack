@@ -1957,6 +1957,23 @@ EOF
     fi  # End of INFISICAL_READY check
 fi
 
+# Configure REST first-init admin hooks (Phase 2 Modul 2.2b, #505):
+# Portainer + n8n + Metabase + LakeFS + OpenMetadata. The Python CLI
+# renders the per-hook bash, runs it via one ssh round-trip, and
+# parses RESULT lines per hook. Other admin-setup hooks (Filestash,
+# RedPanda, Superset, Gitea, Wiki.js, Dify, etc.) ship in 2.2c/d.
+SERVICES_RC=0
+printf '%s' "$SECRETS_JSON" | DOMAIN="$DOMAIN" ADMIN_EMAIL="$ADMIN_EMAIL" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy services configure \
+    --enabled "$(printf '%s' "$ENABLED_SERVICES" | tr '\n ' ',,')" \
+    || SERVICES_RC=$?
+case "$SERVICES_RC" in
+    0) ;;
+    1) echo -e "${YELLOW}  ⚠ Some admin-setup hooks failed (continuing)${NC}" ;;
+    *) echo -e "${RED}  ✗ services configure hard failure (rc=$SERVICES_RC) — bad args, transport, or unexpected error; check Python stderr above. Aborting.${NC}"; exit "$SERVICES_RC" ;;
+esac
+
 # Re-apply pg_ducklake bootstrap SQL (handles credential rotation)
 # /docker-entrypoint-initdb.d/ scripts only run on empty data dir, so we
 # also exec the same SQL after every spin-up to ensure rotated credentials
@@ -1989,33 +2006,6 @@ if echo "$ENABLED_SERVICES" | grep -qw "pg-ducklake" && [ -n "$PG_DUCKLAKE_PASS"
     CONFIG_JOBS+=($!)
 fi
 
-# Configure Portainer admin (non-blocking, can run in parallel with other configs)
-if echo "$ENABLED_SERVICES" | grep -qw "portainer" && [ -n "$PORTAINER_PASS" ]; then
-    (
-        echo "  Configuring Portainer admin..."
-        # Quick readiness check
-        for i in $(seq 1 5); do
-            if ssh nexus "curl -s --connect-timeout 2 'http://localhost:9090/api/system/status'" >/dev/null 2>&1; then
-                break
-            fi
-            sleep 1
-        done
-
-        PORTAINER_JSON="{\"Username\":\"$ADMIN_USERNAME\",\"Password\":\"$PORTAINER_PASS\"}"
-        PORTAINER_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:9090/api/users/admin/init' \
-            -H 'Content-Type: application/json' \
-            -d '$PORTAINER_JSON'" 2>/dev/null || echo "")
-
-        if echo "$PORTAINER_RESULT" | grep -q '"Id"' 2>/dev/null; then
-            echo -e "${GREEN}  ✓ Portainer admin created (user: $ADMIN_USERNAME)${NC}"
-        elif echo "$PORTAINER_RESULT" | grep -q 'already initialized' 2>/dev/null; then
-            echo -e "${YELLOW}  ⚠ Portainer already initialized${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ Portainer setup skipped (may already be configured)${NC}"
-        fi
-    ) &
-    CONFIG_JOBS+=($!)
-fi
 
 # Configure Filestash (host, force_ssl, S3 backend)
 if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
@@ -2233,49 +2223,6 @@ if echo "$ENABLED_SERVICES" | grep -qw "redpanda" && [ -n "$REDPANDA_ADMIN_PASS"
     CONFIG_JOBS+=($!)
 fi
 
-# Configure n8n owner account
-if echo "$ENABLED_SERVICES" | grep -qw "n8n" && [ -n "$N8N_PASS" ]; then
-    echo "  Configuring n8n..."
-    
-    # Wait for n8n to be ready
-    echo "  Waiting for n8n to be ready..."
-    N8N_READY=false
-    for i in $(seq 1 30); do
-        N8N_HEALTH=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:5678/healthz 2>/dev/null" || echo "000")
-        if [ "$N8N_HEALTH" = "200" ]; then
-            N8N_READY=true
-            break
-        fi
-        sleep 2
-    done
-    
-    if [ "$N8N_READY" = "false" ]; then
-        echo -e "${YELLOW}  ⚠ n8n not ready after 60s - skipping config${NC}"
-    else
-        # Check if setup is needed (showSetupOnFirstLoad=true means setup needed)
-        SETUP_CHECK=$(ssh nexus "curl -s http://localhost:5678/rest/settings" 2>/dev/null || echo "{}")
-        # jq outputs boolean as 'true'/'false' string, fallback to 'true' if parsing fails
-        NEEDS_SETUP=$(echo "$SETUP_CHECK" | jq -r '.data.userManagement.showSetupOnFirstLoad // true | if . then "true" else "false" end' 2>/dev/null || echo "true")
-        
-        if [ "$NEEDS_SETUP" = "false" ]; then
-            echo -e "${YELLOW}  ⚠ n8n already configured - skipping owner setup${NC}"
-        else
-            # Create owner account via API (use jq for proper JSON escaping)
-            N8N_SETUP_PAYLOAD=$(jq -n --arg email "$ADMIN_EMAIL" --arg password "$N8N_PASS" \
-                '{email: $email, firstName: "Admin", lastName: "User", password: $password}')
-            N8N_RESULT=$(printf '%s' "$N8N_SETUP_PAYLOAD" | ssh nexus "curl -s -X POST 'http://localhost:5678/rest/owner/setup' \
-                -H 'Content-Type: application/json' \
-                -d @-" 2>&1 || echo "")
-            
-            if echo "$N8N_RESULT" | grep -q '"id"'; then
-                echo -e "${GREEN}  ✓ n8n owner account created (email: $ADMIN_EMAIL)${NC}"
-            else
-                echo -e "${YELLOW}  ⚠ n8n auto-setup failed - configure manually at first login${NC}"
-                echo -e "${YELLOW}    Credentials available in Infisical${NC}"
-            fi
-        fi
-    fi
-fi
 
 # Configure SFTPGo: create the default user `nexus-default` with an
 # R2-backed virtual filesystem. The admin (nexus-sftpgo) is bootstrapped
@@ -2579,78 +2526,6 @@ REMOTE_SFTPGO_USER_EOF
     fi
 fi
 
-# Configure Metabase admin account
-if echo "$ENABLED_SERVICES" | grep -qw "metabase" && [ -n "$METABASE_PASS" ]; then
-    echo "  Configuring Metabase..."
-
-    # Metabase port (from services.yaml)
-    METABASE_PORT=3000
-    
-    # Quick health check (max 10s - for already running instances)
-    echo "  Checking Metabase status..."
-    METABASE_READY=false
-    for i in $(seq 1 5); do
-        METABASE_HEALTH=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:$METABASE_PORT/api/health 2>/dev/null" || echo "000")
-        if [ "$METABASE_HEALTH" = "200" ]; then
-            METABASE_READY=true
-            break
-        fi
-        sleep 2
-    done
-    
-    # If not ready yet, wait longer (Java app takes ~2min on first boot)
-    if [ "$METABASE_READY" = "false" ]; then
-        echo "  Metabase starting (first boot takes ~2min)..."
-        for i in $(seq 1 55); do
-            METABASE_HEALTH=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' http://localhost:$METABASE_PORT/api/health 2>/dev/null" || echo "000")
-            if [ "$METABASE_HEALTH" = "200" ]; then
-                METABASE_READY=true
-                break
-            fi
-            sleep 2
-        done
-    fi
-    
-    if [ "$METABASE_READY" = "false" ]; then
-        echo -e "${YELLOW}  ⚠ Metabase not ready after 120s - skipping config${NC}"
-    else
-        # Get setup token (only available before first setup)
-        SETUP_TOKEN=$(ssh nexus "curl -s http://localhost:$METABASE_PORT/api/session/properties 2>/dev/null | grep -o '\"setup-token\":\"[^\"]*\"' | cut -d'\"' -f4" || echo "")
-        
-        if [ -z "$SETUP_TOKEN" ]; then
-            echo -e "${YELLOW}  ⚠ Metabase already configured - skipping admin setup${NC}"
-        else
-            # Create admin user via setup API (use jq for proper JSON escaping)
-            METABASE_SETUP_PAYLOAD=$(jq -n \
-                --arg token "$SETUP_TOKEN" \
-                --arg email "$ADMIN_EMAIL" \
-                --arg password "$METABASE_PASS" \
-                '{
-                    token: $token,
-                    user: {
-                        email: $email,
-                        first_name: "Admin",
-                        last_name: "User",
-                        password: $password
-                    },
-                    prefs: {
-                        site_name: "Nexus Stack Analytics",
-                        allow_tracking: false
-                    }
-                }')
-            METABASE_RESULT=$(printf '%s' "$METABASE_SETUP_PAYLOAD" | ssh nexus "curl -s -X POST 'http://localhost:$METABASE_PORT/api/setup' \
-                -H 'Content-Type: application/json' \
-                -d @-" 2>&1 || echo "")
-            
-            if echo "$METABASE_RESULT" | grep -q '"id"'; then
-                echo -e "${GREEN}  ✓ Metabase admin created (email: $ADMIN_EMAIL)${NC}"
-            else
-                echo -e "${YELLOW}  ⚠ Metabase auto-setup failed - configure manually at first login${NC}"
-                echo -e "${YELLOW}    Credentials available in Infisical${NC}"
-            fi
-        fi
-    fi
-fi
 
 # -----------------------------------------------------------------------------
 # TODO: Fix Uptime Kuma auto-configuration (Issue #145)
@@ -2717,78 +2592,6 @@ if echo "$ENABLED_SERVICES" | grep -qw "superset" && [ -n "$SUPERSET_PASS" ]; th
     CONFIG_JOBS+=($!)
 fi
 
-# Configure LakeFS admin user via API (one-time setup)
-# Note: LAKEFS_INSTALLATION_* env vars only work with database.type=local
-# Since we use PostgreSQL, we must configure via API
-if echo "$ENABLED_SERVICES" | grep -qw "lakefs" && [ -n "$LAKEFS_ADMIN_ACCESS_KEY" ]; then
-    (
-        echo "  Configuring LakeFS admin user..."
-        # Wait for LakeFS to be ready
-        LAKEFS_READY=false
-        for i in $(seq 1 30); do
-            if ssh nexus "curl -sf http://localhost:8000/api/v1/healthcheck" >/dev/null 2>&1; then
-                LAKEFS_READY=true
-                break
-            fi
-            sleep 2
-        done
-
-        if [ "$LAKEFS_READY" = "true" ]; then
-            # Check if setup is already complete
-            SETUP_CHECK=$(ssh nexus "curl -s http://localhost:8000/api/v1/config" 2>/dev/null || echo "")
-            if echo "$SETUP_CHECK" | grep -q '"setup_complete":true'; then
-                echo -e "${YELLOW}  ⚠ LakeFS already configured${NC}"
-            else
-                # Create admin user via setup API
-                SETUP_PAYLOAD="{\"username\":\"nexus-lakefs\",\"key\":{\"access_key_id\":\"$LAKEFS_ADMIN_ACCESS_KEY\",\"secret_access_key\":\"$LAKEFS_ADMIN_SECRET_KEY\"}}"
-                SETUP_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8000/api/v1/setup_lakefs' \
-                    -H 'Content-Type: application/json' \
-                    -d '$SETUP_PAYLOAD'" 2>&1 || echo "")
-
-                if echo "$SETUP_RESULT" | grep -q 'access_key_id'; then
-                    echo -e "${GREEN}  ✓ LakeFS admin created (user: nexus-lakefs)${NC}"
-                elif echo "$SETUP_RESULT" | grep -q 'already'; then
-                    echo -e "${YELLOW}  ⚠ LakeFS already configured${NC}"
-                else
-                    echo -e "${YELLOW}  ⚠ LakeFS setup failed - configure manually${NC}"
-                    echo -e "${DIM}    Response: $(echo "$SETUP_RESULT" | head -c 200)${NC}"
-                fi
-            fi
-
-            # Create default repository (independent of admin setup)
-            echo "  Creating default repository..."
-
-            # Determine storage namespace and repository name based on configuration
-            if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_BUCKET" ]; then
-                STORAGE_NAMESPACE="s3://${HETZNER_S3_BUCKET}/lakefs/"
-                BACKEND_TYPE="Hetzner Object Storage"
-                REPO_NAME="hetzner-object-storage"
-            else
-                STORAGE_NAMESPACE="local://data/lakefs/"
-                BACKEND_TYPE="local storage"
-                REPO_NAME="local-storage"
-            fi
-
-            REPO_PAYLOAD="{\"name\":\"$REPO_NAME\",\"storage_namespace\":\"$STORAGE_NAMESPACE\",\"default_branch\":\"main\",\"sample_data\":false}"
-            REPO_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8000/api/v1/repositories' \
-                -u '$LAKEFS_ADMIN_ACCESS_KEY:$LAKEFS_ADMIN_SECRET_KEY' \
-                -H 'Content-Type: application/json' \
-                -d '$REPO_PAYLOAD'" 2>&1 || echo "")
-
-            if echo "$REPO_RESULT" | grep -q '"id"'; then
-                echo -e "${GREEN}  ✓ Repository '$REPO_NAME' created ($BACKEND_TYPE)${NC}"
-            elif echo "$REPO_RESULT" | grep -q 'already exists'; then
-                echo -e "${YELLOW}  ⚠ Repository '$REPO_NAME' already exists${NC}"
-            else
-                echo -e "${YELLOW}  ⚠ Repository creation skipped${NC}"
-                echo -e "${DIM}    Response: $(echo "$REPO_RESULT" | head -c 200)${NC}"
-            fi
-        else
-            echo -e "${YELLOW}  ⚠ LakeFS not ready after 60s - skipping setup${NC}"
-        fi
-    ) &
-    CONFIG_JOBS+=($!)
-fi
 
 # Configure Garage layout (one-time setup after first start)
 if echo "$ENABLED_SERVICES" | grep -qw "garage" && [ -n "$GARAGE_ADMIN_TOKEN" ]; then
@@ -2915,75 +2718,6 @@ if echo "$ENABLED_SERVICES" | grep -qw "windmill" && [ -n "$WINDMILL_ADMIN_PASS"
     CONFIG_JOBS+=($!)
 fi
 
-# Configure OpenMetadata admin (change default password)
-if echo "$ENABLED_SERVICES" | grep -qw "openmetadata" && [ -n "$OPENMETADATA_ADMIN_PASS" ]; then
-    (
-        echo "  Configuring OpenMetadata..."
-        OM_PRINCIPAL_DOMAIN=$(echo "$ADMIN_EMAIL" | cut -d'@' -f2)
-
-        # Wait for OpenMetadata to be ready (Java app, may take 2-3 min on first boot)
-        OPENMETADATA_READY=false
-        echo "  Waiting for OpenMetadata to be ready (may take up to 3min)..."
-        for i in $(seq 1 60); do
-            if ssh nexus "curl -s --connect-timeout 3 'http://localhost:8585/api/v1/system/version'" 2>/dev/null | grep -q 'version'; then
-                OPENMETADATA_READY=true
-                break
-            fi
-            sleep 3
-        done
-
-        if [ "$OPENMETADATA_READY" = "false" ]; then
-            echo -e "${YELLOW}  ⚠ OpenMetadata not ready after 180s - skipping auto-configuration${NC}"
-            echo -e "${YELLOW}    Default credentials: admin@${OM_PRINCIPAL_DOMAIN} / admin${NC}"
-            exit 0
-        fi
-
-        # Login with default credentials to get JWT token
-        # Note: OpenMetadata requires passwords to be base64 encoded in API requests
-        OM_DEFAULT_PW_B64=$(echo -n "admin" | base64)
-        OM_LOGIN_JSON=$(jq -n --arg email "admin@${OM_PRINCIPAL_DOMAIN}" --arg password "$OM_DEFAULT_PW_B64" \
-            '{email: $email, password: $password}')
-        OM_LOGIN_RESULT=$(printf '%s' "$OM_LOGIN_JSON" | ssh nexus "curl -s -X POST 'http://localhost:8585/api/v1/users/login' \
-            -H 'Content-Type: application/json' \
-            -d @-" 2>/dev/null || echo "")
-
-        OM_TOKEN=$(echo "$OM_LOGIN_RESULT" | jq -r '.accessToken // empty' 2>/dev/null)
-
-        if [ -n "$OM_TOKEN" ] && [ "$OM_TOKEN" != "null" ]; then
-            # Change admin password using the password change API
-            # Note: Password change API uses plain text (NOT base64 like login API)
-            OM_PW_JSON=$(jq -n --arg old "admin" --arg new "$OPENMETADATA_ADMIN_PASS" \
-                '{username: "admin", oldPassword: $old, newPassword: $new, confirmPassword: $new, requestType: "SELF"}')
-            OM_PW_RESULT=$(printf '%s' "$OM_PW_JSON" | ssh nexus "curl -s -X PUT 'http://localhost:8585/api/v1/users/changePassword' \
-                -H 'Authorization: Bearer $OM_TOKEN' \
-                -H 'Content-Type: application/json' \
-                -d @-" 2>/dev/null || echo "")
-
-            # Verify new password works by logging in with it
-            OM_NEW_PW_B64=$(echo -n "$OPENMETADATA_ADMIN_PASS" | base64)
-            OM_VERIFY_JSON=$(jq -n --arg email "admin@${OM_PRINCIPAL_DOMAIN}" --arg password "$OM_NEW_PW_B64" \
-                '{email: $email, password: $password}')
-            OM_VERIFY_RESULT=$(printf '%s' "$OM_VERIFY_JSON" | ssh nexus "curl -s -X POST 'http://localhost:8585/api/v1/users/login' \
-                -H 'Content-Type: application/json' \
-                -d @-" 2>/dev/null || echo "")
-
-            if echo "$OM_VERIFY_RESULT" | jq -r '.accessToken // empty' 2>/dev/null | grep -q '.'; then
-                echo -e "${GREEN}  ✓ OpenMetadata admin configured (user: admin@${OM_PRINCIPAL_DOMAIN})${NC}"
-            else
-                echo "    Password change response: $(echo "$OM_PW_RESULT" | head -c 200)"
-                echo "    Login verify response: $(echo "$OM_VERIFY_RESULT" | head -c 200)"
-                echo -e "${YELLOW}  ⚠ OpenMetadata password change failed - password may not meet complexity requirements${NC}"
-            fi
-        elif echo "$OM_LOGIN_RESULT" | grep -qi 'invalid\|unauthorized\|credentials' 2>/dev/null; then
-            # Login with default password failed - already configured
-            echo -e "${YELLOW}  ⚠ OpenMetadata already configured (default password already changed)${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ OpenMetadata auto-setup failed - configure manually at first login${NC}"
-            echo -e "${YELLOW}    Credentials available in Infisical${NC}"
-        fi
-    ) &
-    CONFIG_JOBS+=($!)
-fi
 
 # Configure Gitea admin account and shared workspace repo
 # NOTE: This runs synchronously (not in background) because other services

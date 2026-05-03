@@ -8,6 +8,7 @@ Currently:
 - ``seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]``
   (#505 Modul 2.1)
 - ``compose up --enabled <comma-list>`` (#505 Modul 2.2a)
+- ``services configure --enabled <comma-list>`` (#505 Modul 2.2b)
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from nexus_deploy.infisical import (
 )
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
+from nexus_deploy.services import run_admin_setups
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -537,12 +539,112 @@ def _compose_up(args: list[str]) -> int:
     return 0
 
 
+def _services_configure(args: list[str]) -> int:
+    """`nexus-deploy services configure --enabled <comma-list>`.
+
+    Renders + executes the per-service admin-setup hooks for the
+    enabled services that have a renderer in
+    ``nexus_deploy.services._HOOK_REGISTRY``. Reads NexusConfig from
+    stdin (SECRETS_JSON) and reads BootstrapEnv fields (DOMAIN,
+    ADMIN_EMAIL, etc.) from environment variables — same handoff
+    pattern as ``infisical bootstrap``.
+
+    Currently shipped (Modul 2.2b): Portainer, n8n, Metabase, LakeFS,
+    OpenMetadata. Other admin-setup hooks (Filestash, RedPanda,
+    Superset, Gitea) ship in 2.2c/d follow-up PRs.
+
+    Exit codes:
+    - 0: all enabled+supported hooks ended in configured /
+         already-configured / skipped-not-ready states (no failures).
+    - 1: at least one hook reported status=failed but at least one
+         succeeded. deploy.sh: yellow warning, continue.
+    - 2: bad args, transport (ssh) failure, or unexpected exception.
+         deploy.sh: red, abort.
+    """
+    if not args or args[0] != "configure":
+        print("services: only 'configure' subcommand is supported", file=sys.stderr)
+        return 2
+
+    enabled_str: str | None = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--enabled":
+            if i + 1 >= len(args):
+                print(
+                    "services configure: --enabled requires a value",
+                    file=sys.stderr,
+                )
+                return 2
+            enabled_str = args[i + 1]
+            i += 2
+        else:
+            print(f"services configure: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+
+    if enabled_str is None:
+        print(
+            "services configure: --enabled <comma-separated-services> is required",
+            file=sys.stderr,
+        )
+        return 2
+
+    enabled = [s.strip() for s in enabled_str.split(",") if s.strip()]
+    if not enabled:
+        print("services configure: no services enabled, nothing to do")
+        return 0
+
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"services configure: {exc}", file=sys.stderr)
+        return 2
+    bootstrap_env = BootstrapEnv(
+        domain=os.environ.get("DOMAIN") or None,
+        admin_email=os.environ.get("ADMIN_EMAIL") or None,
+        gitea_user_email=os.environ.get("GITEA_USER_EMAIL") or None,
+        gitea_user_username=os.environ.get("GITEA_USER_USERNAME") or None,
+        gitea_repo_owner=os.environ.get("GITEA_REPO_OWNER") or None,
+        repo_name=os.environ.get("REPO_NAME") or None,
+        om_principal_domain=os.environ.get("OM_PRINCIPAL_DOMAIN") or None,
+        woodpecker_gitea_client=os.environ.get("WOODPECKER_GITEA_CLIENT") or None,
+        woodpecker_gitea_secret=os.environ.get("WOODPECKER_GITEA_SECRET") or None,
+        ssh_private_key_base64=os.environ.get("SSH_KEY_BASE64") or None,
+    )
+
+    try:
+        result = run_admin_setups(config, bootstrap_env, enabled)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"services configure: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"services configure: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(
+        f"services configure: configured={result.configured} "
+        f"already-configured={result.already_configured} "
+        f"skipped-not-ready={result.skipped_not_ready} "
+        f"failed={result.failed}"
+    )
+    if result.failed > 0:
+        if result.configured + result.already_configured == 0:
+            return 2
+        return 1
+    return 0
+
+
 def main() -> int:
     """Subcommand dispatcher. Shipped subcommands by phase:
 
     - Phase 1: ``config dump-shell``, ``infisical bootstrap``,
       ``secret-sync``
-    - Phase 2: ``seed``, ``compose up``
+    - Phase 2: ``seed``, ``compose up``, ``services configure``
 
     More land as the migration progresses; see #505.
     """
@@ -563,6 +665,8 @@ def main() -> int:
         return _seed(args[1:])
     if args[:1] == ["compose"]:
         return _compose_up(args[1:])
+    if args[:1] == ["services"]:
+        return _services_configure(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -573,7 +677,8 @@ def main() -> int:
         "infisical bootstrap (reads SECRETS_JSON from stdin + env vars), "
         "secret-sync --stack <jupyter|marimo>, "
         "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/], "
-        "compose up --enabled <comma-list>",
+        "compose up --enabled <comma-list>, "
+        "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin)",
         file=sys.stderr,
     )
     return 2
