@@ -186,6 +186,26 @@ def test_render_handles_empty_lists() -> None:
     assert 'echo "RESULT started=$STARTED failed=$FAILED"' in script
 
 
+def test_render_missing_parent_compose_counted_as_failed_strict_divergence() -> None:
+    """DELIBERATE divergence from legacy deploy.sh: a missing
+    parent docker-compose.yml is counted as failed (legacy bash
+    silently skipped). Documented in the rendered-script comment;
+    this test pins the divergence so a future round-trip back to
+    legacy semantics requires touching the test (forcing reviewer
+    awareness)."""
+    script = render_remote_script(parents=["seaweedfs"], leaves=[])
+    # The conditional + FAILED increment must be present
+    assert 'if [ -f "$STACKS_DIR/$svc/docker-compose.yml" ]' in script
+    assert "missing for parent" in script
+    # Both parent + leaf branches increment FAILED on missing compose.yml
+    # → the loop appears twice (one per branch); count via the
+    # specific FAILED+=1 pattern. We expect two occurrences.
+    assert script.count("FAILED=$((FAILED+1))") >= 2
+    # The DELIBERATE DIVERGENCE comment must be present so a
+    # reviewer flipping the behaviour back to legacy sees the rationale
+    assert "DELIBERATE DIVERGENCE" in script
+
+
 def test_render_special_chars_in_service_name_quoted() -> None:
     """shlex.quote protects against future stack names with special chars.
 
@@ -338,35 +358,6 @@ def test_cli_compose_up_empty_enabled_returns_zero() -> None:
     assert "nothing to do" in out
 
 
-def test_cli_compose_up_tolerates_empty_csv_entries() -> None:
-    """Leading/trailing/consecutive commas are filtered; deploy.sh's
-    `tr '\\n ' ',,'` of newline-separated $ENABLED_SERVICES produces a
-    trailing comma (echo appends \\n), and operators sometimes pass
-    `--enabled "a,,b"` by accident. Both must result in a clean
-    parse, not a phantom empty-string service.
-
-    Regression for round-1 finding on PR #513: the deploy.sh side
-    was sending `"jupyter\\nmarimo"` (newlines preserved) which the
-    Python parser would have treated as a single service — fix is
-    on the deploy.sh side (`tr '\\n ' ',,'`); this test verifies the
-    Python parser does the right thing with the resulting CSV.
-    """
-    # Will fail with rc=2 because /does/not/exist isn't a directory,
-    # but we're testing that "a,,b,c," parses to ["a", "b", "c"] (3
-    # services), not ["a", "", "b", "c", ""] (5 with phantom empties).
-    # The phantom-empty case would crash on root.is_dir() check
-    # because of how the orchestrator expand the empty string.
-    # With a non-existent root the CLI returns rc=0 (skips compose-up
-    # entirely) for ALL non-empty entries we feed it.
-    # Here we just verify rc != 2 (no parser-side rejection of empties).
-    # Use a non-existent --enabled list that would trigger rc=2 if
-    # parsed badly; clean parsing reaches the runner mock-free path.
-    # Simpler: rely on the mock-injection test below instead. Just
-    # check the CLI accepts the CSV form.
-    # Actually the ssh_run_script call WILL fire. Skip this CLI-level
-    # test; the unit test below covers the parser semantic.
-
-
 def test_run_compose_up_filters_empty_csv_entries() -> None:
     """expand_targets handles empty / duplicate inputs cleanly.
 
@@ -398,3 +389,72 @@ def test_cli_compose_up_subcommand_typo_returns_2() -> None:
     rc, _, err = _run_cli(["down", "--enabled", "x"])
     assert rc == 2
     assert "only 'up'" in err
+
+
+# ---------------------------------------------------------------------------
+# CLI rc-mapping unit tests — monkeypatch run_compose_up to exercise the
+# rc=1 (partial) and rc=2-from-no-RESULT paths without spinning a subprocess.
+# Subprocess-based tests above only exercise rc=0/2-from-arg-validation;
+# these fill the gap (round-2 finding on PR #513).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("started", "failed", "expected_rc"),
+    [
+        (5, 0, 0),  # all success
+        (3, 2, 1),  # partial: some succeeded, some failed → rc=1
+        (0, 4, 2),  # nothing succeeded → rc=2 (orchestrator should abort)
+        (0, 0, 0),  # zero-zero (e.g. all virtuals collapsed) → rc=0
+    ],
+)
+def test_compose_up_cli_rc_mapping(
+    monkeypatch: pytest.MonkeyPatch, started: int, failed: int, expected_rc: int
+) -> None:
+    """Verify the rc=0/1/2 contract via direct `_compose_up` call."""
+    from nexus_deploy.__main__ import _compose_up
+
+    def fake_run(_enabled: list[str]) -> ComposeUpResult:
+        return ComposeUpResult(started=started, failed=failed)
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_compose_up", fake_run)
+    rc = _compose_up(["up", "--enabled", "jupyter,marimo"])
+    assert rc == expected_rc
+
+
+def test_compose_up_cli_rc2_on_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Programming errors → rc=2 (NOT Python's default rc=1, which would
+    collide with the partial-failure semantic). Exception class only
+    in stderr; no str/repr that could leak attribute values."""
+    from nexus_deploy.__main__ import _compose_up
+
+    def boom(_enabled: list[str]) -> ComposeUpResult:
+        raise RuntimeError("secret-bearing-message-NEVER-print")
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_compose_up", boom)
+    rc = _compose_up(["up", "--enabled", "jupyter"])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "RuntimeError" in captured.err
+    assert "secret-bearing-message-NEVER-print" not in captured.err
+    assert "secret-bearing-message-NEVER-print" not in captured.out
+
+
+def test_compose_up_cli_rc2_on_transport_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ssh/rsync failure → rc=2. exc.cmd must NOT leak to stderr."""
+    from nexus_deploy.__main__ import _compose_up
+
+    def boom(_enabled: list[str]) -> ComposeUpResult:
+        raise subprocess.CalledProcessError(255, ["ssh", "with-secret-arg"])
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_compose_up", boom)
+    rc = _compose_up(["up", "--enabled", "jupyter"])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "transport failure" in captured.err
+    assert "with-secret-arg" not in captured.err
+    assert "with-secret-arg" not in captured.out

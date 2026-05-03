@@ -1798,7 +1798,7 @@ uv run --quiet --project "$PROJECT_ROOT" \
 case "$COMPOSE_RC" in
     0) echo -e "${GREEN}  ✓ All containers started successfully${NC}" ;;
     1) echo -e "${YELLOW}  ⚠ Compose-up had partial failures (continuing)${NC}" ;;
-    *) echo -e "${RED}  ✗ Compose-up transport failure (rc=$COMPOSE_RC); aborting${NC}"; exit "$COMPOSE_RC" ;;
+    *) echo -e "${RED}  ✗ Compose-up hard failure (rc=$COMPOSE_RC) — bad args, transport, no parseable RESULT, or unexpected error; check Python stderr above. Aborting.${NC}"; exit "$COMPOSE_RC" ;;
 esac
 
 # -----------------------------------------------------------------------------

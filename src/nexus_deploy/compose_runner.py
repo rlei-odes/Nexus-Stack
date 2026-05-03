@@ -216,7 +216,15 @@ FAILED=0
 PIDS=()
 NAMES=()
 
-# 1. Start parent stacks first (parallel).
+# 1. Start parent stacks (parallel — see docstring for why no barrier
+#    between parents and leaves).
+# DELIBERATE DIVERGENCE from legacy deploy.sh: the bash version had
+# no `else` branch on the parent-stack `[ -f ... ]` check — a missing
+# parent compose.yml was silently skipped (no FAILED++). We treat it
+# as a real configuration error: a virtual service is enabled, its
+# parent is implied, and the parent's compose.yml is missing —
+# operators need to know. The leaf-stack branch always counted this
+# as failed, so we just unify the two tiers (STRICTLY-MORE-CORRECT).
 for svc in "${{PARENTS[@]}}"; do
     if [ -f "$STACKS_DIR/$svc/docker-compose.yml" ]; then
         ( cd "$STACKS_DIR/$svc" && docker compose up -d --build 2>&1 ) &
@@ -249,7 +257,10 @@ for i in "${{!PIDS[@]}}"; do
     pid=${{PIDS[$i]}}
     name=${{NAMES[$i]}}
     if wait "$pid"; then
-        # docker ps -f name=^foo$ excludes substring matches (e.g. "foo-bar" wouldn't match "^foo$")
+        # `docker ps --format '{{{{.Names}}}}' | grep -q "^name$"`:
+        # the anchored grep regex avoids substring false-matches
+        # (`foo` would otherwise match `foo-bar`). Verified by R4
+        # exec'd-bash test against the substring-trap input.
         if docker ps --format '{{{{.Names}}}}' | grep -q "^${{name}}$"; then
             STARTED=$((STARTED+1))
             echo "  ✓ $name started and running"
