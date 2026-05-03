@@ -27,6 +27,19 @@ from nexus_deploy.compose_runner import (
 # ---------------------------------------------------------------------------
 
 
+def test_virtual_services_derived_from_stack_parents_keys() -> None:
+    """`_VIRTUAL_SERVICES` is derived from `_STACK_PARENTS.keys()` —
+    they cannot drift. Round-4 finding: previously they were two
+    independent sources of truth, and a service listed in
+    `_VIRTUAL_SERVICES` but missing from `_STACK_PARENTS` would
+    have been silently never started (skipped from leaves AND
+    parents). The derivation closes that risk.
+    """
+    from nexus_deploy.compose_runner import _STACK_PARENTS, _VIRTUAL_SERVICES
+
+    assert frozenset(_STACK_PARENTS.keys()) == _VIRTUAL_SERVICES
+
+
 def test_expand_targets_no_virtuals() -> None:
     """All-leaf input: parents empty, leaves preserve order."""
     parents, leaves = expand_targets(["jupyter", "marimo", "gitea"])

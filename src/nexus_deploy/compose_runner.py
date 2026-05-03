@@ -49,17 +49,23 @@ from dataclasses import dataclass
 
 from nexus_deploy import _remote
 
-# Hardcoded deploy-config: virtual services, parent-stack mapping, and
-# deferred services. These live in deploy.sh today (L1796/L1799/L1821);
-# we lift them into module-level constants so the migration is byte-
-# identical. Adding/removing entries here is the same amount of effort
-# as touching deploy.sh. New stacks that don't fit this pattern just
-# don't appear in either set.
-_VIRTUAL_SERVICES: frozenset[str] = frozenset({"seaweedfs-filer", "seaweedfs-manager"})
+# Hardcoded deploy-config: parent-stack mapping and deferred services.
+# These live in deploy.sh today (L1796/L1799/L1821); we lift them into
+# module-level constants so the migration is byte-identical.
+# Adding/removing entries here is the same amount of effort as touching
+# deploy.sh. New stacks that don't fit either pattern just don't appear.
+#
+# `_VIRTUAL_SERVICES` is derived from `_STACK_PARENTS.keys()` rather
+# than maintained as a separate frozenset so the two can't drift —
+# previously they were both manually listed and a round-4 review
+# pointed out the duplication risk (a service could be treated as
+# virtual yet have no parent mapping → skipped from leaves AND from
+# parents → silently never started).
 _STACK_PARENTS: dict[str, str] = {
     "seaweedfs-filer": "seaweedfs",
     "seaweedfs-manager": "seaweedfs",
 }
+_VIRTUAL_SERVICES: frozenset[str] = frozenset(_STACK_PARENTS.keys())
 _DEFERRED_SERVICES: frozenset[str] = frozenset({"woodpecker"})
 
 # Server-side stacks dir (mirror of deploy.sh's REMOTE_STACKS_DIR).
@@ -175,10 +181,15 @@ def render_remote_script(
          constraint.) Each leaf invocation also applies
          ``-f docker-compose.firewall.yml`` when present on disk.
       4. ``wait`` each PID, then verify the container is in
-         ``docker ps`` (R4 — exact-anchor grep). Per-service ✓
-         lines go to stdout; ✗ lines go to stderr (so workflow-
-         log filtering can split happy-path noise from real
-         errors).
+         ``docker ps`` (R4 — fixed-string + line-exact grep). The
+         rendered bash splits per-service ✓ to stdout and ✗ to
+         stderr, but ``_remote.ssh_run_script(merge_stderr=True)``
+         merges them on capture, and ``run_compose_up`` then
+         forwards every non-RESULT line to local stderr. Net
+         operator UX: both ✓ and ✗ land in the workflow-log
+         stderr stream alongside the bash warnings, in source
+         order. Phase 3 (paramiko refactor) can preserve the
+         split if desired.
       5. Emit the RESULT line on stdout.
     """
     stacks_q = shlex.quote(stacks_dir)
