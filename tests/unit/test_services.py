@@ -1296,18 +1296,35 @@ def test_render_filestash_pull_script_executable_via_bash_n(tmp_path: Path) -> N
 # -- _render_filestash_push_script ----------------------------------
 
 
-def test_render_filestash_push_script_uses_stdin_for_b64() -> None:
-    """R4-equivalent: base64-decoded JSON contains S3 secrets — must NOT
-    end up in argv. The base64 string itself goes via shlex.quote'd
-    stdin to base64 -d."""
+def test_render_filestash_push_script_uses_heredoc_not_argv_for_b64() -> None:
+    """R4: base64 (encoding S3 secrets) must NOT appear in argv on the
+    remote host. Even encoded the b64 is recoverable; ``ps -ef`` on
+    nexus during the brief command window would expose it. The b64
+    travels via heredoc on stdin to ``base64 -d``, NOT as a positional
+    arg to ``printf`` / ``echo``."""
     fake_b64 = base64.b64encode(b'{"x":"secret-do-not-leak"}').decode()
     script = _render_filestash_push_script(new_config_b64=fake_b64)
-    # The b64 string IS in the rendered script (it's the only way to get
-    # the bytes onto the server) — but the DECODED secret is not.
+    # The b64 string IS in the rendered script body (it's the only way
+    # to get the bytes onto the server) — but the DECODED secret is not.
     assert "secret-do-not-leak" not in script
-    # Pipe form: printf … | base64 -d | docker exec -i …
+    # Heredoc form: cat <<'NEXUS_FS_PUSH_EOF' | base64 -d | docker exec -i ...
+    assert "<<'NEXUS_FS_PUSH_EOF'" in script
+    # The b64 must NOT appear after `printf` / `echo` / argv-style invocations
+    # — that would leak it to remote `ps`.
+    for line in script.splitlines():
+        if fake_b64 in line:
+            # Only allowed: the heredoc body line (just the b64, nothing else)
+            assert line.strip() == fake_b64, f"b64 leaked into argv-bearing line: {line!r}"
     assert "base64 -d" in script
     assert "docker exec -i filestash" in script
+
+
+def test_render_filestash_push_script_pipefail_enabled() -> None:
+    """Without `set -o pipefail`, a base64 -d failure would be masked
+    by docker exec's exit status. Pin the option in the rendered script."""
+    fake_b64 = base64.b64encode(b"{}").decode()
+    script = _render_filestash_push_script(new_config_b64=fake_b64)
+    assert "set -o pipefail" in script
 
 
 def test_render_filestash_push_script_rejects_non_b64_input() -> None:

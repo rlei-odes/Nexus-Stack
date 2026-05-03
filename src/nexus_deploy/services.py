@@ -1004,17 +1004,27 @@ echo "{_FILESTASH_PULL_OK} $CONFIG_B64"
 def _render_filestash_push_script(*, new_config_b64: str) -> str:
     """Stage 2: push base64'd config → restart → wait for /healthz.
 
-    The new config arrives in the rendered script as a base64 string —
-    that's the SAME wire we received the pull on, so any byte the
-    container produced can be pushed back. The decoded JSON may contain
-    S3 secret keys; the base64 representation of those keys is still
-    secret. We pipe the base64 through ``printf '%s' <b64> | base64 -d
-    | docker exec -i …``: the base64 string lands in argv to ``printf``
-    (still ``shlex.quote``'d for safety), but the *decoded* secret
-    travels only on stdin to ``docker exec``, never reaching the
-    container's argv or remote ``ps``. The base64 string itself
-    contains no shell metacharacters (``[A-Za-z0-9+/=]``) so embedding
-    into the rendered script is safe.
+    R4 — keep the base64 (and therefore the encoded S3 secret material)
+    OUT of argv on the remote host. We feed the base64 string into
+    ``base64 -d`` via heredoc on stdin (``cat << 'NEXUS_FS_PUSH_EOF'
+    | base64 -d | docker exec -i …``), NOT as a positional argument to
+    ``printf``. Heredoc bodies are written to the child's stdin by the
+    bash shell directly; no fork in the pipeline carries the secret in
+    argv visible to ``ps -ef`` on the nexus host.
+
+    The single-quoted heredoc delimiter (``'NEXUS_FS_PUSH_EOF'``)
+    disables variable expansion inside, so any ``$``-shaped bytes that
+    coincidentally appear in base64 are not interpreted. The base64
+    alphabet is ``[A-Za-z0-9+/=]`` — no underscores, no E-O-F sequence
+    on its own line is reachable from a continuous (newline-stripped)
+    base64 string — but we still defensively assert the delimiter
+    doesn't appear inside the payload as a defence-in-depth check.
+
+    pipefail is ON: a failure anywhere in the pipeline (missing
+    ``base64`` binary, corrupt input, ``docker exec -i`` rejecting
+    stdin) propagates to the if-branch's exit status. Without it the
+    pipeline's status is just the last command's, which would mask a
+    silent empty-write into config.json.
 
     Emits ``RESULT hook=filestash status=configured`` on success or
     ``status=failed`` if either the write or the post-restart
@@ -1025,17 +1035,26 @@ def _render_filestash_push_script(*, new_config_b64: str) -> str:
     # ship a broken script that the operator has to debug remotely.
     if not re.fullmatch(r"[A-Za-z0-9+/=]+", new_config_b64):
         raise ValueError("new_config_b64 contains characters outside the base64 alphabet")
+    # Defence in depth — unreachable as long as the base64 alphabet
+    # check above stands (b64 alphabet excludes underscores, the
+    # delimiter contains them). Kept as a tripwire for any future
+    # widening of the accepted alphabet that would invalidate the
+    # collision-impossibility argument.
+    delimiter = "NEXUS_FS_PUSH_EOF"
+    if delimiter in new_config_b64:  # pragma: no cover
+        raise ValueError(f"heredoc delimiter {delimiter!r} appears inside the payload")
 
     return f"""
 set -u
-WRITE_OK=false
-if printf '%s' {shlex.quote(new_config_b64)} | base64 -d | \\
+set -o pipefail  # ANY pipeline-stage failure → non-zero exit, NOT just the last
+cat <<'{delimiter}' 2>/dev/null | base64 -d 2>/dev/null | \\
     docker exec -i filestash sh -c 'cat > {shlex.quote(_FILESTASH_CONFIG_PATH)}' \\
-    2>/dev/null; then
-    WRITE_OK=true
-fi
-if [ "$WRITE_OK" != "true" ]; then
-    echo "  ✗ filestash config write failed" >&2
+    2>/dev/null
+{new_config_b64}
+{delimiter}
+WRITE_RC=$?
+if [ "$WRITE_RC" -ne 0 ]; then
+    echo "  ✗ filestash config write failed (rc=$WRITE_RC)" >&2
     echo "RESULT hook=filestash status=failed"
     exit 0
 fi
