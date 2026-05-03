@@ -3346,12 +3346,19 @@ REMOTE_KESTRA_PROBE_EOF
                     # user-seeded flows immediately. The Python path opens
                     # an SSH port-forward (8085→8085) and talks to Kestra
                     # via local HTTP, no rendered server-side bash.
+                    # CRITICAL: env-var prefix MUST sit on `uv run`, not on
+                    # `echo`. `VAR=value echo … | python …` scopes VAR to the
+                    # left-hand `echo` only — the Python process after the
+                    # pipe never sees it. Caught in PR #517 review pre-spinup;
+                    # without this fix, every Kestra invocation would exit
+                    # rc=2 with "missing required env" on every deploy.
                     KESTRA_RC=0
-                    GITEA_REPO_OWNER="$GITEA_REPO_OWNER" \
+                    echo "$SECRETS_JSON" | \
+                        GITEA_REPO_OWNER="$GITEA_REPO_OWNER" \
                         REPO_NAME="$REPO_NAME" \
                         WORKSPACE_BRANCH="$WORKSPACE_BRANCH" \
                         ADMIN_EMAIL="$ADMIN_EMAIL" \
-                        echo "$SECRETS_JSON" | uv run --quiet --project "$PROJECT_ROOT" \
+                        uv run --quiet --project "$PROJECT_ROOT" \
                         python -m nexus_deploy kestra register-system-flows \
                         || KESTRA_RC=$?
                     case "$KESTRA_RC" in

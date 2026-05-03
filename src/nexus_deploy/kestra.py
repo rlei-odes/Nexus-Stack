@@ -25,10 +25,14 @@ API:
   builder for the two system flows. Templates ship verbatim from
   deploy.sh so the registered flow body is byte-equivalent (modulo
   the substituted variables).
-- :func:`run_register_system_flows` — top-level orchestrator: opens
-  port-forward, waits for Kestra, registers both flows, optionally
-  triggers ``flow-sync``. Returns the full set of register results
-  for the CLI to map to rc=0/1/2.
+- :func:`run_register_system_flows` — top-level orchestrator: takes
+  an already-forwarded ``base_url``, instantiates KestraClient,
+  waits for Kestra, registers both flows, optionally triggers
+  ``flow-sync`` and verifies that the canonical seeded flow appears.
+  Caller (the CLI in ``__main__._kestra_register_system_flows``) is
+  responsible for opening the SSH port-forward — keeping the tunnel
+  outside this function lets ``responses``-mock the HTTP layer in
+  tests without an ssh roundtrip.
 
 Auth note (R4): basic-auth credentials are passed to ``requests`` via
 the ``auth=(user, pass)`` keyword, which puts them in the
@@ -59,7 +63,34 @@ _HTTP_TIMEOUT: tuple[float, float] = (_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S)
 
 
 RegisterStatus = Literal["created", "updated", "failed"]
-ExecutionState = Literal["SUCCESS", "FAILED", "KILLED", "RUNNING", "CREATED", "UNKNOWN"]
+# Kestra-side states + two synthetic states the orchestrator emits:
+# - TRIGGER_FAILED: execute_flow raised KestraError (couldn't even start).
+#   Distinct from FAILED (ran but errored) and from None (caller opted
+#   out of triggering); is_success treats it as a failure so the deploy
+#   gets a yellow warning rather than a silent green pass.
+# - SEED_FLOW_MISSING: execute reached SUCCESS, but the canonical
+#   nexus-tutorials.r2-taxi-pipeline flow isn't visible afterwards.
+#   Same is_success treatment as TRIGGER_FAILED — operator needs to
+#   know the workspace repo wasn't seeded as expected.
+ExecutionState = Literal[
+    "SUCCESS",
+    "FAILED",
+    "KILLED",
+    "RUNNING",
+    "CREATED",
+    "UNKNOWN",
+    "TRIGGER_FAILED",
+    "SEED_FLOW_MISSING",
+]
+
+# Canonical seeded flow that system.flow-sync should produce after
+# pulling nexus_seeds/kestra/flows/ from the workspace repo. Hardcoded
+# because deploy.sh hardcoded it for the same reason: it's the
+# single ship-with-Nexus-Stack tutorial flow under the
+# nexus-tutorials namespace, and "did flow-sync actually run?" needs
+# a deterministic check, not a guess across all user flows.
+_SEED_VERIFICATION_NS = "nexus-tutorials"
+_SEED_VERIFICATION_ID = "r2-taxi-pipeline"
 
 
 @dataclass(frozen=True)
@@ -85,19 +116,21 @@ class SystemFlowsResult:
 
     @property
     def is_success(self) -> bool:
-        """All flows registered/updated AND (if triggered) execution succeeded."""
+        """All flows registered/updated AND (if triggered) execution succeeded.
+
+        ``execution_state == None`` is success ONLY when the orchestrator
+        was called with ``trigger_onboarding=False`` (caller deliberately
+        skipped). When trigger_onboarding=True and execute_flow raised,
+        the orchestrator records ``"TRIGGER_FAILED"`` (NOT None), so
+        the silent-pass bug from PR #517 round 1 is closed.
+        """
         flows_ok = all(f.status != "failed" for f in self.flows)
-        # ExecutionState=None means we didn't trigger (a flow registration
-        # failed, so triggering would race against a stale flow definition);
-        # that's reflected in flows_ok=False already. RUNNING/CREATED at
-        # timeout count as failure for the deploy-time "everything ready"
-        # contract — the deploy shouldn't claim success if the onboarding
-        # didn't actually finish.
         if not flows_ok:
             return False
-        if self.execution_state is None:
-            return True
-        return self.execution_state == "SUCCESS"
+        # Success: didn't trigger (None) OR triggered and execution
+        # ended in SUCCESS. Anything else (FAILED/KILLED/RUNNING/UNKNOWN/
+        # TRIGGER_FAILED/SEED_FLOW_MISSING) is a partial-failure.
+        return self.execution_state is None or self.execution_state == "SUCCESS"
 
 
 class KestraError(Exception):
@@ -287,6 +320,30 @@ class KestraClient:
         if current in ("SUCCESS", "FAILED", "KILLED", "RUNNING", "CREATED"):
             return current  # type: ignore[no-any-return]
         return "UNKNOWN"
+
+    def flow_exists(self, namespace: str, flow_id: str) -> bool:
+        """``GET /api/v1/flows/<ns>/<id>`` — 200 → exists, 404 → not.
+
+        Used post-``system.flow-sync``-execution to confirm the seeded
+        flow actually landed (a SUCCESS execution against an empty
+        seed tree wouldn't fail the execution but would leave Kestra
+        without the user-visible flow). Other status codes (5xx,
+        transport) raise :class:`KestraError` so a network blip
+        doesn't get conflated with a true "missing flow" condition.
+        """
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/v1/flows/{namespace}/{flow_id}",
+                auth=self._auth,
+                timeout=_HTTP_TIMEOUT,
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise KestraError(f"flow_exists transport ({type(exc).__name__})") from exc
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 404:
+            return False
+        raise KestraError(f"flow_exists HTTP {resp.status_code}")
 
     def wait_for_execution(
         self,
@@ -501,9 +558,37 @@ def run_register_system_flows(
         return SystemFlowsResult(flows=register_results)
 
     try:
-        exec_state: ExecutionState | None = trigger_flow_sync_onboarding(
+        exec_state: ExecutionState = trigger_flow_sync_onboarding(
             client, timeout_s=onboarding_timeout_s
         )
     except KestraError:
-        exec_state = None
-    return SystemFlowsResult(flows=register_results, execution_state=exec_state)
+        # Couldn't even start the onboarding execute → record as
+        # TRIGGER_FAILED (NOT None). is_success treats this as a
+        # partial-failure so deploy.sh's case-block routes to the
+        # yellow-warning branch instead of green-success — the
+        # onboarding genuinely didn't run, and the operator deserves
+        # to see that signal.
+        return SystemFlowsResult(flows=register_results, execution_state="TRIGGER_FAILED")
+
+    # If the execution itself didn't reach SUCCESS, surface its terminal
+    # state directly — no further verification possible against an
+    # incomplete sync.
+    if exec_state != "SUCCESS":
+        return SystemFlowsResult(flows=register_results, execution_state=exec_state)
+
+    # Post-success verification: the canonical seeded flow
+    # (nexus-tutorials.r2-taxi-pipeline) must be visible in Kestra.
+    # A SUCCESS execution against an empty seed tree (no flows in the
+    # workspace repo) wouldn't surface as FAILED — Kestra's SyncFlows
+    # runs cleanly with zero files. Without this check the deploy
+    # would print green "registered" while operators couldn't find
+    # their tutorial flow. Mirrors deploy.sh L3479-3490 exactly.
+    try:
+        seed_visible = client.flow_exists(_SEED_VERIFICATION_NS, _SEED_VERIFICATION_ID)
+    except KestraError:
+        # Network blip during verification; don't downgrade the
+        # SUCCESS execution to a failure on a transient HTTP error.
+        return SystemFlowsResult(flows=register_results, execution_state=exec_state)
+    if not seed_visible:
+        return SystemFlowsResult(flows=register_results, execution_state="SEED_FLOW_MISSING")
+    return SystemFlowsResult(flows=register_results, execution_state="SUCCESS")

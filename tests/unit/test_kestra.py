@@ -527,7 +527,7 @@ def test_trigger_flow_sync_onboarding_returns_terminal_state() -> None:
 
 @responses.activate
 def test_run_register_system_flows_happy_path_with_onboarding() -> None:
-    """Wait → register both → execute flow-sync → poll SUCCESS."""
+    """Wait → register both → execute flow-sync → poll SUCCESS → seed-flow visible."""
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
@@ -542,6 +542,13 @@ def test_run_register_system_flows_happy_path_with_onboarding() -> None:
         f"{BASE_URL}/api/v1/executions/exec-99",
         status=200,
         json={"state": {"current": "SUCCESS"}},
+    )
+    # Post-execute verification: seed flow IS visible
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
+        status=200,
+        json={"id": "r2-taxi-pipeline"},
     )
 
     result = run_register_system_flows(
@@ -625,9 +632,14 @@ def test_run_register_system_flows_trigger_onboarding_false_skips_execute() -> N
 
 
 @responses.activate
-def test_run_register_system_flows_onboarding_kestra_error_recorded_as_none() -> None:
-    """Execute throws KestraError → execution_state=None, but result is
-    NOT marked failed (registers succeeded; the cron will tick later)."""
+def test_run_register_system_flows_onboarding_kestra_error_recorded_as_trigger_failed() -> None:
+    """Execute throws KestraError → execution_state=TRIGGER_FAILED (NOT None).
+
+    Round-2 fix: previously this collapsed to None, which made
+    is_success return True even though onboarding never ran. Now the
+    distinct sentinel makes deploy.sh route to the yellow-warning
+    branch (rc=1) instead of silently green.
+    """
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
@@ -647,11 +659,140 @@ def test_run_register_system_flows_onboarding_kestra_error_recorded_as_none() ->
         ready_timeout_s=0.05,
         onboarding_timeout_s=2.0,
     )
-    # Execution state None because we couldn't trigger; that's a yellow
-    # warning from the deploy's perspective, not a register failure.
-    assert result.execution_state is None
-    # All registers succeeded
+    assert result.execution_state == "TRIGGER_FAILED"
+    # All registers succeeded — the failure is purely the onboarding execute
     assert all(f.status in ("created", "updated") for f in result.flows)
+    # is_success must be False so the CLI returns rc=1
+    assert result.is_success is False
+
+
+@responses.activate
+def test_run_register_system_flows_seed_flow_missing_after_success() -> None:
+    """SUCCESS execution but the canonical seed flow isn't in Kestra → SEED_FLOW_MISSING.
+
+    Mirrors deploy.sh L3479-3490: a SUCCESS execution against an empty
+    seed tree (no flows in the workspace repo) wouldn't surface as
+    FAILED. Without the post-execute verify, deploy would falsely
+    print green "registered" while operators couldn't find the
+    tutorial flow.
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/flow-sync",
+        status=201,
+        json={"id": "exec-99"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/exec-99",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    # Verification call: 404 — flow not registered
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
+        status=404,
+    )
+
+    result = run_register_system_flows(
+        _make_config(),
+        base_url=BASE_URL,
+        repo_owner="o",
+        repo_name="r",
+        branch="main",
+        admin_email="admin@example.com",
+        ready_timeout_s=0.05,
+        onboarding_timeout_s=2.0,
+    )
+    assert result.execution_state == "SEED_FLOW_MISSING"
+    assert result.is_success is False
+
+
+@responses.activate
+def test_run_register_system_flows_seed_flow_visible_after_success() -> None:
+    """SUCCESS + seed flow visible (200) → execution_state stays SUCCESS."""
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/flow-sync",
+        status=201,
+        json={"id": "exec-99"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/exec-99",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
+        status=200,
+        json={"id": "r2-taxi-pipeline"},
+    )
+
+    result = run_register_system_flows(
+        _make_config(),
+        base_url=BASE_URL,
+        repo_owner="o",
+        repo_name="r",
+        branch="main",
+        admin_email="admin@example.com",
+        ready_timeout_s=0.05,
+        onboarding_timeout_s=2.0,
+    )
+    assert result.execution_state == "SUCCESS"
+    assert result.is_success is True
+
+
+@responses.activate
+def test_run_register_system_flows_seed_verify_transport_error_keeps_success() -> None:
+    """Verification HTTP 5xx → don't downgrade a SUCCESS execution.
+
+    Network blip during the verify call shouldn't reclassify a
+    perfectly-valid SUCCESS execution as a failure — a transient
+    glitch is recoverable on the next deploy.
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/flow-sync",
+        status=201,
+        json={"id": "exec-99"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/exec-99",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
+        status=503,
+    )
+
+    result = run_register_system_flows(
+        _make_config(),
+        base_url=BASE_URL,
+        repo_owner="o",
+        repo_name="r",
+        branch="main",
+        admin_email="admin@example.com",
+        ready_timeout_s=0.05,
+        onboarding_timeout_s=2.0,
+    )
+    # Stays SUCCESS despite the verification failure
+    assert result.execution_state == "SUCCESS"
+    assert result.is_success is True
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +830,69 @@ def test_is_success_false_on_register_failure_even_with_success_execution() -> N
         execution_state="SUCCESS",
     )
     assert r.is_success is False
+
+
+def test_is_success_false_on_trigger_failed() -> None:
+    """TRIGGER_FAILED → onboarding never even started → is_success False.
+
+    Round-2 round of #517: previously this collapsed to None and
+    silently passed. The dedicated sentinel pins the contract.
+    """
+    r = SystemFlowsResult(
+        flows=(RegisterResult(name="a", status="created"),),
+        execution_state="TRIGGER_FAILED",
+    )
+    assert r.is_success is False
+
+
+def test_is_success_false_on_seed_flow_missing() -> None:
+    """SEED_FLOW_MISSING → SUCCESS execution but no user flow → is_success False."""
+    r = SystemFlowsResult(
+        flows=(RegisterResult(name="a", status="created"),),
+        execution_state="SEED_FLOW_MISSING",
+    )
+    assert r.is_success is False
+
+
+# ---------------------------------------------------------------------------
+# flow_exists — post-execute seed verification
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_flow_exists_returns_true_on_200() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/system/git-sync",
+        status=200,
+        json={"id": "git-sync"},
+    )
+    assert _client().flow_exists("system", "git-sync") is True
+
+
+@responses.activate
+def test_flow_exists_returns_false_on_404() -> None:
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows/nexus-tutorials/missing", status=404)
+    assert _client().flow_exists("nexus-tutorials", "missing") is False
+
+
+@responses.activate
+def test_flow_exists_raises_on_5xx() -> None:
+    """5xx is neither yes-it-exists nor no-it-doesn't — raise to caller."""
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows/system/x", status=503)
+    with pytest.raises(KestraError, match="HTTP 503"):
+        _client().flow_exists("system", "x")
+
+
+@responses.activate
+def test_flow_exists_raises_on_connection_error() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/system/x",
+        body=requests.ConnectionError("boom"),
+    )
+    with pytest.raises(KestraError, match="transport"):
+        _client().flow_exists("system", "x")
 
 
 # ---------------------------------------------------------------------------
