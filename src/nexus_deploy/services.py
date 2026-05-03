@@ -1110,6 +1110,29 @@ def _parse_filestash_pull_output(stdout: str) -> dict[str, Any] | None | Literal
     return None
 
 
+_FILESTASH_MARKER_PREFIXES = (
+    _FILESTASH_PULL_OK,
+    _FILESTASH_PULL_NOT_READY,
+    _FILESTASH_PULL_NO_CONFIG,
+    "RESULT hook=filestash",
+)
+
+
+def _forward_non_marker_stderr(stdout: str) -> None:
+    """Forward remote diagnostic lines (``  ⚠ …``, ``  ✗ …``) to local stderr.
+
+    Mirrors the bash-hook orchestrator's pattern (Modul-1.2 Round-4):
+    the rendered script writes warnings to its stderr, ``merge_stderr=True``
+    folds them into stdout, we strip the wire-format marker lines and
+    forward the rest so operators see WHY a setup failed instead of
+    just ``status=failed``.
+    """
+    for line in stdout.splitlines():
+        if any(line.startswith(p) for p in _FILESTASH_MARKER_PREFIXES):
+            continue
+        sys.stderr.write(line + "\n")
+
+
 def configure_filestash(
     config: NexusConfig,
     *,
@@ -1122,6 +1145,10 @@ def configure_filestash(
     EXCEPT for the explicit "not ready" / "no config" markers from
     stage 1 which are pre-setup states, not failures.
 
+    Remote diagnostic lines (``  ⚠ …``, ``  ✗ …``) from both stages
+    are forwarded to local stderr so failures are debuggable from the
+    deploy log, not just visible as ``status=failed``.
+
     ``script_runner`` defaults to :func:`_remote.ssh_run_script` so
     tests can substitute a mock; the production caller
     (``run_admin_setups``) passes the same callable through.
@@ -1130,6 +1157,7 @@ def configure_filestash(
 
     # Stage 1: pull
     out1 = runner(_render_filestash_pull_script())
+    _forward_non_marker_stderr(out1.stdout)
     pulled = _parse_filestash_pull_output(out1.stdout)
     if pulled == "not-ready":
         return HookResult(name="filestash", status="skipped-not-ready")
@@ -1143,6 +1171,7 @@ def configure_filestash(
 
     # Stage 3: push + restart + wait
     out2 = runner(_render_filestash_push_script(new_config_b64=new_b64))
+    _forward_non_marker_stderr(out2.stdout)
     if "RESULT hook=filestash status=configured" in out2.stdout:
         return HookResult(name="filestash", status="configured")
     return HookResult(name="filestash", status="failed")

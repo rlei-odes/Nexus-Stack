@@ -2008,8 +2008,8 @@ fi
 
 
 # Filestash admin setup (host fix, force_ssl, S3 backend) is handled
-# by `python -m nexus_deploy services configure --enabled <list>` further
-# below — see Phase 2 Modul 2.2d (#505). The legacy bash block here was
+# by the `python -m nexus_deploy services configure --enabled <list>`
+# call ABOVE (Phase 2 Modul 2.2d, #505). The legacy bash block here was
 # replaced because the JSON-mutation logic is now testable as pure Python.
 
 

@@ -203,8 +203,21 @@ class SSHClient:
         an exception message.
         """
         forward_spec = f"{local_port}:{remote_host}:{remote_port}"
+        # ExitOnForwardFailure=yes: if the local bind fails (port already
+        # in use), ssh exits non-zero immediately instead of staying up
+        # without a working forward. Without it, _wait_for_local_port
+        # could TCP-connect to whichever unrelated process happens to
+        # already own the port and falsely report the tunnel as ready.
         proc = subprocess.Popen(
-            ["ssh", "-N", "-L", forward_spec, self.host],
+            [
+                "ssh",
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                forward_spec,
+                self.host,
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

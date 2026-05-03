@@ -246,9 +246,15 @@ def test_port_forward_yields_after_local_port_accepts(
         with ssh.port_forward(local_port, "localhost", 9200) as p:
             assert p == local_port
             # The argv we constructed must be the canonical -N -L form
+            # plus -o ExitOnForwardFailure=yes (so a port-in-use bind
+            # failure exits ssh immediately instead of leaving a stale
+            # process that could let _wait_for_local_port falsely
+            # connect to an unrelated listener).
             assert captured_argv[0] == [
                 "ssh",
                 "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
                 "-L",
                 f"{local_port}:localhost:9200",
                 "nexus",

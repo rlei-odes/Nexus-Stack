@@ -1463,6 +1463,32 @@ def test_configure_filestash_pull_unparseable_returns_failed() -> None:
     assert result == HookResult(name="filestash", status="failed")
 
 
+def test_configure_filestash_forwards_remote_diagnostics_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Remote ``  ⚠ …`` / ``  ✗ …`` lines must reach local stderr so
+    operators can debug failures from the deploy log, not just see
+    ``status=failed``. Mirrors the bash-hook orchestrator's pattern.
+    """
+    initial = {"general": {"host": "x"}}
+    pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
+    # Pull stage emits a warning + the OK marker; push stage emits a
+    # warning + the failed RESULT.
+    runner = _runner_returning(
+        [
+            f"  ⚠ pull-stage diagnostic warning\nRESULT_PULL_OK {pull_b64}\n",
+            "  ✗ push-stage diagnostic\nRESULT hook=filestash status=failed\n",
+        ]
+    )
+    configure_filestash(_config_no_s3(), script_runner=runner)
+    captured = capsys.readouterr()
+    assert "pull-stage diagnostic warning" in captured.err
+    assert "push-stage diagnostic" in captured.err
+    # Marker lines must NOT be forwarded (those are wire-format only)
+    assert "RESULT_PULL_OK" not in captured.err
+    assert "RESULT hook=filestash" not in captured.err
+
+
 def test_configure_filestash_push_failed_returns_failed() -> None:
     initial = {"general": {"host": "x.example.com"}}
     pull_b64 = base64.b64encode(json.dumps(initial).encode()).decode()
