@@ -30,6 +30,7 @@ backend without changing call sites.
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import subprocess
 import time
@@ -211,11 +212,20 @@ class SSHClient:
             self._wait_for_local_port(local_port, wait_seconds, proc)
             yield local_port
         finally:
-            proc.terminate()
+            # If ssh exited on its own (transient network drop, signal,
+            # auth-renew failure mid-session) we may race terminate()
+            # against a pid that no longer exists. On POSIX that surfaces
+            # as ProcessLookupError; on Windows OSError. Either way we
+            # still want to reap to avoid a zombie. poll() is the
+            # cheap probe; the broad except is the belt to the suspenders.
+            if proc.poll() is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.terminate()
             try:
                 proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
                 proc.wait(timeout=5.0)
 
     @staticmethod

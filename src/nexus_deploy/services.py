@@ -1006,12 +1006,15 @@ def _render_filestash_push_script(*, new_config_b64: str) -> str:
 
     The new config arrives in the rendered script as a base64 string —
     that's the SAME wire we received the pull on, so any byte the
-    container produced can be pushed back. base64 in argv is fine
-    because the *decoded* JSON may contain S3 secret keys, but the
-    base64 of those keys is still secret — so we feed it via heredoc
-    on stdin to ``base64 -d``. The base64 string itself contains no
-    metacharacters (``[A-Za-z0-9+/=]``) so embedding into the
-    heredoc is safe.
+    container produced can be pushed back. The decoded JSON may contain
+    S3 secret keys; the base64 representation of those keys is still
+    secret. We pipe the base64 through ``printf '%s' <b64> | base64 -d
+    | docker exec -i …``: the base64 string lands in argv to ``printf``
+    (still ``shlex.quote``'d for safety), but the *decoded* secret
+    travels only on stdin to ``docker exec``, never reaching the
+    container's argv or remote ``ps``. The base64 string itself
+    contains no shell metacharacters (``[A-Za-z0-9+/=]``) so embedding
+    into the rendered script is safe.
 
     Emits ``RESULT hook=filestash status=configured`` on success or
     ``status=failed`` if either the write or the post-restart
@@ -1169,10 +1172,25 @@ _PYTHON_HOOK_REGISTRY: dict[str, PythonHookFn] = {
     "filestash": _filestash_python_hook,
 }
 
+# Single-source-of-truth invariant: a name lives in exactly one registry.
+# A name in both would silently double-dispatch in run_admin_setups (one
+# bash run + one python run). Checked at import time so any future
+# refactor that violates the invariant fails the test suite, not
+# production. If you genuinely need cross-registry routing, route via a
+# wrapper function that lives in only one registry.
+if _overlap := set(_HOOK_REGISTRY) & set(_PYTHON_HOOK_REGISTRY):
+    raise RuntimeError(f"hook names in both registries: {sorted(_overlap)}")
+
 
 def supported_hooks() -> tuple[str, ...]:
-    """All service names with admin-setup hooks (bash + python families)."""
-    return tuple(list(_HOOK_REGISTRY.keys()) + list(_PYTHON_HOOK_REGISTRY.keys()))
+    """All service names with admin-setup hooks (bash + python families).
+
+    Order: bash-registry insertion order, then python-registry insertion
+    order. ``dict.fromkeys`` preserves order while de-duplicating —
+    redundant given the import-time invariant above, but defence in depth
+    if a future refactor weakens that assertion.
+    """
+    return tuple(dict.fromkeys((*_HOOK_REGISTRY, *_PYTHON_HOOK_REGISTRY)))
 
 
 # ---------------------------------------------------------------------------

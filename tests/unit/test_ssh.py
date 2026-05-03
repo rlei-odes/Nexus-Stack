@@ -359,10 +359,97 @@ def test_port_forward_kills_subprocess_if_terminate_hangs(
         listener.join(timeout=1.0)
 
 
+# -- terminate ProcessLookupError hardening -----------------------------
+
+
+def test_port_forward_does_not_terminate_already_exited_proc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ssh exited before context exit, skip terminate() entirely.
+
+    Race: the process exits naturally (signal, transient drop) AFTER
+    _wait_for_local_port saw it alive but BEFORE the finally block runs.
+    Calling terminate() on a reaped pid raises ProcessLookupError on
+    POSIX. We defend by checking poll() first.
+    """
+
+    class ProcExitsAfterYield(_FakeProc):
+        """poll() None during yield, then exits before cleanup poll."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.exited = False
+
+        def poll(self) -> int | None:
+            if self.exited:
+                self.returncode = 0
+            return self.returncode
+
+    proc = ProcExitsAfterYield()
+    port_holder: list[int] = []
+    stop = threading.Event()
+    listener = _start_loopback_listener(port_holder, stop)
+    try:
+        for _ in range(50):
+            if port_holder:
+                break
+            time.sleep(0.02)
+        assert port_holder
+
+        def fake_popen(_argv: list[str], **_kwargs: Any) -> ProcExitsAfterYield:
+            return proc
+
+        monkeypatch.setattr("nexus_deploy.ssh.subprocess.Popen", fake_popen)
+
+        with SSHClient("nexus").port_forward(port_holder[0], "localhost", 1):
+            # Simulate the ssh subprocess exiting on its own during the yield —
+            # auth refresh dropped, network blip, etc. Cleanup must skip
+            # terminate() because poll() now reports the exit.
+            proc.exited = True
+        # terminate() must NOT have been called — proc was already gone
+        assert proc.terminated is False
+    finally:
+        stop.set()
+        listener.join(timeout=1.0)
+
+
+def test_port_forward_swallows_process_lookup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even if poll() lies (returns None) and terminate() raises, cleanup is non-fatal."""
+
+    class RaisingProc(_FakeProc):
+        def terminate(self) -> None:
+            raise ProcessLookupError(3, "No such process")
+
+    proc = RaisingProc()
+    port_holder: list[int] = []
+    stop = threading.Event()
+    listener = _start_loopback_listener(port_holder, stop)
+    try:
+        for _ in range(50):
+            if port_holder:
+                break
+            time.sleep(0.02)
+        assert port_holder
+
+        def fake_popen(_argv: list[str], **_kwargs: Any) -> RaisingProc:
+            return proc
+
+        monkeypatch.setattr("nexus_deploy.ssh.subprocess.Popen", fake_popen)
+
+        # No exception should escape the with-block
+        with SSHClient("nexus").port_forward(port_holder[0], "localhost", 1):
+            pass
+    finally:
+        stop.set()
+        listener.join(timeout=1.0)
+
+
 # -- exception-message hygiene ------------------------------------------
 
 
-def test_sshe_error_message_does_not_leak_argv() -> None:
+def test_ssh_error_message_does_not_leak_argv() -> None:
     """SSHError text should not include user-controlled host/host-config bits.
 
     ``SSHError`` carries fixed format strings; this is a static check

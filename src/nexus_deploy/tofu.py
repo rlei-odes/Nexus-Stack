@@ -65,7 +65,12 @@ class TofuRunner:
             if default is _MISSING:
                 raise TofuError(f"tofu output -raw {name} failed in {self.tofu_dir}") from exc
             return str(default)
-        return completed.stdout
+        # Strip trailing newlines to match deploy.sh's $(...) command-substitution
+        # semantic. POSIX command substitution removes ALL trailing newlines, so
+        # `SERVER_IP=$(tofu output -raw server_ip)` lands without the `\n`. Returning
+        # raw stdout would diverge subtly: `f"http://{server_ip}/api"` becomes
+        # `"http://1.2.3.4\n/api"` — silent breakage downstream.
+        return completed.stdout.rstrip("\n")
 
     @overload
     def output_json(self, name: str) -> Any: ...

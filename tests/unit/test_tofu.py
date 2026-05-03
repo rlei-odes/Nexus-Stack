@@ -43,6 +43,48 @@ def test_output_raw_default_tofu_dir_is_stack() -> None:
     assert runner.tofu_dir == Path("tofu/stack")
 
 
+def test_output_raw_strips_trailing_newlines_to_match_dollar_paren(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tofu output -raw`` adds a trailing ``\\n``; deploy.sh's ``$(...)``
+    command-substitution strips it. The Python wrapper must do the same
+    or downstream f-strings get a stray ``\\n`` in the middle of URLs etc.
+    POSIX ``$(...)`` strips ALL trailing newlines, not just one — match
+    that with ``rstrip('\\n')``.
+    """
+
+    def fake_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="1.2.3.4\n\n",  # tofu adds one + extra possible
+            stderr="",
+        )
+
+    monkeypatch.setattr("nexus_deploy.tofu.subprocess.run", fake_run)
+    result = TofuRunner().output_raw("server_ip")
+    assert result == "1.2.3.4"
+
+
+def test_output_raw_preserves_internal_newlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Newlines INSIDE the value (e.g. multi-line PEM) must NOT be stripped —
+    only trailing ones. Defends against an over-eager rstrip()."""
+
+    def fake_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="line1\nline2\nline3\n",  # 2 internal + 1 trailing
+            stderr="",
+        )
+
+    monkeypatch.setattr("nexus_deploy.tofu.subprocess.run", fake_run)
+    result = TofuRunner().output_raw("multiline_value")
+    assert result == "line1\nline2\nline3"
+
+
 def test_output_raw_returns_default_on_called_process_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
