@@ -129,13 +129,23 @@ def test_render_metabase_hook_uses_admin_email() -> None:
 def test_render_lakefs_hook_picks_hetzner_when_both_bucket_and_server_set() -> None:
     """Storage namespace selection mirrors legacy deploy.sh — BOTH
     `hetzner_s3_bucket_lakefs` AND `hetzner_s3_server` must be set
-    to land in the s3:// namespace."""
+    to land in the s3:// namespace.
+
+    Test fixture intentionally uses a non-URL-shaped server value
+    (``hetzner-s3-fake-host``) to avoid CodeQL's "Incomplete URL
+    substring sanitization" false-positive — the rule fires on
+    ``"foo.com" in some_url`` patterns intended for security
+    decisions, but this assertion just checks rendered-bash content.
+    """
     script = render_lakefs_hook(
-        _make_config(hetzner_s3_bucket_lakefs="b1", hetzner_s3_server="s3.example.com"),
+        _make_config(
+            hetzner_s3_bucket_lakefs="b1",
+            hetzner_s3_server="hetzner-s3-fake-host",
+        ),
         _make_env(),
     )
     assert "b1" in script
-    assert "s3.example.com" in script
+    assert "hetzner-s3-fake-host" in script
     # The if-condition tests both vars
     assert '[ -n "$HETZNER_BUCKET" ] && [ -n "$HETZNER_SERVER" ]' in script
 
