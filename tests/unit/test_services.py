@@ -233,24 +233,41 @@ def test_round_2_per_spec_healthcheck_timeouts() -> None:
         (render_openmetadata_hook, "openmetadata_admin_password", "OM-CANARY-X1Y2"),
     ],
 )
-def test_no_credential_leaks_into_curl_line_per_hook(
+def test_no_credential_leaks_into_subprocess_argv_per_hook(
     renderer: Any, canary_field: str, canary_value: str
 ) -> None:
     """R4 (per-hook generalisation): no credential ever lands on a line
-    containing a curl invocation.
+    that invokes a non-builtin subprocess (``curl`` or ``jq``) — both
+    leak via ``ps`` on the remote host.
 
-    Round-2 finding on PR #514: previous tests caught Metabase only;
-    Portainer + n8n + LakeFS basic-auth + OpenMetadata Bearer all
-    leaked credentials into curl argv. This parameterized test pins
-    the invariant for ALL 5 hooks: the canary value must appear
-    SOMEWHERE in the rendered script (it's a credential we need to
-    use) but NEVER on a line that contains the literal token ``curl``.
+    Round-2 PR #514: caught Portainer + n8n curl-argv leaks.
+    Round-5 PR #514: caught the SAME class on jq's argv (``jq -n
+    --arg pw <secret>`` puts secret in jq's argv). This test now
+    checks BOTH curl AND jq invocation lines.
+
+    Bash builtins (printf, env-var assignments via ``VAR=value cmd``)
+    don't fork — values can safely appear on those lines without
+    reaching ``ps``. Non-builtins (curl, jq, base64, tr) DO fork —
+    any positional value on those lines hits ``ps``.
     """
     script = renderer(_make_config(**{canary_field: canary_value}), _make_env())
     assert canary_value in script, "Canary must appear somewhere in the script"
     for line in script.splitlines():
-        if "curl " in line or "curl\n" in line:
-            assert canary_value not in line, f"Credential leaked into curl line: {line!r}"
+        # Skip lines that ONLY contain `VAR=value cmd ...` env-var
+        # assignment for the next non-builtin (e.g. `NEXUS_P=secret jq -n`):
+        # the value is set as an env var, NOT as positional argv to jq.
+        # We detect this pattern by checking whether the canary appears
+        # before any forking-command token on the line.
+        for forking_command in ("curl ", "curl\n", "jq ", "jq\n"):
+            if forking_command in line:
+                idx_canary = line.find(canary_value)
+                idx_cmd = line.find(forking_command)
+                if idx_canary >= 0 and idx_canary > idx_cmd:
+                    # Canary appears AFTER the command name → it's in
+                    # positional argv → leak.
+                    raise AssertionError(
+                        f"Credential leaked into {forking_command.strip()!r} argv: {line!r}"
+                    )
 
 
 def test_round_4_setup_body_via_jq_no_argv_leak() -> None:

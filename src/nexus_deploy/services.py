@@ -167,9 +167,12 @@ fi
 def render_portainer_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """Portainer first-init: ``POST /api/users/admin/init`` (no auth).
 
-    Body built via ``jq -n --arg`` and piped to curl via stdin
-    (``--data-binary @-``) so the admin password never appears in
-    the curl process argv on the remote host (R4).
+    Secrets reach jq via env vars (``NEXUS_U`` / ``NEXUS_P``) and are
+    referenced in the filter as ``env.NEXUS_U`` / ``env.NEXUS_P`` —
+    NEVER as positional ``--arg`` values, which would put them in
+    jq's argv (visible via ``ps``). The body is then piped to curl
+    via stdin (``--data-binary @-``) so neither jq nor curl carry
+    secrets in argv (R4).
     """
     del env  # not used; signature uniform across hooks
     username = config.admin_username or "admin"
@@ -187,8 +190,8 @@ def render_portainer_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     return f"""
 portainer_hook() {{
     {wait}
-    BODY=$(jq -n --arg u {username_q} --arg p {password_q} \\
-        '{{Username: $u, Password: $p}}')
+    BODY=$(NEXUS_U={username_q} NEXUS_P={password_q} jq -n \\
+        '{{Username: env.NEXUS_U, Password: env.NEXUS_P}}')
     RESP=$(printf '%s' "$BODY" | curl -s -X POST 'http://localhost:9090/api/users/admin/init' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
@@ -232,8 +235,8 @@ n8n_hook() {{
         echo "RESULT hook=n8n status=already-configured"
         return 0
     fi
-    BODY=$(jq -n --arg email {email_q} --arg pw {password_q} \\
-        '{{email: $email, firstName: "Admin", lastName: "User", password: $pw}}')
+    BODY=$(NEXUS_E={email_q} NEXUS_P={password_q} jq -n \\
+        '{{email: env.NEXUS_E, firstName: "Admin", lastName: "User", password: env.NEXUS_P}}')
     RESP=$(printf '%s' "$BODY" | curl -s -X POST 'http://localhost:5678/rest/owner/setup' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
@@ -270,11 +273,8 @@ metabase_hook() {{
         echo "RESULT hook=metabase status=already-configured"
         return 0
     fi
-    BODY=$(jq -n \\
-        --arg token "$SETUP_TOKEN" \\
-        --arg email {email_q} \\
-        --arg password {password_q} \\
-        '{{token: $token, user: {{email: $email, first_name: "Admin", last_name: "User", password: $password}}, prefs: {{site_name: "Nexus Stack Analytics", allow_tracking: false}}}}')
+    BODY=$(NEXUS_TOKEN="$SETUP_TOKEN" NEXUS_E={email_q} NEXUS_P={password_q} jq -n \\
+        '{{token: env.NEXUS_TOKEN, user: {{email: env.NEXUS_E, first_name: "Admin", last_name: "User", password: env.NEXUS_P}}, prefs: {{site_name: "Nexus Stack Analytics", allow_tracking: false}}}}')
     RESP=$(printf '%s' "$BODY" | curl -s -X POST 'http://localhost:3000/api/setup' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
@@ -329,10 +329,8 @@ lakefs_hook() {{
         SETUP_DONE=true
     fi
     if [ "$SETUP_DONE" = "false" ]; then
-        SETUP_BODY=$(jq -n \\
-            --arg ak {access_q} \\
-            --arg sk {secret_q} \\
-            '{{username: "nexus-lakefs", key: {{access_key_id: $ak, secret_access_key: $sk}}}}')
+        SETUP_BODY=$(NEXUS_AK={access_q} NEXUS_SK={secret_q} jq -n \\
+            '{{username: "nexus-lakefs", key: {{access_key_id: env.NEXUS_AK, secret_access_key: env.NEXUS_SK}}}}')
         SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -X POST 'http://localhost:8000/api/v1/setup_lakefs' \\
             --max-time 30 \\
             -H 'Content-Type: application/json' \\
@@ -420,8 +418,11 @@ openmetadata_hook() {{
         return 0
     fi
     DEFAULT_PW_B64=$(printf 'admin' | base64 | tr -d '\\n')
-    LOGIN_BODY=$(jq -n --arg email "admin@${{DOMAIN}}" --arg pw "$DEFAULT_PW_B64" \\
-        '{{email: $email, password: $pw}}')
+    # NEXUS_PW carries the base64 of "admin" (default OpenMetadata
+    # password) — public knowledge, but keep it out of jq's argv
+    # uniformly with the other hooks. NEXUS_E is the email address.
+    LOGIN_BODY=$(NEXUS_E="admin@${{DOMAIN}}" NEXUS_PW="$DEFAULT_PW_B64" jq -n \\
+        '{{email: env.NEXUS_E, password: env.NEXUS_PW}}')
     LOGIN_RESP=$(printf '%s' "$LOGIN_BODY" | curl -s -X POST 'http://localhost:8585/api/v1/users/login' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
@@ -435,8 +436,8 @@ openmetadata_hook() {{
         fi
         return 0
     fi
-    PW_BODY=$(jq -n --arg new {new_pw_q} \\
-        '{{username: "admin", oldPassword: "admin", newPassword: $new, confirmPassword: $new, requestType: "SELF"}}')
+    PW_BODY=$(NEXUS_NEW={new_pw_q} jq -n \\
+        '{{username: "admin", oldPassword: "admin", newPassword: env.NEXUS_NEW, confirmPassword: env.NEXUS_NEW, requestType: "SELF"}}')
     # R4: Bearer token via curl --config tmpfile, NOT -H argv. The
     # tmpfile is mode 600 + cleaned up by a function-scoped RETURN
     # trap (fires when openmetadata_hook returns) plus an explicit
@@ -452,9 +453,14 @@ openmetadata_hook() {{
         --data-binary @- >/dev/null 2>&1 || true
     rm -f "$OM_CFG"
     trap - RETURN
+    # base64 reads the new password from stdin (printf is a bash
+    # builtin → no fork → no `ps` exposure for the printf).
     NEW_PW_B64=$(printf '%s' {new_pw_q} | base64 | tr -d '\\n')
-    VERIFY_BODY=$(jq -n --arg email "admin@${{DOMAIN}}" --arg pw "$NEW_PW_B64" \\
-        '{{email: $email, password: $pw}}')
+    # NEXUS_PW carries the base64-of-new-password — even base64 of
+    # the password is sensitive (trivially reversible), so we route
+    # via env var to keep it out of jq's argv.
+    VERIFY_BODY=$(NEXUS_E="admin@${{DOMAIN}}" NEXUS_PW="$NEW_PW_B64" jq -n \\
+        '{{email: env.NEXUS_E, password: env.NEXUS_PW}}')
     VERIFY_RESP=$(printf '%s' "$VERIFY_BODY" | curl -s -X POST 'http://localhost:8585/api/v1/users/login' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
