@@ -149,15 +149,24 @@ def _render_wait_healthy(
 ) -> str:
     """Render a polling-wait loop; sets ``$READY`` to ``true``/``false``.
 
+    Bounded by **wall-clock** (``$SECONDS``), not iteration count.
+    Earlier versions used ``for _ in $(seq 1 N)`` with N derived
+    from ``timeout_seconds // interval_seconds``, but each iteration
+    can spend up to curl's ``--max-time`` waiting for a stalled
+    response PLUS ``sleep interval_seconds`` between probes — so a
+    "60s" timeout could blow out to ~200s in the worst case while
+    still printing the misleading "after 60s" warning. Using
+    ``$SECONDS`` keeps the upper bound at exactly ``timeout_seconds``.
+
     The predicate runs against ``$STATUS`` (HTTP code from curl
     ``-w '%{http_code}'``). Specs that need a body-substring check
     (OpenMetadata's ``grep 'version'``) build a custom inner block
     instead of using this helper.
     """
-    iters = max(1, timeout_seconds // interval_seconds)
     return f"""
 READY=false
-for _ in $(seq 1 {iters}); do
+SECONDS=0
+while [ "$SECONDS" -lt {timeout_seconds} ]; do
     STATUS=$(curl -s -o /dev/null -w '%{{http_code}}' --connect-timeout 3 --max-time 5 {shlex.quote(url)} 2>/dev/null || echo "000")
     if {predicate}; then READY=true; break; fi
     sleep {interval_seconds}
@@ -313,16 +322,18 @@ def render_lakefs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
         return 'echo "RESULT hook=lakefs status=skipped-not-ready"\n'
     access_q = shlex.quote(access_key)
     secret_q = shlex.quote(secret_key)
-    # Storage namespace selection mirrors deploy.sh:2762-2770. The
-    # bucket name comes from `config.hetzner_s3_bucket_lakefs` (a
-    # NexusConfig field parsed from `tofu output -json secrets`) and
-    # is shlex-quoted into the rendered bash as a literal — NOT read
-    # from a remote env var. This keeps the renderer pure (no
-    # round-trip needed to discover it on the server) at the cost of
-    # making the namespace tied to deploy-time tofu state instead of
-    # post-deploy server state. In practice the two are identical.
+    # Storage namespace selection mirrors deploy.sh's legacy LakeFS
+    # block: ``[ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_BUCKET" ]``
+    # — BOTH must be set. Bucket alone isn't enough because LakeFS
+    # also needs the endpoint URL to read/write S3, and a partially
+    # configured tofu state (bucket without server) would land us in
+    # the s3:// branch with broken connectivity. Both NexusConfig
+    # fields are shlex-quoted into the rendered bash as literals, NOT
+    # read from a remote env var — keeps the renderer pure.
     hetzner_bucket = config.hetzner_s3_bucket_lakefs or ""
-    hetzner_q = shlex.quote(hetzner_bucket)
+    hetzner_server = config.hetzner_s3_server or ""
+    hetzner_bucket_q = shlex.quote(hetzner_bucket)
+    hetzner_server_q = shlex.quote(hetzner_server)
     wait = _render_wait_healthy(
         name="lakefs",
         url="http://localhost:8000/api/v1/healthcheck",
@@ -350,8 +361,11 @@ lakefs_hook() {{
             fi
         fi
     fi
-    HETZNER_BUCKET={hetzner_q}
-    if [ -n "$HETZNER_BUCKET" ]; then
+    HETZNER_BUCKET={hetzner_bucket_q}
+    HETZNER_SERVER={hetzner_server_q}
+    # BOTH must be set to pick the s3:// namespace (matches legacy
+    # deploy.sh — bucket alone without endpoint would break read/write).
+    if [ -n "$HETZNER_BUCKET" ] && [ -n "$HETZNER_SERVER" ]; then
         STORAGE_NS="s3://${{HETZNER_BUCKET}}/lakefs/"
         REPO_NAME="hetzner-object-storage"
     else
@@ -413,8 +427,13 @@ def render_openmetadata_hook(config: NexusConfig, env: BootstrapEnv) -> str:
 openmetadata_hook() {{
     EMAIL={email_q}
     DOMAIN=$(printf '%s' "$EMAIL" | cut -d'@' -f2)
+    # Wall-clock-bounded wait (matches _render_wait_healthy's pattern):
+    # each iteration spends up to ~5s in curl + 3s sleep, so an
+    # iteration-counted loop would blow well past 180s in the
+    # worst case. ``$SECONDS`` caps the real wall-time at 180.
     READY=false
-    for _ in $(seq 1 60); do
+    SECONDS=0
+    while [ "$SECONDS" -lt 180 ]; do
         if curl -s --connect-timeout 3 --max-time 5 'http://localhost:8585/api/v1/system/version' 2>/dev/null | grep -q 'version'; then
             READY=true; break
         fi

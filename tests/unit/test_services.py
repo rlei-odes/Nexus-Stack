@@ -126,17 +126,39 @@ def test_render_metabase_hook_uses_admin_email() -> None:
     assert "/api/setup" in script
 
 
-def test_render_lakefs_hook_picks_hetzner_bucket_when_set() -> None:
-    """Storage namespace selection mirrors deploy.sh:2762-2770."""
-    script = render_lakefs_hook(_make_config(hetzner_s3_bucket_lakefs="b1"), _make_env())
+def test_render_lakefs_hook_picks_hetzner_when_both_bucket_and_server_set() -> None:
+    """Storage namespace selection mirrors legacy deploy.sh — BOTH
+    `hetzner_s3_bucket_lakefs` AND `hetzner_s3_server` must be set
+    to land in the s3:// namespace."""
+    script = render_lakefs_hook(
+        _make_config(hetzner_s3_bucket_lakefs="b1", hetzner_s3_server="s3.example.com"),
+        _make_env(),
+    )
     assert "b1" in script
-    assert "hetzner-object-storage" in script
+    assert "s3.example.com" in script
+    # The if-condition tests both vars
+    assert '[ -n "$HETZNER_BUCKET" ] && [ -n "$HETZNER_SERVER" ]' in script
 
 
 def test_render_lakefs_hook_falls_back_to_local_when_no_hetzner() -> None:
-    script = render_lakefs_hook(_make_config(hetzner_s3_bucket_lakefs=""), _make_env())
+    script = render_lakefs_hook(
+        _make_config(hetzner_s3_bucket_lakefs="", hetzner_s3_server=""), _make_env()
+    )
     assert "local://data/lakefs/" in script
     assert "local-storage" in script
+
+
+def test_render_lakefs_hook_falls_back_when_only_bucket_set_no_server() -> None:
+    """Round-7 finding: bucket alone is NOT enough — endpoint is also
+    required. Without the server, lakefs has no way to read/write S3.
+    The legacy deploy.sh required BOTH; we must too."""
+    config = _make_config(hetzner_s3_bucket_lakefs="b1", hetzner_s3_server="")
+    script = render_lakefs_hook(config, _make_env())
+    # Both fields are present in the rendered script (their values
+    # get baked in), but at runtime the AND-check will land in the
+    # local:// branch because HETZNER_SERVER is empty. We pin the
+    # AND-check structure here.
+    assert '[ -n "$HETZNER_BUCKET" ] && [ -n "$HETZNER_SERVER" ]' in script
 
 
 def test_render_openmetadata_hook_3_step_flow() -> None:
