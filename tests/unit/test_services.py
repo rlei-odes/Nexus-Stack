@@ -269,8 +269,15 @@ def test_no_credential_leaks_into_subprocess_argv_per_hook(
 
     Bash builtins (printf, env-var assignments via ``VAR=value cmd``)
     don't fork — values can safely appear on those lines without
-    reaching ``ps``. Non-builtins (curl, jq, base64, tr) DO fork —
-    any positional value on those lines hits ``ps``.
+    reaching ``ps``.
+
+    Scope of THIS test: ``curl`` + ``jq`` only — the two non-builtins
+    that currently consume credentials in this module. Other forking
+    commands the rendered scripts use (``base64``, ``tr``, ``mktemp``,
+    ``chmod``) all read from stdin or operate on tmpfile paths
+    rather than taking secrets as positional args, so they're not
+    on the leak-path here. Future hooks adding a new credential-
+    handling fork-tool should extend this test's command list.
     """
     script = renderer(_make_config(**{canary_field: canary_value}), _make_env())
     assert canary_value in script, "Canary must appear somewhere in the script"

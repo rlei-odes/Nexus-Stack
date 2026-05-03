@@ -152,11 +152,17 @@ def _render_wait_healthy(
     Bounded by **wall-clock** (``$SECONDS``), not iteration count.
     Earlier versions used ``for _ in $(seq 1 N)`` with N derived
     from ``timeout_seconds // interval_seconds``, but each iteration
-    can spend up to curl's ``--max-time`` waiting for a stalled
+    could spend up to curl's ``--max-time`` waiting for a stalled
     response PLUS ``sleep interval_seconds`` between probes — so a
     "60s" timeout could blow out to ~200s in the worst case while
     still printing the misleading "after 60s" warning. Using
-    ``$SECONDS`` keeps the upper bound at exactly ``timeout_seconds``.
+    ``$SECONDS`` keeps the upper bound close to ``timeout_seconds``:
+    the worst case is ~``timeout_seconds + curl_max_time +
+    interval_seconds`` (the loop can enter at SECONDS=N-1, then
+    spend one more probe + sleep before the while-check fires
+    again). For the typical Portainer/n8n/Metabase configs that's
+    ~+7s; not exact, but bounded and accurate enough for the
+    "after Ns — skipping" warning.
 
     The predicate runs against ``$STATUS`` (HTTP code from curl
     ``-w '%{http_code}'``). Specs that need a body-substring check
@@ -545,12 +551,22 @@ def render_remote_script(
     on its bail-out paths and the orchestrator script has no
     ``set -e`` in the outer scope).
 
-    Hook execution is sequential (NOT parallel — different hooks may
-    target the same backing services like Postgres, and sequential
-    keeps the workflow log readable). **Order matches the caller-
-    provided ``enabled_hooks`` argument** — NOT ``_HOOK_REGISTRY``
-    insertion order. Callers (the CLI in ``__main__._services_configure``)
-    determine the order; the registry is only a name → renderer map.
+    Hook execution is sequential (NOT parallel). **Order matches the
+    caller-provided ``enabled_hooks`` argument** — NOT
+    ``_HOOK_REGISTRY`` insertion order. Callers (the CLI in
+    ``__main__._services_configure``) determine the order; the
+    registry is only a name → renderer map.
+
+    KNOWN-LIMITATION (acknowledged tradeoff vs legacy deploy.sh):
+    legacy ran several hooks (Portainer, LakeFS, OpenMetadata) in
+    parallel via ``( ... ) & CONFIG_JOBS+=($!)`` background subshells
+    + ``wait``, which capped wall-time at the slowest hook (~180s).
+    Sequential here can reach ~``sum(per-hook timeouts)`` — about
+    7 minutes worst case for the 5 currently-shipped hooks. Phase 3
+    (#505 Modul 3.1, paramiko + asyncio) replaces the bash-render
+    layer wholesale and naturally restores parallelism via
+    ``asyncio.gather``. Until then we accept the increased wall-
+    time in exchange for predictable, easy-to-grep linear logs.
     """
     parts: list[str] = ["set -u  # -e omitted: hook failures must not abort the orchestrator\n"]
     for name in enabled_hooks:
