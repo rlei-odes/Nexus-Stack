@@ -13,6 +13,7 @@ Currently:
 - ``gitea configure`` (#505 Modul 2.2e)
 - ``gitea woodpecker-oauth`` (#505 Modul 2.2f)
 - ``gitea mirror-setup`` (#505 Modul 2.2f part 2)
+- ``stack-sync --enabled <comma-list>`` (#505 Modul 3.3)
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 from nexus_deploy.services import run_admin_setups
 from nexus_deploy.ssh import SSHClient, SSHError
+from nexus_deploy.stack_sync import run_stack_sync
 
 
 def _config_dump_shell(args: list[str]) -> int:
@@ -1312,6 +1314,137 @@ def _gitea_mirror_setup(args: list[str]) -> int:
     return 0 if result.is_success else 1
 
 
+def _stack_sync(args: list[str]) -> int:
+    """`nexus-deploy stack-sync --enabled <comma-list> [--stacks-dir PATH]`.
+
+    Replaces deploy.sh L1401-1444 (#505 Modul 3.3): per-stack rsync of
+    ``stacks/<svc>/`` → ``nexus:/opt/docker-server/stacks/<svc>/``,
+    plus disabled-stack cleanup (server-side ``docker compose down``
+    + ``rm -rf`` for any folder NOT in the enabled list).
+
+    The comma-list maps directly to deploy.sh's ``$ENABLED_SERVICES``
+    (``tr '\\n ' ',,'`` already happens on the bash side, same wire-
+    format as compose_runner).
+
+    Optional ``--stacks-dir`` defaults to ``stacks`` relative to the
+    repo root — exposed for tests. Production callers leave it off.
+
+    Exit codes:
+
+    - 0: every enabled service was either rsynced successfully or
+      reported missing-local (deploy.sh's pre-migration warning
+      branch, kept as soft-success); the cleanup script ran and
+      returned RESULT with failed=0.
+    - 1: at least one rsync failed OR the cleanup loop reported
+      ``failed > 0``, but at least one operation succeeded. deploy.sh:
+      yellow warning, continue.
+    - 2: bad args, transport (ssh/rsync) failure, no parseable RESULT
+      line, or unexpected exception. deploy.sh: red, abort.
+    """
+    enabled_str: str | None = None
+    stacks_dir_arg: str | None = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--enabled":
+            if i + 1 >= len(args):
+                print("stack-sync: --enabled requires a value", file=sys.stderr)
+                return 2
+            enabled_str = args[i + 1]
+            i += 2
+        elif args[i] == "--stacks-dir":
+            if i + 1 >= len(args):
+                print("stack-sync: --stacks-dir requires a value", file=sys.stderr)
+                return 2
+            stacks_dir_arg = args[i + 1]
+            i += 2
+        else:
+            print(f"stack-sync: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+
+    if enabled_str is None:
+        print(
+            "stack-sync: --enabled <comma-separated-services> is required",
+            file=sys.stderr,
+        )
+        return 2
+
+    enabled = [s.strip() for s in enabled_str.split(",") if s.strip()]
+    if not enabled:
+        # Empty list: nothing to rsync, but the cleanup loop still
+        # has work — every existing folder on the server is "not in
+        # the enabled list" and gets removed. That matches deploy.sh's
+        # behaviour: a deploy with zero enabled services would tear
+        # down every stack on the server.
+        pass
+
+    stacks_dir = Path(stacks_dir_arg) if stacks_dir_arg else Path("stacks")
+    if not stacks_dir.is_dir():
+        print(
+            f"stack-sync: stacks dir {stacks_dir!s} is not a directory",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        result = run_stack_sync(stacks_dir, enabled)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"stack-sync: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        # Force rc=2 (Python's default rc=1 collides with our
+        # partial-failure semantic). Class name only — no str/repr,
+        # which could embed secret-bearing values from a future
+        # config-aware helper.
+        print(f"stack-sync: unexpected error ({type(exc).__name__})", file=sys.stderr)
+        return 2
+
+    # Per-service rsync diagnostics on stderr — same pattern as the
+    # cleanup script (which streams its own diagnostics). On rsync
+    # failure we ALSO surface the captured stderr excerpt as an
+    # indented block — Round-2 PR #523 finding: a bare "rc=23"
+    # gave operators no actionable signal, the underlying rsync
+    # error message ("Permission denied", "No space left on device",
+    # "ssh: connect to host nexus port 22: Connection refused", etc.)
+    # is what they need to see.
+    for r in result.rsync:
+        if r.status == "synced":
+            sys.stderr.write(f"  ✓ {r.service} synced\n")
+        elif r.status == "missing-local":
+            sys.stderr.write(f"  ⚠ {r.service}: local stack folder not found - skipping\n")
+        else:
+            detail = f" ({r.detail})" if r.detail else ""
+            sys.stderr.write(f"  ✗ {r.service} rsync failed{detail}\n")
+            if r.stderr_excerpt:
+                for line in r.stderr_excerpt.splitlines():
+                    sys.stderr.write(f"      {line}\n")
+
+    cleanup_summary = (
+        f"stopped={result.cleanup.stopped} removed={result.cleanup.removed} "
+        f"failed={result.cleanup.failed}"
+        if result.cleanup is not None
+        else "stopped=? removed=? failed=? (cleanup did not return RESULT)"
+    )
+    print(
+        f"stack-sync: synced={result.synced} missing={result.missing} "
+        f"failed_rsync={result.failed_rsync} cleanup: {cleanup_summary}",
+    )
+
+    if result.cleanup is None:
+        # No parseable RESULT: hard failure (same defensive parse as
+        # compose_runner / seeder).
+        return 2
+    if result.is_success:
+        return 0
+    # Partial: at least one rsync OR cleanup failure. Distinguish
+    # "everything failed" (rc=2) from "some succeeded" (rc=1).
+    if result.synced == 0 and result.cleanup.stopped + result.cleanup.removed == 0:
+        return 2
+    return 1
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -1400,6 +1533,8 @@ def main() -> int:
         return _gitea_woodpecker_oauth(args[2:])
     if args[:2] == ["gitea", "mirror-setup"]:
         return _gitea_mirror_setup(args[2:])
+    if args[:1] == ["stack-sync"]:
+        return _stack_sync(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -1415,7 +1550,8 @@ def main() -> int:
         "kestra register-system-flows (reads SECRETS_JSON from stdin + env vars), "
         "gitea configure (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout), "
         "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
-        "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned)",
+        "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned), "
+        "stack-sync --enabled <comma-list> [--stacks-dir PATH]",
         file=sys.stderr,
     )
     return 2

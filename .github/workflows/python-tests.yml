@@ -162,6 +162,26 @@ jobs:
           create-new-comment: false
           report-only-changed-files: false
 
+      - name: Upload coverage to Codecov
+        # External coverage trend graphs + auto-updating README badge.
+        # Public repos technically don't require a token, but Codecov has
+        # been progressively rolling out token-required uploads since
+        # 2023 to deal with token-free upload abuse — providing the
+        # CODECOV_TOKEN secret avoids the intermittent rate-limit /
+        # rejection. `fail_ci_if_error: false` makes the step
+        # non-blocking: if Codecov is down, the gate-relevant local
+        # `--cov-fail-under=80` step has already passed and CI stays
+        # green. The MishaKav comment step above is independent of
+        # Codecov (local-only PR comment); both run.
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: nexus_deploy
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@v4
