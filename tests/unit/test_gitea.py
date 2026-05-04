@@ -2413,6 +2413,35 @@ def test_get_user_id_raises_on_5xx() -> None:
 
 
 @responses.activate
+def test_get_user_id_raises_on_200_with_missing_id() -> None:
+    """200 + payload without integer 'id' (proxy mangling, schema
+    drift) must raise — NOT silently return None. Without this, the
+    caller would treat it as a genuine 404 and the CLI would print
+    the misleading 'admin user not found in Gitea'. (Copilot R5)
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"login": "admin"},  # id missing
+    )
+    with pytest.raises(GiteaError, match="missing integer 'id'"):
+        _client(token="t").get_user_id("admin")
+
+
+@responses.activate
+def test_get_user_id_raises_on_200_with_non_int_id() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": "not-an-int", "login": "admin"},
+    )
+    with pytest.raises(GiteaError, match="missing integer 'id'"):
+        _client(token="t").get_user_id("admin")
+
+
+@responses.activate
 def test_migrate_mirror_returns_created_on_201() -> None:
     responses.add(
         responses.POST,

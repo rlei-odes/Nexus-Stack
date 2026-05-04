@@ -857,6 +857,10 @@ class GiteaClient:
         except (requests.ConnectionError, requests.Timeout) as exc:
             raise GiteaError(f"get_user_id transport ({type(exc).__name__})") from exc
         if resp.status_code == 404:
+            # Genuine "user doesn't exist" — this is the only path
+            # that returns None. Distinct from malformed-response
+            # handling below which raises so the caller can surface
+            # the diagnostic via admin_uid_error.
             return None
         if resp.status_code != 200:
             raise GiteaError(f"get_user_id HTTP {resp.status_code}")
@@ -865,7 +869,14 @@ class GiteaClient:
         except ValueError as exc:
             raise GiteaError("get_user_id response was not JSON") from exc
         uid = payload.get("id") if isinstance(payload, dict) else None
-        return uid if isinstance(uid, int) else None
+        if not isinstance(uid, int):
+            # 200 but the response shape is wrong (proxy mangling,
+            # Gitea schema drift). Raise so admin_uid_error surfaces
+            # the diagnostic — without this, run_mirror_setup would
+            # treat it as a genuine 404 and the CLI would print the
+            # misleading "admin user not found in Gitea". (Copilot R5)
+            raise GiteaError("get_user_id response missing integer 'id'")
+        return uid
 
     def migrate_mirror(
         self,
