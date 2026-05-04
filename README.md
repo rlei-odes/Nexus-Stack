@@ -6,6 +6,8 @@
 [![GitHub Issues](https://img.shields.io/github/issues/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/issues)
 [![GitHub Pull Requests](https://img.shields.io/github/issues-pr/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/pulls)
 [![GitHub Last Commit](https://img.shields.io/github/last-commit/stefanko-ch/Nexus-Stack)](https://github.com/stefanko-ch/Nexus-Stack/commits/main)
+[![Tests](https://github.com/stefanko-ch/Nexus-Stack/actions/workflows/python-tests.yml/badge.svg)](https://github.com/stefanko-ch/Nexus-Stack/actions/workflows/python-tests.yml)
+[![codecov](https://codecov.io/gh/stefanko-ch/Nexus-Stack/branch/main/graph/badge.svg)](https://codecov.io/gh/stefanko-ch/Nexus-Stack)
 
 [![OpenTofu](https://img.shields.io/badge/OpenTofu-FFDA18?logo=opentofu&logoColor=black)](https://opentofu.org/)
 [![Hetzner](https://img.shields.io/badge/Hetzner-D50C2D?logo=hetzner&logoColor=white)](https://www.hetzner.com/)
