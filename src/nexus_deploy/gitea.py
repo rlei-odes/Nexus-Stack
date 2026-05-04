@@ -1124,11 +1124,23 @@ def run_woodpecker_oauth_setup(
             app_id = app.get("id")
             if isinstance(app_id, int):
                 if not client.delete_oauth_app(app_id):
+                    # Conservative dispatch: any non-True result —
+                    # observed 403/5xx/timeout/connection-reset —
+                    # could mean Gitea actually processed the DELETE
+                    # but the response was lost in flight. We can't
+                    # tell server-side state from a client-side
+                    # transport error. Mark rotation_started=True so
+                    # the CLI exits rc=2 (abort) instead of rc=1
+                    # (warn-and-continue) — abort is safe in both
+                    # branches: if delete succeeded, we'd otherwise
+                    # leave Woodpecker on stale creds; if delete
+                    # failed cleanly, the operator gets a hard
+                    # signal to remediate. (Copilot R3)
                     return (
                         None,
                         f"delete_oauth_app(id={app_id}): failed — "
-                        "refusing to create duplicate (rotation broken)",
-                        rotation_started,
+                        "rotation broken (server state ambiguous)",
+                        True,
                     )
                 rotation_started = True
 

@@ -25,6 +25,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 import responses
 
 from nexus_deploy.config import NexusConfig
@@ -1758,6 +1759,41 @@ def test_list_oauth_apps_raises_on_non_array_shape() -> None:
 
 
 @responses.activate
+def test_woodpecker_oauth_aborts_on_delete_transport_error() -> None:
+    """Connection reset / timeout during DELETE → server state ambiguous
+    → conservatively mark rotation_started=True so CLI exits rc=2.
+
+    Copilot R3 finding: when ``requests`` raises ConnectionError or
+    Timeout on the DELETE, Gitea may have actually processed the
+    request before the response was lost. Treating the transport
+    error as a pre-rotation failure (rotation_started=False, rc=1)
+    would let deploy.sh continue with a possibly-invalidated
+    OAuth pair active in Woodpecker's .env.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[{"id": 42, "name": "Woodpecker CI"}],
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        body=requests.ConnectionError("simulated connection reset"),
+    )
+    result, err, rotation_started = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "delete_oauth_app" in err
+    assert "ambiguous" in err
+    assert rotation_started is True
+
+
+@responses.activate
 def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
     """Delete failure (403/timeout) MUST abort the create.
 
@@ -1778,7 +1814,7 @@ def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
         status=403,  # operator revoked admin's permission, e.g.
     )
     # No POST mock — must NOT be called.
-    result, err, _rotation_started = run_woodpecker_oauth_setup(
+    result, err, rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="tok",
@@ -1787,6 +1823,13 @@ def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
     assert result is None
     assert "delete_oauth_app" in err
     assert "rotation broken" in err
+    # Conservative dispatch (R3): any delete failure (observed 403,
+    # 5xx, or transport timeout) marks rotation_started=True so the
+    # CLI exits rc=2 (abort). Server-side state is ambiguous after
+    # a transport error — the DELETE may have succeeded before the
+    # response was lost — and we'd rather false-positive on abort
+    # than silently leave Woodpecker on stale creds.
+    assert rotation_started is True
     # POST must NOT have been issued
     assert all(c.request.method != "POST" for c in responses.calls)
 
@@ -2092,10 +2135,18 @@ def test_cli_woodpecker_oauth_eval_handoff_safe_with_shell_meta(
     lines = result.stdout.splitlines()
     assert lines[0] == adversarial_id
     assert lines[1] == adversarial_secret
-    # And critically: nothing got executed (no PWNED on stdout, no
-    # /tmp/pwned side-effect — the adversarial substrings are
-    # quoted as data, not parsed as commands).
-    assert "PWNED-id" not in result.stdout.split("\n", 1)[0] + "\n" if False else True
+    # And critically: nothing got executed. If the eval had parsed
+    # the values as commands, the embedded ``;echo PWNED-id`` would
+    # have produced an extra stdout line of its own (the output of
+    # the ``echo`` command) BEFORE our printf lines. With shlex.quote,
+    # the assignments are atomic and only our two printf lines
+    # appear — exactly 2 lines total. (Round-3 fix: the previous form
+    # ``"PWNED-id" not in result.stdout`` was wrong because the
+    # literal data byte-string contains "PWNED-id" verbatim. The
+    # length check distinguishes data round-trip from command
+    # execution. The earlier ``... if False else True`` was a
+    # no-op assertion — Copilot caught the typo.)
+    assert len(lines) == 2
     # The ID line should be the literal adversarial_id, NOT "id"
     # alone (which is what `id;echo PWNED-id` would produce on
     # unquoted eval).
