@@ -2483,7 +2483,16 @@ fi
 # depend on the Gitea repo being created before they can be configured.
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
     echo "  Configuring Gitea..."
+    # Tempfile holds the eval-able `GITEA_TOKEN=<sha1>` line. chmod
+    # 600 explicitly (mktemp's mode is umask-dependent — CI runners
+    # often run with umask 022 → 644 by default, which would let
+    # any other process on the runner read the token). Register
+    # with the global RUNNER_CLEANUP_PATHS list so an interrupt
+    # between mktemp and the explicit `rm -f` below still triggers
+    # removal via the script's EXIT trap (see L324-331).
     GITEA_OUT=$(mktemp)
+    chmod 600 "$GITEA_OUT"
+    echo "$GITEA_OUT" >> "$RUNNER_CLEANUP_PATHS"
     GITEA_RC=0
     # Pass env vars via the `uv run` line, NOT via the leading `echo` —
     # otherwise the assignments are scoped only to `echo` and the python

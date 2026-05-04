@@ -1097,20 +1097,26 @@ def test_run_configure_gitea_mirror_mode_skips_repo_and_collaborator() -> None:
 
 @responses.activate
 def test_run_configure_gitea_not_ready_returns_failed_admin() -> None:
-    """Health endpoint never 200 → admin.status=='failed', no token."""
+    """Health endpoint never 200 → admin.status=='failed', no token.
+
+    Uses a non-default admin_username so the regression test catches
+    the Copilot-round-2 finding: the early-return path on health-check
+    timeout previously hardcoded ``name="admin"`` even when the
+    operator configured a different admin username.
+    """
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=503)
 
     ssh = _make_ssh([(0, "RESULT db_pw=synced\n")])
 
     result = run_configure_gitea(
-        _make_config(),
+        _make_config(admin_username="custom-admin-name"),
         base_url=BASE_URL,
         ssh=ssh,
         admin_email="a@b.c",
         gitea_user_email=None,
         gitea_user_password=None,
         repo_name="nexus-foo",
-        gitea_repo_owner="admin",
+        gitea_repo_owner="custom-admin-name",
         is_mirror_mode=False,
         enabled_services=["jupyter"],
         ready_timeout_s=0.2,
@@ -1120,6 +1126,9 @@ def test_run_configure_gitea_not_ready_returns_failed_admin() -> None:
 
     assert result.is_success is False
     assert result.admin.status == "failed"
+    # Round-2 regression: name must be the configured admin_username,
+    # not the literal "admin".
+    assert result.admin.name == "custom-admin-name"
     assert result.token is None
     assert result.restart_services == ("jupyter",)
 

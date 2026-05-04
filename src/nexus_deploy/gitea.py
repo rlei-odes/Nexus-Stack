@@ -763,7 +763,11 @@ def run_configure_gitea(
     if not rest.wait_ready(timeout_s=ready_timeout_s):
         return GiteaResult(
             db_pw_synced=db_pw_synced,
-            admin=CreateUserResult(name="admin", status="failed", detail="gitea not ready"),
+            # Use the configured admin_username (Copilot round 2) — not
+            # the literal "admin" — so CreateUserResult.name carries
+            # the same value across all paths regardless of how the
+            # operator named the admin user.
+            admin=CreateUserResult(name=admin_username, status="failed", detail="gitea not ready"),
             user=None,
             token=None,
             repo=None,
