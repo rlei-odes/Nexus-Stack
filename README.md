@@ -26,7 +26,7 @@
 ## What This Does
 
 ### Infrastructure
-- **Hetzner Cloud Server** - ARM-based (cax11/cax31) running Ubuntu 24.04
+- **Hetzner Cloud Server** - x86 (`cpx22`/`cpx32`) running Ubuntu 24.04 — defaults switched permanently from ARM in 2026-05 because (a) Hetzner ARM EU capacity has been unavailable since 2026-01-22, and (b) Hetzner's 2025+ pricing flipped — ARM is now ~40% more expensive than the equivalent x86 spec. ARM (`cax`) variants are still supported via the `SERVER_TYPE` repo variable for users who want to override the default
 - **Cloudflare Tunnel** - All traffic routed through Cloudflare, zero open ports
 - **Cloudflare Access** - Email OTP authentication for all services
 - **Remote State** - OpenTofu state stored in Cloudflare R2

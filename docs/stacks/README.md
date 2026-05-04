@@ -84,7 +84,7 @@ Images are pinned to **major versions** where supported for automatic security p
 | RisingWave | `risingwavelabs/risingwave` | `v2.8.1` | Exact ¹ |
 | SFTPGo | `drakkan/sftpgo` | `v2.7.1` | Exact ¹ |
 | Sling | `nexus-sling` (custom build) | `1.5.13` | Exact ³ |
-| Soda Core | `soda-core-arm64` | `3.3.7` | Exact ³ |
+| Soda Core | `soda-core` | `3.3.7` | Exact ³ |
 | Spark Master | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Spark Worker | `nexus-spark` | `4.1.1-python3.13` | Exact ³ |
 | Superset | `apache/superset` | `6.0.0` | Exact ¹ |
