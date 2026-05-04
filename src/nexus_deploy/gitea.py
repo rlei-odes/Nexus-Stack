@@ -223,6 +223,21 @@ class CreateRepoResult:
 
 
 @dataclass(frozen=True)
+class OAuthAppResult:
+    """Result of creating a Gitea OAuth2 application.
+
+    Used for Woodpecker CI's Gitea-as-forge OAuth flow (Modul 2.2f).
+    ``client_id`` and ``client_secret`` are emitted via stdout in
+    eval-able form so deploy.sh can inject them into Woodpecker's
+    ``.env`` before the container starts.
+    """
+
+    name: str
+    client_id: str
+    client_secret: str
+
+
+@dataclass(frozen=True)
 class GiteaResult:
     """Aggregate of all Gitea-config sub-steps.
 
@@ -748,6 +763,105 @@ class GiteaClient:
             return False
         return resp.status_code in (204, 422)
 
+    # -------------------------------------------------------------------
+    # OAuth2 application management (Woodpecker CI integration, Modul 2.2f)
+    # -------------------------------------------------------------------
+
+    def list_oauth_apps(self) -> list[dict[str, object]]:
+        """``GET /api/v1/user/applications/oauth2`` — list current user's apps.
+
+        Returns the JSON array verbatim (each entry has ``id``, ``name``,
+        ``redirect_uris``, etc. — but NO ``client_secret``; Gitea only
+        returns the secret on initial create). Empty list if the user
+        has no OAuth apps. Raises :class:`GiteaError` on transport /
+        non-200 — we don't try to recover here; caller decides whether
+        to skip the OAuth setup or hard-fail.
+        """
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/v1/user/applications/oauth2",
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise GiteaError(f"list_oauth_apps transport ({type(exc).__name__})") from exc
+        if resp.status_code != 200:
+            raise GiteaError(f"list_oauth_apps HTTP {resp.status_code}")
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise GiteaError("list_oauth_apps response was not JSON") from exc
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+
+    def delete_oauth_app(self, app_id: int) -> bool:
+        """``DELETE /api/v1/user/applications/oauth2/<id>``. 204+404 → True.
+
+        Idempotent: 404 is treated as success (the app was already gone).
+        Used to wipe a stale "Woodpecker CI" app before recreating with
+        a fresh client_secret on every deploy.
+        """
+        if not isinstance(app_id, int) or app_id <= 0:
+            raise GiteaError(f"delete_oauth_app: invalid app_id {app_id!r}")
+        try:
+            resp = requests.delete(
+                f"{self.base_url}/api/v1/user/applications/oauth2/{app_id}",
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout):
+            return False
+        return resp.status_code in (204, 404)
+
+    def create_oauth_app(
+        self,
+        name: str,
+        redirect_uris: list[str],
+        *,
+        confidential_client: bool = True,
+    ) -> OAuthAppResult:
+        """``POST /api/v1/user/applications/oauth2`` — create OAuth app.
+
+        Returns :class:`OAuthAppResult` with the freshly-issued
+        ``client_id`` and ``client_secret``. Gitea returns the secret
+        ONLY on this initial create (subsequent ``GET`` lists hide it),
+        so the caller must capture both values from this response and
+        persist them immediately.
+
+        Raises :class:`GiteaError` on transport / non-201 / missing
+        fields. Name + URIs are passed verbatim to Gitea; both ``name``
+        and the host portion of redirect URIs should be operator-
+        controlled (no user input), so no path-safety regex applies.
+        """
+        body = {
+            "name": name,
+            "redirect_uris": redirect_uris,
+            "confidential_client": confidential_client,
+        }
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/user/applications/oauth2",
+                json=body,
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise GiteaError(f"create_oauth_app transport ({type(exc).__name__})") from exc
+        if resp.status_code != 201:
+            raise GiteaError(f"create_oauth_app HTTP {resp.status_code}")
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise GiteaError("create_oauth_app response was not JSON") from exc
+        client_id = payload.get("client_id") if isinstance(payload, dict) else None
+        client_secret = payload.get("client_secret") if isinstance(payload, dict) else None
+        if not isinstance(client_id, str) or not client_id:
+            raise GiteaError("create_oauth_app response missing 'client_id'")
+        if not isinstance(client_secret, str) or not client_secret:
+            raise GiteaError("create_oauth_app response missing 'client_secret'")
+        return OAuthAppResult(name=name, client_id=client_id, client_secret=client_secret)
+
 
 # ---------------------------------------------------------------------------
 # Top-level orchestrator
@@ -925,3 +1039,83 @@ def run_configure_gitea(
         collaborator_added=collaborator_added,
         restart_services=_compute_restart_services(enabled_services),
     )
+
+
+def run_woodpecker_oauth_setup(
+    *,
+    base_url: str,
+    domain: str,
+    gitea_token: str,
+    admin_username: str,
+) -> tuple[OAuthAppResult | None, str]:
+    """End-to-end Woodpecker CI OAuth-app provisioning in Gitea (Modul 2.2f).
+
+    Idempotent re-run pattern:
+      1. List existing OAuth apps under the admin user.
+      2. If an app named "Woodpecker CI" already exists, DELETE it
+         (so the new client_secret-bearing create returns a fresh
+         pair — Woodpecker has no rotate-secret API, so deleting +
+         recreating is the only way to surface the secret again).
+      3. POST a fresh OAuth app with redirect URI
+         ``https://woodpecker.<domain>/authorize`` and
+         ``confidential_client=True`` (browser flow needs PKCE
+         + secret).
+      4. Return :class:`OAuthAppResult` with the new credentials.
+         The CLI handler emits these via stdout in eval-able form
+         so deploy.sh can write Woodpecker's ``.env`` before the
+         rsync + ``docker compose up -d``.
+
+    On any :class:`GiteaError`, returns ``(None, diagnostic_message)``.
+    The CLI handler routes that to rc=1 (yellow warning, deploy
+    continues without Woodpecker). Same pattern as
+    :func:`run_configure_gitea`'s ``token_error`` field.
+
+    Auth: token-bearer (the GITEA_TOKEN minted in 2.2e/2.2e-fix).
+    The list/delete/create endpoints all accept token auth as the
+    authenticated user (admin in our case).
+    """
+    if not gitea_token:
+        return None, "GITEA_TOKEN is empty"
+    _validate_path_segment(admin_username, kind="admin_username")
+
+    # ``with_token`` returns a new client that uses token-auth instead
+    # of basic-auth. The placeholder password is never sent — see
+    # :meth:`GiteaClient.with_token`.
+    client = GiteaClient(
+        base_url=base_url,
+        admin_username=admin_username,
+        admin_password="placeholder-not-used",  # noqa: S106
+    ).with_token(gitea_token)
+
+    try:
+        apps = client.list_oauth_apps()
+    except GiteaError as exc:
+        # str(exc) is safe — GiteaError messages are constructed from
+        # fixed format strings + status codes only, never response bodies.
+        return None, f"list_oauth_apps: {exc}"
+
+    # Find any existing app named exactly "Woodpecker CI" — Gitea
+    # allows multiple apps with the same name, so iterate the full
+    # list rather than break on first match.
+    for app in apps:
+        if app.get("name") == "Woodpecker CI":
+            app_id = app.get("id")
+            if isinstance(app_id, int):
+                # Best-effort delete — failure here doesn't block the
+                # create below (Gitea allows duplicate names; if delete
+                # fails and create succeeds we end up with two apps
+                # which is harmless but a bit untidy).
+                client.delete_oauth_app(app_id)
+
+    redirect_uri = f"https://woodpecker.{domain}/authorize"
+    try:
+        return (
+            client.create_oauth_app(
+                "Woodpecker CI",
+                [redirect_uri],
+                confidential_client=True,
+            ),
+            "",
+        )
+    except GiteaError as exc:
+        return None, f"create_oauth_app: {exc}"

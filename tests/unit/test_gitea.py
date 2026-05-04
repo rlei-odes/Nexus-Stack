@@ -35,12 +35,14 @@ from nexus_deploy.gitea import (
     GiteaClient,
     GiteaError,
     GiteaResult,
+    OAuthAppResult,
     _compute_restart_services,
     _escape_sql_string_literal,
     _parse_admin_list_for_user,
     _render_db_pw_sync_script,
     _validate_path_segment,
     run_configure_gitea,
+    run_woodpecker_oauth_setup,
 )
 
 BASE_URL = "http://localhost:3300"
@@ -1416,6 +1418,512 @@ def test_round_8_cli_omits_token_line_when_token_none(
     # "silent token-mint failure" debugging blind spot.
     assert "token: NOT minted" in err
     assert "CLI rc=1: simulated production failure" in err
+
+
+# ---------------------------------------------------------------------------
+# OAuth2 application management (Modul 2.2f Woodpecker integration)
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_list_oauth_apps_returns_array() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[{"id": 1, "name": "Woodpecker CI"}, {"id": 2, "name": "other"}],
+    )
+    apps = _client(token="t").list_oauth_apps()
+    assert len(apps) == 2
+    assert apps[0]["name"] == "Woodpecker CI"
+
+
+@responses.activate
+def test_list_oauth_apps_returns_empty_on_no_apps() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[],
+    )
+    assert _client(token="t").list_oauth_apps() == []
+
+
+@responses.activate
+def test_list_oauth_apps_raises_on_500() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=500,
+    )
+    with pytest.raises(GiteaError, match="HTTP 500"):
+        _client(token="t").list_oauth_apps()
+
+
+@responses.activate
+def test_delete_oauth_app_204_returns_true() -> None:
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        status=204,
+    )
+    assert _client(token="t").delete_oauth_app(42) is True
+
+
+@responses.activate
+def test_delete_oauth_app_404_returns_true() -> None:
+    """Idempotent — 404 (already gone) treated as success."""
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/99",
+        status=404,
+    )
+    assert _client(token="t").delete_oauth_app(99) is True
+
+
+@responses.activate
+def test_delete_oauth_app_403_returns_false() -> None:
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        status=403,
+    )
+    assert _client(token="t").delete_oauth_app(42) is False
+
+
+def test_delete_oauth_app_rejects_invalid_id() -> None:
+    with pytest.raises(GiteaError, match="invalid app_id"):
+        _client(token="t").delete_oauth_app(0)
+    with pytest.raises(GiteaError, match="invalid app_id"):
+        _client(token="t").delete_oauth_app(-1)
+
+
+@responses.activate
+def test_create_oauth_app_returns_credentials_on_201() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={
+            "id": 1,
+            "name": "Woodpecker CI",
+            "client_id": "client-123",
+            "client_secret": "secret-456",
+        },
+    )
+    result = _client(token="t").create_oauth_app(
+        "Woodpecker CI", ["https://woodpecker.example.com/authorize"]
+    )
+    assert result.name == "Woodpecker CI"
+    assert result.client_id == "client-123"
+    assert result.client_secret == "secret-456"
+
+
+@responses.activate
+def test_create_oauth_app_raises_on_missing_client_id() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_secret": "secret-456"},  # client_id missing
+    )
+    with pytest.raises(GiteaError, match="client_id"):
+        _client(token="t").create_oauth_app("Woodpecker CI", ["https://x"])
+
+
+@responses.activate
+def test_create_oauth_app_raises_on_missing_client_secret() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_id": "client-123"},  # client_secret missing
+    )
+    with pytest.raises(GiteaError, match="client_secret"):
+        _client(token="t").create_oauth_app("Woodpecker CI", ["https://x"])
+
+
+@responses.activate
+def test_create_oauth_app_raises_on_4xx() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=422,
+        json={"message": "redirect URIs invalid"},
+    )
+    with pytest.raises(GiteaError, match="HTTP 422"):
+        _client(token="t").create_oauth_app("Woodpecker CI", ["not-a-url"])
+
+
+@responses.activate
+def test_create_oauth_app_sends_full_body() -> None:
+    """Verifies the POST body shape includes name + redirect_uris + confidential."""
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_id": "c", "client_secret": "s"},
+    )
+    _client(token="t").create_oauth_app(
+        "Woodpecker CI",
+        ["https://woodpecker.foo.com/authorize"],
+        confidential_client=True,
+    )
+    body = json.loads(responses.calls[0].request.body)  # type: ignore[arg-type]
+    assert body == {
+        "name": "Woodpecker CI",
+        "redirect_uris": ["https://woodpecker.foo.com/authorize"],
+        "confidential_client": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# run_woodpecker_oauth_setup orchestrator
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_woodpecker_oauth_happy_path_creates_fresh_app() -> None:
+    """No existing apps → POST creates new → returns OAuthAppResult."""
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[],
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_id": "fresh-id", "client_secret": "fresh-secret"},
+    )
+    result, err = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert err == ""
+    assert result is not None
+    assert result.client_id == "fresh-id"
+    assert result.client_secret == "fresh-secret"
+
+
+@responses.activate
+def test_woodpecker_oauth_idempotent_deletes_existing_then_creates() -> None:
+    """Existing "Woodpecker CI" → DELETE → fresh POST → fresh secret.
+
+    Critical because Gitea has no rotate-secret API: re-deploying
+    must surface a NEW client_secret (the old one is likely stale
+    in Woodpecker's persisted state) by deleting + recreating.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[
+            {"id": 1, "name": "other-app"},
+            {"id": 42, "name": "Woodpecker CI"},
+        ],
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        status=204,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_id": "new-id", "client_secret": "new-secret"},
+    )
+    result, err = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert err == ""
+    assert result is not None
+    assert result.client_id == "new-id"
+    # Verify the call sequence: GET → DELETE → POST
+    assert [c.request.method for c in responses.calls] == ["GET", "DELETE", "POST"]
+
+
+@responses.activate
+def test_woodpecker_oauth_redirect_uri_built_from_domain() -> None:
+    """The redirect URI must be `https://woodpecker.<domain>/authorize`."""
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[],
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_id": "c", "client_secret": "s"},
+    )
+    run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="nexus-stack.ch",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    body = json.loads(responses.calls[1].request.body)  # type: ignore[arg-type]
+    assert body["redirect_uris"] == ["https://woodpecker.nexus-stack.ch/authorize"]
+
+
+@responses.activate
+def test_woodpecker_oauth_returns_diagnostic_on_list_failure() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=503,
+    )
+    result, err = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "list_oauth_apps" in err
+    assert "503" in err
+
+
+@responses.activate
+def test_woodpecker_oauth_returns_diagnostic_on_create_failure() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[],
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=422,
+    )
+    result, err = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "create_oauth_app" in err
+
+
+def test_woodpecker_oauth_rejects_empty_token() -> None:
+    """Empty GITEA_TOKEN → no API call, return diagnostic immediately."""
+    result, err = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "GITEA_TOKEN is empty" in err
+
+
+def test_woodpecker_oauth_rejects_unsafe_admin_username() -> None:
+    """Path-safety on admin_username (defence in depth)."""
+    with pytest.raises(GiteaError, match="unsafe"):
+        run_woodpecker_oauth_setup(
+            base_url=BASE_URL,
+            domain="example.com",
+            gitea_token="tok",
+            admin_username="admin;rm -rf /",
+        )
+
+
+@responses.activate
+def test_woodpecker_oauth_token_in_authorization_header_not_argv() -> None:
+    """R7 — token bearer auth lives in Authorization header only."""
+    secret_token = "do-not-leak-this-token"
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[],
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=201,
+        json={"client_id": "c", "client_secret": "s"},
+    )
+    run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token=secret_token,
+        admin_username="admin",
+    )
+    for call in responses.calls:
+        # Token must NOT be in URL or body
+        assert secret_token not in (call.request.url or "")
+        body = call.request.body or b""
+        body_text = body.decode("utf-8") if isinstance(body, bytes) else body
+        assert secret_token not in body_text
+        # Token IS in the Authorization header in `token <sha>` form
+        assert call.request.headers.get("Authorization") == f"token {secret_token}"
+
+
+# ---------------------------------------------------------------------------
+# CLI handler for `gitea woodpecker-oauth`
+# ---------------------------------------------------------------------------
+
+
+def test_cli_woodpecker_oauth_unknown_args_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth(["--bogus"])
+    assert rc == 2
+    assert "unknown args" in capsys.readouterr().err
+
+
+def test_cli_woodpecker_oauth_missing_env_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("DOMAIN", raising=False)
+    monkeypatch.delenv("GITEA_TOKEN", raising=False)
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "DOMAIN" in err
+    assert "GITEA_TOKEN" in err
+
+
+def _setup_fake_ssh(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    fake_ssh = MagicMock()
+    fake_ssh.__enter__ = MagicMock(return_value=fake_ssh)
+    fake_ssh.__exit__ = MagicMock(return_value=None)
+    fake_pf = MagicMock()
+    fake_pf.__enter__ = MagicMock(return_value=12345)
+    fake_pf.__exit__ = MagicMock(return_value=None)
+    fake_ssh.port_forward = MagicMock(return_value=fake_pf)
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda host: fake_ssh)
+    return fake_ssh
+
+
+def test_cli_woodpecker_oauth_emits_eval_able_stdout_on_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    _setup_fake_ssh(monkeypatch)
+
+    fake_result = OAuthAppResult(
+        name="Woodpecker CI", client_id="client-abc", client_secret="secret-xyz"
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.run_woodpecker_oauth_setup",
+        lambda **kwargs: (fake_result, ""),
+    )
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "WOODPECKER_GITEA_CLIENT=client-abc" in out
+    assert "WOODPECKER_GITEA_SECRET=secret-xyz" in out
+
+
+def test_cli_woodpecker_oauth_returns_rc_1_on_failure_with_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+    _setup_fake_ssh(monkeypatch)
+
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.run_woodpecker_oauth_setup",
+        lambda **kwargs: (None, "list_oauth_apps: HTTP 503"),
+    )
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 1
+    captured = capsys.readouterr()
+    # No eval-able stdout on failure — deploy.sh's existing .env values
+    # stay untouched.
+    assert "WOODPECKER_GITEA_CLIENT" not in captured.out
+    assert "WOODPECKER_GITEA_SECRET" not in captured.out
+    # Diagnostic on stderr
+    assert "NOT created" in captured.err
+    assert "list_oauth_apps: HTTP 503" in captured.err
+
+
+def test_cli_woodpecker_oauth_ssh_tunnel_failure_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+
+    from nexus_deploy.ssh import SSHError
+
+    class _BoomSSH:
+        def __init__(self, _host: str) -> None: ...
+        def __enter__(self) -> _BoomSSH:
+            return self
+
+        def __exit__(self, *_: Any) -> None: ...
+        def port_forward(self, *_a: Any, **_k: Any) -> Any:
+            raise SSHError("ssh tunnel boom")
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _BoomSSH)
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "ssh tunnel" in captured.err
+    assert "WOODPECKER_GITEA_CLIENT" not in captured.out
+
+
+def test_cli_woodpecker_oauth_unexpected_exception_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+    _setup_fake_ssh(monkeypatch)
+
+    secret_in_msg = "secret-in-exception-XYZZY"
+
+    def boom(**_kwargs: Any) -> Any:
+        raise RuntimeError(secret_in_msg)
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_woodpecker_oauth_setup", boom)
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Type name only — message body MUST NOT leak.
+    assert "RuntimeError" in err
+    assert secret_in_msg not in err
+
+
+def test_cli_dispatcher_routes_woodpecker_oauth(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["nexus_deploy", "gitea", "woodpecker-oauth", "--bogus"])
+    from nexus_deploy.__main__ import main
+
+    rc = main()
+    assert rc == 2
+    assert "woodpecker-oauth" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
