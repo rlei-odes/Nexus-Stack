@@ -226,7 +226,7 @@ Stream + batch processing, two databases, an orchestrator, a notebook, full obse
 
 ## Resource considerations
 
-The default Hetzner server is **`cax11` (2 vCPU, 4 GB RAM, ARM64)** which is plenty for ~5–10 lightweight services. For heavier setups, switch to **`cax31` (4 vCPU, 8 GB RAM)** or higher in the Control Plane configuration.
+The default Hetzner server is **`cpx32` (4 vCPU, 8 GB RAM, x86)** which handles ~10–15 typical services comfortably. For lighter setups, switch to **`cpx22` (2 vCPU, 4 GB RAM)** to save cost; for heavier workloads, `cpx41` (8 vCPU, 16 GB) or larger in the Control Plane configuration. ARM (`cax`) variants are still supported via the `SERVER_TYPE` repo variable but no longer the default — see the project README for the rationale.
 
 Memory-hungry stacks to watch out for:
 

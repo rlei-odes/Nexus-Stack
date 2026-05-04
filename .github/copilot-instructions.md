@@ -14,12 +14,12 @@ Review PRs with the following priorities, in this order.
 - `*.tfvars` and `terraform.tfstate` are gitignored. Flag any attempt to track them.
 - Service-account naming must use the `nexus-` prefix to avoid default-username guessing (`nexus-postgres`, not `admin` or `postgres`). Flag violations.
 
-## 2. ARM64 compatibility
+## 2. Image arch compatibility
 
-Nexus-Stack runs on ARM64 servers (cax31 = Ampere Altra). Every Docker image added under `stacks/` must support `linux/arm64`. Flag any stack that pins an image tag that only has `linux/amd64` manifest listings. If the review can't confirm ARM64 support, ask the author to either:
-- swap for an ARM64-capable image, or
-- provide a custom `Dockerfile` that builds from an ARM64 base (Python, Node, JDK), or
-- document ARM64 absence as a known limitation with a tracking issue.
+Nexus-Stack defaults to **x86 servers** (`cpx32`) since 2026-05 — switched permanently from ARM (`cax31`) for two durable reasons: (a) Hetzner ARM EU capacity has been unavailable for an extended period, and (b) Hetzner pricing flipped — ARM is now ~40% more expensive than equivalent x86. Every Docker image added under `stacks/` must support `linux/amd64`. Multi-arch (amd64 + arm64) is strongly preferred so the ARM revert path stays open and contributors can build/test on Apple Silicon without an emulator. Flag any stack that pins an image tag with no `linux/amd64` manifest listing. If the review can't confirm amd64 support, ask the author to either:
+- swap for a multi-arch image, or
+- provide a custom `Dockerfile` that builds from a multi-arch base (Python, Node, JDK, Debian-slim), or
+- document the arch limitation as a known limitation with a tracking issue.
 
 ## 3. Docker image version pinning
 

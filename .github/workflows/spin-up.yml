@@ -267,7 +267,7 @@ jobs:
         run: |
           # Stack config (emails from secrets)
           cat > tofu/stack/config.tfvars << EOF
-          server_type     = "cax31"
+          server_type     = "${{ vars.SERVER_TYPE || 'cpx32' }}"
           server_location = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
           server_image    = "ubuntu-24.04"
 
@@ -561,7 +561,7 @@ jobs:
           fi
           
           # Server config values
-          SERVER_TYPE="cax31"
+          SERVER_TYPE="${{ vars.SERVER_TYPE || 'cpx32' }}"
           SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'fsn1' }}"
           
           # Escape values for safe SQL insertion (single quotes doubled)
