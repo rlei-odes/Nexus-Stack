@@ -252,7 +252,7 @@ class CreateRepoResult:
 
 
 MirrorStatus = Literal["created", "already_exists", "failed"]
-ForkStatus = Literal["created", "already_exists", "skipped", "failed"]
+ForkStatus = Literal["created", "already_exists", "failed"]
 
 
 @dataclass(frozen=True)
@@ -278,9 +278,14 @@ class ForkResult:
 
     Only the first iteration's fork is created (matching the legacy
     bash's ``FORKED_WORKSPACE`` flag) — there's exactly one workspace
-    repo per stack. ``skipped`` is the no-user-configured branch
-    (``GITEA_USER_USERNAME`` empty); ``failed`` covers fork-creation
-    HTTP failures.
+    repo per stack. ``status`` is one of ``created`` (POST 202),
+    ``already_exists`` (POST 409 — fork survived a prior deploy),
+    or ``failed`` (HTTP non-2xx-non-409, transport, or temp-token
+    mint failed before the fork POST could run).
+
+    The no-user-configured branch (``GITEA_USER_USERNAME`` empty)
+    leaves :class:`MirrorSetupResult.fork` as ``None`` — no
+    ``ForkResult`` is constructed at all on that path.
     """
 
     name: str
