@@ -2534,31 +2534,36 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     # --- Workspace seed + service restart (post-token, non-mirror only) ---
     if [ -n "${GITEA_TOKEN:-}" ]; then
 
+        # Seed examples/workspace-seeds/ → Gitea repo via the migrated
+        # nexus_deploy.seeder CLI (Phase 2 Modul 2.1, #512). Defined
+        # UNCONDITIONALLY (outside the GH_MIRROR_REPOS branch) so the
+        # mirror-mode block later in this script can call it for
+        # per-user forks too — Modul 2.2f will migrate that block.
+        # Args default to $GITEA_REPO_OWNER/$REPO_NAME (matches the
+        # legacy no-arg call site at L3403). Pass explicit owner/repo
+        # when looping over multiple repos (e.g. mirror forks).
+        seed_workspace_files() {
+            local owner="${1:-$GITEA_REPO_OWNER}" repo="${2:-$REPO_NAME}"
+            local SEED_DIR="$PROJECT_ROOT/examples/workspace-seeds"
+            if [ ! -d "$SEED_DIR" ] || [ -z "$GITEA_TOKEN" ] || [ -z "$repo" ] || [ -z "$owner" ]; then
+                return 0
+            fi
+            echo "  Seeding workspace files into ${owner}/${repo}..."
+            local SEED_RC=0
+            GITEA_TOKEN="$GITEA_TOKEN" \
+                uv run --quiet --project "$PROJECT_ROOT" \
+                python -m nexus_deploy seed \
+                --repo "$owner/$repo" \
+                --root "$SEED_DIR" \
+                || SEED_RC=$?
+            case "$SEED_RC" in
+                0) ;;
+                1) echo -e "${YELLOW}  ⚠ Workspace seed had partial failures (continuing)${NC}" ;;
+                *) echo -e "${RED}  ✗ Workspace seed transport failure (rc=$SEED_RC); aborting${NC}"; exit 1 ;;
+            esac
+        }
+
         if [ -z "${GH_MIRROR_REPOS:-}" ]; then
-            # Seed examples/workspace-seeds/ → workspace repo via the migrated
-            # nexus_deploy.seeder CLI (Phase 2 Modul 2.1, #512). Kept as a
-            # function so mirror-mode can call it for forks too (still
-            # in deploy.sh — separate Modul 2.2f migration).
-            seed_workspace_files() {
-                local owner="$1" repo="$2"
-                local SEED_DIR="$PROJECT_ROOT/examples/workspace-seeds"
-                if [ ! -d "$SEED_DIR" ] || [ -z "$GITEA_TOKEN" ] || [ -z "$repo" ] || [ -z "$owner" ]; then
-                    return 0
-                fi
-                echo "  Seeding workspace files into ${owner}/${repo}..."
-                local SEED_RC=0
-                GITEA_TOKEN="$GITEA_TOKEN" \
-                    uv run --quiet --project "$PROJECT_ROOT" \
-                    python -m nexus_deploy seed \
-                    --repo "$owner/$repo" \
-                    --root "$SEED_DIR" \
-                    || SEED_RC=$?
-                case "$SEED_RC" in
-                    0) ;;
-                    1) echo -e "${YELLOW}  ⚠ Workspace seed had partial failures (continuing)${NC}" ;;
-                    *) echo -e "${RED}  ✗ Workspace seed transport failure (rc=$SEED_RC); aborting${NC}"; exit 1 ;;
-                esac
-            }
             seed_workspace_files "$GITEA_REPO_OWNER" "$REPO_NAME"
 
             # Restart git-integrated services. Python emitted a CSV via
