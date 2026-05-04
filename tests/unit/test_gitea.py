@@ -850,6 +850,100 @@ def test_run_configure_gitea_admin_does_not_exist_creates() -> None:
 
 
 @responses.activate
+def test_create_admin_already_exists_falls_back_to_sync_password() -> None:
+    """Defence in depth: if list_admin_users returns empty (false negative —
+    e.g. transient ssh+docker exec failure), CREATE runs and may report
+    "already exists" from Gitea. Without a follow-up sync, the admin
+    password drift stays and the subsequent REST token mint 401s.
+    The orchestrator now falls back to sync_password automatically.
+
+    Regression test for Copilot round 1.
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/admin/tokens",
+        status=201,
+        json={"sha1": "tok"},
+    )
+
+    ssh = _make_ssh(
+        [
+            (0, "RESULT db_pw=synced\n"),
+            (0, ""),  # admin list — empty (false negative)
+            (0, "user already exists\n"),  # create_admin → already_exists
+            (0, ""),  # FALLBACK: sync_password runs and succeeds
+        ]
+    )
+
+    result = run_configure_gitea(
+        _make_config(),
+        base_url=BASE_URL,
+        ssh=ssh,
+        admin_email="a@b.c",
+        gitea_user_email=None,
+        gitea_user_password=None,
+        repo_name="nexus-foo",
+        gitea_repo_owner="admin",
+        is_mirror_mode=True,  # skip repo to keep test focused
+        enabled_services=[],
+        ready_timeout_s=1.0,
+        db_sync_attempts=1,
+        db_sync_interval_s=0.01,
+    )
+
+    # Final admin status must be "synced" (not "already_exists") —
+    # the fallback ran and the result was overwritten.
+    assert result.admin.status == "synced"
+    # 4 ssh.run_script calls: db_sync, list, create, sync_password
+    assert ssh.run_script.call_count == 4
+
+
+@responses.activate
+def test_create_user_already_exists_falls_back_to_sync_password() -> None:
+    """Same fallback as admin — protects against the false-negative
+    list path for the regular user (Copilot round 1).
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/admin/tokens",
+        status=201,
+        json={"sha1": "tok"},
+    )
+
+    ssh = _make_ssh(
+        [
+            (0, "RESULT db_pw=synced\n"),
+            (0, _ADMIN_LIST_FIXTURE),  # admin exists
+            (0, ""),  # admin sync_password
+            (0, ""),  # user list — empty (false negative)
+            (0, "user already exists\n"),  # create_user → already_exists
+            (0, ""),  # FALLBACK: sync_password
+        ]
+    )
+
+    result = run_configure_gitea(
+        _make_config(),
+        base_url=BASE_URL,
+        ssh=ssh,
+        admin_email="a@b.c",
+        gitea_user_email="stefan.koch@hslu.ch",
+        gitea_user_password="userpw",
+        repo_name="nexus-foo",
+        gitea_repo_owner="admin",
+        is_mirror_mode=True,
+        enabled_services=[],
+        ready_timeout_s=1.0,
+        db_sync_attempts=1,
+        db_sync_interval_s=0.01,
+    )
+
+    assert result.user is not None
+    assert result.user.status == "synced"
+
+
+@responses.activate
 def test_round_2_legacy_email_collision_triggers_patch() -> None:
     """Admin row's email == GITEA_USER_EMAIL → PATCH fires before sync."""
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)

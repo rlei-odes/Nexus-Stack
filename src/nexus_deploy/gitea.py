@@ -222,8 +222,15 @@ class GiteaResult:
         - token must exist (if expected — i.e. core happy path)
         - repo (if present) must be ``created`` or ``already_exists``
 
-        deploy.sh maps False → rc=1 (yellow warn, continue). The token
-        IS in stdout regardless so downstream seed/kestra still work.
+        deploy.sh maps False → rc=1 (yellow warn, continue). The CLI
+        only emits ``GITEA_TOKEN=`` to stdout when ``token is not None``
+        — so on partial-failure paths where the token DID get minted
+        (e.g. legacy email PATCH failed but token + repo OK), deploy.sh
+        captures the token via ``eval`` and downstream seed/kestra
+        still work; on paths where token is None (token-mint failed)
+        is_success is False AND no token line is emitted, so deploy.sh
+        sees rc=1 but no `$GITEA_TOKEN`, and the seed/kestra blocks
+        skip themselves on the empty-token guard.
         """
         if self.admin.status == "failed":
             return False
@@ -328,10 +335,10 @@ class GiteaCli:
         return result.stdout if result.returncode == 0 else ""
 
     def create_admin(self, username: str, password: str, email: str) -> CreateUserResult:
-        return self._create_user(username, password, email, is_admin=True, label="admin")
+        return self._create_user(username, password, email, is_admin=True)
 
     def create_user(self, username: str, password: str, email: str) -> CreateUserResult:
-        return self._create_user(username, password, email, is_admin=False, label="user")
+        return self._create_user(username, password, email, is_admin=False)
 
     def _create_user(
         self,
@@ -340,7 +347,6 @@ class GiteaCli:
         email: str,
         *,
         is_admin: bool,
-        label: str,
     ) -> CreateUserResult:
         _validate_path_segment(username, kind="username")
         # email is not a URL segment but still feed via shlex.quote
@@ -358,17 +364,21 @@ class GiteaCli:
         result = self.ssh.run_script(script, check=False, timeout=30.0)
         text = result.stdout
         # deploy.sh L2600 / L2659: success substrings.
+        # ``CreateUserResult.name`` is always the real username (Copilot
+        # round 1) — using a role label ("admin"/"user") here while
+        # ``sync_password`` returns the actual username made the field
+        # semantics inconsistent and confused downstream reporting.
         text_lc = text.lower()
         if any(kw in text_lc for kw in ("created", "success", "new user")):
-            return CreateUserResult(name=label, status="created")
+            return CreateUserResult(name=username, status="created")
         # Gitea returns "user already exists" / "email already in use" on
         # collision — both route to ``already_exists`` so the caller can
         # follow up with a sync_password (which is idempotent) instead of
         # treating it as a failure.
         if "already" in text_lc:
-            return CreateUserResult(name=label, status="already_exists")
+            return CreateUserResult(name=username, status="already_exists")
         return CreateUserResult(
-            name=label,
+            name=username,
             status="failed",
             detail=text.strip()[:200] if text else "(no output)",
         )
@@ -777,6 +787,16 @@ def run_configure_gitea(
         admin_result = cli.sync_password(admin_username, admin_password)
     else:
         admin_result = cli.create_admin(admin_username, admin_password, admin_email)
+        # CREATE returns ``already_exists`` when the existence check was a
+        # false negative (e.g. ssh+docker exec failed → empty list → CREATE
+        # path → "user already exists"). Without a follow-up sync, the
+        # admin password drift stays — the subsequent REST token mint
+        # uses basic-auth with the OpenTofu-generated password and 401s.
+        # Fall back to sync_password so we converge on the desired state.
+        # Same defence-in-depth pattern as deploy.sh's rerun-tolerance,
+        # but tightened (Copilot round 1).
+        if admin_result.status == "already_exists":
+            admin_result = cli.sync_password(admin_username, admin_password)
 
     # 4. Regular user (only if email + password provided)
     user_result: CreateUserResult | None = None
@@ -789,6 +809,9 @@ def run_configure_gitea(
             user_result = cli.sync_password(user_username, gitea_user_password)
         else:
             user_result = cli.create_user(user_username, gitea_user_password, gitea_user_email)
+            # Same already_exists → sync_password fallback as for admin.
+            if user_result.status == "already_exists":
+                user_result = cli.sync_password(user_username, gitea_user_password)
 
     # 5. Token (REST, basic-auth)
     token: str | None = None

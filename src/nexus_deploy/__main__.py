@@ -821,10 +821,13 @@ def _gitea_configure(args: list[str]) -> int:
     coordinates from environment variables:
 
     - ``ADMIN_EMAIL`` — admin's email
-    - ``GITEA_USER_EMAIL`` (optional) — regular user's email; if set,
-      the user will be created/synced. Also drives the legacy
-      email-collision PATCH check on the admin row.
-    - ``GITEA_USER_PASS`` (optional) — required iff GITEA_USER_EMAIL set
+    - ``GITEA_USER_EMAIL`` (optional) — regular user's email. Drives the
+      legacy email-collision PATCH check on the admin row. The user is
+      created/synced ONLY when both this AND ``GITEA_USER_PASS`` are set
+      — if either is missing the user-create/sync branch is silently
+      skipped (mirrors deploy.sh L2617's `[ -n "$GITEA_USER_EMAIL" ] &&
+      [ -n "$GITEA_USER_PASS" ]` guard).
+    - ``GITEA_USER_PASS`` (optional) — see ``GITEA_USER_EMAIL`` above
     - ``REPO_NAME`` — workspace repo name (e.g. nexus-<slug>-gitea)
     - ``GITEA_REPO_OWNER`` — owner of the workspace repo
     - ``ENABLED_SERVICES`` — comma-or-space list driving the
