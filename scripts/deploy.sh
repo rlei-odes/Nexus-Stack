@@ -206,11 +206,16 @@ uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy setup ensure-jq
 
 PERSISTENT_VOLUME_ID=$(cd "$TOFU_DIR" && tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
+# Initialize MOUNT_RC=0 BEFORE the command (Round-3 PR #524 finding):
+# `cmd || MOUNT_RC=$?` only assigns on failure, so a stale value
+# inherited from the outer environment would survive a successful
+# run and trigger a spurious abort in the case-block below.
+MOUNT_RC=0
 PERSISTENT_VOLUME_ID="$PERSISTENT_VOLUME_ID" \
     uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy setup mount-volume \
     || MOUNT_RC=$?
-case "${MOUNT_RC:-0}" in
+case "$MOUNT_RC" in
     0) ;;
     1) echo -e "${YELLOW}  ⚠ Persistent volume mount fallback failed (continuing)${NC}" ;;
     *) echo -e "${RED}  ✗ Persistent volume hard failure (rc=${MOUNT_RC}); aborting${NC}"; exit "${MOUNT_RC}" ;;

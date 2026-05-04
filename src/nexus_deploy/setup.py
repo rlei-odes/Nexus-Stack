@@ -54,6 +54,7 @@ five-line wrapper.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -283,13 +284,33 @@ def configure_ssh(
         dir=str(target.parent),
     )
     tmp_path = Path(tmp_str)
+    fd_owned_by_caller = True
     try:
-        os.fchmod(fd, 0o600)
+        # fchmod must run before fdopen takes ownership of the fd.
+        # If it raises (e.g. read-only filesystem on the tmp dir),
+        # we still own the fd and must close it ourselves to avoid
+        # an fd leak across long-running test runs / processes
+        # (Round-3 PR #524 finding).
+        try:
+            os.fchmod(fd, 0o600)
+        except Exception:
+            os.close(fd)
+            fd_owned_by_caller = False
+            raise
+        # Ownership transfers to the file object below; closing the
+        # context manager on success or via the outer except's
+        # bubble-up path closes the fd.
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            fd_owned_by_caller = False
             f.write(final)
         tmp_path.replace(target)
     except Exception:
         # Cleanup the tmp file on any write failure; bubble up.
+        # If we still own the fd (mkstemp succeeded but every
+        # subsequent step before fdopen failed), close it.
+        if fd_owned_by_caller:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         if tmp_path.exists():
             tmp_path.unlink()
         raise
@@ -480,11 +501,18 @@ if ! grep -q "$MOUNT_POINT" /etc/fstab; then
     FSTAB_ADDED=1
 fi
 
-# Service sub-dirs (only useful when mount succeeded; harmless on
-# unmount-failed since they'd land on the underlying root fs).
-mkdir -p "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs" "$MOUNT_POINT/gitea/db"
-chown -R 1000:1000 "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs"
-chown -R 70:70 "$MOUNT_POINT/gitea/db"
+# Service sub-dirs — gated on a successful mount (Round-3 PR #524
+# finding). Without the gate, mkdir/chown would land on the
+# underlying root filesystem when every mount stage failed,
+# silently storing user data on ephemeral storage that vanishes
+# on reboot. Better to leave the dirs absent so downstream stacks
+# fail fast with a clear "directory not found" error than to fake
+# success on the wrong filesystem.
+if [ "$MOUNTED" = "1" ]; then
+    mkdir -p "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs" "$MOUNT_POINT/gitea/db"
+    chown -R 1000:1000 "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs"
+    chown -R 70:70 "$MOUNT_POINT/gitea/db"
+fi
 
 echo "RESULT mounted=$MOUNTED fstab_added=$FSTAB_ADDED"
 """
@@ -535,8 +563,14 @@ def mount_persistent_volume(
         )
     script = _render_volume_mount_script(volume_id)
     completed = ssh.run_script(script, check=True)
-    # Forward per-step server-side stderr to local stderr (Modul-1.2
-    # Round-4 pattern). RESULT line stripped from forwarding.
+    # Forward per-step server-side output to local stderr. The remote
+    # script writes diagnostics to its own stderr (`>&2`), but
+    # ssh.run_script defaults to ``merge_stderr=True``, so they land
+    # on completed.stdout interleaved with the RESULT line. We split
+    # them: the RESULT wire-format line is parsed by Python below,
+    # everything else gets forwarded to local stderr (Modul-1.2
+    # Round-4 pattern; docstring corrected in Round-3 PR #524 since
+    # "stderr" was misleading — the actual fd is merged stdout).
     for line in completed.stdout.splitlines():
         if not line.startswith("RESULT "):
             sys.stderr.write(line + "\n")

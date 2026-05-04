@@ -482,6 +482,31 @@ def test_render_volume_mount_hostile_id_is_safely_quoted() -> None:
         assert proc.returncode == 0, proc.stderr
 
 
+def test_render_volume_mount_mkdir_chown_gated_on_mounted_flag() -> None:
+    """Round-3 PR #524: the mkdir/chown for SERVICE sub-dirs must
+    only run when MOUNTED=1. Otherwise a failed mount leaves the
+    dirs on the underlying root filesystem (ephemeral) and stacks
+    silently lose data on reboot.
+
+    Distinct from the un-gated `mkdir -p "$MOUNT_POINT"` at the top
+    of the script which just ensures the mountpoint dir itself
+    exists before `mount` is called — that's the canonical pattern
+    and must stay un-gated.
+    """
+    script = _render_volume_mount_script("12345")
+    # Find the gate. The service-dir mkdir must come AFTER the gate
+    # opener and BEFORE the matching `fi`.
+    gate_idx = script.index('if [ "$MOUNTED" = "1" ]')
+    service_mkdir_idx = script.index('mkdir -p "$MOUNT_POINT/gitea/repos"')
+    chown_idx = script.index("chown -R 1000:1000")
+    # Both inside the gate.
+    assert gate_idx < service_mkdir_idx
+    assert gate_idx < chown_idx
+    # Closing fi for the gate must come AFTER the chown commands.
+    closing_fi_after_chown = script.index("\nfi\n", chown_idx)
+    assert closing_fi_after_chown > chown_idx
+
+
 def test_render_volume_mount_emits_result_line() -> None:
     """RESULT wire-format consistent with rest of migration (R8)."""
     script = _render_volume_mount_script("12345")
