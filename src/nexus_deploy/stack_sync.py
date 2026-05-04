@@ -90,11 +90,20 @@ class RsyncResult:
     * ``failed`` — rsync exited non-zero (transport problem, permission
       issue, broken pipe), OR the service name failed path-safety.
       ``detail`` carries the rc / reason for the operator log.
+
+    ``stderr_excerpt`` carries the captured rsync stderr (truncated)
+    when status='failed' due to rsync rc≠0. Empty for the other two
+    statuses. The CLI surfaces it as an indented block after the
+    per-service ✗ line so operators see WHY the rsync failed (legacy
+    deploy.sh's ``rsync -av`` streamed its stderr directly to the
+    deploy log; ``_remote.rsync_to_remote`` uses ``capture_output=True``
+    so we have to forward it explicitly — Round-2 PR #523 finding).
     """
 
     service: str
     status: Literal["synced", "missing-local", "failed"]
     detail: str = ""
+    stderr_excerpt: str = ""
 
 
 @dataclass(frozen=True)
@@ -330,12 +339,28 @@ def rsync_enabled_stacks(
             runner(local, f"{host}:{remote_stacks_dir}/{svc}/")
         except subprocess.CalledProcessError as exc:
             # rsync's stderr for a stack-dir push contains only file
-            # paths + permission errors — no secrets. Surfacing the
-            # rc gives operators something to grep for; the captured
-            # stderr is left in CalledProcessError but not echoed
-            # here (the module-level orchestrator forwards it).
+            # paths + permission errors — no secrets. We surface it
+            # so operators can see WHY a sync failed instead of just
+            # the bare rc (Round-2 PR #523 finding: the previous
+            # version captured stderr via _remote.rsync_to_remote's
+            # capture_output=True but discarded it, leaving only
+            # `rsync rc=N` for diagnosis).
+            #
+            # Truncate at 2000 chars: enough for a screen of file-
+            # path errors but bounded so a pathological retry loop
+            # can't flood the deploy log. exc.stderr/stdout may be
+            # None if the runner was a test stub raising a bare
+            # CalledProcessError without those fields populated;
+            # default to empty string for both branches.
+            stderr = (exc.stderr or "") + (exc.stdout or "")
+            excerpt = stderr[-2000:] if len(stderr) > 2000 else stderr
             results.append(
-                RsyncResult(service=svc, status="failed", detail=f"rsync rc={exc.returncode}"),
+                RsyncResult(
+                    service=svc,
+                    status="failed",
+                    detail=f"rsync rc={exc.returncode}",
+                    stderr_excerpt=excerpt.rstrip(),
+                ),
             )
             continue
         results.append(RsyncResult(service=svc, status="synced"))

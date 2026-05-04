@@ -375,6 +375,60 @@ def test_rsync_enabled_failed_status_on_rsync_rc_nonzero(tmp_path: Path) -> None
     assert "rc=23" in results[0].detail
 
 
+def test_rsync_failed_captures_stderr_excerpt(tmp_path: Path) -> None:
+    """Round-2 PR #523: the captured rsync stderr must reach the
+    RsyncResult so the CLI can surface it in the deploy log. Without
+    this, operators get bare `rc=23` with no actionable signal."""
+    (tmp_path / "jupyter").mkdir()
+
+    def fail_rsync(_local: Path, _remote: str) -> subprocess.CompletedProcess[str]:
+        exc = subprocess.CalledProcessError(23, ["rsync"])
+        exc.stderr = "rsync: connection unexpectedly closed\nrsync error: code 23\n"
+        exc.stdout = ""
+        raise exc
+
+    results = rsync_enabled_stacks(tmp_path, ["jupyter"], rsync_runner=fail_rsync)
+    assert results[0].status == "failed"
+    assert "connection unexpectedly closed" in results[0].stderr_excerpt
+    assert "rsync error: code 23" in results[0].stderr_excerpt
+
+
+def test_rsync_failed_truncates_pathological_stderr(tmp_path: Path) -> None:
+    """Bound stderr_excerpt to ≤2000 chars so a pathological repeat-
+    line situation can't flood the deploy log. The TAIL is kept (the
+    actually-relevant final error line, not the file-by-file noise)."""
+    (tmp_path / "jupyter").mkdir()
+    huge = "rsync: file: " + ("x" * 100) + "\n"
+    payload = huge * 100  # ~10KB
+    payload += "rsync: connection broken at end\n"  # tail signal
+
+    def fail_rsync(_local: Path, _remote: str) -> subprocess.CompletedProcess[str]:
+        exc = subprocess.CalledProcessError(12, ["rsync"])
+        exc.stderr = payload
+        exc.stdout = ""
+        raise exc
+
+    results = rsync_enabled_stacks(tmp_path, ["jupyter"], rsync_runner=fail_rsync)
+    assert len(results[0].stderr_excerpt) <= 2000
+    # The tail must be preserved — that's where the actionable line lives
+    assert "connection broken at end" in results[0].stderr_excerpt
+
+
+def test_rsync_failed_handles_none_stderr_stdout(tmp_path: Path) -> None:
+    """A test stub raising bare CalledProcessError leaves exc.stderr
+    and exc.stdout as None (the default). The fallback to empty
+    string keeps stderr_excerpt empty, no AttributeError."""
+    (tmp_path / "jupyter").mkdir()
+
+    def fail_rsync(_local: Path, _remote: str) -> subprocess.CompletedProcess[str]:
+        # Note: stderr/stdout left as None (default)
+        raise subprocess.CalledProcessError(1, ["rsync"])
+
+    results = rsync_enabled_stacks(tmp_path, ["jupyter"], rsync_runner=fail_rsync)
+    assert results[0].status == "failed"
+    assert results[0].stderr_excerpt == ""
+
+
 def test_rsync_enabled_failed_on_unsafe_name(tmp_path: Path) -> None:
     """Unsafe name → status='failed' BEFORE attempting rsync.
 
@@ -674,6 +728,41 @@ def test_cli_stack_sync_unparseable_cleanup_returns_2(
     monkeypatch.setattr("nexus_deploy.__main__.run_stack_sync", fake_run)
     rc = _stack_sync(["--enabled", "jupyter", "--stacks-dir", str(tmp_path)])
     assert rc == 2
+
+
+def test_cli_stack_sync_forwards_rsync_stderr_excerpt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-2 PR #523: when an rsync failed, the CLI must print the
+    captured stderr_excerpt to stderr so operators see WHY (not just
+    `rc=23`). Each line indented under the per-service ✗ line."""
+    from nexus_deploy.__main__ import _stack_sync
+
+    (tmp_path / "jupyter").mkdir()
+
+    def fake_run(_local: Path, _enabled: list[str]) -> StackSyncResult:
+        return StackSyncResult(
+            rsync=(
+                RsyncResult(
+                    service="jupyter",
+                    status="failed",
+                    detail="rsync rc=23",
+                    stderr_excerpt="rsync: connection unexpectedly closed\nrsync error: code 23",
+                ),
+            ),
+            cleanup=CleanupResult(stopped=0, removed=0, failed=0),
+        )
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_stack_sync", fake_run)
+    rc = _stack_sync(["--enabled", "jupyter", "--stacks-dir", str(tmp_path)])
+    assert rc == 2  # all-failed → rc=2
+    err = capsys.readouterr().err
+    # Per-service ✗ line
+    assert "✗ jupyter rsync failed" in err
+    assert "rsync rc=23" in err
+    # Indented stderr block — both lines surfaced, indented
+    assert "      rsync: connection unexpectedly closed" in err
+    assert "      rsync error: code 23" in err
 
 
 def test_cli_stack_sync_rc2_on_transport_failure(

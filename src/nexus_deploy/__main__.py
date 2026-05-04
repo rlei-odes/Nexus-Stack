@@ -1402,7 +1402,13 @@ def _stack_sync(args: list[str]) -> int:
         return 2
 
     # Per-service rsync diagnostics on stderr — same pattern as the
-    # cleanup script (which streams its own diagnostics).
+    # cleanup script (which streams its own diagnostics). On rsync
+    # failure we ALSO surface the captured stderr excerpt as an
+    # indented block — Round-2 PR #523 finding: a bare "rc=23"
+    # gave operators no actionable signal, the underlying rsync
+    # error message ("Permission denied", "No space left on device",
+    # "ssh: connect to host nexus port 22: Connection refused", etc.)
+    # is what they need to see.
     for r in result.rsync:
         if r.status == "synced":
             sys.stderr.write(f"  ✓ {r.service} synced\n")
@@ -1411,6 +1417,9 @@ def _stack_sync(args: list[str]) -> int:
         else:
             detail = f" ({r.detail})" if r.detail else ""
             sys.stderr.write(f"  ✗ {r.service} rsync failed{detail}\n")
+            if r.stderr_excerpt:
+                for line in r.stderr_excerpt.splitlines():
+                    sys.stderr.write(f"      {line}\n")
 
     cleanup_summary = (
         f"stopped={result.cleanup.stopped} removed={result.cleanup.removed} "
