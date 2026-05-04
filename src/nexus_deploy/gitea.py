@@ -421,39 +421,54 @@ class GiteaCli:
 
         Returns ``(sha1_or_None, diagnostic_message)``. On success the
         diagnostic is empty. On failure the diagnostic is a short
-        Gitea-CLI-error description suitable for stderr — Gitea's
-        delete/generate output is just username + token-name +
-        status, never password material.
+        Gitea-side error description suitable for stderr — never
+        password material.
 
-        Idempotent: deletes any existing token with the same name
-        first (best-effort, ``|| true`` swallows the non-zero rc Gitea's
-        CLI returns when the token doesn't exist), then generates fresh.
-        Mirrors the legacy deploy.sh delete-then-create pattern but
-        via peer-auth CLI instead of REST basic-auth — eliminates
-        the chicken-egg of "we need a working REST password to mint
-        a token" that bit production in PR #519's spin-up: REST POST
-        returned 400 inside ``CreateAccessToken`` despite the prior
-        admin password sync reporting success. The CLI peer-auths
-        as the container's git user, so password drift between the
-        CLI sync and the basic-auth attempt cannot manifest.
+        Idempotent: deletes any existing token with this name first
+        (psql DELETE inside the gitea-db container — peer auth, no
+        password needed), then generates fresh. Two-pronged peer-
+        auth approach because:
+
+        1. Gitea v1.23 CLI has NO ``delete-access-token`` subcommand
+           (verified live: ``admin user`` only exposes create / list
+           / change-password / delete-USER / generate-access-token).
+           A previous attempt to use ``gitea admin user
+           delete-access-token`` failed silently in production
+           (PR #520 spin-up surfaced it via the diagnostic field
+           added in this same PR, after diagnosing as the bash
+           ``|| true`` swallowing the unknown-subcommand error).
+        2. REST DELETE on the tokens API requires basic-auth, which
+           hits the same chicken-egg as the original PR #519 token-
+           mint REST POST. Avoid.
+
+        psql peer-auth bypasses both. The DELETE is scoped to the
+        admin's UID via a subquery on the ``user`` table — name
+        uniqueness in ``access_token`` is per-user (``UNIQUE INDEX
+        UQE_access_token_name`` on (uid, name)). Both ``username``
+        and ``name`` pass through :func:`_validate_path_segment`
+        first, so the SQL string is injection-safe by construction.
         """
         _validate_path_segment(username, kind="username")
         _validate_path_segment(name, kind="token_name")
-        # Best-effort delete — peer auth CLI. Inside the script the
-        # docker-exec exits 0 if a token with this name existed and
-        # was removed, non-zero otherwise (e.g. token didn't exist,
-        # or transient docker error). The trailing ``|| true``
-        # collapses both cases to script-rc=0, so ``ssh.run_script``
-        # always sees rc=0 here and we never raise on the delete step.
-        # Whether the delete actually removed anything is irrelevant
-        # for our flow: ``generate-access-token`` requires a free
-        # name; if a stale token with the same name still exists at
-        # generate time, the generate call itself reports the
-        # collision and the diagnostic surfaces via the parsed output.
+        # psql DELETE — peer auth via -U inside gitea-db container.
+        # Same approach as :meth:`sync_db_password`. ``|| true``
+        # swallows transient psql errors (gitea-db not yet ready,
+        # connection blip) — if the delete didn't run, the
+        # generate step below will surface "name has been used
+        # already" with full diagnostic.
+        # SQL injection-safe by construction: both ``name`` and
+        # ``username`` are validated against ``_PATH_SAFE_RE``
+        # ([a-zA-Z0-9._-]+) above, so neither can contain a single
+        # quote, semicolon, or comment marker. ruff's S608 warning
+        # is the generic "f-string SQL" heuristic and doesn't see
+        # the validator.
+        delete_sql = (
+            f"DELETE FROM access_token WHERE name = '{name}' "  # noqa: S608
+            f"AND uid = (SELECT id FROM \"user\" WHERE lower_name = lower('{username}'));"
+        )
         delete_script = (
-            "docker exec -u git gitea gitea admin user delete-access-token "
-            f"--username {shlex.quote(username)} "
-            f"--token {shlex.quote(name)} "
+            "docker exec gitea-db psql -U nexus-gitea -d gitea "
+            f"-c {shlex.quote(delete_sql)} "
             ">/dev/null 2>&1 || true\n"
         )
         self.ssh.run_script(delete_script, check=False, timeout=30.0)
@@ -468,7 +483,8 @@ class GiteaCli:
         result = self.ssh.run_script(generate_script, check=False, timeout=30.0)
         if result.returncode != 0:
             # Output examples on failure: "User does not exist" or
-            # "...invalid scopes...". Capture first line only.
+            # "Command error: access token name has been used already".
+            # Capture first line only.
             first_line = (result.stdout or "").splitlines()
             detail = first_line[0][:200] if first_line else "(no output)"
             return None, f"CLI rc={result.returncode}: {detail}"

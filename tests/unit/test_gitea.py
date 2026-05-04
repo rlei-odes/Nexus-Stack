@@ -485,12 +485,24 @@ def test_round_4_mint_token_idempotent_delete_first() -> None:
     assert err == ""
     # Both delete + generate were called.
     assert ssh.run_script.call_count == 2
-    # First call is the delete-access-token script — must contain
-    # `|| true` so docker-exec's non-zero rc on missing-token is
-    # swallowed (the pattern that justifies the rc=0 mock above).
+    # First call is the psql DELETE script. The SQL is shlex-quoted
+    # for bash, so we assert on substrings that survive that quoting:
+    # the unquoted SQL keywords (DELETE FROM, WHERE, AND uid, lower)
+    # plus the literal name + username values (which appear inside
+    # shlex's `'"'"'` quote-escape but the inner characters survive).
+    # `|| true` swallows transient psql errors (justifies the rc=0
+    # mock above).
     delete_script = ssh.run_script.call_args_list[0][0][0]
-    assert "delete-access-token" in delete_script
+    assert "DELETE FROM access_token" in delete_script
+    assert "nexus-automation" in delete_script
+    assert "WHERE lower_name" in delete_script
+    assert "admin" in delete_script
     assert "|| true" in delete_script
+    # Must NOT use the non-existent gitea CLI subcommand
+    # (PR #520 round-3 production bug — `gitea admin user
+    # delete-access-token` is hallucinated; psql DELETE is the
+    # bulletproof replacement).
+    assert "delete-access-token" not in delete_script
 
 
 def test_mint_token_returns_diagnostic_on_cli_failure() -> None:
