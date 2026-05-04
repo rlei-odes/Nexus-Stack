@@ -1651,6 +1651,41 @@ def test_woodpecker_oauth_idempotent_deletes_existing_then_creates() -> None:
 
 
 @responses.activate
+@responses.activate
+def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
+    """Delete failure (403/timeout) MUST abort the create.
+
+    Otherwise we'd end up with two valid OAuth apps with the same
+    name — the old one still issuing tokens until manually cleaned
+    up, breaking the rotate-secret-on-every-deploy contract.
+    (Copilot R1 round-1 finding.)
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[{"id": 42, "name": "Woodpecker CI"}],
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        status=403,  # operator revoked admin's permission, e.g.
+    )
+    # No POST mock — must NOT be called.
+    result, err = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "delete_oauth_app" in err
+    assert "rotation broken" in err
+    # POST must NOT have been issued
+    assert all(c.request.method != "POST" for c in responses.calls)
+
+
+@responses.activate
 def test_woodpecker_oauth_redirect_uri_built_from_domain() -> None:
     """The redirect URI must be `https://woodpecker.<domain>/authorize`."""
     responses.add(

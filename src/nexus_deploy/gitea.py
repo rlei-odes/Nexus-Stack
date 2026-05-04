@@ -1096,16 +1096,20 @@ def run_woodpecker_oauth_setup(
 
     # Find any existing app named exactly "Woodpecker CI" — Gitea
     # allows multiple apps with the same name, so iterate the full
-    # list rather than break on first match.
+    # list rather than break on first match. Each delete must
+    # SUCCEED (204 or 404) before we proceed to create — otherwise
+    # the rotation semantics break: we'd issue fresh credentials
+    # while the old app remains valid, leaving stale OAuth tokens
+    # active until the operator manually cleans up. (Copilot R1)
     for app in apps:
         if app.get("name") == "Woodpecker CI":
             app_id = app.get("id")
-            if isinstance(app_id, int):
-                # Best-effort delete — failure here doesn't block the
-                # create below (Gitea allows duplicate names; if delete
-                # fails and create succeeds we end up with two apps
-                # which is harmless but a bit untidy).
-                client.delete_oauth_app(app_id)
+            if isinstance(app_id, int) and not client.delete_oauth_app(app_id):
+                return (
+                    None,
+                    f"delete_oauth_app(id={app_id}): failed — "
+                    "refusing to create duplicate (rotation broken)",
+                )
 
     redirect_uri = f"https://woodpecker.{domain}/authorize"
     try:

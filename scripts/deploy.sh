@@ -3157,6 +3157,14 @@ REMOTE_KESTRA_PROBE_EOF
             # removal on interrupt/early-exit.
             if echo "$ENABLED_SERVICES" | grep -qw "woodpecker" && [ -n "$WOODPECKER_AGENT_SECRET" ]; then
                 echo "  Creating Woodpecker CI OAuth app in Gitea..."
+                # Clear any stale eval values from a prior iteration / parent
+                # env BEFORE the CLI runs. Without this, an rc=1 (CLI failed
+                # to mint fresh creds) followed by the `[ -n "${VAR:-}" ]`
+                # gate below would happily rewrite Woodpecker's .env using
+                # whatever credentials happened to be inherited from the
+                # shell — potentially restarting Woodpecker with stale creds
+                # that Gitea has already invalidated. (Copilot R1)
+                unset WOODPECKER_GITEA_CLIENT WOODPECKER_GITEA_SECRET
                 WP_OUT=$(mktemp)
                 chmod 600 "$WP_OUT"
                 echo "$WP_OUT" >> "$RUNNER_CLEANUP_PATHS"
