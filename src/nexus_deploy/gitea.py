@@ -21,13 +21,28 @@ Two transports — by design, mirroring deploy.sh's split:
   CRUD, collaborator add. By the time the token is minted, the admin
   password has already been synced via CLI, so basic-auth works.
 
-R7 (token-not-in-argv): all REST calls use ``requests`` with
+R7 (token-not-in-LOCAL-argv): all REST calls use ``requests`` with
 ``auth=(user, pw)`` or ``headers={"Authorization": f"token {tok}"}``
-— credentials live in the Authorization header, never in argv. The
-DB-password sync is the only exception by necessity (psql wants the
-password as a SQL string literal): we use ``ssh.run_script`` so the
-script (and the password inside it) is fed via stdin to the remote
-shell, not argv.
+— credentials live in the Authorization header, never in argv on
+the deploy host (no shell-out for these calls).
+
+What we DON'T claim — for the SSH/CLI paths, secrets DO transit
+the remote container's argv for the brief duration of the docker-
+exec call: ``gitea admin user create --password '<pw>'`` and
+``psql -c "ALTER USER ... PASSWORD '<pw>'"`` are visible in
+``ps -ef`` inside the relevant container while running. We feed
+the rendered bash via ``ssh.run_script`` (stdin, not argv) so the
+secret never lands in:
+  - LOCAL ``ps`` on the deploy host
+  - LOCAL CI logs (workflow argv-echoes the bash invocation only)
+  - ``CalledProcessError.cmd`` / ``TimeoutExpired.cmd`` exception
+    payloads
+
+This matches the exposure profile of the legacy deploy.sh block
+exactly — same security boundary, no regression. Tightening
+further (e.g. piping the password into ``gitea admin user create``
+via stdin or ``--password-stdin``) is upstream-tooling-dependent
+and out of scope for this migration.
 
 R5 (path safety): all user/repo path segments are validated against
 ``^[a-zA-Z0-9._-]+$`` before URL interpolation OR shell-quoting.
@@ -147,9 +162,21 @@ def _render_db_pw_sync_script(
 
     Peer auth via ``-U nexus-gitea`` (no ``-W``), so no PGPASSWORD env
     var is needed and the password value only enters the SQL string
-    literal. The SQL is built locally so the escaped password is in
-    the SCRIPT body (which we feed via stdin, not argv) — never in
-    ``ps`` on either host.
+    literal. The SCRIPT body (containing the SQL) is fed via stdin
+    by the caller (``ssh.run_script``), so the password does NOT
+    appear in:
+      - LOCAL ``ps`` on the deploy host
+      - LOCAL CI logs / ``CalledProcessError.cmd`` payloads
+      - SSH argv on the deploy host
+
+    The password DOES appear in the gitea-db container's ``ps -ef``
+    for the brief duration of the ``psql -c "ALTER USER … PASSWORD
+    '<pw>'"`` call (since psql takes the SQL via argv). This matches
+    deploy.sh L2483-2485's exposure profile exactly — no regression.
+    Tightening would require either ``\\password`` (interactive) or
+    a server-side script feeding the SQL via stdin to psql, both of
+    which add complexity for marginal gain on a runner-isolated
+    container.
 
     Mirrors deploy.sh L2477-2491. RESULT line emitted on success so
     the caller can disambiguate "succeeded after N tries" from "all
