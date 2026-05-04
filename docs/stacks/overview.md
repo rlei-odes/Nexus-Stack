@@ -219,7 +219,7 @@ Source-of-truth in PostgreSQL, change data capture into Redpanda via Debezium, m
 A full Git + CI + remote-IDE setup with email testing. Around 3 GB RAM.
 
 **LLM playground** — `ollama` · `dify` · `postgres` · `portainer`
-Local LLMs via Ollama, a workflow builder for RAG / agents via Dify. Heavy — needs at least a `cax31` server (8 GB RAM) and probably more.
+Local LLMs via Ollama, a workflow builder for RAG / agents via Dify. Heavy — needs at least a `cpx32` server (4 vCPU, 8 GB RAM) and probably more.
 
 **Data engineer's Swiss Army knife** — `redpanda` · `flink` · `dinky` · `postgres` · `clickhouse` · `grafana` · `kestra` · `jupyter`
 Stream + batch processing, two databases, an orchestrator, a notebook, full observability. Around 6 GB RAM.
