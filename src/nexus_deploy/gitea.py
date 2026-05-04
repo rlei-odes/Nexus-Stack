@@ -109,6 +109,35 @@ def _validate_path_segment(value: str, *, kind: str) -> None:
         raise GiteaError(f"unsafe {kind}: {value!r}")
 
 
+_USER_FORK_SANITIZE_RE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9]")
+
+
+def _sanitize_user_for_fork_name(username: str) -> str:
+    """Mirror deploy.sh's ``${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}``.
+
+    Used to derive a fork repo name like ``<orig>_<sanitized_user>``
+    where the user's username may contain dots or hyphens that
+    Gitea allows in usernames but operators want flattened in repo
+    names. Keeps the legacy naming scheme byte-identical so existing
+    forks across re-deploys keep matching.
+    """
+    return _USER_FORK_SANITIZE_RE.sub("_", username)
+
+
+def _basename_no_git(repo_url: str) -> str:
+    """``basename "$REPO_URL" .git`` — the last path segment with a
+    trailing ``.git`` stripped if present.
+
+    Mirrors deploy.sh's clone-mirror name derivation. Handles both
+    ``https://github.com/owner/repo.git`` and ``https://.../repo``
+    (no .git suffix); both yield ``repo``.
+    """
+    last = repo_url.rstrip("/").rsplit("/", 1)[-1]
+    if last.endswith(".git"):
+        return last[: -len(".git")]
+    return last
+
+
 def _escape_sql_string_literal(value: str) -> str:
     """Escape a value for safe inclusion in a single-quoted SQL string.
 
@@ -219,6 +248,49 @@ class CreateUserResult:
 class CreateRepoResult:
     name: str
     status: CreateRepoStatus
+    detail: str = ""
+
+
+MirrorStatus = Literal["created", "already_exists", "failed"]
+ForkStatus = Literal["created", "already_exists", "failed"]
+
+
+@dataclass(frozen=True)
+class MirrorResult:
+    """One pull-mirror entry from the GH_MIRROR_REPOS loop.
+
+    ``name`` is the Gitea-side repo name (``mirror-readonly-<basename>``),
+    NOT the upstream GitHub URL. ``status`` distinguishes the
+    idempotent re-deploy paths: ``already_exists`` is a soft-success
+    (the mirror was created on a previous spin-up), ``created`` means
+    Gitea ran the migration this call, ``failed`` means the migrate
+    POST didn't return a usable id (caller routes to a yellow warning).
+    """
+
+    name: str
+    status: MirrorStatus
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class ForkResult:
+    """The user-fork carved off the FIRST mirror in the loop.
+
+    Only the first iteration's fork is created (matching the legacy
+    bash's ``FORKED_WORKSPACE`` flag) — there's exactly one workspace
+    repo per stack. ``status`` is one of ``created`` (POST 202),
+    ``already_exists`` (POST 409 — fork survived a prior deploy),
+    or ``failed`` (HTTP non-2xx-non-409, transport, or temp-token
+    mint failed before the fork POST could run).
+
+    The no-user-configured branch (``GITEA_USER_USERNAME`` empty)
+    leaves :class:`MirrorSetupResult.fork` as ``None`` — no
+    ``ForkResult`` is constructed at all on that path.
+    """
+
+    name: str
+    owner: str
+    status: ForkStatus
     detail: str = ""
 
 
@@ -764,6 +836,296 @@ class GiteaClient:
         return resp.status_code in (204, 422)
 
     # -------------------------------------------------------------------
+    # Mirror-mode operations (Modul 2.2f part 2)
+    # -------------------------------------------------------------------
+
+    def get_user_id(self, username: str) -> int | None:
+        """``GET /api/v1/users/<u>`` — returns user's numeric id, or None.
+
+        Used by the mirror-migrate flow: Gitea's ``/api/v1/repos/migrate``
+        requires the target owner's UID (not username) in the
+        ``uid`` field. We can't substitute the admin's username
+        directly. None on 404 (user doesn't exist).
+        """
+        _validate_path_segment(username, kind="username")
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/v1/users/{username}",
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise GiteaError(f"get_user_id transport ({type(exc).__name__})") from exc
+        if resp.status_code == 404:
+            # Genuine "user doesn't exist" — this is the only path
+            # that returns None. Distinct from malformed-response
+            # handling below which raises so the caller can surface
+            # the diagnostic via admin_uid_error.
+            return None
+        if resp.status_code != 200:
+            raise GiteaError(f"get_user_id HTTP {resp.status_code}")
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise GiteaError("get_user_id response was not JSON") from exc
+        uid = payload.get("id") if isinstance(payload, dict) else None
+        if not isinstance(uid, int):
+            # 200 but the response shape is wrong (proxy mangling,
+            # Gitea schema drift). Raise so admin_uid_error surfaces
+            # the diagnostic — without this, run_mirror_setup would
+            # treat it as a genuine 404 and the CLI would print the
+            # misleading "admin user not found in Gitea". (Copilot R5)
+            raise GiteaError("get_user_id response missing integer 'id'")
+        return uid
+
+    def migrate_mirror(
+        self,
+        repo_name: str,
+        clone_url: str,
+        owner_uid: int,
+        github_pat: str,
+        *,
+        mirror_interval: str = "10m0s",
+    ) -> MirrorResult:
+        """``POST /api/v1/repos/migrate`` — clone-mirror a remote repo.
+
+        Mirrors deploy.sh's ``GH_MIRROR_REPOS`` migration call.
+        ``github_pat`` is the GitHub personal access token used by
+        Gitea to clone the (private) source repo; it travels in
+        the request body as ``auth_token`` and is never logged
+        locally or rendered into argv.
+
+        Returns :class:`MirrorResult`:
+        - ``status="created"`` on 200 OR 201 with a parseable
+          integer ``id`` in the body. Gitea v1.20+ documents 201
+          for /repos/migrate, but we accept 200 too for forward-
+          compat with older / forked Gitea variants.
+        - ``status="already_exists"`` on 409 OR 422 where the
+          message contains "already exists".
+        - ``status="failed"`` for other non-2xx / missing id paths.
+          Caller routes to a yellow warning per mirror so a single
+          bad URL doesn't abort the whole loop.
+        """
+        _validate_path_segment(repo_name, kind="repo_name")
+        body = {
+            "clone_addr": clone_url,
+            "repo_name": repo_name,
+            "private": True,
+            "mirror": True,
+            "mirror_interval": mirror_interval,
+            "auth_token": github_pat,
+            "uid": owner_uid,
+        }
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/repos/migrate",
+                json=body,
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            return MirrorResult(
+                name=repo_name,
+                status="failed",
+                detail=f"transport ({type(exc).__name__})",
+            )
+        if resp.status_code in (200, 201):
+            try:
+                payload = resp.json()
+            except ValueError:
+                return MirrorResult(name=repo_name, status="failed", detail="response not JSON")
+            if isinstance(payload, dict) and isinstance(payload.get("id"), int):
+                return MirrorResult(
+                    name=repo_name, status="created", detail=f"POST {resp.status_code}"
+                )
+            return MirrorResult(name=repo_name, status="failed", detail="response missing id")
+        if resp.status_code == 409:
+            return MirrorResult(name=repo_name, status="already_exists", detail="POST 409")
+        if resp.status_code == 422:
+            try:
+                msg = resp.json().get("message", "") if resp.content else ""
+            except ValueError:
+                msg = ""
+            if isinstance(msg, str) and "already exists" in msg.lower():
+                return MirrorResult(
+                    name=repo_name,
+                    status="already_exists",
+                    detail="POST 422 already exists",
+                )
+        return MirrorResult(name=repo_name, status="failed", detail=f"POST {resp.status_code}")
+
+    def trigger_mirror_sync(self, owner: str, name: str) -> bool:
+        """``POST /api/v1/repos/<o>/<n>/mirror-sync`` — pull fresh from upstream.
+
+        Returns True on 200 (Gitea queued the sync), False otherwise.
+        Best-effort: caller doesn't abort on False — the next 10-min
+        cron tick of the mirror schedule will re-sync.
+        """
+        _validate_path_segment(owner, kind="owner")
+        _validate_path_segment(name, kind="repo_name")
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/repos/{owner}/{name}/mirror-sync",
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout):
+            return False
+        return resp.status_code == 200
+
+    def merge_upstream(self, owner: str, name: str, branch: str) -> str:
+        """``POST /api/v1/repos/<o>/<n>/merge-upstream`` — fast-forward fork
+        from its parent's branch. Returns HTTP status code as a string
+        for the caller's dispatch.
+
+        Gitea's responses:
+        - 200: merged (fork advanced)
+        - 409: already up to date
+        - 404: fork doesn't have a parent / branch missing on upstream
+        - 5xx: server-side error
+
+        Returns ``"200"`` / ``"409"`` / etc. or ``"transport"`` on
+        connection failure — caller pattern-matches like the legacy
+        bash's HTTP-code dispatch.
+        """
+        _validate_path_segment(owner, kind="owner")
+        _validate_path_segment(name, kind="repo_name")
+        # Branch may contain a slash (e.g. ``feat/branch``), so it's
+        # passed in the body, not as a URL segment — no path-validation
+        # needed for branch.
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/repos/{owner}/{name}/merge-upstream",
+                json={"branch": branch},
+                timeout=_HTTP_TIMEOUT,
+                **self._request_kwargs(),  # type: ignore[arg-type]
+            )
+        except (requests.ConnectionError, requests.Timeout):
+            return "transport"
+        return str(resp.status_code)
+
+    def create_user_token(
+        self,
+        username: str,
+        token_name: str,
+        scopes: list[str],
+        *,
+        admin_username: str,
+        admin_password: str,
+    ) -> str | None:
+        """Mint a token for ``username`` using admin's basic-auth.
+
+        Used by the fork flow: forking a mirror needs a token that
+        belongs to the target user (else the fork lands in admin's
+        namespace, not the user's). Admin can create tokens on behalf
+        of other users via basic-auth (NOT token-auth — token bearer
+        only acts on its own user). Idempotent: on any first-attempt
+        failure (non-200/201, transport, JSON parse, missing sha1)
+        it deletes the token by name and retries once. (Copilot R6 —
+        the previous "201-failure" wording was confusing because 201
+        is the success code; the retry trigger is anything-not-success.)
+
+        Returns the sha1 string on success, None on persistent failure
+        (both attempts return non-success). None routes to a yellow
+        warning + skip-fork at the orchestrator level.
+        """
+        _validate_path_segment(username, kind="username")
+        _validate_path_segment(token_name, kind="token_name")
+        body = {"name": token_name, "scopes": scopes}
+        auth = (admin_username, admin_password)
+
+        def _attempt() -> str | None:
+            try:
+                resp = requests.post(
+                    f"{self.base_url}/api/v1/users/{username}/tokens",
+                    json=body,
+                    auth=auth,
+                    timeout=_HTTP_TIMEOUT,
+                )
+            except (requests.ConnectionError, requests.Timeout):
+                return None
+            if resp.status_code not in (200, 201):
+                return None
+            try:
+                payload = resp.json()
+            except ValueError:
+                return None
+            sha1 = payload.get("sha1") if isinstance(payload, dict) else None
+            return sha1 if isinstance(sha1, str) and sha1 else None
+
+        sha1 = _attempt()
+        if sha1:
+            return sha1
+        # First attempt failed — token name may already exist.
+        # Delete and retry once. Errors here are silenced; the next
+        # _attempt() will surface any persistent failure as None.
+        self.delete_user_token(
+            username,
+            token_name,
+            admin_username=admin_username,
+            admin_password=admin_password,
+        )
+        return _attempt()
+
+    def delete_user_token(
+        self,
+        username: str,
+        token_name: str,
+        *,
+        admin_username: str,
+        admin_password: str,
+    ) -> bool:
+        """``DELETE /api/v1/users/<u>/tokens/<n>`` with admin basic-auth.
+
+        Idempotent: 204 + 404 → True. Used by the fork flow to clean
+        up a temp user-token after the fork POST settles, AND to
+        clear a stale token before retrying create_user_token.
+        """
+        _validate_path_segment(username, kind="username")
+        _validate_path_segment(token_name, kind="token_name")
+        try:
+            resp = requests.delete(
+                f"{self.base_url}/api/v1/users/{username}/tokens/{token_name}",
+                auth=(admin_username, admin_password),
+                timeout=_HTTP_TIMEOUT,
+            )
+        except (requests.ConnectionError, requests.Timeout):
+            return False
+        return resp.status_code in (204, 404)
+
+    def fork_repo_as_user(
+        self,
+        source_owner: str,
+        source_name: str,
+        fork_name: str,
+        *,
+        user_token: str,
+    ) -> str:
+        """``POST /api/v1/repos/<o>/<n>/forks`` with the USER's bearer token.
+
+        Returns HTTP status code as a string — caller dispatches:
+        - ``"202"``: Gitea accepted the fork (queued)
+        - ``"409"``: fork already exists in user's namespace
+        - other: failure
+
+        Uses the user's token (not admin's) so the fork lands in the
+        user's namespace. Mirrors deploy.sh's per-user fork pattern.
+        """
+        _validate_path_segment(source_owner, kind="owner")
+        _validate_path_segment(source_name, kind="repo_name")
+        _validate_path_segment(fork_name, kind="fork_name")
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/repos/{source_owner}/{source_name}/forks",
+                json={"name": fork_name},
+                headers={"Authorization": f"token {user_token}"},
+                timeout=_HTTP_TIMEOUT,
+            )
+        except (requests.ConnectionError, requests.Timeout):
+            return "transport"
+        return str(resp.status_code)
+
+    # -------------------------------------------------------------------
     # OAuth2 application management (Woodpecker CI integration, Modul 2.2f)
     # -------------------------------------------------------------------
 
@@ -1246,3 +1608,290 @@ def run_woodpecker_oauth_setup(
         )
     except GiteaError as exc:
         return None, f"create_oauth_app: {exc}", rotation_started
+
+
+# ---------------------------------------------------------------------------
+# Mirror-mode orchestrator (Modul 2.2f part 2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MirrorSetupResult:
+    """Aggregate result of a GH_MIRROR_REPOS spin-up.
+
+    The CLI handler emits ``FORK_NAME=<name>`` + ``GITEA_REPO_OWNER=<owner>``
+    on stdout when ``fork`` reached ``created`` or ``already_exists``,
+    so deploy.sh can call the existing seed-into-fork wrapper post-eval.
+
+    ``is_success`` is True iff every mirror reached ``created`` or
+    ``already_exists`` AND (if a fork was attempted) the fork did
+    too. The CLI maps False → rc=1 (yellow warn, deploy continues —
+    next spin-up retries).
+    """
+
+    admin_uid: int | None
+    # Diagnostic when admin_uid is None — distinguishes "user
+    # genuinely doesn't exist (404)" from auth/5xx/transport
+    # failures so the CLI can print the real cause instead of
+    # the misleading "admin UID not found". Empty string when
+    # admin_uid was successfully resolved. (Copilot R4)
+    admin_uid_error: str
+    mirrors: tuple[MirrorResult, ...]
+    fork: ForkResult | None
+    collaborator_added_count: int
+    fork_synced: bool
+
+    @property
+    def is_success(self) -> bool:
+        if self.admin_uid is None:
+            return False
+        if any(m.status == "failed" for m in self.mirrors):
+            return False
+        return not (self.fork is not None and self.fork.status == "failed")
+
+
+def run_mirror_setup(
+    *,
+    base_url: str,
+    admin_username: str,
+    admin_password: str,
+    gitea_token: str,
+    gitea_user_username: str | None,
+    gh_mirror_repos: list[str],
+    gh_mirror_token: str,
+    workspace_branch: str,
+    fork_token_name: str = "nexus-workspace-fork",  # noqa: S107
+    mirror_sync_settle_seconds: float = 3.0,
+) -> MirrorSetupResult:
+    """End-to-end GH_MIRROR_REPOS provisioning (Modul 2.2f part 2).
+
+    Mirrors deploy.sh's mirror loop (L3224-3412 pre-migration):
+
+    1. GET admin's UID (required by Gitea's migrate API).
+    2. For each repo URL in ``gh_mirror_repos``:
+       a. Compute mirror name ``mirror-readonly-<basename>``.
+       b. POST /repos/migrate (or skip if 409/already_exists).
+       c. On the FIRST mirror with a configured user, fork it
+          into the user's namespace via a temp user-token
+          (created + deleted on this call).
+       d. Add the user as a read-collaborator on the mirror.
+       e. If the fork was created on this iteration: trigger
+          ``mirror-sync`` on the mirror, sleep
+          ``mirror_sync_settle_seconds``, then ``merge-upstream``
+          on the fork at ``workspace_branch``.
+
+    The fork creation (step c) and fork-sync (step e) happen ONLY
+    on the first iteration that has both a successful migrate AND a
+    configured user — same single-fork-per-stack semantics as
+    deploy.sh's ``FORKED_WORKSPACE`` / ``SYNCED_FORK`` flags. Later
+    iterations still do mirror+collab.
+
+    All admin actions use ``gitea_token`` (token-bearer). The fork
+    creation step uses a temporary token minted on behalf of
+    ``gitea_user_username`` via admin basic-auth, then deleted right
+    after — mirrors the legacy bash pattern. Both ``gitea_token`` and
+    ``admin_password`` reach REST as request-auth only, never argv.
+    """
+    # Path safety on admin_username — used in URL interpolation
+    # immediately below.
+    _validate_path_segment(admin_username, kind="admin_username")
+
+    client = GiteaClient(
+        base_url=base_url,
+        admin_username=admin_username,
+        admin_password=admin_password,
+    ).with_token(gitea_token)
+
+    # 1. Admin UID lookup. Failure → no migrate possible. Distinguish
+    # three failure modes so the CLI can surface the real cause
+    # instead of the misleading "admin UID not found" for every path
+    # (Copilot R4):
+    #   - get_user_id raises GiteaError: auth/transport/5xx —
+    #     stash exc message in admin_uid_error
+    #   - get_user_id returns None: 404 (user genuinely doesn't
+    #     exist) — admin_uid_error stays "" but admin_uid is None
+    admin_uid: int | None = None
+    admin_uid_error = ""
+    try:
+        admin_uid = client.get_user_id(admin_username)
+    except GiteaError as exc:
+        # GiteaError messages here are constructed from format
+        # strings only (HTTP status / type names), no secrets —
+        # safe to surface verbatim.
+        admin_uid_error = str(exc)
+    if admin_uid is None:
+        return MirrorSetupResult(
+            admin_uid=None,
+            admin_uid_error=admin_uid_error,
+            mirrors=(),
+            fork=None,
+            collaborator_added_count=0,
+            fork_synced=False,
+        )
+
+    mirrors: list[MirrorResult] = []
+    fork: ForkResult | None = None
+    last_fork_failure: ForkResult | None = None
+    fork_synced = False
+    collaborator_added_count = 0
+
+    for repo_url in gh_mirror_repos:
+        repo_url = repo_url.strip()
+        if not repo_url:
+            continue
+        orig_name = _basename_no_git(repo_url)
+        mirror_name = f"mirror-readonly-{orig_name}"
+
+        # Validate the derived mirror_name BEFORE calling repo_exists
+        # / migrate_mirror — both internally invoke
+        # ``_validate_path_segment`` which raises GiteaError on
+        # unsafe values. Without this guard, one bad URL with
+        # shell-meta chars in the basename (e.g.
+        # ``.../repo?evil`` or ``.../repo;sh``) would propagate the
+        # GiteaError out of the loop and turn into rc=2 (hard
+        # abort), defeating the per-mirror-failed-result intent.
+        # (Copilot R1)
+        try:
+            _validate_path_segment(mirror_name, kind="mirror_name")
+        except GiteaError as exc:
+            mirrors.append(
+                MirrorResult(
+                    name=mirror_name,
+                    status="failed",
+                    detail=f"path validation: {exc}",
+                )
+            )
+            continue
+
+        # Idempotent re-deploy: skip migration if mirror already exists.
+        try:
+            already_present = client.repo_exists(admin_username, mirror_name)
+        except GiteaError:
+            already_present = False
+
+        if already_present:
+            mirror_result = MirrorResult(
+                name=mirror_name,
+                status="already_exists",
+                detail="GET /repos returned 200",
+            )
+        else:
+            mirror_result = client.migrate_mirror(mirror_name, repo_url, admin_uid, gh_mirror_token)
+        mirrors.append(mirror_result)
+
+        if mirror_result.status == "failed":
+            # Don't try to fork off a failed mirror; continue to next
+            # iteration so a single bad URL doesn't abort the loop.
+            continue
+
+        # Fork the FIRST successful mirror into the user's namespace
+        # (idempotent across spin-ups via the existing-fork 409 branch).
+        # On transient failure (token mint glitch, fork POST 5xx),
+        # retry on the next mirror iteration — matches the legacy
+        # deploy.sh's ``FORKED_WORKSPACE`` flag which only got set
+        # to 1 on HTTP 202/409 success. Without retry, a single
+        # bad first mirror would prevent the fork on every later
+        # mirror in the same loop too. (Copilot R3)
+        if fork is None and gitea_user_username:
+            sanitized = _sanitize_user_for_fork_name(gitea_user_username)
+            fork_name = f"{orig_name}_{sanitized}"
+
+            user_token = client.create_user_token(
+                gitea_user_username,
+                fork_token_name,
+                ["all"],
+                admin_username=admin_username,
+                admin_password=admin_password,
+            )
+            if user_token is None:
+                attempt: ForkResult = ForkResult(
+                    name=fork_name,
+                    owner=gitea_user_username,
+                    status="failed",
+                    detail="could not create user token for fork",
+                )
+            else:
+                try:
+                    fork_status = client.fork_repo_as_user(
+                        admin_username,
+                        mirror_name,
+                        fork_name,
+                        user_token=user_token,
+                    )
+                finally:
+                    # Always cleanup the temp user-token regardless
+                    # of fork outcome.
+                    client.delete_user_token(
+                        gitea_user_username,
+                        fork_token_name,
+                        admin_username=admin_username,
+                        admin_password=admin_password,
+                    )
+
+                if fork_status == "202":
+                    attempt = ForkResult(
+                        name=fork_name,
+                        owner=gitea_user_username,
+                        status="created",
+                        detail="POST 202",
+                    )
+                elif fork_status == "409":
+                    attempt = ForkResult(
+                        name=fork_name,
+                        owner=gitea_user_username,
+                        status="already_exists",
+                        detail="POST 409",
+                    )
+                else:
+                    attempt = ForkResult(
+                        name=fork_name,
+                        owner=gitea_user_username,
+                        status="failed",
+                        detail=f"POST {fork_status}",
+                    )
+
+            if attempt.status in ("created", "already_exists"):
+                # Finalize — no more fork attempts on later iterations.
+                fork = attempt
+            else:
+                # Transient failure: keep ``fork=None`` so the next
+                # iteration retries. Save the most recent attempt's
+                # diagnostic so the FINAL result still surfaces the
+                # last failure if every iteration fails.
+                last_fork_failure = attempt
+
+        # Grant the user read-only access to the mirror (separate from
+        # the fork above — every mirror gets the user as collaborator,
+        # not just the first).
+        if gitea_user_username and client.add_collaborator(
+            admin_username, mirror_name, gitea_user_username, permission="read"
+        ):
+            collaborator_added_count += 1
+
+        # Sync the fork from upstream — only on the first iteration
+        # where the fork was actually created/already-existed (matches
+        # deploy.sh's SYNCED_FORK flag scoped to the first iteration).
+        if fork is not None and fork.status in ("created", "already_exists") and not fork_synced:
+            fork_synced = True  # set even if the merge below soft-fails
+            client.trigger_mirror_sync(admin_username, mirror_name)
+            # Brief settle for Gitea's async mirror clone before the
+            # fast-forward attempt. legacy bash sleeps the same.
+            time.sleep(mirror_sync_settle_seconds)
+            client.merge_upstream(fork.owner, fork.name, workspace_branch)
+
+    # If every fork attempt across the loop failed, surface the last
+    # one's diagnostic in the final result so the operator can see WHY
+    # the fork never succeeded. (Copilot R3 — without this, a multi-
+    # mirror loop where every fork POST fails would return fork=None
+    # which is indistinguishable from the no-user-configured branch.)
+    if fork is None and last_fork_failure is not None:
+        fork = last_fork_failure
+
+    return MirrorSetupResult(
+        admin_uid=admin_uid,
+        admin_uid_error="",  # admin_uid resolved successfully
+        mirrors=tuple(mirrors),
+        fork=fork,
+        collaborator_added_count=collaborator_added_count,
+        fork_synced=fork_synced,
+    )

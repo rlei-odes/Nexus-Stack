@@ -3238,178 +3238,54 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" \
     echo "  Setting up GitHub Mirrors"
     echo "=========================================="
 
-    # Get admin user ID (required by Gitea migration API)
-    GITEA_ADMIN_UID=$(ssh nexus "curl -s \
-        'http://localhost:3200/api/v1/users/$ADMIN_USERNAME' \
-        -H 'Authorization: token $GITEA_TOKEN'" 2>/dev/null \
-        | jq -r '.id // empty')
-
-    if [ -z "$GITEA_ADMIN_UID" ]; then
-        echo -e "${YELLOW}  ⚠ Could not get Gitea admin UID - skipping mirrors${NC}"
-    else
-        IFS=',' read -ra MIRROR_REPOS <<< "$GH_MIRROR_REPOS"
-        for REPO_URL in "${MIRROR_REPOS[@]}"; do
-            REPO_URL=$(echo "$REPO_URL" | tr -d ' ')
-            [ -z "$REPO_URL" ] && continue
-            REPO_NAME="mirror-readonly-$(basename "$REPO_URL" .git)"
-
-            echo "  Mirroring: $REPO_NAME..."
-
-            # Check if mirror already exists (idempotent re-deploy)
-            HTTP_CODE=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME' \
-                -H 'Authorization: token $GITEA_TOKEN'")
-
-            MIRROR_OK=0
-            if [ "$HTTP_CODE" = "200" ]; then
-                echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' already exists, skipping creation${NC}"
-                MIRROR_OK=1
-            else
-                MIGRATE_PAYLOAD=$(jq -n \
-                    --arg clone_addr "$REPO_URL" \
-                    --arg repo_name "$REPO_NAME" \
-                    --arg auth_token "$GH_MIRROR_TOKEN" \
-                    --argjson uid "$GITEA_ADMIN_UID" \
-                    '{
-                        clone_addr: $clone_addr,
-                        repo_name: $repo_name,
-                        private: true,
-                        mirror: true,
-                        mirror_interval: "10m0s",
-                        auth_token: $auth_token,
-                        uid: $uid
-                    }')
-
-                MIRROR_RESULT=$(printf '%s' "$MIGRATE_PAYLOAD" | ssh nexus "curl -s -X POST \
-                    'http://localhost:3200/api/v1/repos/migrate' \
-                    -H 'Authorization: token $GITEA_TOKEN' \
-                    -H 'Content-Type: application/json' \
-                    -d @-" 2>/dev/null || echo "")
-
-                if echo "$MIRROR_RESULT" | jq -e '.id' >/dev/null 2>&1; then
-                    echo -e "${GREEN}  ✓ Mirror '$REPO_NAME' created (syncs every 10 min)${NC}"
-                    MIRROR_OK=1
-                else
-                    echo -e "${YELLOW}  ⚠ Mirror '$REPO_NAME' setup failed${NC}"
-                    echo -e "${YELLOW}    Verify GH_MIRROR_TOKEN has Contents:read permission${NC}"
-                    echo -e "${YELLOW}    and GH_MIRROR_REPOS contains valid GitHub HTTPS URLs${NC}"
-                fi
+    # Phase 2 Modul 2.2f part 2 (#505): the mirror loop (admin-UID
+    # lookup + per-repo migrate + per-user fork via temp-token +
+    # collab + mirror-sync + merge-upstream) is now in
+    # nexus_deploy.gitea.run_mirror_setup. Same idempotent semantics
+    # as before; CLI emits FORK_NAME=<name> + GITEA_REPO_OWNER=<user>
+    # on stdout (eval-able) iff a fork was provisioned, so the
+    # downstream seed_workspace_files (still in deploy.sh) hits the
+    # user's fork rather than the per-iteration mirror name.
+    #
+    # Clear any stale eval values from prior iterations so an rc=1
+    # (CLI failed pre-fork) doesn't leak old values into the seed
+    # call below.
+    unset FORK_NAME
+    MIRROR_OUT=$(mktemp)
+    chmod 600 "$MIRROR_OUT"
+    echo "$MIRROR_OUT" >> "$RUNNER_CLEANUP_PATHS"
+    MIRROR_RC=0
+    ADMIN_USERNAME="$ADMIN_USERNAME" \
+        GITEA_ADMIN_PASS="$GITEA_ADMIN_PASS" \
+        GITEA_TOKEN="$GITEA_TOKEN" \
+        GITEA_USER_USERNAME="${GITEA_USER_USERNAME:-}" \
+        GH_MIRROR_REPOS="$GH_MIRROR_REPOS" \
+        GH_MIRROR_TOKEN="$GH_MIRROR_TOKEN" \
+        WORKSPACE_BRANCH="${WORKSPACE_BRANCH:-main}" \
+        uv run --quiet --project "$PROJECT_ROOT" \
+        python -m nexus_deploy gitea mirror-setup > "$MIRROR_OUT" \
+        || MIRROR_RC=$?
+    case "$MIRROR_RC" in
+        0)
+            if [ -s "$MIRROR_OUT" ]; then
+                eval "$(cat "$MIRROR_OUT")"
             fi
-
-            if [ "$MIRROR_OK" = "1" ]; then
-                # Fork the first mirror as the user's workspace repo (idempotent)
-                # FORKED_WORKSPACE flag ensures we only fork once (the first mirror)
-                if [ "${FORKED_WORKSPACE:-}" != "1" ] && [ -n "${GITEA_USER_USERNAME:-}" ]; then
-                    ORIG_NAME=$(basename "$REPO_URL" .git)
-                    GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
-                    FORK_NAME="${ORIG_NAME}_${GITEA_USER_SANITIZED}"
-                    echo "  Forking ${ADMIN_USERNAME}/${REPO_NAME} into ${GITEA_USER_USERNAME}/${FORK_NAME}..."
-
-                    # Create a user token so the fork lands in the user's namespace (not admin's)
-                    USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
-                        -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-                        -H 'Content-Type: application/json' \
-                        -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
-                    if [ -z "$USER_TOKEN" ]; then
-                        ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
-                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
-                        USER_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens' \
-                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-                            -H 'Content-Type: application/json' \
-                            -d '{\"name\":\"nexus-workspace-fork\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
-                    fi
-                    if [ -n "$USER_TOKEN" ]; then
-                        FORK_RESULT=$(ssh nexus "curl -s -o /dev/null -w '%{http_code}' \
-                            -X POST 'http://localhost:3200/api/v1/repos/${ADMIN_USERNAME}/${REPO_NAME}/forks' \
-                            -H 'Authorization: token $USER_TOKEN' \
-                            -H 'Content-Type: application/json' \
-                            -d '{\"name\":\"$FORK_NAME\"}'")
-                        if [ "$FORK_RESULT" = "202" ]; then
-                            echo -e "${GREEN}  ✓ Forked into ${GITEA_USER_USERNAME}/${FORK_NAME}${NC}"
-                            FORKED_WORKSPACE=1
-                        elif [ "$FORK_RESULT" = "409" ]; then
-                            echo -e "${YELLOW}  ⚠ Fork ${GITEA_USER_USERNAME}/${FORK_NAME} already exists${NC}"
-                            FORKED_WORKSPACE=1
-                        else
-                            echo -e "${YELLOW}  ⚠ Fork returned HTTP $FORK_RESULT${NC}"
-                        fi
-                        ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$GITEA_USER_USERNAME/tokens/nexus-workspace-fork' \
-                            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
-                    else
-                        echo -e "${YELLOW}  ⚠ Could not create user token for fork${NC}"
-                    fi
-                fi
-
-                # Grant student user (gitea_user) read-only access to the mirror
-                if [ -n "$GITEA_USER_USERNAME" ]; then
-                    COLLAB_PAYLOAD=$(jq -n '{permission: "read"}')
-                    printf '%s' "$COLLAB_PAYLOAD" | ssh nexus "curl -s -X PUT \
-                        'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/collaborators/$GITEA_USER_USERNAME' \
-                        -H 'Authorization: token $GITEA_TOKEN' \
-                        -H 'Content-Type: application/json' \
-                        -d @-" >/dev/null 2>&1 || true
-                    echo -e "${GREEN}  ✓ Read access granted to '$GITEA_USER_USERNAME'${NC}"
-                fi
-
-                # Sync fork from upstream mirror (ensures fork has latest code on every Spin Up)
-                # Uses Gitea's merge-upstream API to fast-forward the fork from the mirror.
-                if [ "${FORKED_WORKSPACE:-}" = "1" ] && [ "${SYNCED_FORK:-}" != "1" ]; then
-                    SYNCED_FORK=1
-                    ORIG_NAME=$(basename "$REPO_URL" .git)
-                    GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
-                    SYNC_FORK_NAME="${ORIG_NAME}_${GITEA_USER_SANITIZED}"
-                    echo "  Syncing fork ${GITEA_USER_USERNAME}/${SYNC_FORK_NAME} from upstream..."
-
-                    # First trigger mirror sync to pull latest from GitHub
-                    ssh nexus "curl -s -X POST \
-                        'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/mirror-sync' \
-                        -H 'Authorization: token $GITEA_TOKEN'" >/dev/null 2>&1 || true
-                    # Wait briefly for mirror sync to complete
-                    sleep 3
-
-                    # Merge upstream into fork (fast-forward) on the
-                    # branch detected at script-start time (resolved into
-                    # $WORKSPACE_BRANCH from the GitHub API for the first
-                    # mirror URL — defaults to `main` if detection failed
-                    # or no token was supplied). Hardcoding `main` here
-                    # broke `master`-default upstreams: merge-upstream
-                    # 404s and the fork drifts.
-                    #
-                    # Auth header + branch body go through a remote
-                    # `curl --config` file (mode 0600, removed via local
-                    # trap) so $GITEA_TOKEN never appears in argv on the
-                    # server (would otherwise be visible in `ps` while
-                    # curl runs). Same argv-safe pattern as the other
-                    # token-bearing calls in this script.
-                    MERGE_TOKEN_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
-                    MERGE_BRANCH_B64=$(printf '%s' "$WORKSPACE_BRANCH" | base64 | tr -d '\n')
-                    MERGE_RESULT=$(ssh nexus "bash -s" <<REMOTE_MERGE_EOF 2>/dev/null
-TOK=\$(printf '%s' '$MERGE_TOKEN_B64' | base64 -d)
-BR=\$(printf '%s' '$MERGE_BRANCH_B64' | base64 -d)
-CFG=\$(mktemp)
-chmod 600 "\$CFG"
-trap 'rm -f "\$CFG"' EXIT
-{
-    printf 'header = "Authorization: token %s"\n' "\$TOK"
-    printf 'header = "Content-Type: application/json"\n'
-} > "\$CFG"
-printf '{"branch":"%s"}' "\$BR" | curl -s -o /dev/null -w '%{http_code}' \\
-    -X POST 'http://localhost:3200/api/v1/repos/$GITEA_USER_USERNAME/$SYNC_FORK_NAME/merge-upstream' \\
-    --config "\$CFG" \\
-    --data-binary @-
-REMOTE_MERGE_EOF
-)
-
-                    if [ "$MERGE_RESULT" = "200" ]; then
-                        echo -e "${GREEN}  ✓ Fork synced from upstream (new commits merged)${NC}"
-                    elif [ "$MERGE_RESULT" = "409" ]; then
-                        echo "  ✓ Fork already up to date"
-                    else
-                        echo -e "${YELLOW}  ⚠ Fork sync returned HTTP $MERGE_RESULT (may need manual sync)${NC}"
-                    fi
-                fi
+            ;;
+        1)
+            if [ -s "$MIRROR_OUT" ]; then
+                eval "$(cat "$MIRROR_OUT")"
             fi
-        done
+            echo -e "${YELLOW}  ⚠ Mirror setup had partial failures (continuing)${NC}"
+            ;;
+        *)
+            rm -f "$MIRROR_OUT"
+            echo -e "${RED}  ✗ Mirror setup hard failure (rc=$MIRROR_RC); aborting${NC}"
+            exit "$MIRROR_RC"
+            ;;
+    esac
+    rm -f "$MIRROR_OUT"
+
+    if [ "$MIRROR_RC" -le 1 ]; then
 
         # Seed Nexus-Stack example workspace files into the now-existing
         # fork. The mirror loop above OVERWRITES `$REPO_NAME` per

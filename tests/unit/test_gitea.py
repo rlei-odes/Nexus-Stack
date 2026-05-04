@@ -36,13 +36,17 @@ from nexus_deploy.gitea import (
     GiteaClient,
     GiteaError,
     GiteaResult,
+    MirrorResult,
     OAuthAppResult,
+    _basename_no_git,
     _compute_restart_services,
     _escape_sql_string_literal,
     _parse_admin_list_for_user,
     _render_db_pw_sync_script,
+    _sanitize_user_for_fork_name,
     _validate_path_segment,
     run_configure_gitea,
+    run_mirror_setup,
     run_woodpecker_oauth_setup,
 )
 
@@ -2345,6 +2349,1173 @@ def test_cli_woodpecker_oauth_unexpected_exception_returns_rc_2(
     # Type name only — message body MUST NOT leak.
     assert "RuntimeError" in err
     assert secret_in_msg not in err
+
+
+# ---------------------------------------------------------------------------
+# Mirror-mode helpers (Modul 2.2f part 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/owner/repo.git", "repo"),
+        ("https://github.com/owner/repo", "repo"),
+        ("https://github.com/owner/Bsc_EDS_GIS_FS2026.git", "Bsc_EDS_GIS_FS2026"),
+        ("https://gitea.foo.com/o/r.git/", "r"),  # trailing slash stripped
+    ],
+)
+def test_basename_no_git(url: str, expected: str) -> None:
+    assert _basename_no_git(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("user", "expected"),
+    [
+        ("admin", "admin"),
+        ("stefan.koch", "stefan_koch"),
+        ("user-with-dash", "user_with_dash"),
+        ("user.with.dots-and-dashes", "user_with_dots_and_dashes"),
+        ("UPPER_lower", "UPPER_lower"),  # underscore is alphanumeric-safe-ish in regex
+    ],
+)
+def test_sanitize_user_for_fork_name(user: str, expected: str) -> None:
+    assert _sanitize_user_for_fork_name(user) == expected
+
+
+# ---------------------------------------------------------------------------
+# GiteaClient mirror REST methods
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_get_user_id_returns_int_on_200() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 42, "login": "admin"},
+    )
+    assert _client(token="t").get_user_id("admin") == 42
+
+
+@responses.activate
+def test_get_user_id_returns_none_on_404() -> None:
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=404)
+    assert _client(token="t").get_user_id("admin") is None
+
+
+@responses.activate
+def test_get_user_id_raises_on_5xx() -> None:
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=500)
+    with pytest.raises(GiteaError, match="HTTP 500"):
+        _client(token="t").get_user_id("admin")
+
+
+@responses.activate
+def test_get_user_id_raises_on_200_with_missing_id() -> None:
+    """200 + payload without integer 'id' (proxy mangling, schema
+    drift) must raise — NOT silently return None. Without this, the
+    caller would treat it as a genuine 404 and the CLI would print
+    the misleading 'admin user not found in Gitea'. (Copilot R5)
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"login": "admin"},  # id missing
+    )
+    with pytest.raises(GiteaError, match="missing integer 'id'"):
+        _client(token="t").get_user_id("admin")
+
+
+@responses.activate
+def test_get_user_id_raises_on_200_with_non_int_id() -> None:
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": "not-an-int", "login": "admin"},
+    )
+    with pytest.raises(GiteaError, match="missing integer 'id'"):
+        _client(token="t").get_user_id("admin")
+
+
+@responses.activate
+def test_migrate_mirror_returns_created_on_201() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 10, "name": "mirror-readonly-x"},
+    )
+    result = _client(token="t").migrate_mirror(
+        "mirror-readonly-x", "https://github.com/o/x.git", 1, "ghp_xxx"
+    )
+    assert result.status == "created"
+    body = json.loads(responses.calls[0].request.body)  # type: ignore[arg-type]
+    assert body["clone_addr"] == "https://github.com/o/x.git"
+    assert body["repo_name"] == "mirror-readonly-x"
+    assert body["mirror"] is True
+    assert body["mirror_interval"] == "10m0s"
+    assert body["uid"] == 1
+    # GitHub PAT travels in body, never in URL/headers
+    assert body["auth_token"] == "ghp_xxx"
+    assert "ghp_xxx" not in (responses.calls[0].request.url or "")
+
+
+@responses.activate
+def test_migrate_mirror_409_returns_already_exists() -> None:
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=409)
+    result = _client(token="t").migrate_mirror("mirror-readonly-x", "https://x.git", 1, "ghp")
+    assert result.status == "already_exists"
+
+
+@responses.activate
+def test_migrate_mirror_422_already_exists_returns_already_exists() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=422,
+        json={"message": "repository already exists"},
+    )
+    result = _client(token="t").migrate_mirror("mirror-readonly-x", "https://x.git", 1, "ghp")
+    assert result.status == "already_exists"
+
+
+@responses.activate
+def test_migrate_mirror_5xx_returns_failed() -> None:
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=503)
+    result = _client(token="t").migrate_mirror("mirror-readonly-x", "https://x.git", 1, "ghp")
+    assert result.status == "failed"
+    assert "503" in result.detail
+
+
+@responses.activate
+def test_trigger_mirror_sync_200_returns_true() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-x/mirror-sync",
+        status=200,
+    )
+    assert _client(token="t").trigger_mirror_sync("admin", "mirror-readonly-x")
+
+
+@responses.activate
+def test_trigger_mirror_sync_returns_false_on_non_200() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-x/mirror-sync",
+        status=403,
+    )
+    assert not _client(token="t").trigger_mirror_sync("admin", "mirror-readonly-x")
+
+
+@responses.activate
+def test_merge_upstream_returns_status_string() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/user/fork/merge-upstream",
+        status=200,
+    )
+    rc = _client(token="t").merge_upstream("user", "fork", "main")
+    assert rc == "200"
+    body = json.loads(responses.calls[0].request.body)  # type: ignore[arg-type]
+    assert body == {"branch": "main"}
+
+
+@responses.activate
+def test_merge_upstream_409_already_up_to_date() -> None:
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/user/fork/merge-upstream",
+        status=409,
+    )
+    assert _client(token="t").merge_upstream("user", "fork", "main") == "409"
+
+
+@responses.activate
+def test_merge_upstream_handles_non_main_branch() -> None:
+    """merge-upstream supports any branch — `master`-default upstreams
+    were broken when deploy.sh hardcoded `main`. Verify the body
+    branch is whatever caller passes.
+    """
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/user/fork/merge-upstream",
+        status=200,
+    )
+    _client(token="t").merge_upstream("user", "fork", "master")
+    body = json.loads(responses.calls[0].request.body)  # type: ignore[arg-type]
+    assert body["branch"] == "master"
+
+
+@responses.activate
+def test_create_user_token_uses_basic_auth_not_bearer() -> None:
+    """Admin creating a token on behalf of a user MUST use basic-auth.
+
+    Token-bearer auth would only let admin act on its own user
+    (Gitea constraint). Regression test pins this contract: the
+    request must carry an Authorization: Basic ... header, not
+    a token header.
+    """
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "abc-user-token"},
+    )
+    sha1 = _client().create_user_token(
+        "stefan",
+        "nexus-workspace-fork",
+        ["all"],
+        admin_username="admin",
+        admin_password="admin-pw",
+    )
+    assert sha1 == "abc-user-token"
+    auth_header = responses.calls[0].request.headers.get("Authorization", "")
+    assert auth_header.startswith("Basic ")
+    # NOT a token-bearer
+    assert not auth_header.startswith("token ")
+
+
+@responses.activate
+def test_create_user_token_retries_via_delete_on_first_failure() -> None:
+    """On first 4xx (token name conflict), delete + retry once."""
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=409,
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "fresh-token"},
+    )
+    sha1 = _client().create_user_token(
+        "stefan",
+        "nexus-workspace-fork",
+        ["all"],
+        admin_username="admin",
+        admin_password="admin-pw",
+    )
+    assert sha1 == "fresh-token"
+    assert [c.request.method for c in responses.calls] == ["POST", "DELETE", "POST"]
+
+
+@responses.activate
+def test_create_user_token_returns_none_on_persistent_failure() -> None:
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    sha1 = _client().create_user_token(
+        "stefan",
+        "nexus-workspace-fork",
+        ["all"],
+        admin_username="admin",
+        admin_password="admin-pw",
+    )
+    assert sha1 is None
+
+
+@responses.activate
+def test_fork_repo_as_user_uses_user_token_not_admin_token() -> None:
+    """Fork POST must use the USER's bearer token so the fork lands in
+    the user's namespace, not admin's. Regression test pins the auth.
+    """
+    user_token = "user-bearer-do-not-leak"
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-x/forks",
+        status=202,
+    )
+    rc = _client(token="ADMIN-TOKEN-WRONG").fork_repo_as_user(
+        "admin", "mirror-readonly-x", "x_stefan", user_token=user_token
+    )
+    assert rc == "202"
+    auth = responses.calls[0].request.headers.get("Authorization", "")
+    # User token in header, NOT admin token
+    assert auth == f"token {user_token}"
+    assert "ADMIN-TOKEN-WRONG" not in auth
+
+
+# ---------------------------------------------------------------------------
+# run_mirror_setup orchestrator
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_run_mirror_setup_happy_path_with_user() -> None:
+    """One mirror, one user → mirror created, fork created, collab added,
+    fork synced via mirror-sync + merge-upstream.
+    """
+    # admin UID lookup
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    # Idempotent existence check (mirror does not exist yet)
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo",
+        status=404,
+    )
+    # migrate POST
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 10},
+    )
+    # user-token mint (basic-auth)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "user-tok"},
+    )
+    # fork POST (user's bearer)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo/forks",
+        status=202,
+    )
+    # cleanup user-token
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    # collaborator add
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo/collaborators/stefan",
+        status=204,
+    )
+    # mirror-sync
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo/mirror-sync",
+        status=200,
+    )
+    # merge-upstream (fork)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/stefan/myrepo_stefan/merge-upstream",
+        status=200,
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=["https://github.com/o/myrepo.git"],
+        gh_mirror_token="ghp_xxx",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,  # don't sleep in tests
+    )
+    assert result.is_success is True
+    assert result.admin_uid == 1
+    assert len(result.mirrors) == 1
+    assert result.mirrors[0].status == "created"
+    assert result.fork is not None
+    assert result.fork.owner == "stefan"
+    assert result.fork.name == "myrepo_stefan"
+    assert result.fork.status == "created"
+    assert result.collaborator_added_count == 1
+    assert result.fork_synced is True
+
+
+@responses.activate
+def test_run_mirror_setup_idempotent_skips_existing_mirror() -> None:
+    """Mirror already exists → skip migrate, still do fork+collab+sync."""
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    # existence check returns 200 — skip migrate
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo",
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "tok"},
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo/forks",
+        status=409,  # fork already exists too
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo/collaborators/stefan",
+        status=204,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-myrepo/mirror-sync",
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/stefan/myrepo_stefan/merge-upstream",
+        status=409,
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=["https://github.com/o/myrepo.git"],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    assert result.is_success is True
+    assert result.mirrors[0].status == "already_exists"
+    assert result.fork is not None
+    assert result.fork.status == "already_exists"
+    # POST migrate must NOT have been issued (idempotent skip).
+    assert all(c.request.url != f"{BASE_URL}/api/v1/repos/migrate" for c in responses.calls)
+
+
+@responses.activate
+def test_run_mirror_setup_no_user_skips_fork() -> None:
+    """gitea_user_username=None → mirror+collab branches skipped where
+    user-dependent. fork=None.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-x",
+        status=404,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 10},
+    )
+    # No fork mocks, no collab mock — should not be called.
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username=None,
+        gh_mirror_repos=["https://github.com/o/x.git"],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    assert result.is_success is True
+    assert result.fork is None
+    assert result.collaborator_added_count == 0
+    assert result.fork_synced is False
+
+
+@responses.activate
+def test_run_mirror_setup_returns_no_admin_uid_early() -> None:
+    """Admin UID lookup 404 → return early with admin_uid=None and
+    is_success=False (CLI rc=1).
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=404)
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=["https://github.com/o/x.git"],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    assert result.admin_uid is None
+    assert result.mirrors == ()
+    assert result.fork is None
+    assert result.is_success is False
+
+
+@responses.activate
+def test_run_mirror_setup_fork_only_first_iteration() -> None:
+    """Multi-mirror: fork only happens on the first successful mirror
+    even when later iterations also succeed (matches the legacy
+    FORKED_WORKSPACE flag scoped to first iteration).
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    # Two mirrors, both new
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1", status=404)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 10},
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "tok"},
+    )
+    # Fork the FIRST one
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1/forks",
+        status=202,
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    # First-iteration collab + sync
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1/collaborators/stefan",
+        status=204,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1/mirror-sync",
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/stefan/r1_stefan/merge-upstream",
+        status=200,
+    )
+    # Second iteration: mirror still gets created + collab, but no fork
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2", status=404)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 11},
+    )
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/collaborators/stefan",
+        status=204,
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=[
+            "https://github.com/o/r1.git",
+            "https://github.com/o/r2.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    assert result.is_success is True
+    assert len(result.mirrors) == 2
+    assert all(m.status == "created" for m in result.mirrors)
+    # Only ONE fork (from the first mirror)
+    assert result.fork is not None
+    assert result.fork.name == "r1_stefan"
+    # Both mirrors got the collaborator
+    assert result.collaborator_added_count == 2
+    # No fork POST against r2
+    fork_calls = [c for c in responses.calls if "/forks" in (c.request.url or "")]
+    assert len(fork_calls) == 1
+    assert "mirror-readonly-r1" in (fork_calls[0].request.url or "")
+
+
+@responses.activate
+def test_run_mirror_setup_fork_retries_on_next_iteration_after_transient_failure() -> None:
+    """Multi-mirror loop: first fork attempt fails (transient
+    user-token mint glitch), second iteration retries the fork
+    against the next mirror and succeeds. Final result shows the
+    successful fork — not the earlier transient failure.
+
+    Mirrors the legacy bash's FORKED_WORKSPACE flag semantics:
+    only set on HTTP 202/409 success, so failure leaves the flag
+    unset and later iterations get another attempt. (Copilot R3)
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=200, json={"id": 1})
+    # First mirror: created OK
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1", status=404)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=201, json={"id": 10})
+    # First user-token mint: persistent failure (initial + delete + retry)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    # First-iteration collab still happens
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1/collaborators/stefan",
+        status=204,
+    )
+    # Second mirror: created OK
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2", status=404)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=201, json={"id": 11})
+    # Second iteration: user-token mint succeeds this time
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "user-tok"},
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/forks",
+        status=202,
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/collaborators/stefan",
+        status=204,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/mirror-sync",
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/stefan/r2_stefan/merge-upstream",
+        status=200,
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=[
+            "https://github.com/o/r1.git",
+            "https://github.com/o/r2.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    # Final fork is the SECOND mirror's successful fork, NOT the
+    # first iteration's transient failure.
+    assert result.fork is not None
+    assert result.fork.status == "created"
+    assert result.fork.name == "r2_stefan"
+    assert result.is_success is True
+    assert result.collaborator_added_count == 2
+
+
+@responses.activate
+def test_run_mirror_setup_surfaces_last_fork_failure_when_every_attempt_fails() -> None:
+    """Multi-mirror loop where every fork attempt fails — final
+    result surfaces the LAST attempt's diagnostic in
+    ``fork.status="failed"`` so the operator can debug. Without
+    this, fork=None would be ambiguous with the no-user-configured
+    branch. (Copilot R3)
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=200, json={"id": 1})
+    # Both mirrors create OK; both fork attempts fail (user-token
+    # mint persistent fail).
+    for repo in ("r1", "r2"):
+        responses.add(
+            responses.GET,
+            f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-{repo}",
+            status=404,
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/api/v1/repos/migrate",
+            status=201,
+            json={"id": 10},
+        )
+        responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+        responses.add(
+            responses.DELETE,
+            f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+            status=204,
+        )
+        responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+        responses.add(
+            responses.PUT,
+            f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-{repo}/collaborators/stefan",
+            status=204,
+        )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=[
+            "https://github.com/o/r1.git",
+            "https://github.com/o/r2.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    # fork=last_fork_failure (the second iteration's attempt) so the
+    # operator sees a diagnostic — not None.
+    assert result.fork is not None
+    assert result.fork.status == "failed"
+    assert result.fork.name == "r2_stefan"
+    assert "user token" in result.fork.detail
+    assert result.is_success is False
+
+
+@responses.activate
+def test_run_mirror_setup_unsafe_basename_marks_failed_and_continues() -> None:
+    """A repo URL whose basename contains shell-meta chars (e.g.
+    ``?`` or ``;``) derives an unsafe ``mirror_name``. Without the
+    pre-validation guard, ``_validate_path_segment`` inside
+    ``repo_exists`` / ``migrate_mirror`` would raise GiteaError out
+    of the loop → CLI rc=2 (hard abort) — defeating the per-mirror
+    failed-result intent. (Copilot R1)
+
+    Now: bad mirror_name → MirrorResult(failed) + continue, the
+    second mirror still gets processed.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    # Second mirror succeeds normally.
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-good", status=404)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=201, json={"id": 10})
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username=None,
+        gh_mirror_repos=[
+            # Basename "repo?evil" contains '?' — unsafe in path
+            # segment, must NOT propagate as a raised exception.
+            "https://github.com/o/repo?evil.git",
+            "https://github.com/o/good.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    # Loop did NOT abort — both URLs got processed.
+    assert len(result.mirrors) == 2
+    assert result.mirrors[0].status == "failed"
+    assert "path validation" in result.mirrors[0].detail
+    assert result.mirrors[1].status == "created"
+
+
+@responses.activate
+def test_run_mirror_setup_partial_failure_continues_loop() -> None:
+    """One failed mirror in a multi-mirror loop doesn't abort —
+    is_success becomes False but other mirrors still get processed.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    # First mirror fails
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-bad", status=404)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=503,
+    )
+    # Second mirror succeeds
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-good", status=404)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 10},
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username=None,  # no fork to keep test focused
+        gh_mirror_repos=[
+            "https://github.com/o/bad.git",
+            "https://github.com/o/good.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    assert len(result.mirrors) == 2
+    assert result.mirrors[0].status == "failed"
+    assert result.mirrors[1].status == "created"
+    assert result.is_success is False  # because one mirror failed
+
+
+@responses.activate
+def test_run_mirror_setup_user_token_failure_marks_fork_failed() -> None:
+    """user-token mint persistently fails → fork status='failed', no
+    fork POST attempted.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r", status=404)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/migrate",
+        status=201,
+        json={"id": 10},
+    )
+    # Both user-token POST attempts fail (initial + post-delete retry)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r/collaborators/stefan",
+        status=204,
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=["https://github.com/o/r.git"],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    assert result.fork is not None
+    assert result.fork.status == "failed"
+    assert "user token" in result.fork.detail
+    assert result.is_success is False
+    # Collab still attempted
+    assert result.collaborator_added_count == 1
+    # No fork POST issued
+    fork_calls = [c for c in responses.calls if "/forks" in (c.request.url or "")]
+    assert len(fork_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# CLI handler for `gitea mirror-setup`
+# ---------------------------------------------------------------------------
+
+
+def test_cli_mirror_setup_unknown_args_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup(["--bogus"])
+    assert rc == 2
+    assert "unknown args" in capsys.readouterr().err
+
+
+def test_cli_mirror_setup_missing_env_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Mirrors-only mode (no GITEA_USER_USERNAME) → GITEA_ADMIN_PASS
+    is NOT in the required list (Copilot R6). Only the unconditional
+    three are required.
+    """
+    for var in (
+        "GITEA_ADMIN_PASS",
+        "GITEA_TOKEN",
+        "GH_MIRROR_REPOS",
+        "GH_MIRROR_TOKEN",
+        "GITEA_USER_USERNAME",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "GITEA_TOKEN" in err
+    assert "GH_MIRROR_REPOS" in err
+    assert "GH_MIRROR_TOKEN" in err
+    # Mirrors-only mode: GITEA_ADMIN_PASS is conditional, NOT in
+    # the missing list when GITEA_USER_USERNAME is unset.
+    assert "GITEA_ADMIN_PASS" not in err
+
+
+def test_cli_mirror_setup_admin_pass_required_when_user_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fork mode (GITEA_USER_USERNAME set) → GITEA_ADMIN_PASS
+    becomes required because the temp user-token mint inside the
+    fork flow uses admin basic-auth. (Copilot R6)
+    """
+    monkeypatch.setenv("GITEA_USER_USERNAME", "stefan")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    monkeypatch.delenv("GITEA_ADMIN_PASS", raising=False)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "GITEA_ADMIN_PASS" in err
+    assert "when GITEA_USER_USERNAME is set" in err
+
+
+def test_cli_mirror_setup_empty_repos_csv_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", " , ,")  # only whitespace + commas
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 2
+    assert "no repo URLs" in capsys.readouterr().err
+
+
+def test_cli_mirror_setup_emits_fork_name_and_owner_on_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Happy path stdout: FORK_NAME=<name> + GITEA_REPO_OWNER=<user>
+    eval-able. Required by deploy.sh's seed_workspace_files post-eval.
+    """
+    from nexus_deploy.gitea import ForkResult, MirrorSetupResult
+
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    monkeypatch.setenv("GITEA_USER_USERNAME", "stefan")
+    _setup_fake_ssh(monkeypatch)
+
+    fake_result = MirrorSetupResult(
+        admin_uid=42,
+        admin_uid_error="",
+        mirrors=(MirrorResult(name="m", status="created"),),
+        fork=ForkResult(name="myrepo_stefan", owner="stefan", status="created"),
+        collaborator_added_count=1,
+        fork_synced=True,
+    )
+    monkeypatch.setattr("nexus_deploy.__main__.run_mirror_setup", lambda **kwargs: fake_result)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "FORK_NAME='myrepo_stefan'" in out or "FORK_NAME=myrepo_stefan" in out
+    assert "GITEA_REPO_OWNER='stefan'" in out or "GITEA_REPO_OWNER=stefan" in out
+
+
+def test_cli_mirror_setup_omits_stdout_when_no_fork(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No fork (no user, or fork failed) → empty stdout. deploy.sh's
+    seed wrapper falls back to its existing $REPO_NAME / $GITEA_REPO_OWNER.
+    """
+    from nexus_deploy.gitea import MirrorSetupResult
+
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    monkeypatch.delenv("GITEA_USER_USERNAME", raising=False)
+    _setup_fake_ssh(monkeypatch)
+
+    fake_result = MirrorSetupResult(
+        admin_uid=42,
+        admin_uid_error="",
+        mirrors=(MirrorResult(name="m", status="created"),),
+        fork=None,
+        collaborator_added_count=0,
+        fork_synced=False,
+    )
+    monkeypatch.setattr("nexus_deploy.__main__.run_mirror_setup", lambda **kwargs: fake_result)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "FORK_NAME" not in out
+    assert "GITEA_REPO_OWNER" not in out
+
+
+def test_cli_mirror_setup_admin_uid_none_404_returns_rc_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """admin user genuinely doesn't exist (404 → admin_uid=None,
+    admin_uid_error="" empty) → rc=1 with "admin user not found".
+    """
+    from nexus_deploy.gitea import MirrorSetupResult
+
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    _setup_fake_ssh(monkeypatch)
+
+    fake_result = MirrorSetupResult(
+        admin_uid=None,
+        admin_uid_error="",  # genuine 404
+        mirrors=(),
+        fork=None,
+        collaborator_added_count=0,
+        fork_synced=False,
+    )
+    monkeypatch.setattr("nexus_deploy.__main__.run_mirror_setup", lambda **kwargs: fake_result)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "admin user not found in Gitea" in err
+    # Must NOT use the misleading "lookup failed" wording reserved
+    # for the auth/transport/5xx branch.
+    assert "lookup failed" not in err
+
+
+def test_cli_mirror_setup_admin_uid_lookup_failure_surfaces_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Auth/transport/5xx during get_user_id → admin_uid_error
+    populated → CLI surfaces the real cause (e.g. "HTTP 503")
+    instead of the misleading "user not found". (Copilot R4)
+    """
+    from nexus_deploy.gitea import MirrorSetupResult
+
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    _setup_fake_ssh(monkeypatch)
+
+    fake_result = MirrorSetupResult(
+        admin_uid=None,
+        admin_uid_error="get_user_id HTTP 503",
+        mirrors=(),
+        fork=None,
+        collaborator_added_count=0,
+        fork_synced=False,
+    )
+    monkeypatch.setattr("nexus_deploy.__main__.run_mirror_setup", lambda **kwargs: fake_result)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "admin UID lookup failed" in err
+    assert "HTTP 503" in err
+    # Must NOT use the "user not found" wording reserved for the
+    # genuine 404 branch.
+    assert "not found in Gitea" not in err
+
+
+def test_cli_mirror_setup_ssh_tunnel_failure_returns_rc_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+
+    from nexus_deploy.ssh import SSHError
+
+    class _BoomSSH:
+        def __init__(self, _host: str) -> None: ...
+        def __enter__(self) -> _BoomSSH:
+            return self
+
+        def __exit__(self, *_: Any) -> None: ...
+        def port_forward(self, *_a: Any, **_k: Any) -> Any:
+            raise SSHError("ssh tunnel boom")
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _BoomSSH)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 2
+    assert "ssh tunnel" in capsys.readouterr().err
+
+
+def test_cli_dispatcher_routes_mirror_setup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["nexus_deploy", "gitea", "mirror-setup", "--bogus"])
+    from nexus_deploy.__main__ import main
+
+    rc = main()
+    assert rc == 2
+    assert "mirror-setup" in capsys.readouterr().err
 
 
 def test_cli_dispatcher_routes_woodpecker_oauth(

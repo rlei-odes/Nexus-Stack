@@ -12,6 +12,7 @@ Currently:
 - ``kestra register-system-flows`` (#505 Modul 2.3)
 - ``gitea configure`` (#505 Modul 2.2e)
 - ``gitea woodpecker-oauth`` (#505 Modul 2.2f)
+- ``gitea mirror-setup`` (#505 Modul 2.2f part 2)
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ from pathlib import Path
 from nexus_deploy import __version__, hello
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
-from nexus_deploy.gitea import GiteaError, run_configure_gitea, run_woodpecker_oauth_setup
+from nexus_deploy.gitea import (
+    GiteaError,
+    run_configure_gitea,
+    run_mirror_setup,
+    run_woodpecker_oauth_setup,
+)
 from nexus_deploy.infisical import (
     BootstrapEnv,
     InfisicalClient,
@@ -1120,6 +1126,192 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
     return 0
 
 
+def _gitea_mirror_setup(args: list[str]) -> int:
+    """`nexus-deploy gitea mirror-setup`.
+
+    Provisions GH_MIRROR_REPOS as Gitea pull-mirrors plus per-user
+    forks (Modul 2.2f part 2). Mirrors deploy.sh's mirror-loop block
+    (L3224-3412 pre-migration); per-mirror operations:
+
+    1. Migrate (clone-mirror via Gitea's /api/v1/repos/migrate +
+       GitHub PAT) — idempotent: already_exists is soft-success
+    2. On the FIRST mirror with a configured user: fork into the
+       user's namespace via temp user-token (created+deleted
+       around the fork POST)
+    3. Add the user as read-collaborator on every mirror
+    4. On the first iteration where a fork was created/exists:
+       trigger mirror-sync + merge-upstream so the fork is
+       fast-forwarded from upstream
+
+    Required env:
+
+    - ``GITEA_TOKEN`` — admin's bearer token for migrate / collab /
+      mirror-sync (from earlier ``gitea configure`` invocation)
+    - ``GH_MIRROR_REPOS`` — comma-separated GitHub repo URLs
+    - ``GH_MIRROR_TOKEN`` — GitHub PAT (Contents:read for private
+      sources)
+
+    Conditionally required env:
+
+    - ``GITEA_ADMIN_PASS`` — admin password (basic-auth for the
+      temp user-token mint inside the fork flow). Required ONLY
+      when ``GITEA_USER_USERNAME`` is set; mirrors-only mode
+      (no user, no fork) doesn't need it. (Copilot R6)
+
+    Optional env:
+
+    - ``ADMIN_USERNAME`` — admin username, path-validated (default
+      ``admin``). Mirrors :class:`NexusConfig`'s ``admin_username``
+      default so the CLI works without the deploy.sh env-passing
+      layer when invoked manually. (Same default as
+      ``gitea woodpecker-oauth`` — Copilot R1 consistency fix.)
+    - ``GITEA_USER_USERNAME`` — Gitea username for the per-user fork.
+      If unset, the fork step is skipped (mirrors-only mode);
+      ``GITEA_ADMIN_PASS`` becomes optional in this case.
+    - ``WORKSPACE_BRANCH`` — branch for the merge-upstream step
+      (default ``main``). deploy.sh resolves this from the GitHub
+      API ahead of time and exports it.
+    - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
+
+    **stdout** (eval-able, only when fork was created/exists):
+
+    - ``FORK_NAME=<name>``
+    - ``GITEA_REPO_OWNER=<user>``
+
+    These two are consumed by deploy.sh's existing
+    ``seed_workspace_files`` wrapper (already migrated, #512) so the
+    seed POST hits the user's fork rather than the per-iteration
+    mirror name. When no fork was created/exists, no stdout output
+    is emitted.
+
+    Exit codes:
+
+    - 0: every mirror succeeded (created or already_exists), fork
+      (if attempted) succeeded too
+    - 1: at least one mirror failed OR fork failed. Deploy.sh keeps
+      going (next spin-up retries; mirrors are idempotent).
+    - 2: bad args / missing required env / SSH tunnel / unexpected
+      exception. Abort.
+    """
+    if args:
+        print(f"gitea mirror-setup: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    admin_username = os.environ.get("ADMIN_USERNAME") or "admin"
+    admin_password = os.environ.get("GITEA_ADMIN_PASS") or ""
+    gitea_token = os.environ.get("GITEA_TOKEN") or ""
+    gh_mirror_repos_csv = os.environ.get("GH_MIRROR_REPOS") or ""
+    gh_mirror_token = os.environ.get("GH_MIRROR_TOKEN") or ""
+    gitea_user_username = os.environ.get("GITEA_USER_USERNAME") or None
+    workspace_branch = os.environ.get("WORKSPACE_BRANCH") or "main"
+    ssh_host = os.environ.get("GITEA_HOST") or "nexus"
+
+    missing: list[str] = []
+    if not gitea_token:
+        missing.append("GITEA_TOKEN")
+    if not gh_mirror_repos_csv:
+        missing.append("GH_MIRROR_REPOS")
+    if not gh_mirror_token:
+        missing.append("GH_MIRROR_TOKEN")
+    # GITEA_ADMIN_PASS is only consumed by the fork flow's temp
+    # user-token mint (basic-auth: admin acts on behalf of user).
+    # Mirrors-only mode (no GITEA_USER_USERNAME) doesn't need it.
+    # (Copilot R6)
+    if gitea_user_username and not admin_password:
+        missing.append("GITEA_ADMIN_PASS (required when GITEA_USER_USERNAME is set)")
+    if missing:
+        print(
+            f"gitea mirror-setup: missing required env: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    repos = [s.strip() for s in gh_mirror_repos_csv.split(",") if s.strip()]
+    if not repos:
+        print("gitea mirror-setup: GH_MIRROR_REPOS contained no repo URLs", file=sys.stderr)
+        return 2
+
+    try:
+        local_port = _allocate_free_port()
+        with (
+            SSHClient(ssh_host) as ssh,
+            ssh.port_forward(local_port, "localhost", 3200) as port,
+        ):
+            _ = ssh
+            result = run_mirror_setup(
+                base_url=f"http://localhost:{port}",
+                admin_username=admin_username,
+                admin_password=admin_password,
+                gitea_token=gitea_token,
+                gitea_user_username=gitea_user_username,
+                gh_mirror_repos=repos,
+                gh_mirror_token=gh_mirror_token,
+                workspace_branch=workspace_branch,
+            )
+    except SSHError as exc:
+        print(f"gitea mirror-setup: ssh tunnel failed: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"gitea mirror-setup: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except GiteaError as exc:
+        # Path-safety violations + REST-layer errors not caught by
+        # the orchestrator's per-call try/except. Surface verbatim
+        # (messages are constructed from format strings only).
+        print(f"gitea mirror-setup: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(
+            f"gitea mirror-setup: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Per-step status lines on stderr.
+    if result.admin_uid is None:
+        # Distinguish "admin user genuinely doesn't exist (404)" from
+        # auth/transport/5xx failures via admin_uid_error. Without
+        # this, the message was misleadingly the same for all paths.
+        # (Copilot R4)
+        if result.admin_uid_error:
+            sys.stderr.write(
+                f"  • admin UID lookup failed ({result.admin_uid_error}) — skipping all mirrors\n"
+            )
+        else:
+            sys.stderr.write("  • admin user not found in Gitea — skipping all mirrors\n")
+        return 1
+    sys.stderr.write(f"  • admin UID: {result.admin_uid}\n")
+    for m in result.mirrors:
+        sys.stderr.write(
+            f"  • mirror: {m.name} → {m.status}{(' — ' + m.detail) if m.detail else ''}\n"
+        )
+    if result.fork is not None:
+        sys.stderr.write(
+            f"  • fork: {result.fork.owner}/{result.fork.name} → {result.fork.status}"
+            f"{(' — ' + result.fork.detail) if result.fork.detail else ''}\n"
+        )
+    if result.collaborator_added_count > 0:
+        sys.stderr.write(f"  • collaborator added on {result.collaborator_added_count} mirror(s)\n")
+    if result.fork_synced:
+        sys.stderr.write("  • fork merge-upstream attempted\n")
+
+    # Eval-able stdout: emit FORK_NAME + GITEA_REPO_OWNER iff the
+    # fork is in a usable state. seed_workspace_files (deploy.sh side)
+    # uses these to point its seed POST at the user's fork rather
+    # than the most recently-mutated $REPO_NAME from the legacy
+    # mirror loop.
+    import shlex as _shlex
+
+    if result.fork is not None and result.fork.status in ("created", "already_exists"):
+        sys.stdout.write(f"FORK_NAME={_shlex.quote(result.fork.name)}\n")
+        sys.stdout.write(f"GITEA_REPO_OWNER={_shlex.quote(result.fork.owner)}\n")
+
+    return 0 if result.is_success else 1
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -1206,6 +1398,8 @@ def main() -> int:
         return _gitea_configure(args[2:])
     if args[:2] == ["gitea", "woodpecker-oauth"]:
         return _gitea_woodpecker_oauth(args[2:])
+    if args[:2] == ["gitea", "mirror-setup"]:
+        return _gitea_mirror_setup(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -1220,7 +1414,8 @@ def main() -> int:
         "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin), "
         "kestra register-system-flows (reads SECRETS_JSON from stdin + env vars), "
         "gitea configure (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout), "
-        "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET)",
+        "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
+        "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned)",
         file=sys.stderr,
     )
     return 2
