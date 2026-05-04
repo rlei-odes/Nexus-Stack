@@ -202,7 +202,16 @@ class SSHClient:
         misconfigured ProxyCommand and we never want to leak that into
         an exception message.
         """
-        forward_spec = f"{local_port}:{remote_host}:{remote_port}"
+        # Explicit IPv4 bind: without ``127.0.0.1:`` prefix, ``ssh -L``
+        # binds both the IPv4 and IPv6 loopback on dual-stack hosts.
+        # Callers (e.g. :func:`nexus_deploy.__main__._allocate_free_port`)
+        # typically probe IPv4 only when picking a "free" local port —
+        # a port that's free on 127.0.0.1 may still be occupied on ::1
+        # by another tunnel, and the resulting ssh-bind failure would
+        # surface as an ExitOnForwardFailure abort. Pinning the bind
+        # to IPv4 matches the allocator's probe surface and eliminates
+        # that whole class of intermittent collisions.
+        forward_spec = f"127.0.0.1:{local_port}:{remote_host}:{remote_port}"
         # ExitOnForwardFailure=yes: if the local bind fails (port already
         # in use), ssh exits non-zero immediately instead of staying up
         # without a working forward. Without it, _wait_for_local_port
