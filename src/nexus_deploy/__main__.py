@@ -948,7 +948,12 @@ def _gitea_configure(args: list[str]) -> int:
     if result.collaborator_added:
         sys.stderr.write("  • collaborator added\n")
     if result.token is None:
-        sys.stderr.write("  • token: NOT minted (REST will 401 downstream)\n")
+        # Always surface the diagnostic — the post-#519 spin-up showed
+        # how a silent token-mint failure (no error string in the deploy
+        # log) blocks debugging. ``token_error`` is constructed from
+        # Gitea CLI error text + return codes, no secrets.
+        detail = f" — {result.token_error}" if result.token_error else ""
+        sys.stderr.write(f"  • token: NOT minted (downstream skipped){detail}\n")
 
     # Eval-able stdout. RESTART_SERVICES is always emitted (even
     # empty) so deploy.sh's ``eval`` doesn't leave a stale value
