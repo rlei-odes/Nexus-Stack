@@ -11,6 +11,7 @@ Currently:
 - ``services configure --enabled <comma-list>`` (#505 Modul 2.2b/c/d)
 - ``kestra register-system-flows`` (#505 Modul 2.3)
 - ``gitea configure`` (#505 Modul 2.2e)
+- ``gitea woodpecker-oauth`` (#505 Modul 2.2f)
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 from nexus_deploy import __version__, hello
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
-from nexus_deploy.gitea import run_configure_gitea
+from nexus_deploy.gitea import GiteaError, run_configure_gitea, run_woodpecker_oauth_setup
 from nexus_deploy.infisical import (
     BootstrapEnv,
     InfisicalClient,
@@ -970,6 +971,155 @@ def _gitea_configure(args: list[str]) -> int:
     return 0 if result.is_success else 1
 
 
+def _gitea_woodpecker_oauth(args: list[str]) -> int:
+    """`nexus-deploy gitea woodpecker-oauth`.
+
+    Provisions Gitea's "Woodpecker CI" OAuth2 application. Idempotent
+    re-run: deletes any existing app of that name, then creates fresh
+    so deploy.sh sees a known-fresh client_secret on every spin-up
+    (Gitea has no rotate-secret API).
+
+    Required env:
+
+    - ``DOMAIN`` — used to build redirect URI ``https://woodpecker.<domain>/authorize``
+    - ``GITEA_TOKEN`` — token-bearer auth for the admin user
+      (eval-captured by deploy.sh from the prior ``gitea configure``
+      invocation, see Modul 2.2e)
+
+    Optional env:
+
+    - ``ADMIN_USERNAME`` — admin username, path-validated (default
+      ``admin``). Mirrors :class:`NexusConfig`'s ``admin_username``
+      default so the CLI works without the deploy.sh env-passing
+      layer when invoked manually.
+    - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
+
+    **stdout** (eval-able):
+
+    - ``WOODPECKER_GITEA_CLIENT=<id>``
+    - ``WOODPECKER_GITEA_SECRET=<secret>``
+
+    Both lines emitted only when the create succeeds. On failure
+    (rc=1), only a stderr diagnostic is emitted; deploy.sh's eval
+    sees nothing new and the existing ``.env`` values stay (which
+    will be either empty on first run or stale from a prior run).
+
+    Exit codes:
+
+    - 0: created — both env-var lines on stdout, ready to ``eval``
+    - 1: partial — list/delete/create REST failure with rotation
+      NOT started (Gitea state still consistent with the existing
+      Woodpecker .env). Deploy continues without rotating.
+    - 2: hard failure — bad args, missing required env, invalid
+      ADMIN_USERNAME, SSH tunnel failure, transport/unexpected
+      exception, OR rotation half-complete (delete ACK'd or
+      possibly applied but create failed; Woodpecker would 401
+      until next successful deploy if we continued). Abort.
+    """
+    if args:
+        print(f"gitea woodpecker-oauth: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    domain = os.environ.get("DOMAIN") or ""
+    gitea_token = os.environ.get("GITEA_TOKEN") or ""
+    admin_username = os.environ.get("ADMIN_USERNAME") or "admin"
+    ssh_host = os.environ.get("GITEA_HOST") or "nexus"
+
+    missing: list[str] = []
+    if not domain:
+        missing.append("DOMAIN")
+    if not gitea_token:
+        missing.append("GITEA_TOKEN")
+    if missing:
+        print(
+            f"gitea woodpecker-oauth: missing required env: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        # Inside the try-block (Copilot R4): _allocate_free_port can
+        # raise OSError on ephemeral-port exhaustion. Without this
+        # guard the traceback escapes instead of converting to rc=2.
+        local_port = _allocate_free_port()
+        with (
+            SSHClient(ssh_host) as ssh,
+            ssh.port_forward(local_port, "localhost", 3200) as port,
+        ):
+            _ = ssh  # tunnel kept alive for the with-block
+            result, error, rotation_started = run_woodpecker_oauth_setup(
+                base_url=f"http://localhost:{port}",
+                domain=domain,
+                gitea_token=gitea_token,
+                admin_username=admin_username,
+            )
+    except SSHError as exc:
+        print(f"gitea woodpecker-oauth: ssh tunnel failed: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"gitea woodpecker-oauth: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except GiteaError as exc:
+        # Path-safety violations (unsafe admin_username) and other
+        # input-validation failures inside run_woodpecker_oauth_setup
+        # surface as GiteaError. Their messages are constructed from
+        # fixed format strings + operator-controlled identifiers
+        # (no secrets), so safe to surface verbatim. (Copilot R5 —
+        # the previous catch-all collapsed these to "unexpected
+        # error (GiteaError)" which lost the actionable detail.)
+        print(f"gitea woodpecker-oauth: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(
+            f"gitea woodpecker-oauth: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    if result is None:
+        # ``error`` is constructed in :func:`run_woodpecker_oauth_setup`
+        # from GiteaError format strings only (HTTP status codes,
+        # type names) — never from ``gitea_token``. CodeQL's taint
+        # analysis can't prove that and surfaces the line as
+        # ``py/clear-text-logging-sensitive-data``. Alert dismissed
+        # as "won't fix" with the same rationale (see PR #521).
+        sys.stderr.write(f"  • woodpecker-oauth: NOT created — {error}\n")
+        # Half-completed rotation = MUST abort. The delete already
+        # invalidated the previous client_secret; if we returned
+        # rc=1 (yellow warn, deploy continues), Woodpecker would
+        # keep running with the now-stale secret in its .env and
+        # 401 on every Gitea login until the next deploy succeeds.
+        # rc=2 routes to deploy.sh's red-abort branch. (Copilot R2)
+        if rotation_started:
+            sys.stderr.write(
+                "  • rotation half-complete — old creds invalidated, "
+                "no fresh ones issued; aborting to avoid a Woodpecker login outage\n",
+            )
+            return 2
+        return 1
+
+    sys.stderr.write("  • woodpecker-oauth: created (fresh client_id + secret)\n")
+
+    import shlex as _shlex
+
+    # Eval-able stdout handoff to deploy.sh — same intentional pattern
+    # as ``GITEA_TOKEN=`` in :func:`_gitea_configure`. ``shlex.quote``
+    # guarantees the value can't break out of the assignment if it
+    # ever contains shell metacharacters; deploy.sh writes the
+    # eval'd values into Woodpecker's ``.env`` (mode 600) before
+    # ``docker compose up -d``. CodeQL flags the secret-bearing line
+    # because ``client_secret`` matches its sensitive-name classifier;
+    # alert dismissed as "won't fix" — the eval-handoff is the
+    # documented contract, mitigated by tempfile mode 600 +
+    # ``$RUNNER_CLEANUP_PATHS`` trap-driven cleanup on deploy.sh side.
+    sys.stdout.write(f"WOODPECKER_GITEA_CLIENT={_shlex.quote(result.client_id)}\n")
+    sys.stdout.write(f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.client_secret)}\n")
+    return 0
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -1054,6 +1204,8 @@ def main() -> int:
         return _kestra_register_system_flows(args[2:])
     if args[:2] == ["gitea", "configure"]:
         return _gitea_configure(args[2:])
+    if args[:2] == ["gitea", "woodpecker-oauth"]:
+        return _gitea_woodpecker_oauth(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -1067,7 +1219,8 @@ def main() -> int:
         "compose up --enabled <comma-list>, "
         "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin), "
         "kestra register-system-flows (reads SECRETS_JSON from stdin + env vars), "
-        "gitea configure (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout)",
+        "gitea configure (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout), "
+        "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET)",
         file=sys.stderr,
     )
     return 2

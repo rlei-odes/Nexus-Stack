@@ -3144,34 +3144,56 @@ REMOTE_KESTRA_PROBE_EOF
             fi
 
             # --- Create Woodpecker CI OAuth application in Gitea ---
+            # Phase 2 Modul 2.2f (#505) — list/delete/create OAuth app
+            # via the migrated nexus_deploy.gitea woodpecker-oauth CLI.
+            # Idempotent: existing "Woodpecker CI" app is deleted first
+            # so the create always returns a fresh client_secret
+            # (Gitea has no rotate-secret API).
+            #
+            # The CLI emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET
+            # to stdout in eval-able form (same handoff pattern as
+            # `gitea configure` from #519). Tempfile mode 600 +
+            # registered with $RUNNER_CLEANUP_PATHS for trap-driven
+            # removal on interrupt/early-exit.
             if echo "$ENABLED_SERVICES" | grep -qw "woodpecker" && [ -n "$WOODPECKER_AGENT_SECRET" ]; then
                 echo "  Creating Woodpecker CI OAuth app in Gitea..."
+                # Clear any stale eval values from a prior iteration / parent
+                # env BEFORE the CLI runs. Without this, an rc=1 (CLI failed
+                # to mint fresh creds) followed by the `[ -n "${VAR:-}" ]`
+                # gate below would happily rewrite Woodpecker's .env using
+                # whatever credentials happened to be inherited from the
+                # shell — potentially restarting Woodpecker with stale creds
+                # that Gitea has already invalidated. (Copilot R1)
+                unset WOODPECKER_GITEA_CLIENT WOODPECKER_GITEA_SECRET
+                WP_OUT=$(mktemp)
+                chmod 600 "$WP_OUT"
+                echo "$WP_OUT" >> "$RUNNER_CLEANUP_PATHS"
+                WP_RC=0
+                DOMAIN="$DOMAIN" \
+                    GITEA_TOKEN="$GITEA_TOKEN" \
+                    ADMIN_USERNAME="${ADMIN_USERNAME:-admin}" \
+                    uv run --quiet --project "$PROJECT_ROOT" \
+                    python -m nexus_deploy gitea woodpecker-oauth > "$WP_OUT" \
+                    || WP_RC=$?
+                case "$WP_RC" in
+                    0)
+                        if [ -s "$WP_OUT" ]; then
+                            eval "$(cat "$WP_OUT")"
+                        fi
+                        echo -e "${GREEN}  ✓ Woodpecker OAuth app created${NC}"
+                        ;;
+                    1)
+                        echo -e "${YELLOW}  ⚠ Could not create Woodpecker OAuth app in Gitea${NC}"
+                        ;;
+                    *)
+                        rm -f "$WP_OUT"
+                        echo -e "${RED}  ✗ Woodpecker OAuth hard failure (rc=$WP_RC); aborting${NC}"
+                        exit "$WP_RC"
+                        ;;
+                esac
+                rm -f "$WP_OUT"
 
-                # Delete existing OAuth app if present (idempotent re-deploy)
-                EXISTING_APPS=$(ssh nexus "curl -s 'http://localhost:3200/api/v1/user/applications/oauth2' \
-                    -H 'Authorization: token $GITEA_TOKEN'" 2>/dev/null || echo "[]")
-                EXISTING_APP_ID=$(echo "$EXISTING_APPS" | jq -r '.[] | select(.name=="Woodpecker CI") | .id // empty' 2>/dev/null)
-                if [ -n "$EXISTING_APP_ID" ]; then
-                    ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/user/applications/oauth2/$EXISTING_APP_ID' \
-                        -H 'Authorization: token $GITEA_TOKEN'" >/dev/null 2>&1 || true
-                fi
-
-                # Create new OAuth application
-                OAUTH_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/user/applications/oauth2' \
-                    -H 'Authorization: token $GITEA_TOKEN' \
-                    -H 'Content-Type: application/json' \
-                    -d '{
-                        \"name\": \"Woodpecker CI\",
-                        \"redirect_uris\": [\"https://woodpecker.${DOMAIN}/authorize\"],
-                        \"confidential_client\": true
-                    }'" 2>/dev/null || echo "")
-
-                WOODPECKER_GITEA_CLIENT=$(echo "$OAUTH_RESULT" | jq -r '.client_id // empty')
-                WOODPECKER_GITEA_SECRET=$(echo "$OAUTH_RESULT" | jq -r '.client_secret // empty')
-
-                if [ -n "$WOODPECKER_GITEA_CLIENT" ] && [ -n "$WOODPECKER_GITEA_SECRET" ]; then
-                    echo -e "${GREEN}  ✓ Woodpecker OAuth app created${NC}"
-
+                if [ -n "${WOODPECKER_GITEA_CLIENT:-}" ] && [ -n "${WOODPECKER_GITEA_SECRET:-}" ]; then
                     # Update Woodpecker .env with OAuth credentials
                     cat > "$STACKS_DIR/woodpecker/.env" << WPEOF
 # Auto-generated - DO NOT COMMIT
@@ -3189,8 +3211,6 @@ WPEOF
                     else
                         echo -e "${YELLOW}  ⚠ Failed to start Woodpecker - check container logs${NC}"
                     fi
-                else
-                    echo -e "${YELLOW}  ⚠ Could not create Woodpecker OAuth app in Gitea${NC}"
                 fi
             fi
 
