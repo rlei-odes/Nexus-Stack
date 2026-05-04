@@ -1019,12 +1019,15 @@ class GiteaClient:
         belongs to the target user (else the fork lands in admin's
         namespace, not the user's). Admin can create tokens on behalf
         of other users via basic-auth (NOT token-auth — token bearer
-        only acts on its own user). Idempotent: on first 201-failure
-        it deletes the token by name and retries.
+        only acts on its own user). Idempotent: on any first-attempt
+        failure (non-200/201, transport, JSON parse, missing sha1)
+        it deletes the token by name and retries once. (Copilot R6 —
+        the previous "201-failure" wording was confusing because 201
+        is the success code; the retry trigger is anything-not-success.)
 
-        Returns the sha1 string on success, None on permanent
-        failure. None routes to a yellow warning + skip-fork at the
-        orchestrator level.
+        Returns the sha1 string on success, None on persistent failure
+        (both attempts return non-success). None routes to a yellow
+        warning + skip-fork at the orchestrator level.
         """
         _validate_path_segment(username, kind="username")
         _validate_path_segment(token_name, kind="token_name")

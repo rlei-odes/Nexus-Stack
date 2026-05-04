@@ -3276,11 +3276,16 @@ def test_cli_mirror_setup_unknown_args_returns_rc_2(
 def test_cli_mirror_setup_missing_env_returns_rc_2(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Mirrors-only mode (no GITEA_USER_USERNAME) → GITEA_ADMIN_PASS
+    is NOT in the required list (Copilot R6). Only the unconditional
+    three are required.
+    """
     for var in (
         "GITEA_ADMIN_PASS",
         "GITEA_TOKEN",
         "GH_MIRROR_REPOS",
         "GH_MIRROR_TOKEN",
+        "GITEA_USER_USERNAME",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -3289,10 +3294,34 @@ def test_cli_mirror_setup_missing_env_returns_rc_2(
     rc = _gitea_mirror_setup([])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "GITEA_ADMIN_PASS" in err
     assert "GITEA_TOKEN" in err
     assert "GH_MIRROR_REPOS" in err
     assert "GH_MIRROR_TOKEN" in err
+    # Mirrors-only mode: GITEA_ADMIN_PASS is conditional, NOT in
+    # the missing list when GITEA_USER_USERNAME is unset.
+    assert "GITEA_ADMIN_PASS" not in err
+
+
+def test_cli_mirror_setup_admin_pass_required_when_user_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fork mode (GITEA_USER_USERNAME set) → GITEA_ADMIN_PASS
+    becomes required because the temp user-token mint inside the
+    fork flow uses admin basic-auth. (Copilot R6)
+    """
+    monkeypatch.setenv("GITEA_USER_USERNAME", "stefan")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    monkeypatch.delenv("GITEA_ADMIN_PASS", raising=False)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "GITEA_ADMIN_PASS" in err
+    assert "when GITEA_USER_USERNAME is set" in err
 
 
 def test_cli_mirror_setup_empty_repos_csv_returns_rc_2(

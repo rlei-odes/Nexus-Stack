@@ -1145,13 +1145,18 @@ def _gitea_mirror_setup(args: list[str]) -> int:
 
     Required env:
 
-    - ``GITEA_ADMIN_PASS`` — admin password (basic-auth for the
-      temp user-token mint inside the fork flow)
     - ``GITEA_TOKEN`` — admin's bearer token for migrate / collab /
       mirror-sync (from earlier ``gitea configure`` invocation)
     - ``GH_MIRROR_REPOS`` — comma-separated GitHub repo URLs
     - ``GH_MIRROR_TOKEN`` — GitHub PAT (Contents:read for private
       sources)
+
+    Conditionally required env:
+
+    - ``GITEA_ADMIN_PASS`` — admin password (basic-auth for the
+      temp user-token mint inside the fork flow). Required ONLY
+      when ``GITEA_USER_USERNAME`` is set; mirrors-only mode
+      (no user, no fork) doesn't need it. (Copilot R6)
 
     Optional env:
 
@@ -1161,7 +1166,8 @@ def _gitea_mirror_setup(args: list[str]) -> int:
       layer when invoked manually. (Same default as
       ``gitea woodpecker-oauth`` — Copilot R1 consistency fix.)
     - ``GITEA_USER_USERNAME`` — Gitea username for the per-user fork.
-      If unset, the fork step is skipped (mirrors-only mode).
+      If unset, the fork step is skipped (mirrors-only mode);
+      ``GITEA_ADMIN_PASS`` becomes optional in this case.
     - ``WORKSPACE_BRANCH`` — branch for the merge-upstream step
       (default ``main``). deploy.sh resolves this from the GitHub
       API ahead of time and exports it.
@@ -1201,14 +1207,18 @@ def _gitea_mirror_setup(args: list[str]) -> int:
     ssh_host = os.environ.get("GITEA_HOST") or "nexus"
 
     missing: list[str] = []
-    if not admin_password:
-        missing.append("GITEA_ADMIN_PASS")
     if not gitea_token:
         missing.append("GITEA_TOKEN")
     if not gh_mirror_repos_csv:
         missing.append("GH_MIRROR_REPOS")
     if not gh_mirror_token:
         missing.append("GH_MIRROR_TOKEN")
+    # GITEA_ADMIN_PASS is only consumed by the fork flow's temp
+    # user-token mint (basic-auth: admin acts on behalf of user).
+    # Mirrors-only mode (no GITEA_USER_USERNAME) doesn't need it.
+    # (Copilot R6)
+    if gitea_user_username and not admin_password:
+        missing.append("GITEA_ADMIN_PASS (required when GITEA_USER_USERNAME is set)")
     if missing:
         print(
             f"gitea mirror-setup: missing required env: {', '.join(missing)}",
