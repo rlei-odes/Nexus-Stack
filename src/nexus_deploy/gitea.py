@@ -235,6 +235,12 @@ class GiteaResult:
     admin: CreateUserResult
     user: CreateUserResult | None
     token: str | None
+    # Diagnostic message when ``token is None`` — empty string on
+    # success. Captures the Gitea-CLI-side error description so the
+    # CLI handler can emit it to stderr without leaking secrets.
+    # Added in the post-#519 fix when production spin-up surfaced a
+    # silent token-mint failure with no diagnostic trace.
+    token_error: str
     repo: CreateRepoResult | None
     collaborator_added: bool
     restart_services: tuple[str, ...]
@@ -274,16 +280,6 @@ class GiteaError(Exception):
     Carries no response body — Gitea error responses on auth-failure
     paths can echo back the credentials we just sent. Constructed
     from fixed format strings + status codes / type names only.
-    """
-
-
-class TokenExistsError(GiteaError):
-    """Raised by ``create_token`` when Gitea reports the token name is taken.
-
-    The orchestrator catches this and falls back to delete-then-retry
-    (``create_token_with_retry``). Keeping the exception class
-    distinct lets tests pin the retry behaviour without grepping
-    error messages.
     """
 
 
@@ -410,6 +406,64 @@ class GiteaCli:
             detail=text.strip()[:200] if text else "(no output)",
         )
 
+    def mint_token(
+        self,
+        username: str,
+        name: str,
+        scopes: str = "all",
+    ) -> tuple[str | None, str]:
+        """Generate API token via ``gitea admin user generate-access-token``.
+
+        Returns ``(sha1_or_None, diagnostic_message)``. On success the
+        diagnostic is empty. On failure the diagnostic is a short
+        Gitea-CLI-error description suitable for stderr — Gitea's
+        delete/generate output is just username + token-name +
+        status, never password material.
+
+        Idempotent: deletes any existing token with the same name
+        first (best-effort, ignored on 404), then generates fresh.
+        Mirrors the legacy deploy.sh delete-then-create pattern but
+        via peer-auth CLI instead of REST basic-auth — eliminates
+        the chicken-egg of "we need a working REST password to mint
+        a token" that bit production in PR #519's spin-up: REST POST
+        returned 400 inside ``CreateAccessToken`` despite the prior
+        admin password sync reporting success. The CLI peer-auths
+        as the container's git user, so password drift between the
+        CLI sync and the basic-auth attempt cannot manifest.
+        """
+        _validate_path_segment(username, kind="username")
+        _validate_path_segment(name, kind="token_name")
+        # Best-effort delete — peer auth CLI; rc=0 if token existed,
+        # rc!=0 if not. Either way, the next generate succeeds.
+        delete_script = (
+            "docker exec -u git gitea gitea admin user delete-access-token "
+            f"--username {shlex.quote(username)} "
+            f"--token {shlex.quote(name)} "
+            ">/dev/null 2>&1 || true\n"
+        )
+        self.ssh.run_script(delete_script, check=False, timeout=30.0)
+
+        generate_script = (
+            "set -euo pipefail\n"
+            "docker exec -u git gitea gitea admin user generate-access-token "
+            f"--username {shlex.quote(username)} "
+            f"--token-name {shlex.quote(name)} "
+            f"--scopes {shlex.quote(scopes)} 2>&1\n"
+        )
+        result = self.ssh.run_script(generate_script, check=False, timeout=30.0)
+        if result.returncode != 0:
+            # Output examples on failure: "User does not exist" or
+            # "...invalid scopes...". Capture first line only.
+            first_line = (result.stdout or "").splitlines()
+            detail = first_line[0][:200] if first_line else "(no output)"
+            return None, f"CLI rc={result.returncode}: {detail}"
+
+        # Success output: "Access token was successfully created: <40-hex>"
+        match = re.search(r"\b([a-f0-9]{40})\b", result.stdout or "")
+        if match:
+            return match.group(1), ""
+        return None, "CLI rc=0 but no sha1 in output"
+
     def sync_password(self, username: str, password: str) -> CreateUserResult:
         """``gitea admin user change-password`` — peer-auth, no old password.
 
@@ -529,77 +583,6 @@ class GiteaClient:
         except (requests.ConnectionError, requests.Timeout):
             return False
         return resp.status_code == 200
-
-    def create_token(self, username: str, name: str, scopes: list[str]) -> str:
-        """``POST /api/v1/users/<u>/tokens`` — basic-auth.
-
-        Returns the sha1. Raises :class:`TokenExistsError` on 409 (or
-        when the response body indicates the name is taken — Gitea
-        sometimes returns 422 with ``"name already exists"``).
-        Raises :class:`GiteaError` on other non-success status / transport.
-        """
-        _validate_path_segment(username, kind="username")
-        body = {"name": name, "scopes": scopes}
-        try:
-            resp = requests.post(
-                f"{self.base_url}/api/v1/users/{username}/tokens",
-                json=body,
-                timeout=_HTTP_TIMEOUT,
-                **self._request_kwargs(),  # type: ignore[arg-type]
-            )
-        except (requests.ConnectionError, requests.Timeout) as exc:
-            raise GiteaError(f"create_token transport ({type(exc).__name__})") from exc
-        if resp.status_code in (200, 201):
-            try:
-                payload = resp.json()
-            except ValueError as exc:
-                raise GiteaError("create_token response was not JSON") from exc
-            sha1 = payload.get("sha1") if isinstance(payload, dict) else None
-            if not isinstance(sha1, str) or not sha1:
-                raise GiteaError("create_token response missing 'sha1'")
-            return sha1
-        if resp.status_code == 409:
-            raise TokenExistsError(f"token {name!r} already exists")
-        # Some Gitea versions return 422 with "name already exists"
-        # in the message body. Match conservatively to avoid masking
-        # real validation errors.
-        if resp.status_code == 422:
-            try:
-                msg = resp.json().get("message", "") if resp.content else ""
-            except ValueError:
-                msg = ""
-            if isinstance(msg, str) and "already exists" in msg.lower():
-                raise TokenExistsError(f"token {name!r} already exists")
-        raise GiteaError(f"create_token HTTP {resp.status_code}")
-
-    def delete_token(self, username: str, name: str) -> bool:
-        """``DELETE /api/v1/users/<u>/tokens/<name>``. 204+404 → True."""
-        _validate_path_segment(username, kind="username")
-        # Token name may contain ``-`` and ``_`` but no path-traversal —
-        # validate against the same regex.
-        _validate_path_segment(name, kind="token_name")
-        try:
-            resp = requests.delete(
-                f"{self.base_url}/api/v1/users/{username}/tokens/{name}",
-                timeout=_HTTP_TIMEOUT,
-                **self._request_kwargs(),  # type: ignore[arg-type]
-            )
-        except (requests.ConnectionError, requests.Timeout):
-            return False
-        return resp.status_code in (204, 404)
-
-    def create_token_with_retry(self, username: str, name: str, scopes: list[str]) -> str:
-        """Idempotent: try create, on TokenExistsError → delete + retry once.
-
-        Mirrors deploy.sh L2671-2683. The second create returns the
-        new sha1 (Gitea always returns a new value on re-create — the
-        old token is invalidated by the delete).
-        """
-        try:
-            return self.create_token(username, name, scopes)
-        except TokenExistsError:
-            self.delete_token(username, name)
-            return self.create_token(username, name, scopes)
 
     def repo_exists(self, owner: str, name: str) -> bool:
         _validate_path_segment(owner, kind="owner")
@@ -797,6 +780,7 @@ def run_configure_gitea(
             admin=CreateUserResult(name=admin_username, status="failed", detail="gitea not ready"),
             user=None,
             token=None,
+            token_error="gitea not ready",  # noqa: S106 — diagnostic, not a credential
             repo=None,
             collaborator_added=False,
             restart_services=_compute_restart_services(enabled_services),
@@ -844,14 +828,15 @@ def run_configure_gitea(
             if user_result.status == "already_exists":
                 user_result = cli.sync_password(user_username, gitea_user_password)
 
-    # 5. Token (REST, basic-auth)
-    token: str | None = None
-    try:
-        token = rest.create_token_with_retry(admin_username, "nexus-automation", ["all"])
-    except GiteaError:
-        # Token couldn't be minted even with retry — surface as
-        # token=None; is_success will return False (rc=1 → yellow).
-        token = None
+    # 5. Token via CLI peer auth (was: REST basic-auth in PR #519).
+    # Switched after production spin-up surfaced a silent 400 from
+    # POST /api/v1/users/<u>/tokens despite admin password sync
+    # reporting success — likely a subtle password-state race
+    # between the bcrypt commit and the next-millisecond REST
+    # auth check. CLI peer auth eliminates the chicken-egg: the
+    # docker-exec runs as the container's git user with no
+    # password verification needed.
+    token, token_error = cli.mint_token(admin_username, "nexus-automation", "all")
 
     # 6+7. Repo + collaborator (skip in mirror mode)
     repo_result: CreateRepoResult | None = None
@@ -878,6 +863,7 @@ def run_configure_gitea(
         admin=admin_result,
         user=user_result,
         token=token,
+        token_error=token_error,
         repo=repo_result,
         collaborator_added=collaborator_added,
         restart_services=_compute_restart_services(enabled_services),

@@ -35,7 +35,6 @@ from nexus_deploy.gitea import (
     GiteaClient,
     GiteaError,
     GiteaResult,
-    TokenExistsError,
     _compute_restart_services,
     _escape_sql_string_literal,
     _parse_admin_list_for_user,
@@ -445,113 +444,122 @@ def test_patch_user_email_path_safety() -> None:
 # ---------------------------------------------------------------------------
 
 
-@responses.activate
-def test_create_token_returns_sha1_on_201() -> None:
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"id": 1, "name": "nexus-automation", "sha1": "abc123"},
+def test_round_4_mint_token_returns_sha1_on_success() -> None:
+    """Happy path: CLI returns "Access token was successfully created: <40-hex>"."""
+    ssh = _make_ssh(
+        [
+            (0, ""),  # delete-access-token best-effort (rc=0 fine)
+            (
+                0,
+                "Access token was successfully created: aebafa8bbcff4e5e7edde8dc89571df698648e7d\n",
+            ),
+        ]
     )
-    assert _client().create_token("admin", "nexus-automation", ["all"]) == "abc123"
+    sha1, err = GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    assert sha1 == "aebafa8bbcff4e5e7edde8dc89571df698648e7d"
+    assert err == ""
 
 
-@responses.activate
-def test_create_token_raises_token_exists_on_409() -> None:
-    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/admin/tokens", status=409)
-    with pytest.raises(TokenExistsError):
-        _client().create_token("admin", "nexus-automation", ["all"])
+def test_round_4_mint_token_idempotent_delete_first() -> None:
+    """Token already exists → CLI delete succeeds → CLI generate succeeds.
 
-
-@responses.activate
-def test_create_token_raises_token_exists_on_422_with_message() -> None:
-    """Some Gitea versions return 422 with 'already exists' body."""
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=422,
-        json={"message": "token name already exists"},
+    The legacy deploy.sh delete-then-create pattern is preserved via
+    the unconditional delete in mint_token. CLI delete-access-token
+    returns rc=0 if the token existed and rc!=0 (silenced via ``|| true``)
+    if not. Either way, the next generate runs and returns the new sha1.
+    """
+    ssh = _make_ssh(
+        [
+            (1, ""),  # delete: token didn't exist (rc!=0, silenced)
+            (
+                0,
+                "Access token was successfully created: 0000000000000000000000000000000000000001\n",
+            ),
+        ]
     )
-    with pytest.raises(TokenExistsError):
-        _client().create_token("admin", "nexus-automation", ["all"])
+    sha1, err = GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    assert sha1 == "0000000000000000000000000000000000000001"
+    assert err == ""
+    # Both delete + generate were called.
+    assert ssh.run_script.call_count == 2
 
 
-@responses.activate
-def test_create_token_raises_gitea_error_on_other_422() -> None:
-    """Non-existence 422 (validation failure) is NOT a retry signal."""
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=422,
-        json={"message": "scopes invalid"},
+def test_mint_token_returns_diagnostic_on_cli_failure() -> None:
+    """Generate fails (non-zero rc) → returns (None, diagnostic) — no crash.
+
+    Regression test for the post-#519 silent-fail bug class: previously
+    a GiteaError was caught silently with ``token = None`` and no stderr
+    diagnostic, making the spin-up failure undebuggable. Now the
+    diagnostic is captured and surfaced via stderr by the CLI handler.
+    """
+    ssh = _make_ssh(
+        [
+            (0, ""),  # delete OK
+            (1, "User does not exist [name: admin]\n"),  # generate fails
+        ]
     )
-    with pytest.raises(GiteaError) as exc_info:
-        _client().create_token("admin", "nexus-automation", ["all"])
-    assert not isinstance(exc_info.value, TokenExistsError)
+    sha1, err = GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    assert sha1 is None
+    assert "rc=1" in err
+    assert "User does not exist" in err
 
 
-@responses.activate
-def test_create_token_raises_gitea_error_on_5xx() -> None:
-    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/admin/tokens", status=500)
-    with pytest.raises(GiteaError):
-        _client().create_token("admin", "nexus-automation", ["all"])
-
-
-@responses.activate
-def test_create_token_raises_on_missing_sha1() -> None:
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"id": 1, "name": "nexus-automation"},  # no sha1
+def test_mint_token_returns_diagnostic_on_unparseable_output() -> None:
+    """rc=0 but no sha1 in output → still surfaces a diagnostic."""
+    ssh = _make_ssh(
+        [
+            (0, ""),
+            (0, "weird unexpected success output\n"),  # no 40-hex
+        ]
     )
-    with pytest.raises(GiteaError, match="sha1"):
-        _client().create_token("admin", "nexus-automation", ["all"])
+    sha1, err = GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    assert sha1 is None
+    assert "no sha1" in err.lower()
 
 
-@responses.activate
-def test_round_4_create_token_with_retry_409_then_delete_then_201() -> None:
-    """The full retry-via-delete flow on a 409."""
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=409,
-    )
-    responses.add(
-        responses.DELETE,
-        f"{BASE_URL}/api/v1/users/admin/tokens/nexus-automation",
-        status=204,
-    )
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "deadbeef"},
-    )
-    assert _client().create_token_with_retry("admin", "nexus-automation", ["all"]) == "deadbeef"
-    # Three calls: POST 409, DELETE 204, POST 201
-    assert len(responses.calls) == 3
-
-
-@responses.activate
-def test_delete_token_treats_404_as_success() -> None:
-    """Idempotent — 404 means already gone, equivalent to 204."""
-    responses.add(
-        responses.DELETE,
-        f"{BASE_URL}/api/v1/users/admin/tokens/nexus-automation",
-        status=404,
-    )
-    assert _client().delete_token("admin", "nexus-automation") is True
-
-
-def test_delete_token_path_safety_on_token_name() -> None:
+def test_mint_token_path_safety_on_username() -> None:
+    ssh = _make_ssh()
     with pytest.raises(GiteaError, match="unsafe"):
-        _client().delete_token("admin", "name;rm -rf /")
+        GiteaCli(ssh).mint_token("admin;rm -rf /", "nexus-automation")
+    ssh.run_script.assert_not_called()
 
 
-def test_create_token_path_safety() -> None:
+def test_mint_token_path_safety_on_token_name() -> None:
+    ssh = _make_ssh()
     with pytest.raises(GiteaError, match="unsafe"):
-        _client().create_token("a;b", "nexus-automation", ["all"])
+        GiteaCli(ssh).mint_token("admin", "evil; name")
+    ssh.run_script.assert_not_called()
+
+
+def test_mint_token_uses_run_script_not_run() -> None:
+    """R7 — peer-auth CLI commands feed via stdin to ssh.run_script,
+    NOT argv. No password is involved (peer auth), so the secrecy
+    surface is the username + token-name, both of which are
+    already non-secret values per the path-safety contract.
+    """
+    ssh = _make_ssh(
+        [
+            (0, ""),
+            (0, "Access token was successfully created: " + "f" * 40 + "\n"),
+        ]
+    )
+    GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    # Never use ssh.run (argv form)
+    ssh.run.assert_not_called()
+
+
+def test_mint_token_supports_custom_scopes() -> None:
+    """Default scopes='all' is preserved, but caller can pass alternatives."""
+    ssh = _make_ssh(
+        [
+            (0, ""),
+            (0, "Access token was successfully created: " + "a" * 40 + "\n"),
+        ]
+    )
+    GiteaCli(ssh).mint_token("admin", "nexus-automation", scopes="write:repository")
+    # Inspect the rendered generate script — last call to run_script
+    last_script = ssh.run_script.call_args[0][0]
+    assert "write:repository" in last_script
 
 
 # ---------------------------------------------------------------------------
@@ -751,16 +759,9 @@ def test_compute_restart_services_empty_input() -> None:
 
 @responses.activate
 def test_run_configure_gitea_full_happy_path_admin_already_exists() -> None:
-    """Admin exists, password sync, token mint, repo+collaborator add."""
+    """Admin exists, password sync, token mint via CLI, repo+collaborator add."""
     # Healthcheck OK
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    # Token mint
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok123"},
-    )
     # Repo create
     responses.add(responses.POST, f"{BASE_URL}/api/v1/user/repos", status=201, json={"id": 1})
     # Collaborator add
@@ -777,6 +778,8 @@ def test_run_configure_gitea_full_happy_path_admin_already_exists() -> None:
             (0, ""),  # admin sync_password
             (0, _ADMIN_LIST_FIXTURE),  # user list (same fixture, has stefan.koch)
             (0, ""),  # user sync_password
+            (0, ""),  # token: delete-access-token (best-effort)
+            (0, f"Access token was successfully created: {'a' * 40}\n"),  # token: generate
         ]
     )
 
@@ -797,7 +800,7 @@ def test_run_configure_gitea_full_happy_path_admin_already_exists() -> None:
     )
 
     assert result.is_success is True
-    assert result.token == "tok123"
+    assert result.token == "a" * 40
     assert result.db_pw_synced is True
     assert result.admin.status == "synced"
     assert result.user is not None
@@ -812,12 +815,6 @@ def test_run_configure_gitea_full_happy_path_admin_already_exists() -> None:
 def test_run_configure_gitea_admin_does_not_exist_creates() -> None:
     """Empty admin list → CREATE branch."""
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok"},
-    )
     responses.add(responses.POST, f"{BASE_URL}/api/v1/user/repos", status=201, json={"id": 1})
 
     ssh = _make_ssh(
@@ -825,6 +822,8 @@ def test_run_configure_gitea_admin_does_not_exist_creates() -> None:
             (0, "RESULT db_pw=synced\n"),
             (0, "ID Username Email\n"),  # empty list
             (0, "New user 'admin' has been created\n"),  # create_admin
+            (0, ""),  # token: delete-access-token
+            (0, f"Access token was successfully created: {'b' * 40}\n"),  # token: generate
         ]
     )
 
@@ -846,7 +845,7 @@ def test_run_configure_gitea_admin_does_not_exist_creates() -> None:
 
     assert result.admin.status == "created"
     assert result.user is None  # GITEA_USER_EMAIL was None
-    assert result.token == "tok"
+    assert result.token == "b" * 40
 
 
 @responses.activate
@@ -860,12 +859,6 @@ def test_create_admin_already_exists_falls_back_to_sync_password() -> None:
     Regression test for Copilot round 1.
     """
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok"},
-    )
 
     ssh = _make_ssh(
         [
@@ -873,6 +866,8 @@ def test_create_admin_already_exists_falls_back_to_sync_password() -> None:
             (0, ""),  # admin list — empty (false negative)
             (0, "user already exists\n"),  # create_admin → already_exists
             (0, ""),  # FALLBACK: sync_password runs and succeeds
+            (0, ""),  # token: delete-access-token
+            (0, f"Access token was successfully created: {'c' * 40}\n"),  # token: generate
         ]
     )
 
@@ -895,8 +890,9 @@ def test_create_admin_already_exists_falls_back_to_sync_password() -> None:
     # Final admin status must be "synced" (not "already_exists") —
     # the fallback ran and the result was overwritten.
     assert result.admin.status == "synced"
-    # 4 ssh.run_script calls: db_sync, list, create, sync_password
-    assert ssh.run_script.call_count == 4
+    # 6 ssh.run_script calls: db_sync, list, create, sync_password (fallback),
+    # delete-access-token (best-effort), generate-access-token
+    assert ssh.run_script.call_count == 6
 
 
 @responses.activate
@@ -905,12 +901,6 @@ def test_create_user_already_exists_falls_back_to_sync_password() -> None:
     list path for the regular user (Copilot round 1).
     """
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok"},
-    )
 
     ssh = _make_ssh(
         [
@@ -920,6 +910,8 @@ def test_create_user_already_exists_falls_back_to_sync_password() -> None:
             (0, ""),  # user list — empty (false negative)
             (0, "user already exists\n"),  # create_user → already_exists
             (0, ""),  # FALLBACK: sync_password
+            (0, ""),  # token: delete-access-token
+            (0, f"Access token was successfully created: {'d' * 40}\n"),  # generate
         ]
     )
 
@@ -953,12 +945,6 @@ def test_round_2_legacy_email_collision_triggers_patch() -> None:
         f"{BASE_URL}/api/v1/admin/users/admin",
         status=200,
     )
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok"},
-    )
     responses.add(responses.POST, f"{BASE_URL}/api/v1/user/repos", status=201, json={"id": 1})
     responses.add(
         responses.PUT,
@@ -975,6 +961,8 @@ def test_round_2_legacy_email_collision_triggers_patch() -> None:
             (0, ""),  # admin sync_password
             (0, "ID Username Email\n"),  # user list — empty
             (0, "New user 'stefan.koch' has been created\n"),  # create_user
+            (0, ""),  # token: delete-access-token
+            (0, f"Access token was successfully created: {'e' * 40}\n"),  # generate
         ]
     )
 
@@ -1006,12 +994,6 @@ def test_round_2_legacy_email_collision_triggers_patch() -> None:
 def test_round_6_repo_already_exists_falls_back_to_patch_private() -> None:
     """409 on POST → PATCH /repos/<o>/<n> with private=True."""
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok"},
-    )
     # Repo create returns 409
     responses.add(responses.POST, f"{BASE_URL}/api/v1/user/repos", status=409)
     # PATCH private fallback
@@ -1025,7 +1007,9 @@ def test_round_6_repo_already_exists_falls_back_to_patch_private() -> None:
         [
             (0, "RESULT db_pw=synced\n"),
             (0, _ADMIN_LIST_FIXTURE),
-            (0, ""),
+            (0, ""),  # admin sync_password
+            (0, ""),  # token: delete-access-token
+            (0, f"Access token was successfully created: {'1' * 40}\n"),  # generate
         ]
     )
 
@@ -1057,18 +1041,14 @@ def test_round_6_repo_already_exists_falls_back_to_patch_private() -> None:
 @responses.activate
 def test_run_configure_gitea_mirror_mode_skips_repo_and_collaborator() -> None:
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    responses.add(
-        responses.POST,
-        f"{BASE_URL}/api/v1/users/admin/tokens",
-        status=201,
-        json={"sha1": "tok"},
-    )
 
     ssh = _make_ssh(
         [
-            (0, ""),
-            (0, _ADMIN_LIST_FIXTURE),
-            (0, ""),
+            (0, ""),  # db_pw_sync
+            (0, _ADMIN_LIST_FIXTURE),  # admin list
+            (0, ""),  # admin sync_password
+            (0, ""),  # token: delete-access-token
+            (0, f"Access token was successfully created: {'2' * 40}\n"),  # generate
         ]
     )
 
@@ -1135,15 +1115,16 @@ def test_run_configure_gitea_not_ready_returns_failed_admin() -> None:
 
 @responses.activate
 def test_run_configure_gitea_token_mint_failure_returns_failure() -> None:
-    """Token can't be minted (5xx on both attempts) → token=None, is_success=False."""
+    """Token CLI fails (rc=1) → token=None, is_success=False, token_error populated."""
     responses.add(responses.GET, f"{BASE_URL}/api/healthz", status=200)
-    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/admin/tokens", status=500)
 
     ssh = _make_ssh(
         [
             (0, "RESULT db_pw=synced\n"),
             (0, _ADMIN_LIST_FIXTURE),
-            (0, ""),
+            (0, ""),  # admin sync_password
+            (0, ""),  # token: delete-access-token (best-effort)
+            (1, "User does not exist [name: admin]\n"),  # token: generate fails
         ]
     )
 
@@ -1164,6 +1145,10 @@ def test_run_configure_gitea_token_mint_failure_returns_failure() -> None:
     )
     assert result.token is None
     assert result.is_success is False
+    # Diagnostic must be populated so CLI handler can emit it to stderr —
+    # the post-#519 silent-fail bug class.
+    assert "rc=1" in result.token_error
+    assert "User does not exist" in result.token_error
 
 
 # ---------------------------------------------------------------------------
@@ -1177,6 +1162,7 @@ def test_is_success_true_on_clean_path() -> None:
         admin=CreateUserResult(name="admin", status="synced"),
         user=CreateUserResult(name="stefan", status="created"),
         token="t",
+        token_error="",
         repo=CreateRepoResult(name="nexus-foo", status="created"),
         collaborator_added=True,
         restart_services=("jupyter",),
@@ -1190,6 +1176,7 @@ def test_is_success_false_when_admin_failed() -> None:
         admin=CreateUserResult(name="admin", status="failed"),
         user=None,
         token="t",
+        token_error="",
         repo=None,
         collaborator_added=False,
         restart_services=(),
@@ -1203,6 +1190,7 @@ def test_is_success_false_when_token_missing() -> None:
         admin=CreateUserResult(name="admin", status="synced"),
         user=None,
         token=None,
+        token_error="CLI rc=1: simulated failure",
         repo=None,
         collaborator_added=False,
         restart_services=(),
@@ -1216,6 +1204,7 @@ def test_is_success_false_when_user_failed() -> None:
         admin=CreateUserResult(name="admin", status="synced"),
         user=CreateUserResult(name="stefan", status="failed"),
         token="t",
+        token_error="",
         repo=None,
         collaborator_added=False,
         restart_services=(),
@@ -1229,6 +1218,7 @@ def test_is_success_false_when_repo_failed() -> None:
         admin=CreateUserResult(name="admin", status="synced"),
         user=None,
         token="t",
+        token_error="",
         repo=CreateRepoResult(name="nexus-foo", status="failed"),
         collaborator_added=False,
         restart_services=(),
@@ -1250,6 +1240,7 @@ def test_round_8_cli_emits_eval_able_stdout(
         admin=CreateUserResult(name="admin", status="synced"),
         user=CreateUserResult(name="stefan", status="created"),
         token="abc123def-token",
+        token_error="",
         repo=CreateRepoResult(name="nexus-foo", status="created"),
         collaborator_added=True,
         restart_services=("jupyter", "marimo"),
@@ -1316,6 +1307,7 @@ def test_round_8_cli_omits_token_line_when_token_none(
         admin=CreateUserResult(name="admin", status="synced"),
         user=None,
         token=None,
+        token_error="CLI rc=1: simulated production failure",
         repo=None,
         collaborator_added=False,
         restart_services=("jupyter",),
@@ -1342,9 +1334,15 @@ def test_round_8_cli_omits_token_line_when_token_none(
     rc = _gitea_configure([])
     assert rc == 1  # is_success=False (token is None)
 
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
+    err = captured.err
     assert "GITEA_TOKEN=" not in out
     assert re.search(r"^RESTART_SERVICES=", out, re.M)
+    # Diagnostic must reach stderr — post-#519 fix that closed the
+    # "silent token-mint failure" debugging blind spot.
+    assert "token: NOT minted" in err
+    assert "CLI rc=1: simulated production failure" in err
 
 
 # ---------------------------------------------------------------------------
