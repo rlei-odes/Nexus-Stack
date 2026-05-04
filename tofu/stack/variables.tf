@@ -17,15 +17,36 @@ variable "hcloud_token" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type (e.g., cax11, cax21, cpx21)"
+  description = "Hetzner server type (e.g., cpx21, cpx31, cax11, cax31)"
   type        = string
-  default     = "cax31"  # 4 vCPU, 8GB RAM (ARM)
+  # x86 (cpx) default — switched from ARM (cax) in 2026-05 for two
+  # durable reasons:
+  #   1. Capacity. Hetzner ARM EU capacity has been unavailable since
+  #      2026-01-22 (~3.5+ months by 2026-05). x86 cpx is the
+  #      reliably-stocked spec class for our use case.
+  #   2. Pricing inversion. At project start, Hetzner cax (ARM) was
+  #      ~50% cheaper than the equivalent cpx (x86). Hetzner has
+  #      since flipped this — cax is now ~40% MORE expensive than
+  #      the cpx with comparable specs. So x86 is the rational
+  #      default on cost grounds even when ARM availability returns.
+  # cpx31 = 4 vCPU / 8 GB RAM / 160 GB disk, mirrors the historical
+  # cax31 spec one-to-one; ARM users can override via tfvars without
+  # any other code change (most stacks build/run multi-arch).
+  default = "cpx31"
 }
 
 variable "server_location" {
   description = "Hetzner datacenter location"
   type        = string
-  default     = "fsn1"  # Falkenstein, Germany
+  # TEMPORARY (2026-05): EU regions (fsn1 / hel1 / nbg1) currently
+  # have no cpx31 capacity either; ash (Ashburn, US East) has it
+  # consistently available. Switch back to a German region (fsn1
+  # preferred, nbg1 as fallback) once EU cpx capacity returns.
+  # Latency impact: ~120-150ms transatlantic for European operators
+  # — tolerable since data-plane traffic flows through Cloudflare's
+  # edge (not direct-to-origin) and the deploy-pipeline ssh
+  # roundtrips amortise across few-minute spin-ups.
+  default = "ash" # Ashburn, US East (target: fsn1 once available)
 }
 
 variable "server_image" {
@@ -40,7 +61,7 @@ variable "ipv6_only" {
   # NOTE: IPv6-only is currently disabled due to connectivity issues.
   # IPv6-only servers cannot download cloudflared from GitHub or pkg.cloudflare.com
   # (TLS handshake failures over IPv6). See issue #130 for progress on IPv6 support.
-  default     = false
+  default = false
 }
 
 variable "ssh_public_key_path" {
@@ -124,7 +145,7 @@ variable "services" {
     enabled        = bool
     subdomain      = string
     port           = number
-    public         = bool   # true = no auth, false = behind Cloudflare Access
+    public         = bool # true = no auth, false = behind Cloudflare Access
     description    = optional(string, "")
     core           = optional(bool, false)
     image          = optional(string, "")

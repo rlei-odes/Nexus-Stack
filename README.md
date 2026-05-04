@@ -26,7 +26,7 @@
 ## What This Does
 
 ### Infrastructure
-- **Hetzner Cloud Server** - ARM-based (cax11/cax31) running Ubuntu 24.04
+- **Hetzner Cloud Server** - x86 (cpx21/cpx31) running Ubuntu 24.04 — [defaults switched from ARM in 2026-05](docs/admin-guides/setup-guide.md) due to (a) ongoing ARM EU capacity shortage and (b) Hetzner's 2025+ pricing flip where ARM is now ~40% more expensive than equivalent x86
 - **Cloudflare Tunnel** - All traffic routed through Cloudflare, zero open ports
 - **Cloudflare Access** - Email OTP authentication for all services
 - **Remote State** - OpenTofu state stored in Cloudflare R2

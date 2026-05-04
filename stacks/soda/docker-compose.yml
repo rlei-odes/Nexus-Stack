@@ -13,7 +13,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${IMAGE_SODA:-soda-core-arm64:3.3.7}
+    # Local build via the adjacent Dockerfile. Image tag was previously
+    # `soda-core-arm64` because Soda's official image is x86-only and
+    # Nexus-Stack shipped an ARM rebuild. The local Dockerfile uses
+    # `python:3.11-slim` (multi-arch) + `pip install soda-core-postgres`
+    # (PyPI serves arch-correct wheels), so it builds correctly on
+    # both Hetzner cax (ARM) and cpx (x86). Renamed to plain
+    # `soda-core` to reflect the now-multi-arch reality.
+    image: ${IMAGE_SODA:-soda-core:3.3.7}
     container_name: soda
     restart: unless-stopped
     environment:

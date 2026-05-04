@@ -63,7 +63,10 @@ variable "user_email" {
 variable "server_type" {
   description = "Hetzner server type (passed to Control Plane for display)"
   type        = string
-  default     = "cax31"
+  # x86 (cpx31) default — switched permanently from ARM (cax31) in
+  # 2026-05 for capacity + pricing-inversion reasons. Full rationale
+  # documented in tofu/stack/variables.tf:server_type.
+  default = "cpx31"
 }
 
 variable "server_location" {

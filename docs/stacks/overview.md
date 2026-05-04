@@ -46,7 +46,7 @@ The tag shown in each table below is the value Nexus Stack ships with **right no
 
 You override any image via the matching `IMAGE_*` environment variable in your deployment — useful for pinning `:latest` stacks to a specific version, or for testing a pre-release tag.
 
-Some images are maintained by Nexus Stack itself rather than pulled from a public registry. Most use the `nexus-*` prefix (e.g. `nexus-flink:1.20.1`, `nexus-spark:4.1.1-python3.13`, `nexus-dagster:1.12.21`, `nexus-dinky:1.2.5-flink1.20`, `nexus-sling:1.5.13`, `nexus-code-server:latest`). A small number of ARM-native or local-build variants use descriptive names without the prefix — most notably **`soda-core-arm64:3.3.7`**, where Soda's official image is x86-only and Nexus Stack ships an ARM rebuild. All of these Dockerfiles live in the Nexus-Stack repo, layer Python/Java dependencies and ARM optimizations on top of upstream base images, and are built on the Hetzner server during Initial Setup.
+Some images are maintained by Nexus Stack itself rather than pulled from a public registry. Most use the `nexus-*` prefix (e.g. `nexus-flink:1.20.1`, `nexus-spark:4.1.1-python3.13`, `nexus-dagster:1.12.21`, `nexus-dinky:1.2.5-flink1.20`, `nexus-sling:1.5.13`, `nexus-code-server:latest`). A small number of local-build variants use descriptive names without the prefix — most notably **`soda-core:3.3.7`**, where Soda's official image is x86-only and Nexus Stack ships a multi-arch rebuild via Python + pip. All of these Dockerfiles live in the Nexus-Stack repo, layer Python/Java dependencies on top of upstream base images, and are built on the Hetzner server during Initial Setup. They build correctly on both ARM (cax) and x86 (cpx) server types.
 
 ## Authentication
 
@@ -167,7 +167,7 @@ Cloudflare Tunnels handle HTTPS perfectly, but a few services need raw TCP acces
 | Stack | Image | Description |
 |-------|-------|-------------|
 | **[OpenMetadata](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/openmetadata.md)** | `docker.getcollate.io/openmetadata/server:1.6.6` | Open-source metadata platform covering discovery, lineage, glossary, and data quality. Heavy — requires Elasticsearch + MySQL — but the right pick if you need a real data catalog. |
-| **[Soda](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/soda.md)** | `soda-core-arm64:3.3.7` | Data quality testing framework. Write checks in SodaCL (a YAML DSL), run them from CI, break pipelines on failed quality thresholds. ARM-native build. CLI-only. |
+| **[Soda](https://github.com/stefanko-ch/Nexus-Stack/blob/main/docs/stacks/soda.md)** | `soda-core:3.3.7` | Data quality testing framework. Write checks in SodaCL (a YAML DSL), run them from CI, break pipelines on failed quality thresholds. Local build via `python:3.11-slim` + pip (multi-arch). CLI-only. |
 
 ## AI / LLM
 
