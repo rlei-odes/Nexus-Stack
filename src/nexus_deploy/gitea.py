@@ -226,9 +226,10 @@ class CreateRepoResult:
 class GiteaResult:
     """Aggregate of all Gitea-config sub-steps.
 
-    ``token`` is None until :meth:`GiteaClient.create_token_with_retry`
-    succeeds. The CLI emits ``GITEA_TOKEN=<token>`` to stdout iff
-    token is non-None — eval-able by deploy.sh.
+    ``token`` is None until :meth:`GiteaCli.mint_token` succeeds (post-
+    #519 fix switched from REST basic-auth to CLI peer-auth). The CLI
+    handler emits ``GITEA_TOKEN=<token>`` to stdout iff token is
+    non-None — eval-able by deploy.sh.
     """
 
     db_pw_synced: bool
@@ -284,7 +285,11 @@ class GiteaError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Hybrid client: SSH-CLI for admin/user CRUD, REST for token/repo/email
+# Hybrid client (post-#519 fix):
+#   SSH CLI peer-auth: admin/user CRUD + token mint
+#   REST basic-auth or token-auth: legacy email PATCH, repo CRUD, collab add
+# Token minting moved from REST to CLI after the production
+# 400-from-CreateAccessToken bug — see GiteaCli.mint_token docstring.
 # ---------------------------------------------------------------------------
 
 
@@ -421,7 +426,8 @@ class GiteaCli:
         status, never password material.
 
         Idempotent: deletes any existing token with the same name
-        first (best-effort, ignored on 404), then generates fresh.
+        first (best-effort, ``|| true`` swallows the non-zero rc Gitea's
+        CLI returns when the token doesn't exist), then generates fresh.
         Mirrors the legacy deploy.sh delete-then-create pattern but
         via peer-auth CLI instead of REST basic-auth — eliminates
         the chicken-egg of "we need a working REST password to mint
@@ -737,7 +743,8 @@ def run_configure_gitea(
     4. User (if ``gitea_user_email``): list → exists?
        - yes → CLI sync_password
        - no  → CLI create_user
-    5. Token: REST create_token_with_retry
+    5. Token: CLI ``mint_token`` (peer-auth ``generate-access-token``,
+       idempotent delete-then-create; switched from REST in post-#519 fix)
     6. (non-mirror) repo: create → on already_exists → patch_repo_private
     7. (non-mirror, with user) collaborator add
     8. Build restart_services list (intersection with enabled)

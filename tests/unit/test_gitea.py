@@ -464,13 +464,16 @@ def test_round_4_mint_token_idempotent_delete_first() -> None:
     """Token already exists → CLI delete succeeds → CLI generate succeeds.
 
     The legacy deploy.sh delete-then-create pattern is preserved via
-    the unconditional delete in mint_token. CLI delete-access-token
-    returns rc=0 if the token existed and rc!=0 (silenced via ``|| true``)
-    if not. Either way, the next generate runs and returns the new sha1.
+    the unconditional delete in mint_token. The rendered delete script
+    ends in ``|| true``, so ``ssh.run_script`` always sees rc=0
+    regardless of whether the inner docker-exec found a token to
+    delete — both states route to the same generate call.
     """
     ssh = _make_ssh(
         [
-            (1, ""),  # delete: token didn't exist (rc!=0, silenced)
+            # Both branches of the delete (token existed / didn't exist)
+            # surface as rc=0 due to the script's `|| true` suffix.
+            (0, ""),
             (
                 0,
                 "Access token was successfully created: 0000000000000000000000000000000000000001\n",
@@ -482,6 +485,12 @@ def test_round_4_mint_token_idempotent_delete_first() -> None:
     assert err == ""
     # Both delete + generate were called.
     assert ssh.run_script.call_count == 2
+    # First call is the delete-access-token script — must contain
+    # `|| true` so docker-exec's non-zero rc on missing-token is
+    # swallowed (the pattern that justifies the rc=0 mock above).
+    delete_script = ssh.run_script.call_args_list[0][0][0]
+    assert "delete-access-token" in delete_script
+    assert "|| true" in delete_script
 
 
 def test_mint_token_returns_diagnostic_on_cli_failure() -> None:
