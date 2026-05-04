@@ -68,9 +68,9 @@ from typing import Literal
 from nexus_deploy.ssh import SSHClient
 
 # Default ssh-config path. Tests override via the ``ssh_config_path``
-# parameter on :func:`configure_ssh`. Production callers can override
-# via the ``SSH_CONFIG`` env-var if a non-standard location is needed
-# (e.g. CI runners with HOME redirected).
+# parameter on :func:`configure_ssh`. CI runners that redirect HOME
+# get the right value automatically (Path.home() resolves at call
+# time against the runner's environment).
 _DEFAULT_SSH_CONFIG = Path.home() / ".ssh" / "config"
 
 
@@ -163,14 +163,31 @@ def render_ssh_config_block(spec: SSHConfigSpec) -> str:
         "  IdentitiesOnly yes",
     ]
     if spec.has_service_token:
-        # Single-line ProxyCommand: bash -c with two TUNNEL_* env vars
-        # exported inline so cloudflared sees them. Mirrors the legacy
-        # heredoc form byte-for-byte (one operator-line, simpler to
-        # diff than a multi-line ProxyCommand expansion).
+        # ProxyCommand uses the `env VAR=val cmd` form (Round-2 PR
+        # #524 finding). The legacy `bash -c 'VAR=val cmd'` form
+        # interpolated raw token values inside single quotes — a
+        # token containing a single quote (or shell metacharacter)
+        # would either break the resulting ssh-config or, worse,
+        # change the executed command. Cloudflare Service Token IDs
+        # are practically always alphanumeric+UUID-like in current
+        # spec, but defence in depth: we shlex-quote the values so
+        # the rendered line stays safe regardless of future
+        # token-format changes.
+        #
+        # `env` is a real binary that takes argv-form `KEY=value`
+        # pairs (no shell parsing of the assignments) and execs the
+        # rest of argv as a command. ssh's ProxyCommand is parsed
+        # by /bin/sh, but each whitespace-separated argv after sh's
+        # tokenization reaches `env` as a single string — so
+        # shlex.quote on the value handles the shell layer, and env
+        # consumes the result without re-parsing.
+        id_q = shlex.quote(spec.cf_client_id or "")
+        secret_q = shlex.quote(spec.cf_client_secret or "")
         proxy = (
-            f"ProxyCommand bash -c 'TUNNEL_SERVICE_TOKEN_ID={spec.cf_client_id} "
-            f"TUNNEL_SERVICE_TOKEN_SECRET={spec.cf_client_secret} "
-            f"cloudflared access ssh --hostname %h'"
+            f"ProxyCommand env "
+            f"TUNNEL_SERVICE_TOKEN_ID={id_q} "
+            f"TUNNEL_SERVICE_TOKEN_SECRET={secret_q} "
+            f"cloudflared access ssh --hostname %h"
         )
     else:
         proxy = "ProxyCommand cloudflared access ssh --hostname %h"
@@ -250,17 +267,24 @@ def configure_ssh(
     cleaned = strip_existing_block(existing, spec.host_alias)
     new_block = render_ssh_config_block(spec)
     final = (cleaned.rstrip() + "\n" + new_block) if cleaned.strip() else new_block
-    # Atomic same-dir mktemp + os.replace — matches the secret_sync /
-    # gitea / kestra atomic-write pattern. mode 0o600 enforced via
-    # os.open before the write, NOT via post-write chmod (which would
-    # leave the file briefly umask-default-readable).
-    fd = os.open(
-        str(target.parent / f".{target.name}.tmp"),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
+    # Atomic same-dir tempfile.mkstemp + os.replace (Round-2 PR #524
+    # finding): mkstemp gives us a unique name + O_EXCL semantics so
+    # we can never collide with a concurrent run, and the kernel
+    # creates the file atomically with the file descriptor we hold —
+    # no symlink-attack window on a pre-existing path. We then
+    # explicitly fchmod to 0o600 to enforce permissions regardless
+    # of umask (mkstemp defaults to 0o600 on POSIX, but we belt-and-
+    # suspenders).
+    import tempfile as _tempfile
+
+    fd, tmp_str = _tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
     )
-    tmp_path = target.parent / f".{target.name}.tmp"
+    tmp_path = Path(tmp_str)
     try:
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(final)
         tmp_path.replace(target)
@@ -344,16 +368,23 @@ def wait_for_ssh(
     """Poll ssh-readiness with exponential timeout ramp.
 
     Timeout schedule mirrors deploy.sh L351-360 exactly: 5s for the
-    first 3 attempts, 10s for attempts 3-6, 15s for the rest.
+    first 3 attempts, 10s for attempts 4-7, 15s for the rest.
     Sleep schedule matches the timeout — operators see the same
     cadence in CI logs as the legacy script.
+
+    Round-2 PR #524 fix: previous version used ``attempt < 3`` /
+    ``attempt < 7`` which gave 5s to ONLY the first 2 attempts and
+    10s to attempts 3-6 — off-by-one against the legacy bash. The
+    legacy bash bumped TIMEOUT *after* the failed attempt's
+    increment, so RETRY values 1, 2, AND 3 all stayed at 5s before
+    jumping. Fixed with `< 4` / `< 8`.
     """
     runner = probe_runner if probe_runner is not None else _default_ssh_probe
     last_error = ""
     for attempt in range(1, max_retries + 1):
-        if attempt < 3:
+        if attempt < 4:
             timeout_s = 5.0
-        elif attempt < 7:
+        elif attempt < 8:
             timeout_s = 10.0
         else:
             timeout_s = 15.0
@@ -421,7 +452,7 @@ else
     # Stage 1: scsi-id discovery (Hetzner block-storage canonical path)
     DEV=$(ls "/dev/disk/by-id/scsi-0HC_Volume_$VOLUME_ID" 2>/dev/null || echo "")
     if [ -n "$DEV" ]; then
-        if mount "$DEV" "$MOUNT_POINT" 2>&1 >&2; then
+        if mount "$DEV" "$MOUNT_POINT" 2>&1; then
             echo "  Volume mounted at $MOUNT_POINT (scsi-id)" >&2
             MOUNTED=1
         fi
@@ -433,7 +464,7 @@ else
     fi
     # Stage 3: /dev/sdb fallback for VMs that pre-date scsi-id naming
     if [ "$MOUNTED" = "0" ] && [ -b /dev/sdb ]; then
-        if mount /dev/sdb "$MOUNT_POINT" 2>&1 >&2; then
+        if mount /dev/sdb "$MOUNT_POINT" 2>&1; then
             echo "  Volume mounted at $MOUNT_POINT (/dev/sdb fallback)" >&2
             MOUNTED=1
         fi

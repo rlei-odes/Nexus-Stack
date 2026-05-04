@@ -45,12 +45,11 @@ def _bash_can_be_invoked() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def test_render_with_service_token_emits_proxycommand_with_env_vars() -> None:
-    """R5-equivalent: token credentials reach the rendered block via
-    the inline `bash -c 'TUNNEL_SERVICE_TOKEN_*=...'` form. We don't
-    test that the credentials are absent from log lines — that's a
-    rendering output, not a leak surface; configure_ssh writes mode
-    0o600 atomically so the file is the only place they land."""
+def test_render_with_service_token_emits_env_proxycommand() -> None:
+    """Token credentials reach the rendered block via the
+    `env VAR=val cmd` ProxyCommand form (Round-2 PR #524 fix). The
+    legacy `bash -c 'VAR=val cmd'` form is gone — single quotes in
+    a token value would have broken the surrounding bash quoting."""
     spec = SSHConfigSpec(
         ssh_host="ssh.example.com",
         cf_client_id="client-abc",
@@ -59,9 +58,31 @@ def test_render_with_service_token_emits_proxycommand_with_env_vars() -> None:
     block = render_ssh_config_block(spec)
     assert "Host nexus" in block
     assert "HostName ssh.example.com" in block
+    assert "ProxyCommand env" in block
     assert "TUNNEL_SERVICE_TOKEN_ID=client-abc" in block
     assert "TUNNEL_SERVICE_TOKEN_SECRET=secret-xyz" in block
     assert "cloudflared access ssh --hostname %h" in block
+    # bash -c form must be GONE (would re-introduce the quote-injection bug).
+    assert "bash -c" not in block
+
+
+def test_render_with_token_containing_single_quote_is_safe() -> None:
+    """Round-2 PR #524: a token with a single quote MUST round-trip
+    safely through the rendered ProxyCommand. shlex.quote handles
+    embedded quotes with the `'"'"'` escape pattern."""
+    spec = SSHConfigSpec(
+        ssh_host="ssh.example.com",
+        cf_client_id="abc'def",  # injection-shaped id
+        cf_client_secret="x'y",
+    )
+    block = render_ssh_config_block(spec)
+    # The hostile values must NOT appear as bare bash text — they
+    # must be wrapped in shell-safe quoting. shlex.quote of `abc'def`
+    # produces `'abc'"'"'def'`.
+    proxy_line = next(line for line in block.splitlines() if "ProxyCommand" in line)
+    assert "'abc'" in proxy_line  # the safe-quote opener+segment
+    assert """abc'def cloudflared""" not in proxy_line  # raw injection absent
+    assert "TUNNEL_SERVICE_TOKEN_ID=abc'def " not in proxy_line
 
 
 def test_render_without_service_token_emits_browser_login_proxycommand() -> None:
@@ -308,8 +329,15 @@ def test_wait_for_service_token_captures_last_error_on_max_retries() -> None:
 
 
 def test_wait_for_ssh_exponential_timeout_ramp() -> None:
-    """R5 — timeout schedule: 5s for attempts 1-2, 10s for 3-6, 15s
-    for 7+. Pinned via the timeout_s passed to the probe."""
+    """R5 — timeout schedule: 5s for attempts 1-3, 10s for 4-7, 15s
+    for 8+. Pinned via the timeout_s passed to the probe.
+
+    Round-2 PR #524 fix: previous version expected only 2 fast
+    attempts which was off-by-one against deploy.sh's legacy schedule
+    (the legacy bash bumped TIMEOUT *after* the failed attempt's
+    counter increment, so RETRY=1, 2, AND 3 all stayed at 5s before
+    jumping). The new expected list mirrors the legacy bash exactly.
+    """
     timeouts: list[float] = []
 
     def probe(_alias: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
@@ -317,15 +345,15 @@ def test_wait_for_ssh_exponential_timeout_ramp() -> None:
         return _fail_proc()
 
     wait_for_ssh(probe_runner=probe, sleep=lambda _: None)
-    # 15 attempts: 1,2 → 5s; 3,4,5,6 → 10s; 7..15 → 15s
+    # 15 attempts: 1,2,3 → 5s; 4,5,6,7 → 10s; 8..15 → 15s
     expected = [
         5.0,
         5.0,
+        5.0,
         10.0,
         10.0,
         10.0,
         10.0,
-        15.0,
         15.0,
         15.0,
         15.0,
@@ -411,12 +439,47 @@ def test_render_volume_mount_three_stage_fallback_chain() -> None:
     assert "/dev/sdb" in script  # fallback stage
 
 
-def test_render_volume_mount_volume_id_quoted_safely() -> None:
-    """volume_id ends up shlex-quoted — even if a hostile id slipped
-    past the upstream digit-only regex, the rendered bash can't
-    break out into command execution."""
+def test_render_volume_mount_digit_id_passes_through_unquoted() -> None:
+    """Sanity: digits-only id (the only form `mount_persistent_volume`
+    actually allows past its `_VOLUME_ID_PATTERN` regex) renders
+    bare. shlex.quote of all-digits is a no-op since digits don't
+    need shell escaping."""
     script = _render_volume_mount_script("12345")
     assert "VOLUME_ID=12345" in script
+
+
+def test_render_volume_mount_hostile_id_is_safely_quoted() -> None:
+    """Round-2 PR #524: defence-in-depth — even if a hostile string
+    slipped past the upstream digit-only regex (e.g. via a future
+    refactor that drops the validation, or a direct call to
+    `_render_volume_mount_script`), the rendered bash must NOT
+    execute the hostile payload.
+
+    `_render_volume_mount_script` itself does no validation; it
+    relies on the caller's regex. shlex.quote is the second line
+    of defence. Pinned via an injection-shaped input that would
+    break out without quoting (`'; rm -rf /; #`).
+    """
+    hostile = "'; rm -rf / ; #"
+    script = _render_volume_mount_script(hostile)
+    # The hostile payload must NOT appear unquoted on the
+    # VOLUME_ID line. shlex.quote wraps the whole string in single
+    # quotes and escapes embedded ones, so the assignment looks
+    # like: VOLUME_ID=''"'"'; rm -rf / ; #'
+    volume_line = next(line for line in script.splitlines() if line.startswith("VOLUME_ID="))
+    # The unquoted payload (with the `';` injection) cannot appear as
+    # a parseable command — bash would see the surrounding quotes.
+    # We assert the line starts with the safe-quote marker.
+    assert volume_line.startswith("VOLUME_ID='"), f"hostile id not quoted: {volume_line!r}"
+    # And bash -n must accept it (would fail if quote balance broke).
+    if shutil.which("bash"):
+        proc = subprocess.run(
+            ["bash", "-n", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
 
 
 def test_render_volume_mount_emits_result_line() -> None:
