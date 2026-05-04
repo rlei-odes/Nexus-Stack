@@ -3298,6 +3298,7 @@ def test_cli_mirror_setup_emits_fork_name_and_owner_on_success(
 
     fake_result = MirrorSetupResult(
         admin_uid=42,
+        admin_uid_error="",
         mirrors=(MirrorResult(name="m", status="created"),),
         fork=ForkResult(name="myrepo_stefan", owner="stefan", status="created"),
         collaborator_added_count=1,
@@ -3331,6 +3332,7 @@ def test_cli_mirror_setup_omits_stdout_when_no_fork(
 
     fake_result = MirrorSetupResult(
         admin_uid=42,
+        admin_uid_error="",
         mirrors=(MirrorResult(name="m", status="created"),),
         fork=None,
         collaborator_added_count=0,
@@ -3347,9 +3349,12 @@ def test_cli_mirror_setup_omits_stdout_when_no_fork(
     assert "GITEA_REPO_OWNER" not in out
 
 
-def test_cli_mirror_setup_admin_uid_none_returns_rc_1(
+def test_cli_mirror_setup_admin_uid_none_404_returns_rc_1(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """admin user genuinely doesn't exist (404 → admin_uid=None,
+    admin_uid_error="" empty) → rc=1 with "admin user not found".
+    """
     from nexus_deploy.gitea import MirrorSetupResult
 
     monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
@@ -3360,6 +3365,7 @@ def test_cli_mirror_setup_admin_uid_none_returns_rc_1(
 
     fake_result = MirrorSetupResult(
         admin_uid=None,
+        admin_uid_error="",  # genuine 404
         mirrors=(),
         fork=None,
         collaborator_added_count=0,
@@ -3372,7 +3378,47 @@ def test_cli_mirror_setup_admin_uid_none_returns_rc_1(
     rc = _gitea_mirror_setup([])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "admin UID not found" in err
+    assert "admin user not found in Gitea" in err
+    # Must NOT use the misleading "lookup failed" wording reserved
+    # for the auth/transport/5xx branch.
+    assert "lookup failed" not in err
+
+
+def test_cli_mirror_setup_admin_uid_lookup_failure_surfaces_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Auth/transport/5xx during get_user_id → admin_uid_error
+    populated → CLI surfaces the real cause (e.g. "HTTP 503")
+    instead of the misleading "user not found". (Copilot R4)
+    """
+    from nexus_deploy.gitea import MirrorSetupResult
+
+    monkeypatch.setenv("GITEA_ADMIN_PASS", "x")
+    monkeypatch.setenv("GITEA_TOKEN", "x")
+    monkeypatch.setenv("GH_MIRROR_REPOS", "https://x.git")
+    monkeypatch.setenv("GH_MIRROR_TOKEN", "x")
+    _setup_fake_ssh(monkeypatch)
+
+    fake_result = MirrorSetupResult(
+        admin_uid=None,
+        admin_uid_error="get_user_id HTTP 503",
+        mirrors=(),
+        fork=None,
+        collaborator_added_count=0,
+        fork_synced=False,
+    )
+    monkeypatch.setattr("nexus_deploy.__main__.run_mirror_setup", lambda **kwargs: fake_result)
+
+    from nexus_deploy.__main__ import _gitea_mirror_setup
+
+    rc = _gitea_mirror_setup([])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "admin UID lookup failed" in err
+    assert "HTTP 503" in err
+    # Must NOT use the "user not found" wording reserved for the
+    # genuine 404 branch.
+    assert "not found in Gitea" not in err
 
 
 def test_cli_mirror_setup_ssh_tunnel_failure_returns_rc_2(

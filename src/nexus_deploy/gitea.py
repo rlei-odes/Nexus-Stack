@@ -885,10 +885,13 @@ class GiteaClient:
         locally or rendered into argv.
 
         Returns :class:`MirrorResult`:
-        - ``status="created"`` on 201 + parseable id.
+        - ``status="created"`` on 200 OR 201 with a parseable
+          integer ``id`` in the body. Gitea v1.20+ documents 201
+          for /repos/migrate, but we accept 200 too for forward-
+          compat with older / forked Gitea variants.
         - ``status="already_exists"`` on 409 OR 422 where the
           message contains "already exists".
-        - ``status="failed"`` for other non-201 / missing id paths.
+        - ``status="failed"`` for other non-2xx / missing id paths.
           Caller routes to a yellow warning per mirror so a single
           bad URL doesn't abort the whole loop.
         """
@@ -1613,6 +1616,12 @@ class MirrorSetupResult:
     """
 
     admin_uid: int | None
+    # Diagnostic when admin_uid is None — distinguishes "user
+    # genuinely doesn't exist (404)" from auth/5xx/transport
+    # failures so the CLI can print the real cause instead of
+    # the misleading "admin UID not found". Empty string when
+    # admin_uid was successfully resolved. (Copilot R4)
+    admin_uid_error: str
     mirrors: tuple[MirrorResult, ...]
     fork: ForkResult | None
     collaborator_added_count: int
@@ -1679,16 +1688,27 @@ def run_mirror_setup(
         admin_password=admin_password,
     ).with_token(gitea_token)
 
-    # 1. Admin UID lookup. Failure → no migrate possible (admin
-    # doesn't exist yet, or transport issue). Return early with
-    # admin_uid=None so the CLI can route to a yellow warning.
+    # 1. Admin UID lookup. Failure → no migrate possible. Distinguish
+    # three failure modes so the CLI can surface the real cause
+    # instead of the misleading "admin UID not found" for every path
+    # (Copilot R4):
+    #   - get_user_id raises GiteaError: auth/transport/5xx —
+    #     stash exc message in admin_uid_error
+    #   - get_user_id returns None: 404 (user genuinely doesn't
+    #     exist) — admin_uid_error stays "" but admin_uid is None
+    admin_uid: int | None = None
+    admin_uid_error = ""
     try:
         admin_uid = client.get_user_id(admin_username)
-    except GiteaError:
-        admin_uid = None
+    except GiteaError as exc:
+        # GiteaError messages here are constructed from format
+        # strings only (HTTP status / type names), no secrets —
+        # safe to surface verbatim.
+        admin_uid_error = str(exc)
     if admin_uid is None:
         return MirrorSetupResult(
             admin_uid=None,
+            admin_uid_error=admin_uid_error,
             mirrors=(),
             fork=None,
             collaborator_added_count=0,
@@ -1855,6 +1875,7 @@ def run_mirror_setup(
 
     return MirrorSetupResult(
         admin_uid=admin_uid,
+        admin_uid_error="",  # admin_uid resolved successfully
         mirrors=tuple(mirrors),
         fork=fork,
         collaborator_added_count=collaborator_added_count,

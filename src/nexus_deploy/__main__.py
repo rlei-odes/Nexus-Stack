@@ -1262,7 +1262,16 @@ def _gitea_mirror_setup(args: list[str]) -> int:
 
     # Per-step status lines on stderr.
     if result.admin_uid is None:
-        sys.stderr.write("  • admin UID not found — skipping all mirrors\n")
+        # Distinguish "admin user genuinely doesn't exist (404)" from
+        # auth/transport/5xx failures via admin_uid_error. Without
+        # this, the message was misleadingly the same for all paths.
+        # (Copilot R4)
+        if result.admin_uid_error:
+            sys.stderr.write(
+                f"  • admin UID lookup failed ({result.admin_uid_error}) — skipping all mirrors\n"
+            )
+        else:
+            sys.stderr.write("  • admin user not found in Gitea — skipping all mirrors\n")
         return 1
     sys.stderr.write(f"  • admin UID: {result.admin_uid}\n")
     for m in result.mirrors:
