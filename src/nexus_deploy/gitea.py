@@ -456,12 +456,18 @@ class GiteaCli:
         # connection blip) — if the delete didn't run, the
         # generate step below will surface "name has been used
         # already" with full diagnostic.
-        # SQL injection-safe by construction: both ``name`` and
+        # SQL injection-safe by construction. Both ``name`` and
         # ``username`` are validated against ``_PATH_SAFE_RE``
         # ([a-zA-Z0-9._-]+) above, so neither can contain a single
-        # quote, semicolon, or comment marker. ruff's S608 warning
-        # is the generic "f-string SQL" heuristic and doesn't see
-        # the validator.
+        # quote or semicolon — i.e. neither value can break out of
+        # the single-quoted SQL string literal it's interpolated into.
+        # (The dash IS allowed, so e.g. ``stefan-koch`` is a valid
+        # username and ``--`` would survive the regex; that's still
+        # safe here because the dashes stay INSIDE the quoted string
+        # — they only become a SQL comment marker if the surrounding
+        # quotes are broken, which the no-single-quote rule prevents.)
+        # ruff's S608 below is the generic "f-string SQL" heuristic
+        # and doesn't see the validator.
         delete_sql = (
             f"DELETE FROM access_token WHERE name = '{name}' "  # noqa: S608
             f"AND uid = (SELECT id FROM \"user\" WHERE lower_name = lower('{username}'));"

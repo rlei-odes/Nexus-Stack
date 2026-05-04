@@ -799,7 +799,7 @@ def test_run_configure_gitea_full_happy_path_admin_already_exists() -> None:
             (0, ""),  # admin sync_password
             (0, _ADMIN_LIST_FIXTURE),  # user list (same fixture, has stefan.koch)
             (0, ""),  # user sync_password
-            (0, ""),  # token: delete-access-token (best-effort)
+            (0, ""),  # token: psql DELETE (best-effort)
             (0, f"Access token was successfully created: {'a' * 40}\n"),  # token: generate
         ]
     )
@@ -843,7 +843,7 @@ def test_run_configure_gitea_admin_does_not_exist_creates() -> None:
             (0, "RESULT db_pw=synced\n"),
             (0, "ID Username Email\n"),  # empty list
             (0, "New user 'admin' has been created\n"),  # create_admin
-            (0, ""),  # token: delete-access-token
+            (0, ""),  # token: psql DELETE
             (0, f"Access token was successfully created: {'b' * 40}\n"),  # token: generate
         ]
     )
@@ -887,7 +887,7 @@ def test_create_admin_already_exists_falls_back_to_sync_password() -> None:
             (0, ""),  # admin list — empty (false negative)
             (0, "user already exists\n"),  # create_admin → already_exists
             (0, ""),  # FALLBACK: sync_password runs and succeeds
-            (0, ""),  # token: delete-access-token
+            (0, ""),  # token: psql DELETE
             (0, f"Access token was successfully created: {'c' * 40}\n"),  # token: generate
         ]
     )
@@ -931,7 +931,7 @@ def test_create_user_already_exists_falls_back_to_sync_password() -> None:
             (0, ""),  # user list — empty (false negative)
             (0, "user already exists\n"),  # create_user → already_exists
             (0, ""),  # FALLBACK: sync_password
-            (0, ""),  # token: delete-access-token
+            (0, ""),  # token: psql DELETE
             (0, f"Access token was successfully created: {'d' * 40}\n"),  # generate
         ]
     )
@@ -982,7 +982,7 @@ def test_round_2_legacy_email_collision_triggers_patch() -> None:
             (0, ""),  # admin sync_password
             (0, "ID Username Email\n"),  # user list — empty
             (0, "New user 'stefan.koch' has been created\n"),  # create_user
-            (0, ""),  # token: delete-access-token
+            (0, ""),  # token: psql DELETE
             (0, f"Access token was successfully created: {'e' * 40}\n"),  # generate
         ]
     )
@@ -1029,7 +1029,7 @@ def test_round_6_repo_already_exists_falls_back_to_patch_private() -> None:
             (0, "RESULT db_pw=synced\n"),
             (0, _ADMIN_LIST_FIXTURE),
             (0, ""),  # admin sync_password
-            (0, ""),  # token: delete-access-token
+            (0, ""),  # token: psql DELETE
             (0, f"Access token was successfully created: {'1' * 40}\n"),  # generate
         ]
     )
@@ -1068,7 +1068,7 @@ def test_run_configure_gitea_mirror_mode_skips_repo_and_collaborator() -> None:
             (0, ""),  # db_pw_sync
             (0, _ADMIN_LIST_FIXTURE),  # admin list
             (0, ""),  # admin sync_password
-            (0, ""),  # token: delete-access-token
+            (0, ""),  # token: psql DELETE
             (0, f"Access token was successfully created: {'2' * 40}\n"),  # generate
         ]
     )
@@ -1144,7 +1144,7 @@ def test_run_configure_gitea_token_mint_failure_returns_failure() -> None:
             (0, "RESULT db_pw=synced\n"),
             (0, _ADMIN_LIST_FIXTURE),
             (0, ""),  # admin sync_password
-            (0, ""),  # token: delete-access-token (best-effort)
+            (0, ""),  # token: psql DELETE (best-effort)
             (1, "User does not exist [name: admin]\n"),  # token: generate fails
         ]
     )
