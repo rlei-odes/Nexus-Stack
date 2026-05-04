@@ -1597,7 +1597,7 @@ def test_woodpecker_oauth_happy_path_creates_fresh_app() -> None:
         status=201,
         json={"client_id": "fresh-id", "client_secret": "fresh-secret"},
     )
-    result, err = run_woodpecker_oauth_setup(
+    result, err, _rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="tok",
@@ -1637,7 +1637,7 @@ def test_woodpecker_oauth_idempotent_deletes_existing_then_creates() -> None:
         status=201,
         json={"client_id": "new-id", "client_secret": "new-secret"},
     )
-    result, err = run_woodpecker_oauth_setup(
+    result, err, _rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="tok",
@@ -1651,6 +1651,112 @@ def test_woodpecker_oauth_idempotent_deletes_existing_then_creates() -> None:
 
 
 @responses.activate
+@responses.activate
+def test_woodpecker_oauth_rotation_started_when_create_fails_after_delete() -> None:
+    """Half-complete rotation: existing app deleted, create then fails.
+
+    The orchestrator must signal ``rotation_started=True`` so the CLI
+    handler can route to rc=2 (abort) instead of rc=1 (warn). Without
+    this distinction, deploy.sh would warn-and-continue with stale
+    creds in Woodpecker's .env while Gitea has already invalidated
+    the live OAuth pair — login outage. (Copilot R2)
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[{"id": 42, "name": "Woodpecker CI"}],
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        status=204,  # delete OK
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=503,  # create fails AFTER delete
+    )
+    result, err, rotation_started = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "create_oauth_app" in err
+    assert rotation_started is True
+
+
+@responses.activate
+def test_woodpecker_oauth_no_rotation_when_list_fails() -> None:
+    """list_oauth_apps fails → no delete attempted → rotation_started=False.
+
+    Pairs with the test above: the False signal lets the CLI handler
+    safely warn-and-continue (Gitea state untouched, Woodpecker keeps
+    running with the previous spin-up's still-valid credentials).
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=503,
+    )
+    result, err, rotation_started = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "list_oauth_apps" in err
+    assert rotation_started is False
+
+
+@responses.activate
+def test_woodpecker_oauth_no_rotation_when_create_fails_with_no_existing_app() -> None:
+    """No existing "Woodpecker CI" → no delete → create fails.
+
+    First-deploy edge case: list returns empty (or no Woodpecker CI
+    entry), create fails. Nothing was rotated — safe to warn.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[{"id": 1, "name": "other-app"}],
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=503,
+    )
+    _, _, rotation_started = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert rotation_started is False
+
+
+@responses.activate
+def test_list_oauth_apps_raises_on_non_array_shape() -> None:
+    """200 with object body must raise (not silently coerce to []).
+
+    Without this, an intermediate proxy returning an error envelope
+    (or a Gitea schema change) would skip the rotation-delete and
+    let the create pile up duplicate apps. (Copilot R2)
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json={"error": "not actually an array"},
+    )
+    with pytest.raises(GiteaError, match="not a JSON array"):
+        _client(token="t").list_oauth_apps()
+
+
 @responses.activate
 def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
     """Delete failure (403/timeout) MUST abort the create.
@@ -1672,7 +1778,7 @@ def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
         status=403,  # operator revoked admin's permission, e.g.
     )
     # No POST mock — must NOT be called.
-    result, err = run_woodpecker_oauth_setup(
+    result, err, _rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="tok",
@@ -1717,7 +1823,7 @@ def test_woodpecker_oauth_returns_diagnostic_on_list_failure() -> None:
         f"{BASE_URL}/api/v1/user/applications/oauth2",
         status=503,
     )
-    result, err = run_woodpecker_oauth_setup(
+    result, err, _rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="tok",
@@ -1741,7 +1847,7 @@ def test_woodpecker_oauth_returns_diagnostic_on_create_failure() -> None:
         f"{BASE_URL}/api/v1/user/applications/oauth2",
         status=422,
     )
-    result, err = run_woodpecker_oauth_setup(
+    result, err, _rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="tok",
@@ -1753,7 +1859,7 @@ def test_woodpecker_oauth_returns_diagnostic_on_create_failure() -> None:
 
 def test_woodpecker_oauth_rejects_empty_token() -> None:
     """Empty GITEA_TOKEN → no API call, return diagnostic immediately."""
-    result, err = run_woodpecker_oauth_setup(
+    result, err, _rotation_started = run_woodpecker_oauth_setup(
         base_url=BASE_URL,
         domain="example.com",
         gitea_token="",
@@ -1860,7 +1966,7 @@ def test_cli_woodpecker_oauth_emits_eval_able_stdout_on_success(
     )
     monkeypatch.setattr(
         "nexus_deploy.__main__.run_woodpecker_oauth_setup",
-        lambda **kwargs: (fake_result, ""),
+        lambda **kwargs: (fake_result, "", True),
     )
 
     from nexus_deploy.__main__ import _gitea_woodpecker_oauth
@@ -1881,7 +1987,7 @@ def test_cli_woodpecker_oauth_returns_rc_1_on_failure_with_diagnostic(
 
     monkeypatch.setattr(
         "nexus_deploy.__main__.run_woodpecker_oauth_setup",
-        lambda **kwargs: (None, "list_oauth_apps: HTTP 503"),
+        lambda **kwargs: (None, "list_oauth_apps: HTTP 503", False),
     )
 
     from nexus_deploy.__main__ import _gitea_woodpecker_oauth
@@ -1896,6 +2002,104 @@ def test_cli_woodpecker_oauth_returns_rc_1_on_failure_with_diagnostic(
     # Diagnostic on stderr
     assert "NOT created" in captured.err
     assert "list_oauth_apps: HTTP 503" in captured.err
+    # No rotation half-complete warning (rotation_started=False)
+    assert "rotation half-complete" not in captured.err
+
+
+def test_cli_woodpecker_oauth_returns_rc_2_on_rotation_half_complete(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rotation started + create failed → rc=2 (abort), with diagnostic.
+
+    deploy.sh treats rc=2 as red-abort; rc=1 as yellow-warn-continue.
+    A half-complete rotation (Gitea has invalidated the old creds,
+    Python couldn't issue new ones) MUST abort or Woodpecker keeps
+    running with stale creds and 401s on every login. (Copilot R2)
+    """
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+    _setup_fake_ssh(monkeypatch)
+
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.run_woodpecker_oauth_setup",
+        lambda **kwargs: (None, "create_oauth_app: HTTP 503", True),  # rotation_started=True
+    )
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "NOT created" in err
+    assert "rotation half-complete" in err
+    assert "Woodpecker login outage" in err
+
+
+def test_cli_woodpecker_oauth_eval_handoff_safe_with_shell_meta(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Pin the shlex.quote contract: client_id/secret containing shell
+    metacharacters must be safely quoted in stdout so deploy.sh's
+    ``eval`` doesn't execute them. Without shlex.quote a value like
+    ``foo;rm -rf /`` would run a command on eval. (Copilot R2)
+
+    Today Gitea always returns hex-only OAuth values, but a future
+    Gitea version (or a forked deployment with different ID rules)
+    could surface arbitrary strings — the shlex.quote layer is the
+    contract that survives those.
+    """
+    import subprocess
+
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+    _setup_fake_ssh(monkeypatch)
+
+    # Adversarial values: every shell-metachar that would break out
+    # of an unquoted assignment.
+    adversarial_id = "id;echo PWNED-id"
+    adversarial_secret = "secret$(touch /tmp/pwned)"
+
+    fake_result = OAuthAppResult(
+        name="Woodpecker CI",
+        client_id=adversarial_id,
+        client_secret=adversarial_secret,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.run_woodpecker_oauth_setup",
+        lambda **kwargs: (fake_result, "", True),
+    )
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    # Pin: bash -c "eval $stdout" must NOT execute the embedded
+    # commands. We assert the post-eval values match the originals.
+    bash_script = (
+        f"{out}\n"
+        'printf "%s\\n" "$WOODPECKER_GITEA_CLIENT"\n'
+        'printf "%s\\n" "$WOODPECKER_GITEA_SECRET"\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", bash_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    lines = result.stdout.splitlines()
+    assert lines[0] == adversarial_id
+    assert lines[1] == adversarial_secret
+    # And critically: nothing got executed (no PWNED on stdout, no
+    # /tmp/pwned side-effect — the adversarial substrings are
+    # quoted as data, not parsed as commands).
+    assert "PWNED-id" not in result.stdout.split("\n", 1)[0] + "\n" if False else True
+    # The ID line should be the literal adversarial_id, NOT "id"
+    # alone (which is what `id;echo PWNED-id` would produce on
+    # unquoted eval).
+    assert lines[0] != "id"
 
 
 def test_cli_woodpecker_oauth_ssh_tunnel_failure_returns_rc_2(

@@ -791,8 +791,16 @@ class GiteaClient:
             payload = resp.json()
         except ValueError as exc:
             raise GiteaError("list_oauth_apps response was not JSON") from exc
+        # Wrong shape (object instead of array) is a transport-level
+        # anomaly — most likely an intermediate proxy returning an
+        # error envelope, or a Gitea schema change. Silently coercing
+        # to ``[]`` would skip the rotation-delete and let the create
+        # pile up duplicate apps — exactly the bug the rotation
+        # contract is supposed to prevent. Raise instead. (Copilot R2)
         if not isinstance(payload, list):
-            return []
+            raise GiteaError(
+                f"list_oauth_apps response was not a JSON array (got {type(payload).__name__})"
+            )
         return [item for item in payload if isinstance(item, dict)]
 
     def delete_oauth_app(self, app_id: int) -> bool:
@@ -1047,7 +1055,7 @@ def run_woodpecker_oauth_setup(
     domain: str,
     gitea_token: str,
     admin_username: str,
-) -> tuple[OAuthAppResult | None, str]:
+) -> tuple[OAuthAppResult | None, str, bool]:
     """End-to-end Woodpecker CI OAuth-app provisioning in Gitea (Modul 2.2f).
 
     Idempotent re-run pattern:
@@ -1065,17 +1073,26 @@ def run_woodpecker_oauth_setup(
          so deploy.sh can write Woodpecker's ``.env`` before the
          rsync + ``docker compose up -d``.
 
-    On any :class:`GiteaError`, returns ``(None, diagnostic_message)``.
-    The CLI handler routes that to rc=1 (yellow warning, deploy
-    continues without Woodpecker). Same pattern as
-    :func:`run_configure_gitea`'s ``token_error`` field.
+    Returns ``(result, error, rotation_started)``:
+
+    - ``result`` is the new :class:`OAuthAppResult` on success, ``None``
+      on failure.
+    - ``error`` is a short diagnostic on failure, empty on success.
+    - ``rotation_started`` is True iff at least one delete actually
+      happened during this call. The CLI handler uses this to
+      distinguish "before-delete" failures (safe to warn-and-continue:
+      Gitea state untouched, Woodpecker keeps running with the
+      previous spin-up's still-valid credentials) from "after-delete"
+      failures (Gitea has invalidated the old app but no new one is
+      ready: Woodpecker would 401 on every login until manual
+      remediation — must abort the deploy). (Copilot R2)
 
     Auth: token-bearer (the GITEA_TOKEN minted in 2.2e/2.2e-fix).
     The list/delete/create endpoints all accept token auth as the
     authenticated user (admin in our case).
     """
     if not gitea_token:
-        return None, "GITEA_TOKEN is empty"
+        return None, "GITEA_TOKEN is empty", False
     _validate_path_segment(admin_username, kind="admin_username")
 
     # ``with_token`` returns a new client that uses token-auth instead
@@ -1092,7 +1109,7 @@ def run_woodpecker_oauth_setup(
     except GiteaError as exc:
         # str(exc) is safe — GiteaError messages are constructed from
         # fixed format strings + status codes only, never response bodies.
-        return None, f"list_oauth_apps: {exc}"
+        return None, f"list_oauth_apps: {exc}", False
 
     # Find any existing app named exactly "Woodpecker CI" — Gitea
     # allows multiple apps with the same name, so iterate the full
@@ -1101,15 +1118,19 @@ def run_woodpecker_oauth_setup(
     # the rotation semantics break: we'd issue fresh credentials
     # while the old app remains valid, leaving stale OAuth tokens
     # active until the operator manually cleans up. (Copilot R1)
+    rotation_started = False
     for app in apps:
         if app.get("name") == "Woodpecker CI":
             app_id = app.get("id")
-            if isinstance(app_id, int) and not client.delete_oauth_app(app_id):
-                return (
-                    None,
-                    f"delete_oauth_app(id={app_id}): failed — "
-                    "refusing to create duplicate (rotation broken)",
-                )
+            if isinstance(app_id, int):
+                if not client.delete_oauth_app(app_id):
+                    return (
+                        None,
+                        f"delete_oauth_app(id={app_id}): failed — "
+                        "refusing to create duplicate (rotation broken)",
+                        rotation_started,
+                    )
+                rotation_started = True
 
     redirect_uri = f"https://woodpecker.{domain}/authorize"
     try:
@@ -1120,6 +1141,7 @@ def run_woodpecker_oauth_setup(
                 confidential_client=True,
             ),
             "",
+            rotation_started,
         )
     except GiteaError as exc:
-        return None, f"create_oauth_app: {exc}"
+        return None, f"create_oauth_app: {exc}", rotation_started

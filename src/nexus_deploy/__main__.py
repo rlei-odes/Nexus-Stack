@@ -1037,7 +1037,7 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
             ssh.port_forward(local_port, "localhost", 3200) as port,
         ):
             _ = ssh  # tunnel kept alive for the with-block
-            result, error = run_woodpecker_oauth_setup(
+            result, error, rotation_started = run_woodpecker_oauth_setup(
                 base_url=f"http://localhost:{port}",
                 domain=domain,
                 gitea_token=gitea_token,
@@ -1067,6 +1067,18 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
         # ``py/clear-text-logging-sensitive-data``. Alert dismissed
         # as "won't fix" with the same rationale (see PR #521).
         sys.stderr.write(f"  • woodpecker-oauth: NOT created — {error}\n")
+        # Half-completed rotation = MUST abort. The delete already
+        # invalidated the previous client_secret; if we returned
+        # rc=1 (yellow warn, deploy continues), Woodpecker would
+        # keep running with the now-stale secret in its .env and
+        # 401 on every Gitea login until the next deploy succeeds.
+        # rc=2 routes to deploy.sh's red-abort branch. (Copilot R2)
+        if rotation_started:
+            sys.stderr.write(
+                "  • rotation half-complete — old creds invalidated, "
+                "no fresh ones issued; aborting to avoid a Woodpecker login outage\n",
+            )
+            return 2
         return 1
 
     sys.stderr.write("  • woodpecker-oauth: created (fresh client_id + secret)\n")
