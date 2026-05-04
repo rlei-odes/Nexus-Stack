@@ -188,8 +188,14 @@ def test_configure_ssh_dedups_existing_block(tmp_path: Path) -> None:
     configure_ssh(spec2, ssh_config_path=target)
     content = target.read_text()
     assert content.count("Host nexus") == 1
-    assert "old.example.com" not in content
-    assert "new.example.com" in content
+    # Match against the full HostName-prefixed line, not bare hostname
+    # substrings — strengthens the test (verifies context, not just
+    # presence) AND avoids CodeQL's `py/incomplete-url-substring-
+    # sanitization` false positive that flags `"x.example.com" in
+    # content` as a URL-validation anti-pattern. Same intent, more
+    # precise.
+    assert "HostName old.example.com" not in content
+    assert "HostName new.example.com" in content
 
 
 def test_configure_ssh_preserves_other_host_blocks(tmp_path: Path) -> None:
