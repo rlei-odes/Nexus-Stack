@@ -798,3 +798,522 @@ def test_cli_run_all_unexpected_exception_returns_2(
     assert "RuntimeError" in captured.err
     assert "secret-bearing-message-NEVER-PRINT" not in captured.err
     assert "secret-bearing-message-NEVER-PRINT" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Per-phase happy-path bodies (mock underlying module functions to drive
+# the try-block + result-mapping logic to ok/partial/failed PhaseResults).
+# ---------------------------------------------------------------------------
+
+
+class _FakeTunnel:
+    """Stand-in for SSHClient.port_forward()'s context manager.
+    Yields the port int that __enter__ returns."""
+
+    def __init__(self, port: int = 5500) -> None:
+        self._port = port
+
+    def __enter__(self) -> int:
+        return self._port
+
+    def __exit__(self, *_a: Any) -> None:
+        return None
+
+
+def _ssh_with_tunnel() -> Any:
+    ssh = MagicMock()
+    ssh.port_forward = MagicMock(return_value=_FakeTunnel())
+    return ssh
+
+
+def test_phase_infisical_bootstrap_ok(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.infisical import BootstrapResult
+
+    fake_client = MagicMock()
+    fake_client.bootstrap.return_value = BootstrapResult(folders_built=3, pushed=12, failed=0)
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._infisical.InfisicalClient", lambda **_kw: fake_client
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._infisical.compute_folders", lambda *_a, **_kw: ()
+    )
+    result = orchestrator._phase_infisical_bootstrap(MagicMock())
+    assert result.status == "ok"
+    assert "built=3" in result.detail
+    assert "pushed=12" in result.detail
+
+
+def test_phase_infisical_bootstrap_partial_when_failed_gt_zero(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.infisical import BootstrapResult
+
+    fake_client = MagicMock()
+    fake_client.bootstrap.return_value = BootstrapResult(folders_built=2, pushed=5, failed=1)
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._infisical.InfisicalClient", lambda **_kw: fake_client
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._infisical.compute_folders", lambda *_a, **_kw: ()
+    )
+    result = orchestrator._phase_infisical_bootstrap(MagicMock())
+    assert result.status == "partial"
+    assert "failed=1" in result.detail
+
+
+def test_phase_infisical_bootstrap_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    def boom(**_kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd="x", timeout=1)
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._infisical.InfisicalClient", boom)
+    result = orchestrator._phase_infisical_bootstrap(MagicMock())
+    assert result.status == "failed"
+    assert "TimeoutExpired" in result.detail
+
+
+def test_phase_infisical_bootstrap_skipped_when_creds_missing(
+    minimal_config: NexusConfig, minimal_env: BootstrapEnv
+) -> None:
+    orch = Orchestrator(
+        config=minimal_config,
+        bootstrap_env=minimal_env,
+        enabled_services=[],
+        repo_name="r",
+        gitea_repo_owner="o",
+        # project_id / infisical_token default to None
+    )
+    result = orch._phase_infisical_bootstrap(MagicMock())
+    assert result.status == "skipped"
+
+
+def test_phase_services_configure_ok(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.services import HookResult, SetupResult
+
+    fake = SetupResult(
+        hooks=(
+            HookResult(name="x", status="configured"),
+            HookResult(name="y", status="already-configured"),
+        )
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._services.run_admin_setups", lambda *_a, **_kw: fake
+    )
+    result = orchestrator._phase_services_configure(MagicMock())
+    assert result.status == "ok"
+    assert "configured=1" in result.detail
+
+
+def test_phase_services_configure_partial_when_failed(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.services import HookResult, SetupResult
+
+    fake = SetupResult(
+        hooks=(
+            HookResult(name="x", status="configured"),
+            HookResult(name="y", status="failed"),
+        )
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._services.run_admin_setups", lambda *_a, **_kw: fake
+    )
+    result = orchestrator._phase_services_configure(MagicMock())
+    assert result.status == "partial"
+    assert "failed=1" in result.detail
+
+
+def test_phase_gitea_configure_ok_populates_state(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _mk_gitea_result(token="abc-token")
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._gitea.run_configure_gitea", lambda *_a, **_kw: fake
+    )
+    result = orchestrator._phase_gitea_configure(_ssh_with_tunnel())
+    assert result.status == "ok"
+    assert orchestrator.state.gitea_token == "abc-token"
+    assert orchestrator.state.restart_services == ("kestra", "jupyter")
+
+
+def test_phase_gitea_configure_partial_when_subresult_unsuccessful(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = GiteaResult(
+        db_pw_synced=True,
+        admin=CreateUserResult(name="admin", status="failed"),  # is_success=False
+        user=None,
+        token="abc",
+        token_error="",
+        repo=CreateRepoResult(name="repo", status="created"),
+        collaborator_added=False,
+        restart_services=(),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._gitea.run_configure_gitea", lambda *_a, **_kw: fake
+    )
+    result = orchestrator._phase_gitea_configure(_ssh_with_tunnel())
+    assert result.status == "partial"
+
+
+def test_phase_gitea_configure_partial_when_admin_password_missing(
+    minimal_env: BootstrapEnv,
+) -> None:
+    cfg = NexusConfig(admin_username="admin")  # no gitea_admin_password
+    orch = Orchestrator(
+        config=cfg,
+        bootstrap_env=minimal_env,
+        enabled_services=["gitea"],
+        repo_name="r",
+        gitea_repo_owner="o",
+    )
+    result = orch._phase_gitea_configure(MagicMock())
+    assert result.status == "partial"
+    assert "GITEA_ADMIN_PASS" in result.detail
+
+
+def test_phase_gitea_configure_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_configure_gitea", boom)
+    result = orchestrator._phase_gitea_configure(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "OSError" in result.detail
+
+
+def test_phase_seed_ok(orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nexus_deploy.seeder import SeedResult
+
+    orchestrator.state.gitea_token = "tok"
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._seeder.run_seed_for_repo",
+        lambda **_kw: SeedResult(created=4, skipped=1, failed=0),
+    )
+    monkeypatch.setattr("nexus_deploy.orchestrator.Path.is_dir", lambda self: True)
+    result = orchestrator._phase_seed(MagicMock())
+    assert result.status == "ok"
+    assert "created=4" in result.detail
+
+
+def test_phase_seed_partial_when_some_failed_but_progress_made(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.seeder import SeedResult
+
+    orchestrator.state.gitea_token = "tok"
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._seeder.run_seed_for_repo",
+        lambda **_kw: SeedResult(created=2, skipped=1, failed=1),
+    )
+    monkeypatch.setattr("nexus_deploy.orchestrator.Path.is_dir", lambda self: True)
+    result = orchestrator._phase_seed(MagicMock())
+    assert result.status == "partial"
+
+
+def test_phase_seed_failed_when_zero_progress(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.seeder import SeedResult
+
+    orchestrator.state.gitea_token = "tok"
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._seeder.run_seed_for_repo",
+        lambda **_kw: SeedResult(created=0, skipped=0, failed=5),
+    )
+    monkeypatch.setattr("nexus_deploy.orchestrator.Path.is_dir", lambda self: True)
+    result = orchestrator._phase_seed(MagicMock())
+    assert result.status == "failed"
+
+
+def test_phase_seed_skipped_when_seeds_dir_missing(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.state.gitea_token = "tok"
+    monkeypatch.setattr("nexus_deploy.orchestrator.Path.is_dir", lambda self: False)
+    result = orchestrator._phase_seed(MagicMock())
+    assert result.status == "skipped"
+    assert "missing" in result.detail
+
+
+def test_phase_kestra_register_ok(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.kestra import RegisterResult, SystemFlowsResult
+
+    fake = SystemFlowsResult(
+        flows=(RegisterResult(name="git-sync", status="created"),),
+        execution_state="SUCCESS",
+        verify_skipped_reason=None,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._kestra.run_register_system_flows",
+        lambda *_a, **_kw: fake,
+    )
+    result = orchestrator._phase_kestra_register(_ssh_with_tunnel())
+    assert result.status == "ok"
+    assert "execution=SUCCESS" in result.detail
+
+
+def test_phase_kestra_register_partial_when_admin_email_missing(
+    minimal_config: NexusConfig,
+) -> None:
+    env = BootstrapEnv(domain="example.com")  # admin_email missing
+    orch = Orchestrator(
+        config=minimal_config,
+        bootstrap_env=env,
+        enabled_services=["kestra"],
+        repo_name="r",
+        gitea_repo_owner="o",
+    )
+    result = orch._phase_kestra_register(MagicMock())
+    assert result.status == "partial"
+    assert "ADMIN_EMAIL" in result.detail
+
+
+def test_phase_kestra_register_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise subprocess.CalledProcessError(returncode=1, cmd="x")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._kestra.run_register_system_flows", boom)
+    result = orchestrator._phase_kestra_register(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "CalledProcessError" in result.detail
+
+
+def test_phase_woodpecker_oauth_partial_when_domain_missing(
+    minimal_config: NexusConfig,
+) -> None:
+    env = BootstrapEnv()  # no domain
+    orch = Orchestrator(
+        config=minimal_config,
+        bootstrap_env=env,
+        enabled_services=["woodpecker"],
+        repo_name="r",
+        gitea_repo_owner="o",
+    )
+    orch.state.gitea_token = "tok"
+    result = orch._phase_woodpecker_oauth(MagicMock())
+    assert result.status == "partial"
+    assert "DOMAIN" in result.detail
+
+
+def test_phase_woodpecker_oauth_failed_when_rotation_half_complete(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If create succeeded but rotation didn't, the failed branch
+    surfaces the half-complete state."""
+    orchestrator.state.gitea_token = "tok"
+
+    def fake_oauth(*_a: Any, **_kw: Any) -> tuple[Any, str | None, bool]:
+        return (None, "rotation aborted mid-flight", True)
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_woodpecker_oauth_setup", fake_oauth)
+    result = orchestrator._phase_woodpecker_oauth(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "half-complete" in result.detail
+
+
+def test_phase_woodpecker_oauth_partial_when_create_failed_no_rotation(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.state.gitea_token = "tok"
+
+    def fake_oauth(*_a: Any, **_kw: Any) -> tuple[Any, str | None, bool]:
+        return (None, "create returned 422", False)
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_woodpecker_oauth_setup", fake_oauth)
+    result = orchestrator._phase_woodpecker_oauth(_ssh_with_tunnel())
+    assert result.status == "partial"
+
+
+def test_phase_mirror_setup_partial_when_gh_token_missing(
+    minimal_config: NexusConfig, minimal_env: BootstrapEnv
+) -> None:
+    orch = Orchestrator(
+        config=minimal_config,
+        bootstrap_env=minimal_env,
+        enabled_services=["gitea"],
+        repo_name="r",
+        gitea_repo_owner="o",
+        gh_mirror_repos=["https://github.com/x/y"],
+    )
+    orch.state.gitea_token = "tok"
+    result = orch._phase_mirror_setup(MagicMock())
+    assert result.status == "partial"
+    assert "GH_MIRROR_TOKEN" in result.detail
+
+
+def test_phase_mirror_setup_partial_when_some_mirrors_failed(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.gh_mirror_repos = ["https://github.com/x/y"]
+    orchestrator.gh_mirror_token = "gh-tok"
+    orchestrator.state.gitea_token = "tok"
+
+    def fake_mirror(*_a: Any, **_kw: Any) -> MirrorSetupResult:
+        return MirrorSetupResult(
+            admin_uid=1,
+            admin_uid_error="",
+            mirrors=(
+                MirrorResult(name="x", status="created"),
+                MirrorResult(name="y", status="failed"),
+            ),
+            fork=None,
+            collaborator_added_count=0,
+            fork_synced=False,
+        )
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_mirror_setup", fake_mirror)
+    result = orchestrator._phase_mirror_setup(_ssh_with_tunnel())
+    assert result.status == "partial"
+
+
+def test_phase_secret_sync_jupyter_skipped_when_not_enabled(
+    minimal_config: NexusConfig, minimal_env: BootstrapEnv
+) -> None:
+    orch = Orchestrator(
+        config=minimal_config,
+        bootstrap_env=minimal_env,
+        enabled_services=["gitea"],  # NOT jupyter
+        repo_name="r",
+        gitea_repo_owner="o",
+        project_id="p",
+        infisical_token="t",
+    )
+    result = orch._phase_secret_sync_jupyter(MagicMock())
+    assert result.status == "skipped"
+
+
+def test_phase_secret_sync_jupyter_partial_when_creds_missing(
+    minimal_config: NexusConfig, minimal_env: BootstrapEnv
+) -> None:
+    orch = Orchestrator(
+        config=minimal_config,
+        bootstrap_env=minimal_env,
+        enabled_services=["jupyter"],
+        repo_name="r",
+        gitea_repo_owner="o",
+        # project_id / infisical_token default None
+    )
+    result = orch._phase_secret_sync_jupyter(MagicMock())
+    assert result.status == "partial"
+
+
+def test_phase_secret_sync_jupyter_ok(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.secret_sync import SyncResult
+
+    fake = SyncResult(
+        pushed=5,
+        skipped_invalid_name=0,
+        skipped_multiline=0,
+        failed_folders=0,
+        collisions=0,
+        succeeded_folders=2,
+        wrote=True,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
+        lambda *_a, **_kw: fake,
+    )
+    result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
+    assert result.status == "ok"
+    assert "pushed=5" in result.detail
+
+
+def test_phase_secret_sync_partial_when_wrote_with_some_failures(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.secret_sync import SyncResult
+
+    fake = SyncResult(
+        pushed=3,
+        skipped_invalid_name=0,
+        skipped_multiline=0,
+        failed_folders=1,
+        collisions=0,
+        succeeded_folders=2,
+        wrote=True,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
+        lambda *_a, **_kw: fake,
+    )
+    result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
+    assert result.status == "partial"
+
+
+def test_phase_secret_sync_outage_gate_ok(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wrote=False but with some succeeded folders means the outage
+    gate skipped the write — still 'ok'."""
+    from nexus_deploy.secret_sync import SyncResult
+
+    fake = SyncResult(
+        pushed=0,
+        skipped_invalid_name=0,
+        skipped_multiline=0,
+        failed_folders=0,
+        collisions=0,
+        succeeded_folders=2,
+        wrote=False,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
+        lambda *_a, **_kw: fake,
+    )
+    result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
+    assert result.status == "ok"
+    assert "outage" in result.detail
+
+
+def test_phase_secret_sync_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("network down")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._secret_sync.run_sync_for_stack", boom)
+    result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
+    assert result.status == "failed"
+    assert "OSError" in result.detail
+
+
+def test_run_all_resets_results_between_runs(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-reset: running twice on the same instance produces independent
+    results (no accumulation)."""
+    monkeypatch.setattr("nexus_deploy.orchestrator.SSHClient", MagicMock())
+    for phase_name in (
+        "_phase_infisical_bootstrap",
+        "_phase_services_configure",
+        "_phase_gitea_configure",
+        "_phase_seed",
+        "_phase_kestra_register",
+        "_phase_woodpecker_oauth",
+        "_phase_mirror_setup",
+        "_phase_secret_sync_jupyter",
+        "_phase_secret_sync_marimo",
+    ):
+        monkeypatch.setattr(orchestrator, phase_name, lambda _ssh, n=phase_name: _ok_phase(n))
+    r1 = orchestrator.run_all()
+    r2 = orchestrator.run_all()
+    assert len(r1.phases) == 9
+    assert len(r2.phases) == 9
