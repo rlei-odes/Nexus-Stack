@@ -439,8 +439,17 @@ class GiteaCli:
         """
         _validate_path_segment(username, kind="username")
         _validate_path_segment(name, kind="token_name")
-        # Best-effort delete — peer auth CLI; rc=0 if token existed,
-        # rc!=0 if not. Either way, the next generate succeeds.
+        # Best-effort delete — peer auth CLI. Inside the script the
+        # docker-exec exits 0 if a token with this name existed and
+        # was removed, non-zero otherwise (e.g. token didn't exist,
+        # or transient docker error). The trailing ``|| true``
+        # collapses both cases to script-rc=0, so ``ssh.run_script``
+        # always sees rc=0 here and we never raise on the delete step.
+        # Whether the delete actually removed anything is irrelevant
+        # for our flow: ``generate-access-token`` requires a free
+        # name; if a stale token with the same name still exists at
+        # generate time, the generate call itself reports the
+        # collision and the diagnostic surfaces via the parsed output.
         delete_script = (
             "docker exec -u git gitea gitea admin user delete-access-token "
             f"--username {shlex.quote(username)} "
