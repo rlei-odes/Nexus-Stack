@@ -1063,12 +1063,10 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
         # ``error`` is constructed in :func:`run_woodpecker_oauth_setup`
         # from GiteaError format strings only (HTTP status codes,
         # type names) — never from ``gitea_token``. CodeQL's taint
-        # analysis can't prove that and would flag the line as
-        # sensitive-data-in-clear-text-log; the lgtm comment is the
-        # explicit acknowledgement that the diagnostic is safe.
-        sys.stderr.write(
-            f"  • woodpecker-oauth: NOT created — {error}\n"
-        )  # lgtm[py/clear-text-logging-sensitive-data]
+        # analysis can't prove that and surfaces the line as
+        # ``py/clear-text-logging-sensitive-data``. Alert dismissed
+        # as "won't fix" with the same rationale (see PR #521).
+        sys.stderr.write(f"  • woodpecker-oauth: NOT created — {error}\n")
         return 1
 
     sys.stderr.write("  • woodpecker-oauth: created (fresh client_id + secret)\n")
@@ -1076,18 +1074,17 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
     import shlex as _shlex
 
     # Eval-able stdout handoff to deploy.sh — same intentional pattern
-    # as ``GITEA_TOKEN=`` in :func:`_gitea_configure`. The shlex.quote
+    # as ``GITEA_TOKEN=`` in :func:`_gitea_configure`. ``shlex.quote``
     # guarantees the value can't break out of the assignment if it
     # ever contains shell metacharacters; deploy.sh writes the
     # eval'd values into Woodpecker's ``.env`` (mode 600) before
     # ``docker compose up -d``. CodeQL flags the secret-bearing line
-    # because the field name matches its sensitive-data classifier;
-    # the lgtm comment is the explicit acknowledgement that the
-    # stdout write is the documented contract.
+    # because ``client_secret`` matches its sensitive-name classifier;
+    # alert dismissed as "won't fix" — the eval-handoff is the
+    # documented contract, mitigated by tempfile mode 600 +
+    # ``$RUNNER_CLEANUP_PATHS`` trap-driven cleanup on deploy.sh side.
     sys.stdout.write(f"WOODPECKER_GITEA_CLIENT={_shlex.quote(result.client_id)}\n")
-    sys.stdout.write(
-        f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.client_secret)}\n"
-    )  # lgtm[py/clear-text-logging-sensitive-data]
+    sys.stdout.write(f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.client_secret)}\n")
     return 0
 
 
