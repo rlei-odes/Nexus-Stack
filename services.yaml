@@ -698,7 +698,7 @@ services:
     website: "https://www.soda.io"
     description: "CLI-based data quality testing tool using SodaCL checks for database validation."
     long_description: "Soda Core is a data quality testing framework. Write checks in SodaCL (Soda Checks Language) to validate row counts, null percentages, uniqueness, referential integrity, and custom SQL conditions. Run checks against PostgreSQL, ClickHouse, and other databases to catch data issues early."
-    image: "soda-core-arm64:3.3.7"
+    image: "soda-core:3.3.7"
     support_images:
       postgres: "postgres:16-alpine"
 

@@ -1,8 +1,11 @@
 # =============================================================================
-# Soda Core - ARM64-compatible build
+# Soda Core - Multi-arch build (amd64 + arm64)
 # =============================================================================
-# Official sodadata/soda-core image doesn't support ARM64, so we build our own
-# using Python 3.11 base image and install soda-core via pip.
+# Official sodadata/soda-core image is amd64-only. We build our own from
+# `python:3.11-slim` (multi-arch base) + pip install — pip serves
+# arch-correct wheels from PyPI, so the resulting image is correct on
+# whichever architecture it's built on. Originally created for ARM
+# parity; now also covers the post-2026-05 x86 (cpx32) default.
 # =============================================================================
 
 FROM python:3.11-slim
