@@ -708,15 +708,29 @@ def _kestra_register_system_flows(args: list[str]) -> int:
         return 2
 
     if not config.kestra_admin_password:
+        # Round-2 fix: previously rc=0 (mapped to green "registered"
+        # banner in deploy.sh, misleading). rc=1 routes to the yellow-
+        # warning branch — accurate signal that nothing was registered.
         print(
             "kestra register-system-flows: KESTRA_PASS missing from SECRETS_JSON — "
             "skipping (Kestra basic-auth would 401 on every call)",
             file=sys.stderr,
         )
-        return 0
+        return 1
+
+    # Round-2 fix: pick a free local port via socket.bind(0) instead of
+    # hardcoded 8085. Hardcoded would clash with leftover ssh tunnels
+    # or any local service already on 8085; the new pre-bind probe
+    # asks the kernel for a free ephemeral port. Tiny race window
+    # (the port is closed before ssh -L re-binds) but vastly better
+    # than the previous unconditional collision.
+    local_port = _allocate_free_port()
 
     try:
-        with SSHClient(ssh_host) as ssh, ssh.port_forward(8085, "localhost", 8085) as port:
+        with (
+            SSHClient(ssh_host) as ssh,
+            ssh.port_forward(local_port, "localhost", 8085) as port,
+        ):
             result = run_register_system_flows(
                 config,
                 base_url=f"http://localhost:{port}",
@@ -749,7 +763,21 @@ def _kestra_register_system_flows(args: list[str]) -> int:
     for flow in result.flows:
         sys.stderr.write(f"  • {flow.name}: {flow.status} ({flow.detail})\n")
     if result.execution_state is not None:
-        sys.stderr.write(f"  • system.flow-sync onboarding execution: {result.execution_state}\n")
+        # Round-2 fix: per-state actionable warning instead of bare enum.
+        # Mirrors the hint deploy.sh L3464/L3489/L3493/L3496 used to print.
+        hint = _kestra_execution_hint(result.execution_state)
+        sys.stderr.write(
+            f"  • system.flow-sync onboarding execution: {result.execution_state}"
+            f"{(' — ' + hint) if hint else ''}\n",
+        )
+    if result.verify_skipped_reason is not None:
+        # Verification step itself didn't complete (transient 5xx /
+        # transport blip during flow_exists). State stays SUCCESS but
+        # the operator sees that the check wasn't actually run.
+        sys.stderr.write(
+            f"  • seed-flow visibility check skipped: {result.verify_skipped_reason}\n",
+        )
+
     print(
         f"kestra register-system-flows: "
         f"created={sum(1 for f in result.flows if f.status == 'created')} "
@@ -758,6 +786,50 @@ def _kestra_register_system_flows(args: list[str]) -> int:
         f"execution={result.execution_state or 'skipped'}",
     )
     return 0 if result.is_success else 1
+
+
+def _allocate_free_port() -> int:
+    """Ask the kernel for a free ephemeral port.
+
+    Bind a socket to ``127.0.0.1:0`` (kernel picks free), record the
+    assigned port, immediately close. The returned port is then handed
+    to ``ssh -L`` to re-bind. Race window between close and ssh-rebind
+    is microseconds; for production-deploy-frequency that's fine. If
+    a future contributor needs zero-race, paramiko's port-forward
+    has a callback API but we explicitly chose subprocess + system
+    ssh in Modul 3.1, so this is the right primitive for now.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+# Hints emitted alongside execution_state in stderr — actionable
+# replacements for the bare-enum output. Mirrors deploy.sh's
+# per-case warnings (L3464 cron-tick / L3489 seed-not-visible /
+# L3493 open-execution-in-UI / L3496 didn't-complete).
+_KESTRA_EXECUTION_HINTS: dict[str, str] = {
+    "SUCCESS": "",
+    "FAILED": "open the execution in the Kestra UI for the error log",
+    "KILLED": "open the execution in the Kestra UI for the error log",
+    "RUNNING": "did not complete within the timeout — first regular cron tick will retry within 15 min",
+    "CREATED": "execution stuck in CREATED state — check Kestra worker logs",
+    "UNKNOWN": "execution state could not be determined — check Kestra UI",
+    "TRIGGER_FAILED": "could not trigger execution — first sync will run on the next 15-min cron tick",
+    "SEED_FLOW_MISSING": "system.flow-sync ran but the seeded flow is not visible — "
+    "check that nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml is in the workspace repo "
+    "and re-execute system.flow-sync from the Kestra UI",
+}
+
+
+def _kestra_execution_hint(state: str) -> str:
+    """Return the actionable warning string for a given ExecutionState."""
+    return _KESTRA_EXECUTION_HINTS.get(state, "")
 
 
 def main() -> int:

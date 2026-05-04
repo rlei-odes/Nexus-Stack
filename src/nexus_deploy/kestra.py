@@ -113,6 +113,13 @@ class SystemFlowsResult:
 
     flows: tuple[RegisterResult, ...]
     execution_state: ExecutionState | None = None  # None if not triggered
+    # Set when the post-execute flow_exists() probe couldn't run
+    # (5xx/transport blip). Doesn't downgrade the SUCCESS state — a
+    # transient HTTP error during verify is recoverable on the next
+    # deploy and reclassifying it would be punishing operators for
+    # network noise. But we still want it surfaced so the operator
+    # sees that the verification step itself didn't complete.
+    verify_skipped_reason: str | None = None
 
     @property
     def is_success(self) -> bool:
@@ -176,6 +183,13 @@ class KestraClient:
         These three == "Kestra is ready and our credentials work".
         Anything else (000/401/403/5xx) keeps the loop running until
         timeout. Returns True on first ready, False on timeout.
+
+        Sleep is **clamped to the deadline**: the loop never sleeps
+        past ``timeout_s``, so a caller passing ``timeout_s=0.05``
+        gets a sub-second response even with the default 3s interval.
+        Without the clamp, the loop would call ``requests.get`` once,
+        sleep the full ``interval_s``, then check the deadline — making
+        short timeouts effectively floor to ``interval_s``.
         """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -189,7 +203,10 @@ class KestraClient:
                 resp = None
             if resp is not None and resp.status_code in (200, 404, 405):
                 return True
-            time.sleep(interval_s)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(interval_s, remaining))
         return False
 
     def register_flow(
@@ -358,6 +375,10 @@ class KestraClient:
         whichever was reached, or ``"RUNNING"`` if the timeout fired
         before the execution settled (caller maps to a warning, not a
         deploy failure — the execution may finish in the next minute).
+
+        Sleep is clamped to the deadline (same pattern as
+        :meth:`wait_ready`) so short ``timeout_s`` values aren't
+        floored to ``interval_s``.
         """
         deadline = time.monotonic() + timeout_s
         last: ExecutionState = "CREATED"
@@ -370,7 +391,10 @@ class KestraClient:
                 last = "UNKNOWN"
             if last in ("SUCCESS", "FAILED", "KILLED"):
                 return last
-            time.sleep(interval_s)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(interval_s, remaining))
         return last
 
 
@@ -585,10 +609,19 @@ def run_register_system_flows(
     # their tutorial flow. Mirrors deploy.sh L3479-3490 exactly.
     try:
         seed_visible = client.flow_exists(_SEED_VERIFICATION_NS, _SEED_VERIFICATION_ID)
-    except KestraError:
-        # Network blip during verification; don't downgrade the
-        # SUCCESS execution to a failure on a transient HTTP error.
-        return SystemFlowsResult(flows=register_results, execution_state=exec_state)
+    except KestraError as exc:
+        # Network blip during verification: don't downgrade the SUCCESS
+        # execution to a failure (transient HTTP errors are recoverable
+        # on the next deploy; reclassifying would punish operators for
+        # network noise). But surface the verify-failed signal via
+        # ``verify_skipped_reason`` so the CLI emits a stderr warning —
+        # operators see that the check itself didn't complete and can
+        # spot-check the flow visibility manually if needed.
+        return SystemFlowsResult(
+            flows=register_results,
+            execution_state=exec_state,
+            verify_skipped_reason=f"flow_exists raised KestraError ({type(exc).__name__})",
+        )
     if not seed_visible:
         return SystemFlowsResult(flows=register_results, execution_state="SEED_FLOW_MISSING")
     return SystemFlowsResult(flows=register_results, execution_state="SUCCESS")

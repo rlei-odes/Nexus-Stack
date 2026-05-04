@@ -753,11 +753,9 @@ def test_run_register_system_flows_seed_flow_visible_after_success() -> None:
 
 @responses.activate
 def test_run_register_system_flows_seed_verify_transport_error_keeps_success() -> None:
-    """Verification HTTP 5xx → don't downgrade a SUCCESS execution.
-
-    Network blip during the verify call shouldn't reclassify a
-    perfectly-valid SUCCESS execution as a failure — a transient
-    glitch is recoverable on the next deploy.
+    """Verification HTTP 5xx → don't downgrade a SUCCESS execution, but
+    surface the verify-skipped reason so the operator knows the check
+    didn't actually run.
     """
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
@@ -793,6 +791,48 @@ def test_run_register_system_flows_seed_verify_transport_error_keeps_success() -
     # Stays SUCCESS despite the verification failure
     assert result.execution_state == "SUCCESS"
     assert result.is_success is True
+    # NEW (round-2 fix): the operator sees the verify-failed signal
+    assert result.verify_skipped_reason is not None
+    assert "KestraError" in result.verify_skipped_reason
+
+
+# ---------------------------------------------------------------------------
+# wait_ready / wait_for_execution — sleep clamps to deadline
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_wait_ready_short_timeout_does_not_block_on_long_interval() -> None:
+    """Sleep is clamped to deadline — `timeout_s=0.1, interval_s=10` doesn't
+    block 10 seconds. Round-2 fix to make the orchestrator's
+    ``ready_timeout_s`` parameter actually honour sub-second values."""
+    import time as _time
+
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=401)
+    start = _time.monotonic()
+    result = _client().wait_ready(timeout_s=0.1, interval_s=10.0)
+    elapsed = _time.monotonic() - start
+    assert result is False
+    # Should be ≤ ~0.2s; the old behavior would block the full 10s.
+    assert elapsed < 1.0, f"wait_ready blocked {elapsed:.2f}s, expected <1s"
+
+
+@responses.activate
+def test_wait_for_execution_short_timeout_does_not_block_on_long_interval() -> None:
+    """Same clamp for wait_for_execution."""
+    import time as _time
+
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/exec-1",
+        status=200,
+        json={"state": {"current": "RUNNING"}},
+    )
+    start = _time.monotonic()
+    result = _client().wait_for_execution("exec-1", timeout_s=0.1, interval_s=10.0)
+    elapsed = _time.monotonic() - start
+    assert result == "RUNNING"
+    assert elapsed < 1.0, f"wait_for_execution blocked {elapsed:.2f}s, expected <1s"
 
 
 # ---------------------------------------------------------------------------
@@ -937,16 +977,21 @@ def test_cli_kestra_missing_required_env_returns_2(
     assert "missing required env" in err
 
 
-def test_cli_kestra_missing_kestra_pass_returns_zero_with_warning(
+def test_cli_kestra_missing_kestra_pass_returns_one_with_warning(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """No Kestra password in SECRETS_JSON → log warning, exit 0 (deploy continues)."""
+    """No Kestra password in SECRETS_JSON → log warning, rc=1.
+
+    Round-2 fix: previously rc=0 (mapped to green "registered" banner).
+    rc=1 routes deploy.sh to the yellow-warning branch — accurate signal
+    that nothing was registered.
+    """
     from nexus_deploy.__main__ import _kestra_register_system_flows
 
     _set_required_env(monkeypatch)
     monkeypatch.setattr("sys.stdin.read", lambda: "{}")
     rc = _kestra_register_system_flows([])
-    assert rc == 0
+    assert rc == 1
     err = capsys.readouterr().err
     assert "KESTRA_PASS missing" in err
 
@@ -1122,3 +1167,198 @@ def test_cli_kestra_partial_failure_returns_one(
     captured = capsys.readouterr()
     assert "failed=1" in captured.out
     assert "execution=skipped" in captured.out
+
+
+def test_cli_kestra_emits_actionable_warning_per_execution_state(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-2 fix: instead of bare enum (TRIGGER_FAILED), CLI emits
+    a human-actionable hint mirroring deploy.sh's per-case warnings."""
+    from nexus_deploy.__main__ import _kestra_register_system_flows
+
+    _set_required_env(monkeypatch)
+    monkeypatch.setattr("sys.stdin.read", lambda: '{"kestra_admin_password": "kp"}')
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> SystemFlowsResult:
+        return SystemFlowsResult(
+            flows=(
+                RegisterResult(name="system.git-sync", status="created", detail="POST 201"),
+                RegisterResult(name="system.flow-sync", status="created", detail="POST 201"),
+            ),
+            execution_state="TRIGGER_FAILED",
+        )
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_register_system_flows", fake_run)
+
+    from contextlib import contextmanager
+
+    class _OkSSH:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _OkSSH:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+        @contextmanager
+        def port_forward(self, *_args: Any, **_kwargs: Any) -> Any:
+            yield 8085
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _OkSSH)
+    rc = _kestra_register_system_flows([])
+    assert rc == 1
+    err = capsys.readouterr().err
+    # The bare enum is shown
+    assert "TRIGGER_FAILED" in err
+    # The actionable hint is also shown — operator sees the remediation
+    assert "first sync will run on the next 15-min cron tick" in err
+
+
+def test_cli_kestra_emits_seed_flow_missing_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SEED_FLOW_MISSING is the most-likely operator-misconfiguration case:
+    the workspace repo is missing the seed flow YAML. The hint must
+    point them to the file path that needs to be present."""
+    from nexus_deploy.__main__ import _kestra_register_system_flows
+
+    _set_required_env(monkeypatch)
+    monkeypatch.setattr("sys.stdin.read", lambda: '{"kestra_admin_password": "kp"}')
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> SystemFlowsResult:
+        return SystemFlowsResult(
+            flows=(
+                RegisterResult(name="system.git-sync", status="created", detail="POST 201"),
+                RegisterResult(name="system.flow-sync", status="created", detail="POST 201"),
+            ),
+            execution_state="SEED_FLOW_MISSING",
+        )
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_register_system_flows", fake_run)
+
+    from contextlib import contextmanager
+
+    class _OkSSH:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _OkSSH:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+        @contextmanager
+        def port_forward(self, *_args: Any, **_kwargs: Any) -> Any:
+            yield 8085
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _OkSSH)
+    rc = _kestra_register_system_flows([])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "SEED_FLOW_MISSING" in err
+    assert "nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml" in err
+
+
+def test_cli_kestra_emits_verify_skipped_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When the verify step itself failed (5xx during flow_exists), the
+    state stays SUCCESS but the operator sees that the check didn't run."""
+    from nexus_deploy.__main__ import _kestra_register_system_flows
+
+    _set_required_env(monkeypatch)
+    monkeypatch.setattr("sys.stdin.read", lambda: '{"kestra_admin_password": "kp"}')
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> SystemFlowsResult:
+        return SystemFlowsResult(
+            flows=(
+                RegisterResult(name="system.git-sync", status="created", detail="POST 201"),
+                RegisterResult(name="system.flow-sync", status="created", detail="POST 201"),
+            ),
+            execution_state="SUCCESS",
+            verify_skipped_reason="flow_exists raised KestraError (KestraError)",
+        )
+
+    monkeypatch.setattr("nexus_deploy.__main__.run_register_system_flows", fake_run)
+
+    from contextlib import contextmanager
+
+    class _OkSSH:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _OkSSH:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+        @contextmanager
+        def port_forward(self, *_args: Any, **_kwargs: Any) -> Any:
+            yield 8085
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _OkSSH)
+    rc = _kestra_register_system_flows([])
+    # SUCCESS is preserved → rc=0 (transient verify failure isn't a deploy failure)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "seed-flow visibility check skipped" in err
+    assert "KestraError" in err
+
+
+def test_cli_kestra_uses_dynamically_allocated_local_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round-2 fix: local port is kernel-allocated (not hardcoded 8085)
+    so leftover tunnels / local services on 8085 don't clash."""
+    from nexus_deploy.__main__ import _allocate_free_port, _kestra_register_system_flows
+
+    _set_required_env(monkeypatch)
+    monkeypatch.setattr("sys.stdin.read", lambda: '{"kestra_admin_password": "kp"}')
+
+    captured_local_port: list[int] = []
+
+    from contextlib import contextmanager
+
+    class _CapturingSSH:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _CapturingSSH:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+        @contextmanager
+        def port_forward(self, local_port: int, *_args: Any, **_kwargs: Any) -> Any:
+            captured_local_port.append(local_port)
+            yield local_port
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> SystemFlowsResult:
+        return SystemFlowsResult(
+            flows=(
+                RegisterResult(name="system.git-sync", status="created", detail="POST 201"),
+                RegisterResult(name="system.flow-sync", status="created", detail="POST 201"),
+            ),
+            execution_state="SUCCESS",
+        )
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _CapturingSSH)
+    monkeypatch.setattr("nexus_deploy.__main__.run_register_system_flows", fake_run)
+
+    _kestra_register_system_flows([])
+    assert len(captured_local_port) == 1
+    # NOT 8085 (the production-side Kestra port). Some kernel-chosen
+    # ephemeral port instead — typically in the 32768-60999 range on
+    # Linux, 49152-65535 on macOS. Just check it's not the hardcoded
+    # value, and that _allocate_free_port returns ints.
+    assert captured_local_port[0] != 8085
+    assert isinstance(captured_local_port[0], int)
+    assert captured_local_port[0] > 0
+
+    # Sanity: _allocate_free_port itself returns a usable port
+    p = _allocate_free_port()
+    assert isinstance(p, int)
+    assert 0 < p < 65536
