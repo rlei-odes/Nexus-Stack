@@ -381,9 +381,7 @@ def test_failed_phase_aborts_downstream_phases(
     phases are NOT invoked."""
     invoked: list[str] = []
 
-    def make_phase(
-        name: str, status: Literal["ok", "partial", "failed", "skipped"] = "ok"
-    ) -> Any:
+    def make_phase(name: str, status: Literal["ok", "partial", "failed", "skipped"] = "ok") -> Any:
         def phase(_ssh: Any) -> PhaseResult:
             invoked.append(name)
             return PhaseResult(name=name, status=status)
@@ -417,9 +415,7 @@ def test_partial_phase_continues_to_downstream(
     Downstream phases still run."""
     invoked: list[str] = []
 
-    def make_phase(
-        name: str, status: Literal["ok", "partial", "failed", "skipped"] = "ok"
-    ) -> Any:
+    def make_phase(name: str, status: Literal["ok", "partial", "failed", "skipped"] = "ok") -> Any:
         def phase(_ssh: Any) -> PhaseResult:
             invoked.append(name)
             return PhaseResult(name=name, status=status)

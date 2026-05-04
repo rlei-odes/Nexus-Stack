@@ -1793,6 +1793,15 @@ def _service_env(args: list[str]) -> int:
     except ConfigError as exc:
         print(f"service-env: {exc}", file=sys.stderr)
         return 2
+    missing = [
+        name for name in ("DOMAIN", "ADMIN_EMAIL") if not (os.environ.get(name) or "").strip()
+    ]
+    if missing:
+        print(
+            f"service-env: missing required env vars: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
     bootstrap_env = BootstrapEnv(
         domain=os.environ.get("DOMAIN") or None,
         admin_email=os.environ.get("ADMIN_EMAIL") or None,

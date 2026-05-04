@@ -167,7 +167,13 @@ class Orchestrator:
         up before return, even on early-fail. A phase with
         status='failed' aborts the run; status='partial' continues
         with a recorded warning.
+
+        Resets ``self.results`` so re-invoking the same instance does
+        not duplicate prior phase outputs. ``self.state`` is left as-is
+        (production callers create a fresh ``Orchestrator`` per run;
+        tests may pre-seed state to skip earlier phases).
         """
+        self.results = []
         with contextlib.ExitStack() as stack:
             ssh = stack.enter_context(SSHClient(self.ssh_host))
             phases: list[Callable[[SSHClient], PhaseResult]] = [

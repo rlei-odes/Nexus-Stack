@@ -219,25 +219,28 @@ def test_sftpgo_renders_with_mode_0o600(full_config: NexusConfig, full_env: Boot
 def test_pg_ducklake_local_only_when_no_s3(
     full_config: NexusConfig, full_env: BootstrapEnv
 ) -> None:
-    """No Hetzner S3 → fallback SQL just drops the secret."""
+    """No Hetzner S3 → fallback SQL only sets local table path."""
     config = full_config.model_copy(update={"hetzner_s3_server": ""})
     rendered = _render_pg_ducklake(config, full_env)
     assert len(rendered.sidecars) == 1
     sql = rendered.sidecars[0].content
-    assert "DROP SECRET IF EXISTS hetzner_s3_secret" in sql
-    assert "CREATE SECRET" not in sql
-    assert "ATTACH" not in sql
+    assert "ducklake.default_table_path = '/var/lib/ducklake/'" in sql
+    assert "create_simple_secret" not in sql
+    assert "drop_secret" not in sql
 
 
-def test_pg_ducklake_with_s3_creates_secret_and_attach(
+def test_pg_ducklake_with_s3_creates_secret(
     full_config: NexusConfig, full_env: BootstrapEnv
 ) -> None:
     rendered = _render_pg_ducklake(full_config, full_env)
     sql = rendered.sidecars[0].content
-    assert "CREATE SECRET hetzner_s3_secret" in sql
-    assert "KEY_ID 'hetzner-access'" in sql
-    assert "ENDPOINT 'https://fsn1.your-objectstorage.com'" in sql
-    assert "ATTACH 'ducklake:postgres" in sql
+    assert "duckdb.create_simple_secret(" in sql
+    assert "duckdb.drop_secret('ducklake_s3')" in sql
+    assert "key_id := 'hetzner-access'" in sql
+    assert "endpoint := 'fsn1.your-objectstorage.com'" in sql
+    assert "scope := 's3://ducklake-bucket/'" in sql
+    assert "ducklake.default_table_path = 's3://ducklake-bucket/'" in sql
+    assert "pg_reload_conf()" in sql
 
 
 def test_pg_ducklake_sql_escapes_single_quotes_in_secret(
@@ -248,7 +251,7 @@ def test_pg_ducklake_sql_escapes_single_quotes_in_secret(
     rendered = _render_pg_ducklake(config, full_env)
     sql = rendered.sidecars[0].content
     # Single quotes doubled, no unescaped '
-    assert "SECRET 'evil''; DROP TABLE--'" in sql
+    assert "secret := 'evil''; DROP TABLE--'" in sql
     # The dangerous unquoted form must NOT appear
     assert "'; DROP TABLE--';" not in sql.replace("''", "")
 
