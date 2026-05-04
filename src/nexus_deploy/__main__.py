@@ -985,10 +985,13 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
     - ``GITEA_TOKEN`` — token-bearer auth for the admin user
       (eval-captured by deploy.sh from the prior ``gitea configure``
       invocation, see Modul 2.2e)
-    - ``ADMIN_USERNAME`` — admin username (path-validated)
 
     Optional env:
 
+    - ``ADMIN_USERNAME`` — admin username, path-validated (default
+      ``admin``). Mirrors :class:`NexusConfig`'s ``admin_username``
+      default so the CLI works without the deploy.sh env-passing
+      layer when invoked manually.
     - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
 
     **stdout** (eval-able):
@@ -1029,9 +1032,11 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
         )
         return 2
 
-    local_port = _allocate_free_port()
-
     try:
+        # Inside the try-block (Copilot R4): _allocate_free_port can
+        # raise OSError on ephemeral-port exhaustion. Without this
+        # guard the traceback escapes instead of converting to rc=2.
+        local_port = _allocate_free_port()
         with (
             SSHClient(ssh_host) as ssh,
             ssh.port_forward(local_port, "localhost", 3200) as port,

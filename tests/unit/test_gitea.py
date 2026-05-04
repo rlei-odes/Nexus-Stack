@@ -1484,12 +1484,30 @@ def test_delete_oauth_app_404_returns_true() -> None:
 
 @responses.activate
 def test_delete_oauth_app_403_returns_false() -> None:
+    """Definitive non-success: Gitea KNOWS the app still exists."""
     responses.add(
         responses.DELETE,
         f"{BASE_URL}/api/v1/user/applications/oauth2/42",
         status=403,
     )
     assert _client(token="t").delete_oauth_app(42) is False
+
+
+@responses.activate
+def test_delete_oauth_app_raises_on_transport_error() -> None:
+    """Transport error → server state UNKNOWN → raise (not False).
+
+    Copilot R4: distinguishes the definitive 403 (server state known)
+    from transport ambiguity (server state unknown) so the caller
+    can route different diagnostics + different abort severity.
+    """
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        body=requests.ConnectionError("simulated connection reset"),
+    )
+    with pytest.raises(GiteaError, match="transport"):
+        _client(token="t").delete_oauth_app(42)
 
 
 def test_delete_oauth_app_rejects_invalid_id() -> None:
@@ -1788,19 +1806,25 @@ def test_woodpecker_oauth_aborts_on_delete_transport_error() -> None:
         admin_username="admin",
     )
     assert result is None
-    assert "delete_oauth_app" in err
+    # Round-4 refinement: transport-error path now uses different
+    # diagnostic wording from the definitive-403 path.
+    assert "transport" in err
     assert "ambiguous" in err
     assert rotation_started is True
 
 
 @responses.activate
-def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
-    """Delete failure (403/timeout) MUST abort the create.
+def test_woodpecker_oauth_aborts_on_definitive_delete_rejection() -> None:
+    """Definitive 403/5xx delete rejection: rotation_started=False
+    (Gitea KNOWS the app still exists), but still aborts the create
+    to avoid duplicates.
 
-    Otherwise we'd end up with two valid OAuth apps with the same
-    name — the old one still issuing tokens until manually cleaned
-    up, breaking the rotate-secret-on-every-deploy contract.
-    (Copilot R1 round-1 finding.)
+    Copilot R4 refinement: distinguishes a definitive 403 (server
+    state known: app still alive) from a transport timeout (server
+    state unknown). The 403 path returns rotation_started=False so
+    deploy.sh can warn-and-continue with the existing OAuth pair
+    (still consistent with Gitea since the delete didn't run); the
+    timeout path returns rotation_started=True forcing rc=2 abort.
     """
     responses.add(
         responses.GET,
@@ -1821,15 +1845,12 @@ def test_woodpecker_oauth_aborts_on_delete_failure() -> None:
         admin_username="admin",
     )
     assert result is None
-    assert "delete_oauth_app" in err
-    assert "rotation broken" in err
-    # Conservative dispatch (R3): any delete failure (observed 403,
-    # 5xx, or transport timeout) marks rotation_started=True so the
-    # CLI exits rc=2 (abort). Server-side state is ambiguous after
-    # a transport error — the DELETE may have succeeded before the
-    # response was lost — and we'd rather false-positive on abort
-    # than silently leave Woodpecker on stale creds.
-    assert rotation_started is True
+    assert "rejected by Gitea" in err
+    assert "rotation NOT started" in err
+    # Definitive 403 → server state KNOWN → rotation NOT started
+    # → CLI rc=1 (warn-and-continue): existing .env + Gitea state
+    # are still in sync.
+    assert rotation_started is False
     # POST must NOT have been issued
     assert all(c.request.method != "POST" for c in responses.calls)
 

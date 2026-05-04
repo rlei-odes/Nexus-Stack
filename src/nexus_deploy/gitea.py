@@ -809,6 +809,23 @@ class GiteaClient:
         Idempotent: 404 is treated as success (the app was already gone).
         Used to wipe a stale "Woodpecker CI" app before recreating with
         a fresh client_secret on every deploy.
+
+        Three-way return semantics (Copilot R4 — earlier code folded
+        all three into ``False``, which made operator diagnostics
+        ambiguous):
+
+        - ``True``: Gitea ACK'd the delete (204) or the app was
+          already gone (404). Server state is KNOWN: app no longer
+          exists.
+        - ``False``: Gitea returned a definitive non-success
+          (403 permission denied, 4xx other, 5xx). Server state is
+          KNOWN: app still exists. Caller can route to "rotation
+          NOT started" with confidence.
+        - ``raise GiteaError``: ``requests`` couldn't deliver a
+          response (ConnectionError, Timeout). Server state is
+          UNKNOWN — Gitea may have processed the DELETE before the
+          response was lost. Caller must treat as "rotation possibly
+          started" and abort to avoid the stale-creds outage class.
         """
         if not isinstance(app_id, int) or app_id <= 0:
             raise GiteaError(f"delete_oauth_app: invalid app_id {app_id!r}")
@@ -818,8 +835,10 @@ class GiteaClient:
                 timeout=_HTTP_TIMEOUT,
                 **self._request_kwargs(),  # type: ignore[arg-type]
             )
-        except (requests.ConnectionError, requests.Timeout):
-            return False
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise GiteaError(
+                f"delete_oauth_app(id={app_id}) transport ({type(exc).__name__})"
+            ) from exc
         return resp.status_code in (204, 404)
 
     def create_oauth_app(
@@ -1123,24 +1142,32 @@ def run_woodpecker_oauth_setup(
         if app.get("name") == "Woodpecker CI":
             app_id = app.get("id")
             if isinstance(app_id, int):
-                if not client.delete_oauth_app(app_id):
-                    # Conservative dispatch: any non-True result —
-                    # observed 403/5xx/timeout/connection-reset —
-                    # could mean Gitea actually processed the DELETE
-                    # but the response was lost in flight. We can't
-                    # tell server-side state from a client-side
-                    # transport error. Mark rotation_started=True so
-                    # the CLI exits rc=2 (abort) instead of rc=1
-                    # (warn-and-continue) — abort is safe in both
-                    # branches: if delete succeeded, we'd otherwise
-                    # leave Woodpecker on stale creds; if delete
-                    # failed cleanly, the operator gets a hard
-                    # signal to remediate. (Copilot R3)
+                # Three-way dispatch on delete (Copilot R4):
+                #   - True: Gitea ACK'd, app gone → continue to create
+                #   - False: Gitea returned definitive non-success
+                #     (403/4xx/5xx with response) → server state KNOWN,
+                #     app still exists → rotation NOT started, safe to
+                #     warn-and-continue (deploy.sh keeps existing
+                #     .env, which is still consistent with Gitea)
+                #   - GiteaError: transport timeout/reset → server
+                #     state UNKNOWN, app may have been deleted before
+                #     the response was lost → conservatively mark
+                #     rotation_started=True so the CLI aborts
+                try:
+                    deleted = client.delete_oauth_app(app_id)
+                except GiteaError as exc:
                     return (
                         None,
-                        f"delete_oauth_app(id={app_id}): failed — "
+                        f"delete_oauth_app(id={app_id}): {exc} — "
                         "rotation broken (server state ambiguous)",
                         True,
+                    )
+                if not deleted:
+                    return (
+                        None,
+                        f"delete_oauth_app(id={app_id}): rejected by Gitea — "
+                        "refusing to create duplicate (rotation NOT started)",
+                        False,
                     )
                 rotation_started = True
 
