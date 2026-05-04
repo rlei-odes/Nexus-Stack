@@ -1317,3 +1317,255 @@ def test_run_all_resets_results_between_runs(
     r2 = orchestrator.run_all()
     assert len(r1.phases) == 9
     assert len(r2.phases) == 9
+
+
+# ---------------------------------------------------------------------------
+# Exception coverage — catch-all + module-specific exception types
+# ---------------------------------------------------------------------------
+
+
+def test_phase_infisical_bootstrap_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch-all branch (RuntimeError, not transport)."""
+
+    def boom(**_kw: Any) -> Any:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._infisical.InfisicalClient", boom)
+    result = orchestrator._phase_infisical_bootstrap(MagicMock())
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+    assert "unexpected" in result.detail.lower()
+
+
+def test_phase_services_configure_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("conn refused")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._services.run_admin_setups", boom)
+    result = orchestrator._phase_services_configure(MagicMock())
+    assert result.status == "failed"
+    assert "OSError" in result.detail
+
+
+def test_phase_services_configure_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise ValueError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._services.run_admin_setups", boom)
+    result = orchestrator._phase_services_configure(MagicMock())
+    assert result.status == "failed"
+    assert "ValueError" in result.detail
+
+
+def test_phase_gitea_configure_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_configure_gitea", boom)
+    result = orchestrator._phase_gitea_configure(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+def test_phase_seed_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(**_kw: Any) -> Any:
+        raise RuntimeError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._seeder.run_seed_for_repo", boom)
+    monkeypatch.setattr("nexus_deploy.orchestrator.Path.is_dir", lambda self: True)
+    result = orchestrator._phase_seed(MagicMock())
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+def test_phase_kestra_register_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._kestra.run_register_system_flows", boom)
+    result = orchestrator._phase_kestra_register(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+def test_phase_kestra_register_partial_when_not_success(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """flows attempted but at least one failed → SystemFlowsResult.is_success=False."""
+    from nexus_deploy.kestra import RegisterResult, SystemFlowsResult
+
+    fake = SystemFlowsResult(
+        flows=(RegisterResult(name="git-sync", status="failed"),),
+        execution_state=None,
+        verify_skipped_reason="execution failed",
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._kestra.run_register_system_flows",
+        lambda *_a, **_kw: fake,
+    )
+    result = orchestrator._phase_kestra_register(_ssh_with_tunnel())
+    assert result.status == "partial"
+
+
+def test_phase_woodpecker_oauth_failed_on_gitea_error(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GiteaError branch (lines 486-491)."""
+    from nexus_deploy.gitea import GiteaError
+
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise GiteaError("API 500")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_woodpecker_oauth_setup", boom)
+    result = orchestrator._phase_woodpecker_oauth(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "API 500" in result.detail
+
+
+def test_phase_woodpecker_oauth_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("conn refused")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_woodpecker_oauth_setup", boom)
+    result = orchestrator._phase_woodpecker_oauth(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "OSError" in result.detail
+
+
+def test_phase_woodpecker_oauth_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_woodpecker_oauth_setup", boom)
+    result = orchestrator._phase_woodpecker_oauth(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+def test_phase_woodpecker_oauth_ok_populates_state(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: result populated → state mutation + ok status."""
+    orchestrator.state.gitea_token = "tok"
+
+    def fake_oauth(*_a: Any, **_kw: Any) -> tuple[OAuthAppResult, str | None, bool]:
+        return (
+            OAuthAppResult(client_id="cid", client_secret="csec", name="Woodpecker CI"),
+            None,
+            False,
+        )
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_woodpecker_oauth_setup", fake_oauth)
+    result = orchestrator._phase_woodpecker_oauth(_ssh_with_tunnel())
+    assert result.status == "ok"
+    assert orchestrator.state.woodpecker_client_id == "cid"
+    assert orchestrator.state.woodpecker_client_secret == "csec"
+
+
+def test_phase_mirror_setup_failed_on_transport(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.gh_mirror_repos = ["https://github.com/x/y"]
+    orchestrator.gh_mirror_token = "gh-tok"
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("conn refused")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_mirror_setup", boom)
+    result = orchestrator._phase_mirror_setup(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "OSError" in result.detail
+
+
+def test_phase_mirror_setup_failed_on_gitea_error(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.gitea import GiteaError
+
+    orchestrator.gh_mirror_repos = ["https://github.com/x/y"]
+    orchestrator.gh_mirror_token = "gh-tok"
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise GiteaError("API 403")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_mirror_setup", boom)
+    result = orchestrator._phase_mirror_setup(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "API 403" in result.detail
+
+
+def test_phase_mirror_setup_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator.gh_mirror_repos = ["https://github.com/x/y"]
+    orchestrator.gh_mirror_token = "gh-tok"
+    orchestrator.state.gitea_token = "tok"
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._gitea.run_mirror_setup", boom)
+    result = orchestrator._phase_mirror_setup(_ssh_with_tunnel())
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+def test_phase_secret_sync_unexpected_exception(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("oops")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._secret_sync.run_sync_for_stack", boom)
+    result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+def test_phase_secret_sync_partial_when_no_usable_result(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wrote=False AND no folders touched → no usable result → partial."""
+    from nexus_deploy.secret_sync import SyncResult
+
+    fake = SyncResult(
+        pushed=0,
+        skipped_invalid_name=0,
+        skipped_multiline=0,
+        failed_folders=0,
+        collisions=0,
+        succeeded_folders=0,
+        wrote=False,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
+        lambda *_a, **_kw: fake,
+    )
+    result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
+    assert result.status == "partial"
