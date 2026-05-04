@@ -648,11 +648,13 @@ def _services_configure(args: list[str]) -> int:
 def _kestra_register_system_flows(args: list[str]) -> int:
     """`nexus-deploy kestra register-system-flows`.
 
-    Opens an SSH port-forward to the nexus host (Kestra binds
-    127.0.0.1:8085 inside the server's bridge network), then registers
-    ``system.git-sync`` + ``system.flow-sync`` via local HTTP and
-    triggers a one-shot ``flow-sync`` execution to onboard
-    user-seeded flows immediately.
+    Opens an SSH port-forward to the nexus host. The Kestra container
+    listens on port 8080 internally; ``stacks/kestra/docker-compose.yml``
+    publishes it as ``8085:8080`` on the server's loopback interface,
+    so we ``ssh -L <local>:localhost:8085`` to reach the host-published
+    port. Once the tunnel is up we register ``system.git-sync`` +
+    ``system.flow-sync`` via local HTTP and trigger a one-shot
+    ``flow-sync`` execution to onboard user-seeded flows immediately.
 
     Reads ``NexusConfig`` from stdin (SECRETS_JSON) and the per-deploy
     repo coordinates from environment variables — same handoff pattern

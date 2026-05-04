@@ -791,9 +791,15 @@ def test_run_register_system_flows_seed_verify_transport_error_keeps_success() -
     # Stays SUCCESS despite the verification failure
     assert result.execution_state == "SUCCESS"
     assert result.is_success is True
-    # NEW (round-2 fix): the operator sees the verify-failed signal
+    # NEW (round-2 fix, sharpened in round 3): the operator sees the
+    # ACTIONABLE failure detail (HTTP status code), not just the
+    # exception class name. Round-2 wrote `type(exc).__name__` which
+    # collapsed every kind of failure to bare "KestraError"; round-3
+    # uses str(exc) which carries "flow_exists HTTP 503" / "transport
+    # (ConnectionError)" / etc.
     assert result.verify_skipped_reason is not None
-    assert "KestraError" in result.verify_skipped_reason
+    assert "503" in result.verify_skipped_reason
+    assert "flow_exists" in result.verify_skipped_reason
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +839,37 @@ def test_wait_for_execution_short_timeout_does_not_block_on_long_interval() -> N
     elapsed = _time.monotonic() - start
     assert result == "RUNNING"
     assert elapsed < 1.0, f"wait_for_execution blocked {elapsed:.2f}s, expected <1s"
+
+
+def test_http_timeout_for_deadline_clamps_both_legs() -> None:
+    """Round-3 fix: per-request HTTP timeout (connect, read) is computed
+    from the remaining deadline so a stalled probe (TCP accepted, body
+    never arrives) can't blow out a sub-second ``timeout_s``.
+
+    Previously a fixed 15s read timeout meant ``wait_ready(timeout_s=0.1)``
+    could block ~15s on a single hung probe and silently violate the
+    contract.
+    """
+    import time as _time
+
+    from nexus_deploy.kestra import _CONNECT_TIMEOUT_S, _http_timeout_for_deadline
+
+    # Tight deadline (50ms in the future) → both legs clamped to ~0.05s
+    # (or 0.1s floor, whichever is bigger).
+    near = _time.monotonic() + 0.05
+    connect, read = _http_timeout_for_deadline(near)
+    assert connect <= _CONNECT_TIMEOUT_S
+    assert read <= 0.5  # well below the 15s default
+    # Both legs floored at 0.1s so requests doesn't hit zero-timeout.
+    assert connect >= 0.1
+    assert read >= 0.1
+
+    # Far-future deadline → defaults preserved (no point clamping
+    # below the original).
+    far = _time.monotonic() + 1000
+    connect, read = _http_timeout_for_deadline(far)
+    assert connect == _CONNECT_TIMEOUT_S
+    assert read == 15.0  # the module-level _READ_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------
@@ -1279,7 +1316,7 @@ def test_cli_kestra_emits_verify_skipped_warning(
                 RegisterResult(name="system.flow-sync", status="created", detail="POST 201"),
             ),
             execution_state="SUCCESS",
-            verify_skipped_reason="flow_exists raised KestraError (KestraError)",
+            verify_skipped_reason="flow_exists HTTP 503",
         )
 
     monkeypatch.setattr("nexus_deploy.__main__.run_register_system_flows", fake_run)
@@ -1306,7 +1343,9 @@ def test_cli_kestra_emits_verify_skipped_warning(
     assert rc == 0
     err = capsys.readouterr().err
     assert "seed-flow visibility check skipped" in err
-    assert "KestraError" in err
+    # Round-3 fix: the verify-skipped message carries the actionable
+    # detail (HTTP status), not just the bare exception class name.
+    assert "HTTP 503" in err
 
 
 def test_cli_kestra_uses_dynamically_allocated_local_port(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -51,15 +51,37 @@ import requests
 
 from nexus_deploy.config import NexusConfig
 
-# HTTP timeouts:
+# Default HTTP timeouts:
 # - connect: short (TCP setup) — Kestra is local via tunnel; if it
 #   doesn't accept connection in 3s, something is structurally wrong.
 # - read: longer (Kestra v1.0 OSS can pause on heavy plugin work
 #   especially first-call after restart) — 15s gives the JVM time to
 #   warm up the request handler without hanging the deploy.
+#
+# Polling helpers (``wait_ready``, ``wait_for_execution``) compute a
+# per-request override via :func:`_http_timeout_for_deadline` so the
+# read timeout can never block past the caller's deadline. Without
+# the override, a 0.1s ``timeout_s`` could block ~15s on a single
+# stalled probe (TCP accepted, body never arrived) and silently
+# violate the timeout contract.
 _CONNECT_TIMEOUT_S: float = 3.0
 _READ_TIMEOUT_S: float = 15.0
 _HTTP_TIMEOUT: tuple[float, float] = (_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S)
+
+
+def _http_timeout_for_deadline(deadline: float) -> tuple[float, float]:
+    """Build a (connect, read) tuple clamped to the time remaining.
+
+    Connect timeout is also clamped to keep ``wait_ready(timeout_s=0.05)``
+    honest — a TCP-RST after a stalled SYN could otherwise eat the
+    whole 3s connect default. Both legs are floored at 0.1s so the
+    ``requests`` library doesn't hit its own zero-timeout edge case.
+    """
+    remaining = max(deadline - time.monotonic(), 0.1)
+    return (
+        min(_CONNECT_TIMEOUT_S, remaining),
+        min(_READ_TIMEOUT_S, remaining),
+    )
 
 
 RegisterStatus = Literal["created", "updated", "failed"]
@@ -197,7 +219,7 @@ class KestraClient:
                 resp = requests.get(
                     f"{self.base_url}/api/v1/flows",
                     auth=self._auth,
-                    timeout=_HTTP_TIMEOUT,
+                    timeout=_http_timeout_for_deadline(deadline),
                 )
             except (requests.ConnectionError, requests.Timeout):
                 resp = None
@@ -308,15 +330,25 @@ class KestraClient:
             raise KestraError("execute_flow response missing 'id'")
         return exec_id
 
-    def get_execution_state(self, exec_id: str) -> ExecutionState:
+    def get_execution_state(
+        self,
+        exec_id: str,
+        *,
+        timeout: tuple[float, float] | None = None,
+    ) -> ExecutionState:
         """Read the current execution state. Returns ``"UNKNOWN"`` if Kestra
         responded but the JSON shape is unexpected (don't raise — pollers
-        keep going if a transient deserialisation glitch happens)."""
+        keep going if a transient deserialisation glitch happens).
+
+        ``timeout`` overrides the module-default ``_HTTP_TIMEOUT`` —
+        :meth:`wait_for_execution` passes a deadline-clamped value so a
+        stalled probe can't blow out the caller's overall timeout.
+        """
         try:
             resp = requests.get(
                 f"{self.base_url}/api/v1/executions/{exec_id}",
                 auth=self._auth,
-                timeout=_HTTP_TIMEOUT,
+                timeout=timeout if timeout is not None else _HTTP_TIMEOUT,
             )
         except (requests.ConnectionError, requests.Timeout) as exc:
             raise KestraError(f"get_execution_state transport ({type(exc).__name__})") from exc
@@ -384,7 +416,9 @@ class KestraClient:
         last: ExecutionState = "CREATED"
         while time.monotonic() < deadline:
             try:
-                last = self.get_execution_state(exec_id)
+                last = self.get_execution_state(
+                    exec_id, timeout=_http_timeout_for_deadline(deadline)
+                )
             except KestraError:
                 # Transient — retry. wait_for_execution itself only raises
                 # on timeout-with-no-terminal.
@@ -615,12 +649,16 @@ def run_register_system_flows(
         # on the next deploy; reclassifying would punish operators for
         # network noise). But surface the verify-failed signal via
         # ``verify_skipped_reason`` so the CLI emits a stderr warning —
-        # operators see that the check itself didn't complete and can
-        # spot-check the flow visibility manually if needed.
+        # operators see WHY the check didn't complete (HTTP 503 vs
+        # auth-rejected vs timeout) and can spot-check manually.
+        # ``str(exc)`` is safe here: KestraError messages in this module
+        # are constructed from fixed format strings + status codes /
+        # exception class names — they never include subprocess output
+        # or response bodies, per the KestraError docstring.
         return SystemFlowsResult(
             flows=register_results,
             execution_state=exec_state,
-            verify_skipped_reason=f"flow_exists raised KestraError ({type(exc).__name__})",
+            verify_skipped_reason=str(exc),
         )
     if not seed_visible:
         return SystemFlowsResult(flows=register_results, execution_state="SEED_FLOW_MISSING")
