@@ -17,7 +17,7 @@ variable "hcloud_token" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type (e.g., cpx21, cpx31, cax11, cax31)"
+  description = "Hetzner server type (e.g., cpx22, cpx32, cax11, cax31)"
   type        = string
   # x86 (cpx) default — switched from ARM (cax) in 2026-05 for two
   # durable reasons:
@@ -29,24 +29,24 @@ variable "server_type" {
   #      since flipped this — cax is now ~40% MORE expensive than
   #      the cpx with comparable specs. So x86 is the rational
   #      default on cost grounds even when ARM availability returns.
-  # cpx31 = 4 vCPU / 8 GB RAM / 160 GB disk, mirrors the historical
+  # cpx32 = 4 vCPU / 8 GB RAM / 160 GB disk, mirrors the historical
   # cax31 spec one-to-one; ARM users can override via tfvars without
   # any other code change (most stacks build/run multi-arch).
-  default = "cpx31"
+  # cpx32 (newer AMD generation) is preferred over cpx31 because at
+  # 2026-05 cpx32 is consistently stocked in EU regions (fsn1 / hel1
+  # / nbg1) while cpx31 EU stock is unavailable since 2026-01-22.
+  default = "cpx32"
 }
 
 variable "server_location" {
   description = "Hetzner datacenter location"
   type        = string
-  # TEMPORARY (2026-05): EU regions (fsn1 / hel1 / nbg1) currently
-  # have no cpx31 capacity either; ash (Ashburn, US East) has it
-  # consistently available. Switch back to a German region (fsn1
-  # preferred, nbg1 as fallback) once EU cpx capacity returns.
-  # Latency impact: ~120-150ms transatlantic for European operators
-  # — tolerable since data-plane traffic flows through Cloudflare's
-  # edge (not direct-to-origin) and the deploy-pipeline ssh
-  # roundtrips amortise across few-minute spin-ups.
-  default = "ash" # Ashburn, US East (target: fsn1 once available)
+  # fsn1 (Falkenstein, Germany) primary — closest EU region to
+  # central-European operators, current cpx32 stock. Failover
+  # alternatives: nbg1 (Nuremberg), hel1 (Helsinki). Each cpx32
+  # spec is identical across these regions; pick whichever has
+  # availability when triggering tofu apply.
+  default = "fsn1"
 }
 
 variable "server_image" {

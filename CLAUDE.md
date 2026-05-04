@@ -205,7 +205,7 @@ All service accounts MUST use the `nexus-` prefix to prevent default username gu
 When adding a new Docker stack, **all locations must be updated**:
 
 1. **Verify image compatibility BEFORE creating the stack:**
-   - Nexus-Stack defaults to **x86 servers (cpx31)** since 2026-05. Switched permanently from ARM (cax31) for two reasons:
+   - Nexus-Stack defaults to **x86 servers (cpx32)** since 2026-05. Switched permanently from ARM (cax31) for two reasons:
      (a) Hetzner ARM EU capacity has been unavailable for an extended period, and
      (b) Hetzner's pricing flipped — ARM is now ~40% more expensive than equivalent x86 (was ~50% cheaper at project start).
    - **Required:** the image must support `linux/amd64`. Check via:
