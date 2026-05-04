@@ -10,6 +10,7 @@ Currently:
 - ``compose up --enabled <comma-list>`` (#505 Modul 2.2a)
 - ``services configure --enabled <comma-list>`` (#505 Modul 2.2b/c/d)
 - ``kestra register-system-flows`` (#505 Modul 2.3)
+- ``gitea configure`` (#505 Modul 2.2e)
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pathlib import Path
 from nexus_deploy import __version__, hello
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
+from nexus_deploy.gitea import run_configure_gitea
 from nexus_deploy.infisical import (
     BootstrapEnv,
     InfisicalClient,
@@ -793,6 +795,176 @@ def _kestra_register_system_flows(args: list[str]) -> int:
     return 0 if result.is_success else 1
 
 
+def _gitea_configure(args: list[str]) -> int:
+    """`nexus-deploy gitea configure`.
+
+    Opens an SSH port-forward to nexus, runs the synchronous Gitea
+    configure flow (DB password sync, admin/user create-or-sync with
+    legacy email-collision PATCH, API token create with retry-via-
+    delete, workspace repo + collaborator), emits stdout in
+    eval-able shell form so deploy.sh can capture the token via:
+
+    .. code-block:: bash
+
+        GITEA_OUT=$(mktemp); python -m nexus_deploy gitea configure > "$GITEA_OUT"
+        eval "$(cat "$GITEA_OUT")"  # GITEA_TOKEN=...; RESTART_SERVICES=...
+        rm -f "$GITEA_OUT"
+
+    **stdout** (eval-able):
+    - ``GITEA_TOKEN=<sha1>`` — only if token was successfully minted
+    - ``RESTART_SERVICES=<csv>`` — git-integrated services intersected
+      with ``$ENABLED_SERVICES`` (always emitted, may be empty string)
+
+    **stderr**: per-step status lines for the deploy log.
+
+    Reads ``NexusConfig`` from stdin (SECRETS_JSON) and per-deploy
+    coordinates from environment variables:
+
+    - ``ADMIN_EMAIL`` — admin's email
+    - ``GITEA_USER_EMAIL`` (optional) — regular user's email. Drives the
+      legacy email-collision PATCH check on the admin row. The user is
+      created/synced ONLY when both this AND ``GITEA_USER_PASS`` are set
+      — if either is missing the user-create/sync branch is silently
+      skipped (mirrors deploy.sh L2617's `[ -n "$GITEA_USER_EMAIL" ] &&
+      [ -n "$GITEA_USER_PASS" ]` guard).
+    - ``GITEA_USER_PASS`` (optional) — see ``GITEA_USER_EMAIL`` above
+    - ``REPO_NAME`` — workspace repo name (e.g. nexus-<slug>-gitea)
+    - ``GITEA_REPO_OWNER`` — owner of the workspace repo
+    - ``ENABLED_SERVICES`` — comma-or-space list driving the
+      RESTART_SERVICES intersection
+    - ``GH_MIRROR_REPOS`` (optional) — if non-empty, skip repo+collab
+      (deferred to Modul 2.2f mirror-mode)
+    - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
+
+    Exit codes:
+    - 0: success — admin configured, token minted, repo state OK
+    - 1: partial — at least one step failed but token may be in stdout
+    - 2: bad args / ssh / unexpected — NO token in stdout
+    """
+    if args:
+        print(f"gitea configure: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    admin_email = os.environ.get("ADMIN_EMAIL") or ""
+    repo_name = os.environ.get("REPO_NAME") or ""
+    gitea_repo_owner = os.environ.get("GITEA_REPO_OWNER") or ""
+    enabled_str = os.environ.get("ENABLED_SERVICES") or ""
+    ssh_host = os.environ.get("GITEA_HOST") or "nexus"
+    gitea_user_email = os.environ.get("GITEA_USER_EMAIL") or None
+    gitea_user_password = os.environ.get("GITEA_USER_PASS") or None
+    is_mirror_mode = bool(os.environ.get("GH_MIRROR_REPOS") or "")
+
+    missing = [
+        name
+        for name, val in (
+            ("ADMIN_EMAIL", admin_email),
+            ("REPO_NAME", repo_name),
+            ("GITEA_REPO_OWNER", gitea_repo_owner),
+        )
+        if not val
+    ]
+    if missing:
+        print(
+            f"gitea configure: missing required env: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    enabled = [s.strip() for s in enabled_str.replace(",", " ").split() if s.strip()]
+
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"gitea configure: {exc}", file=sys.stderr)
+        return 2
+
+    if not config.gitea_admin_password:
+        # Required for both the CLI sync_password and REST basic-auth
+        # paths. Without it everything 401s; emit rc=1 so deploy.sh
+        # routes to yellow warning, NOT rc=0 (which would be a silent
+        # green pass — same bug class as kestra round-2).
+        print(
+            "gitea configure: GITEA_ADMIN_PASS missing from SECRETS_JSON — "
+            "skipping (basic-auth would 401 on every call)",
+            file=sys.stderr,
+        )
+        # Still emit empty RESTART_SERVICES line so eval doesn't
+        # leave a stale value from a previous deploy.
+        print('RESTART_SERVICES=""')
+        return 1
+
+    local_port = _allocate_free_port()
+
+    try:
+        with (
+            SSHClient(ssh_host) as ssh,
+            ssh.port_forward(local_port, "localhost", 3200) as port,
+        ):
+            result = run_configure_gitea(
+                config,
+                base_url=f"http://localhost:{port}",
+                ssh=ssh,
+                admin_email=admin_email,
+                gitea_user_email=gitea_user_email,
+                gitea_user_password=gitea_user_password,
+                repo_name=repo_name,
+                gitea_repo_owner=gitea_repo_owner,
+                is_mirror_mode=is_mirror_mode,
+                enabled_services=enabled,
+            )
+    except SSHError as exc:
+        print(f"gitea configure: ssh tunnel failed: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"gitea configure: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"gitea configure: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Per-step status lines on stderr for the deploy log.
+    if result.db_pw_synced:
+        sys.stderr.write("  • gitea-db password synced\n")
+    sys.stderr.write(
+        f"  • admin: {result.admin.status}"
+        f"{(' — ' + result.admin.detail) if result.admin.detail else ''}\n"
+    )
+    if result.user is not None:
+        sys.stderr.write(
+            f"  • user: {result.user.status}"
+            f"{(' — ' + result.user.detail) if result.user.detail else ''}\n"
+        )
+    if result.repo is not None:
+        sys.stderr.write(
+            f"  • repo: {result.repo.status}"
+            f"{(' — ' + result.repo.detail) if result.repo.detail else ''}\n"
+        )
+    if result.collaborator_added:
+        sys.stderr.write("  • collaborator added\n")
+    if result.token is None:
+        sys.stderr.write("  • token: NOT minted (REST will 401 downstream)\n")
+
+    # Eval-able stdout. RESTART_SERVICES is always emitted (even
+    # empty) so deploy.sh's ``eval`` doesn't leave a stale value
+    # from a previous run in the variable. ``shlex.quote`` on every
+    # value — Gitea sha1 tokens are 40 hex chars in practice (no
+    # special chars), but the explicit quote contract makes
+    # injection-safety unambiguous, same as config dump-shell (#508).
+    import shlex as _shlex
+
+    if result.token is not None:
+        sys.stdout.write(f"GITEA_TOKEN={_shlex.quote(result.token)}\n")
+    sys.stdout.write(f"RESTART_SERVICES={_shlex.quote(','.join(result.restart_services))}\n")
+
+    return 0 if result.is_success else 1
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -875,6 +1047,8 @@ def main() -> int:
         return _services_configure(args[1:])
     if args[:2] == ["kestra", "register-system-flows"]:
         return _kestra_register_system_flows(args[2:])
+    if args[:2] == ["gitea", "configure"]:
+        return _gitea_configure(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -887,7 +1061,8 @@ def main() -> int:
         "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/], "
         "compose up --enabled <comma-list>, "
         "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin), "
-        "kestra register-system-flows (reads SECRETS_JSON from stdin + env vars)",
+        "kestra register-system-flows (reads SECRETS_JSON from stdin + env vars), "
+        "gitea configure (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout)",
         file=sys.stderr,
     )
     return 2

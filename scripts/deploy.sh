@@ -2463,268 +2463,97 @@ fi
 
 
 # Configure Gitea admin account and shared workspace repo
+# Phase 2 Modul 2.2e (#505) — moved from a 346-line synchronous block
+# (DB pw sync + admin/user create-or-sync + legacy email PATCH +
+# token retry-via-delete + workspace repo + collaborator) to
+# nexus_deploy.gitea. Same idempotent behavior; same column-exact
+# user-existence checks (PR #464 bug fix preserved); same
+# legacy-email-collision PATCH (Stage 3, v0.51.9 fix preserved).
+# Token comes back via stdout `GITEA_TOKEN=...` line and is captured
+# via eval so seed_workspace_files (already migrated, #512) +
+# downstream Kestra (#517) can use it. RESTART_SERVICES is also
+# emitted on stdout so the post-token restart loop knows which
+# git-integrated services need a recreate.
+#
+# NOT migrated in this PR (separate Modul 2.2f):
+#   - mirror-mode (GH_MIRROR_REPOS block at L3443+)
+#   - Woodpecker OAuth registration (L3373+)
+#
 # NOTE: This runs synchronously (not in background) because other services
 # depend on the Gitea repo being created before they can be configured.
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
     echo "  Configuring Gitea..."
-
-    # Sync DB password with the current OpenTofu-generated value.
-    # This handles persistent volume scenarios where the DB was initialized with
-    # a different password (e.g., after OpenTofu state recreation).
-    # Uses socket auth (peer) inside the container - no password required for the ALTER.
-    if [ -n "$GITEA_DB_PASS" ]; then
-        echo "  Syncing Gitea DB password..."
-        # Escape password for safe use in SQL string literal
-        GITEA_DB_PASS_ESC=$GITEA_DB_PASS
-        GITEA_DB_PASS_ESC=${GITEA_DB_PASS_ESC//\\/\\\\}
-        GITEA_DB_PASS_ESC=${GITEA_DB_PASS_ESC//\'/\'\'}
-        GITEA_DB_SYNCED=false
-        for i in $(seq 1 15); do
-            if ssh nexus "docker exec gitea-db psql -U nexus-gitea -d gitea \
-                -c \"ALTER USER \\\"nexus-gitea\\\" WITH PASSWORD '$GITEA_DB_PASS_ESC'\" \
-                >/dev/null 2>&1"; then
-                echo -e "${GREEN}  ✓ Gitea DB password synced${NC}"
-                GITEA_DB_SYNCED=true
-                break
+    # Tempfile holds the eval-able `GITEA_TOKEN=<sha1>` line. chmod
+    # 600 explicitly (mktemp's mode is umask-dependent — CI runners
+    # often run with umask 022 → 644 by default, which would let
+    # any other process on the runner read the token). Register
+    # with the global RUNNER_CLEANUP_PATHS list so an interrupt
+    # between mktemp and the explicit `rm -f` below still triggers
+    # removal via the script's EXIT trap (see L324-331).
+    GITEA_OUT=$(mktemp)
+    chmod 600 "$GITEA_OUT"
+    echo "$GITEA_OUT" >> "$RUNNER_CLEANUP_PATHS"
+    GITEA_RC=0
+    # Pass env vars via the `uv run` line, NOT via the leading `echo` —
+    # otherwise the assignments are scoped only to `echo` and the python
+    # subprocess sees them empty (the env-var-precedence-pipe-bug from
+    # PR #517 round 1).
+    echo "$SECRETS_JSON" | \
+        ADMIN_EMAIL="$ADMIN_EMAIL" \
+        REPO_NAME="$REPO_NAME" \
+        GITEA_REPO_OWNER="$GITEA_REPO_OWNER" \
+        GITEA_USER_EMAIL="${GITEA_USER_EMAIL:-}" \
+        GITEA_USER_PASS="${GITEA_USER_PASS:-}" \
+        GH_MIRROR_REPOS="${GH_MIRROR_REPOS:-}" \
+        ENABLED_SERVICES="$ENABLED_SERVICES" \
+        uv run --quiet --project "$PROJECT_ROOT" \
+        python -m nexus_deploy gitea configure > "$GITEA_OUT" \
+        || GITEA_RC=$?
+    case "$GITEA_RC" in
+        0|1)
+            # Even on partial-failure rc=1, the token (if minted) is in
+            # stdout — eval to capture it so downstream blocks
+            # (Kestra Git sync, mirror-mode forks) still work.
+            if [ -s "$GITEA_OUT" ]; then
+                eval "$(cat "$GITEA_OUT")"
             fi
-            sleep 2
-        done
-        if [ "$GITEA_DB_SYNCED" != "true" ]; then
-            echo -e "${YELLOW}  ⚠ Failed to sync Gitea DB password after 15 attempts${NC}"
-        fi
-    fi
-
-    # Wait for Gitea to be ready
-    GITEA_READY=false
-    for i in $(seq 1 30); do
-        if ssh nexus "curl -sf http://localhost:3200/api/healthz" >/dev/null 2>&1; then
-            GITEA_READY=true
-            break
-        fi
-        sleep 2
-    done
-
-    if [ "$GITEA_READY" = "true" ]; then
-        # Check if admin user already exists.
-        # awk-column-exact on the Username column ($2), NOT grep-substring on
-        # the whole line. grep -c '$NAME' falsely matches when the name appears
-        # anywhere in the output — e.g. as a substring of another user's email
-        # address. For the admin block this is only latent (the admin almost
-        # always exists, so a true or false positive both route to the SYNC
-        # branch which was going to run anyway), but the same pattern on the
-        # USER_EXISTS check below is a confirmed bug (see v0.51.7 stderr: on
-        # stacks where the admin email contains the user's username substring,
-        # USER_EXISTS=1 wrongly, CREATE is skipped, the user never exists,
-        # SYNC then fails). Fix the detection in both places for consistency.
-        #
-        # Two-step form (fetch → parse) instead of a one-line remote pipeline
-        # so the remote fetch isn't coupled to a downstream parser whose exit
-        # status could mask an upstream failure. The local code path here is
-        # a single command with an `||` fallback (not a pipeline), so
-        # set -o pipefail doesn't apply — ssh/docker failures are explicitly
-        # folded into an empty list via `|| echo ""` and the downstream awk
-        # then prints 0, routing to the CREATE branch (where PR #464's
-        # stderr capture surfaces any genuine connectivity problem). Same
-        # soft-fallback pattern this section uses elsewhere for transient-
-        # Gitea resilience during deploy — not a crash-on-error design.
-        # If stricter failure handling is wanted later, capture ssh's exit
-        # status in a separate variable and warn explicitly.
-        #
-        # printf '%s\n' instead of echo because bash's echo treats a leading
-        # '-n'/'-e'/'-E' in $ADMIN_LIST as options (not data). Gitea's list
-        # starts with "ID  Username  Email ..." in practice so the collision
-        # doesn't happen today, but printf is the idiomatic safe form.
-        ADMIN_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list --admin 2>/dev/null" || echo "")
-        ADMIN_EXISTS=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
-
-        # Legacy-volume remediation: if admin was previously created with
-        # email == USER_EMAIL (every stack deployed with a pre-v0.51.9
-        # deploy.sh where the caller set both emails equal), the user-create
-        # below will fail with "e-mail already in use". Patch admin's email
-        # to the now-synthesised ADMIN_EMAIL via the Gitea admin API before
-        # the user-create runs. Idempotent: on subsequent spin-ups
-        # CURRENT_ADMIN_EMAIL no longer equals USER_EMAIL and this block
-        # short-circuits. No-op on fresh stacks (admin row doesn't exist
-        # yet) and on stacks where ADMIN_EMAIL and USER_EMAIL were already
-        # distinct (the normal template case).
-        #
-        # The PATCH body requires source_id and login_name even for an
-        # email-only update — Gitea's admin-users schema rejects partial
-        # bodies without them. source_id:0 = local auth provider.
-        if [ "$ADMIN_EXISTS" -gt 0 ] && [ -n "$GITEA_USER_EMAIL" ]; then
-            CURRENT_ADMIN_EMAIL=$(printf '%s\n' "$ADMIN_LIST" | awk -v name="$ADMIN_USERNAME" 'NR>1 && $2==name {print $3; exit}')
-            # Compare against GITEA_USER_EMAIL (single address). The admin
-            # row's email column is always a single address; if USER_EMAIL
-            # is a comma-list, a raw equality check would never match and
-            # this remap (Stage 3, v0.51.9) would silently not fire for
-            # upgraded stacks, leaving the legacy collision in place.
-            if [ "$CURRENT_ADMIN_EMAIL" = "$GITEA_USER_EMAIL" ]; then
-                echo "  Admin has legacy email conflicting with user — remapping to $ADMIN_EMAIL..."
-                # --fail-with-body so curl exits non-zero on HTTP 4xx/5xx while
-                # still printing the response body — without it, a Gitea
-                # validation error would be reported as "✓ remapped".
-                PATCH_OUTPUT=$(ssh nexus "curl -sS --fail-with-body -X PATCH 'http://localhost:3200/api/v1/admin/users/$ADMIN_USERNAME' \
-                    -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-                    -H 'Content-Type: application/json' \
-                    -d '{\"email\":\"$ADMIN_EMAIL\",\"source_id\":0,\"login_name\":\"$ADMIN_USERNAME\"}'" 2>&1) \
-                    && echo -e "${GREEN}  ✓ Admin email remapped${NC}" \
-                    || printf "${YELLOW}  ⚠ Could not remap admin email: %s${NC}\n" "$PATCH_OUTPUT"
-            fi
-        fi
-
-        if [ "$ADMIN_EXISTS" -gt 0 ]; then
-            # Sync password to match current OpenTofu state (persistent volume may have old password).
-            # Capture stderr so when the sync fails we see WHY. Previously this block
-            # used `>/dev/null 2>&1` and silently discarded the error, making diagnosis
-            # impossible for the dotted-username and similar failure classes. Matches
-            # the 2>&1 → RESULT var pattern the CREATE path below already uses.
-            # The failure branch uses printf so CHANGE_OUTPUT is printed verbatim —
-            # echo -e would interpret backslash sequences in the captured stderr
-            # (e.g. Gitea errors mentioning `\w+` or embedded escape codes).
-            echo "  Syncing Gitea admin password..."
-            CHANGE_OUTPUT=$(ssh nexus "docker exec -u git gitea gitea admin user change-password \
-                --username '$ADMIN_USERNAME' \
-                --password '$GITEA_ADMIN_PASS' \
-                --must-change-password=false" 2>&1) \
-                && echo -e "${GREEN}  ✓ Gitea admin password synced${NC}" \
-                || printf "${YELLOW}  ⚠ Could not sync Gitea admin password: %s${NC}\n" "$CHANGE_OUTPUT"
-        else
-            # Create admin user via CLI
-            GITEA_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
-                --admin \
-                --username '$ADMIN_USERNAME' \
-                --password '$GITEA_ADMIN_PASS' \
-                --email '$ADMIN_EMAIL' \
-                --must-change-password=false" 2>&1 || echo "")
-
-            if echo "$GITEA_RESULT" | grep -qi "created\|success\|New user"; then
-                echo -e "${GREEN}  ✓ Gitea admin created (user: $ADMIN_USERNAME)${NC}"
+            if [ "$GITEA_RC" = "1" ]; then
+                echo -e "${YELLOW}  ⚠ Gitea config had partial failures (continuing)${NC}"
             else
-                # Print the captured result so the Gitea error is visible, not
-                # swallowed. printf (not echo -e) so any backslash sequences in
-                # the captured output are rendered verbatim — same rationale
-                # as the change-password failure branches above.
-                printf "${YELLOW}  ⚠ Gitea admin setup needs manual configuration: %s${NC}\n" "$GITEA_RESULT"
-                echo -e "${YELLOW}    Credentials available in Infisical${NC}"
+                echo -e "${GREEN}  ✓ Gitea configured${NC}"
             fi
-        fi
+            ;;
+        *)
+            rm -f "$GITEA_OUT"
+            echo -e "${RED}  ✗ Gitea hard failure (rc=$GITEA_RC); aborting${NC}"
+            exit "$GITEA_RC"
+            ;;
+    esac
+    rm -f "$GITEA_OUT"
 
-        # --- Create regular user account (for students/user_email) ---
-        # Extract username from the single-address GITEA_USER_EMAIL (see ~line 85).
-        # Gate on GITEA_USER_EMAIL (not raw USER_EMAIL) — empty-after-trim
-        # means no valid single address, so CREATE/SYNC both skip cleanly.
-        GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
-        if [ -n "$GITEA_USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
-            # Same column-exact awk pattern as the admin block above, with the
-            # same two-step fetch-then-parse structure. Note that the current
-            # `|| echo ""` fallback collapses ssh/list failures into an empty
-            # result, so failures are treated the same as the "no match" case
-            # (awk prints 0 → CREATE path fires, where PR #464's stderr capture
-            # surfaces the genuine error). This is the block where the
-            # grep-substring form actively broke things: GITEA_USER_USERNAME
-            # is derived from USER_EMAIL prefix (e.g. stefan.koch from
-            # stefan.koch@hslu.ch). If ADMIN_EMAIL also ends in @hslu.ch (or
-            # otherwise contains the user's username as a substring),
-            # `grep -c 'stefan.koch'` matches the admin's email column —
-            # USER_EXISTS=1, CREATE never runs, user is never created,
-            # subsequent SYNC fails because the target doesn't exist.
-            # printf '%s\n' instead of echo — see admin block above for rationale.
-            USER_LIST=$(ssh nexus "docker exec -u git gitea gitea admin user list 2>/dev/null" || echo "")
-            USER_EXISTS=$(printf '%s\n' "$USER_LIST" | awk -v name="$GITEA_USER_USERNAME" 'NR>1 && $2==name {c++} END{print c+0}')
+    # --- Workspace seed + service restart (post-token, non-mirror only) ---
+    if [ -n "${GITEA_TOKEN:-}" ]; then
 
-            if [ "$USER_EXISTS" -gt 0 ]; then
-                # Sync password to match current OpenTofu state (persistent volume may have old password).
-                # Capture stderr — see admin block above for rationale. Currently chasing
-                # a failure class where user stacks whose email prefix contains a dot
-                # (e.g. stefan.koch@hslu.ch → username stefan.koch) silently fail this
-                # sync on every second-or-later Spin Up. Template stack (sk@…) works.
-                # Without the output here we can't tell whether it's a CLI limitation,
-                # a sanitized-name mismatch, or something else — so make it vocal.
-                # Failure branch uses printf (not echo -e) so CHANGE_OUTPUT is printed
-                # verbatim — see admin block above.
-                echo "  Syncing Gitea user password..."
-                CHANGE_OUTPUT=$(ssh nexus "docker exec -u git gitea gitea admin user change-password \
-                    --username '$GITEA_USER_USERNAME' \
-                    --password '$GITEA_USER_PASS' \
-                    --must-change-password=false" 2>&1) \
-                    && echo -e "${GREEN}  ✓ Gitea user password synced${NC}" \
-                    || printf "${YELLOW}  ⚠ Could not sync Gitea user password: %s${NC}\n" "$CHANGE_OUTPUT"
-            else
-                GITEA_USER_RESULT=$(ssh nexus "docker exec -u git gitea gitea admin user create \
-                    --username '$GITEA_USER_USERNAME' \
-                    --password '$GITEA_USER_PASS' \
-                    --email '$GITEA_USER_EMAIL' \
-                    --must-change-password=false" 2>&1 || echo "")
-
-                if echo "$GITEA_USER_RESULT" | grep -qi "created\|success\|New user"; then
-                    echo -e "${GREEN}  ✓ Gitea user created (user: $GITEA_USER_USERNAME)${NC}"
-                else
-                    # Print the captured result — see admin CREATE branch above.
-                    printf "${YELLOW}  ⚠ Gitea user setup needs manual configuration: %s${NC}\n" "$GITEA_USER_RESULT"
-                fi
-            fi
-        fi
-
-        # --- Create shared workspace repo ---
-        # Create admin API token for automation (reuse existing if present)
-        # Use curl -s (not -sf) to avoid exit code 22 on HTTP errors with set -e
-        GITEA_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$ADMIN_USERNAME/tokens' \
-            -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-            -H 'Content-Type: application/json' \
-            -d '{\"name\":\"nexus-automation\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
-
-        if [ -z "$GITEA_TOKEN" ]; then
-            # Token may already exist, try to delete and recreate
-            ssh nexus "curl -s -X DELETE 'http://localhost:3200/api/v1/users/$ADMIN_USERNAME/tokens/nexus-automation' \
-                -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS'" >/dev/null 2>&1 || true
-            GITEA_TOKEN=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/users/$ADMIN_USERNAME/tokens' \
-                -u '$ADMIN_USERNAME:$GITEA_ADMIN_PASS' \
-                -H 'Content-Type: application/json' \
-                -d '{\"name\":\"nexus-automation\",\"scopes\":[\"all\"]}'" 2>/dev/null | jq -r '.sha1 // empty')
-        fi
-
-        # ---------------------------------------------------------------
-        # seed_workspace_files — POST every file under
-        # `examples/workspace-seeds/` into the workspace Gitea repo at
-        # the same relative path. POST returns 422 ("already exists")
-        # for files the user has already touched, which we count as
-        # SKIPPED so user edits persist across re-deploys.
-        #
-        # Called from BOTH branches of the workspace-repo-creation flow:
-        # the non-mirror branch seeds the default `nexus-<slug>-gitea`
-        # repo, the mirror branch seeds each user's fork after it has
-        # been created. The repo PATH owner comes from
-        # `$GITEA_REPO_OWNER` (set per-mode at the top of this script):
-        # admin in non-mirror / mirror-readonly mode, the user's Gitea
-        # username in mirror+user mode. The auth still goes through the
-        # admin token (`$GITEA_TOKEN`) — admin has API access to write
-        # to user forks too.
-        #
-        # Token transits via a curl `--config` file rather than `-H
-        # 'Authorization: token <TOK>'` per request: the latter would
-        # leak the token into the remote `ps` listing for every
-        # iteration of the loop.
-        # ---------------------------------------------------------------
-        # Migrated from a 113-line bash function (Phase 2 Modul 2.1, #505)
-        # to nexus_deploy.seeder. Both call-sites (non-mirror and
-        # mirror+user mode) keep using this thin wrapper to preserve
-        # control flow + the global $REPO_NAME / $GITEA_REPO_OWNER
-        # convention.
-        # Exit-code contract enforced by the Python CLI:
-        #   0 = all files created or correctly skipped (HTTP 422 = exists)
-        #   1 = partial — some files failed but at least one succeeded
-        #   2 = transport / unexpected error → abort the deploy
+        # Seed examples/workspace-seeds/ → Gitea repo via the migrated
+        # nexus_deploy.seeder CLI (Phase 2 Modul 2.1, #512). Defined
+        # UNCONDITIONALLY (outside the GH_MIRROR_REPOS branch) so the
+        # mirror-mode block later in this script can call it for
+        # per-user forks too — Modul 2.2f will migrate that block.
+        # Args default to $GITEA_REPO_OWNER/$REPO_NAME (matches the
+        # legacy no-arg call site at L3403). Pass explicit owner/repo
+        # when looping over multiple repos (e.g. mirror forks).
         seed_workspace_files() {
+            local owner="${1:-$GITEA_REPO_OWNER}" repo="${2:-$REPO_NAME}"
             local SEED_DIR="$PROJECT_ROOT/examples/workspace-seeds"
-            if [ ! -d "$SEED_DIR" ] || [ -z "$GITEA_TOKEN" ] || [ -z "$REPO_NAME" ] || [ -z "$GITEA_REPO_OWNER" ]; then
+            if [ ! -d "$SEED_DIR" ] || [ -z "$GITEA_TOKEN" ] || [ -z "$repo" ] || [ -z "$owner" ]; then
                 return 0
             fi
-            echo "  Seeding workspace files into ${GITEA_REPO_OWNER}/${REPO_NAME}..."
+            echo "  Seeding workspace files into ${owner}/${repo}..."
             local SEED_RC=0
             GITEA_TOKEN="$GITEA_TOKEN" \
                 uv run --quiet --project "$PROJECT_ROOT" \
                 python -m nexus_deploy seed \
-                --repo "$GITEA_REPO_OWNER/$REPO_NAME" \
+                --repo "$owner/$repo" \
                 --root "$SEED_DIR" \
                 || SEED_RC=$?
             case "$SEED_RC" in
@@ -2734,79 +2563,21 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
             esac
         }
 
-        if [ -n "$GITEA_TOKEN" ]; then
-            GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
+        if [ -z "${GH_MIRROR_REPOS:-}" ]; then
+            seed_workspace_files "$GITEA_REPO_OWNER" "$REPO_NAME"
 
-            if [ -z "${GH_MIRROR_REPOS:-}" ]; then
-                # --- Create default empty workspace repo ---
-                # (When GH_MIRROR_REPOS is set, the fork is created after the mirror is ready)
-                REPO_NAME="nexus-${DOMAIN//./-}-gitea"
-                echo "  Creating shared workspace repo: $REPO_NAME..."
-
-                # Create private repo (requires auth for clone and push)
-                # Use curl -s (not -sf) - repo may already exist (409), which is fine
-                REPO_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:3200/api/v1/user/repos' \
-                    -H 'Authorization: token $GITEA_TOKEN' \
-                    -H 'Content-Type: application/json' \
-                    -d '{
-                        \"name\": \"$REPO_NAME\",
-                        \"description\": \"Shared workspace for notebooks, workflows, and pipelines\",
-                        \"private\": true,
-                        \"auto_init\": true,
-                        \"default_branch\": \"main\"
-                    }'" 2>/dev/null || echo "")
-
-                if echo "$REPO_RESULT" | jq -e '.id' >/dev/null 2>&1; then
-                    echo -e "${GREEN}  ✓ Shared repo '$REPO_NAME' created (private)${NC}"
-                elif echo "$REPO_RESULT" | grep -q "already exists"; then
-                    echo -e "${YELLOW}  ⚠ Repo '$REPO_NAME' already exists${NC}"
-                    # Ensure existing repo is set to private
-                    ssh nexus "curl -s -X PATCH 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME' \
-                        -H 'Authorization: token $GITEA_TOKEN' \
-                        -H 'Content-Type: application/json' \
-                        -d '{\"private\": true}'" >/dev/null 2>&1 || true
-                else
-                    echo -e "${YELLOW}  ⚠ Repo creation returned unexpected response${NC}"
-                fi
-
-                # --- Add user as collaborator to the repo ---
-                if [ -n "$GITEA_USER_USERNAME" ] && [ -n "$GITEA_USER_PASS" ]; then
-                    ssh nexus "curl -s -X PUT 'http://localhost:3200/api/v1/repos/$ADMIN_USERNAME/$REPO_NAME/collaborators/$GITEA_USER_USERNAME' \
-                        -H 'Authorization: token $GITEA_TOKEN' \
-                        -H 'Content-Type: application/json' \
-                        -d '{\"permission\": \"write\"}'" >/dev/null 2>&1 || true
-                    echo -e "${GREEN}  ✓ User '$GITEA_USER_USERNAME' added as collaborator${NC}"
-                fi
-
-                # Seed example workspace files via shared function (also
-                # called from the GH_MIRROR_REPOS branch later in this script
-                # so mirror users get the same starter material). See the
-                # function definition for the full mapping rationale.
-                seed_workspace_files
-            fi
-
-            # --- Restart services that have Git integration (to pick up .env vars) ---
-            # Services had their Git .env vars generated in Step 3 but Gitea wasn't
-            # ready yet. Now that the repo exists, restart them to trigger git clone.
-            # When GH_MIRROR_REPOS is set, the fork doesn't exist yet at this point -
-            # services are restarted later in the mirror setup block after fork creation.
-            if [ -z "${GH_MIRROR_REPOS:-}" ]; then
-                RESTART_SERVICES=""
-                for SERVICE in jupyter marimo code-server meltano prefect; do
-                    if echo "$ENABLED_SERVICES" | grep -qw "$SERVICE"; then
-                        RESTART_SERVICES="$RESTART_SERVICES $SERVICE"
-                    fi
+            # Restart git-integrated services. Python emitted a CSV via
+            # RESTART_SERVICES=, captured by eval above. Empty CSV → noop.
+            if [ -n "${RESTART_SERVICES:-}" ]; then
+                echo "  Restarting services with Git integration..."
+                IFS=',' read -ra _RS <<< "$RESTART_SERVICES"
+                for SERVICE in "${_RS[@]}"; do
+                    ssh nexus "cd $REMOTE_STACKS_DIR/$SERVICE && docker compose restart" >/dev/null 2>&1 || true
+                    echo "    Restarted $SERVICE"
                 done
-
-                if [ -n "$RESTART_SERVICES" ]; then
-                    echo "  Restarting services with Git integration..."
-                    for SERVICE in $RESTART_SERVICES; do
-                        ssh nexus "cd $REMOTE_STACKS_DIR/$SERVICE && docker compose restart" >/dev/null 2>&1 || true
-                        echo "    Restarted $SERVICE"
-                    done
-                    echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
-                fi
+                echo -e "${GREEN}  ✓ Git-integrated services restarted${NC}"
             fi
+        fi
 
             # --- Configure Kestra Git sync flow ---
             if echo "$ENABLED_SERVICES" | grep -qw "kestra"; then
@@ -3423,12 +3194,9 @@ WPEOF
                 fi
             fi
 
-            echo -e "${GREEN}  ✓ Gitea workspace setup complete${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ Could not create Gitea API token - skipping repo setup${NC}"
-        fi
+        echo -e "${GREEN}  ✓ Gitea workspace setup complete${NC}"
     else
-        echo -e "${YELLOW}  ⚠ Gitea not ready after 60s - skipping admin setup${NC}"
+        echo -e "${YELLOW}  ⚠ Gitea token not minted — skipping seed/Kestra/Woodpecker${NC}"
         echo -e "${YELLOW}    Credentials available in Infisical${NC}"
     fi
 fi
