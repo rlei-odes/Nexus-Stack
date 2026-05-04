@@ -249,14 +249,17 @@ def test_port_forward_yields_after_local_port_accepts(
             # plus -o ExitOnForwardFailure=yes (so a port-in-use bind
             # failure exits ssh immediately instead of leaving a stale
             # process that could let _wait_for_local_port falsely
-            # connect to an unrelated listener).
+            # connect to an unrelated listener) AND the explicit
+            # 127.0.0.1: bind-address prefix on the forward spec
+            # (round-4 fix: prevents IPv6 ::1 dual-stack bind that
+            # could collide with an IPv4-only port-allocator's probe).
             assert captured_argv[0] == [
                 "ssh",
                 "-N",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
-                f"{local_port}:localhost:9200",
+                f"127.0.0.1:{local_port}:localhost:9200",
                 "nexus",
             ]
         # Tunnel subprocess gets terminated on context exit

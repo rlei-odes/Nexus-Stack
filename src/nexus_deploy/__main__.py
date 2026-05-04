@@ -791,15 +791,22 @@ def _kestra_register_system_flows(args: list[str]) -> int:
 
 
 def _allocate_free_port() -> int:
-    """Ask the kernel for a free ephemeral port.
+    """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
     Bind a socket to ``127.0.0.1:0`` (kernel picks free), record the
     assigned port, immediately close. The returned port is then handed
-    to ``ssh -L`` to re-bind. Race window between close and ssh-rebind
-    is microseconds; for production-deploy-frequency that's fine. If
-    a future contributor needs zero-race, paramiko's port-forward
-    has a callback API but we explicitly chose subprocess + system
-    ssh in Modul 3.1, so this is the right primitive for now.
+    to ``ssh -L 127.0.0.1:<port>:…`` to re-bind. Race window between
+    close and ssh-rebind is microseconds; for production-deploy-
+    frequency that's fine. If a future contributor needs zero-race,
+    paramiko's port-forward has a callback API but we explicitly chose
+    subprocess + system ssh in Modul 3.1, so this is the right
+    primitive for now.
+
+    Note: IPv4-only by design. ``ssh.SSHClient.port_forward`` matches
+    by passing the explicit ``127.0.0.1:`` bind address — without it,
+    ssh on a dual-stack host would also bind ``::1`` and a port that
+    looked free here could still be taken on IPv6, causing intermittent
+    ExitOnForwardFailure aborts (round-4 PR #517 finding).
     """
     import socket
 
