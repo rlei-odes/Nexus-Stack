@@ -1,0 +1,37 @@
+# Codecov configuration for Nexus-Stack.
+# Docs: https://docs.codecov.com/docs/codecovyml-reference
+#
+# Two coverage status checks are emitted on every PR:
+#
+# - codecov/project — total project coverage vs. the base branch.
+#   "auto" target means "must be at least the base branch's
+#   coverage", with a 0.5% threshold tolerance so a single new
+#   module at 95% (with most existing modules at 100%) doesn't
+#   pull total coverage below the line and fail the check.
+#
+# - codecov/patch — coverage of NEW lines in the PR diff.
+#   Fixed 90% target instead of "auto"+0% (which is the default
+#   and which tracks the base branch — this would force every
+#   new module to match the project's existing coverage average,
+#   ratcheting up over time and eventually demanding 100% for
+#   every PR). 90% is the pragmatic floor most OSS Python
+#   projects use; covers happy paths + obvious error paths,
+#   leaves room for defensive branches and DI seams that don't
+#   pay off to unit-test directly.
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%
+    patch:
+      default:
+        target: 90%
+        threshold: 0%
+
+# Optional: skip uninteresting paths from coverage entirely.
+# (Examples folder is user-content, not Python source we ship.)
+ignore:
+  - "examples/**"
+  - "tests/**"
