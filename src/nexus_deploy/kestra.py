@@ -420,8 +420,12 @@ class KestraClient:
                     exec_id, timeout=_http_timeout_for_deadline(deadline)
                 )
             except KestraError:
-                # Transient — retry. wait_for_execution itself only raises
-                # on timeout-with-no-terminal.
+                # Transient — coalesce to UNKNOWN and keep polling.
+                # wait_for_execution itself NEVER raises: callers prefer
+                # a non-terminal "RUNNING"/"UNKNOWN" return at timeout
+                # (yellow warning, the cron tick will retry within 15
+                # min) over an exception that would short-circuit
+                # the rest of the deploy.
                 last = "UNKNOWN"
             if last in ("SUCCESS", "FAILED", "KILLED"):
                 return last

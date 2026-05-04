@@ -3344,8 +3344,9 @@ REMOTE_KESTRA_PROBE_EOF
                     # nexus_deploy.kestra. Same idempotent POST-then-PUT
                     # semantics; same one-shot flow-sync trigger to onboard
                     # user-seeded flows immediately. The Python path opens
-                    # an SSH port-forward (8085→8085) and talks to Kestra
-                    # via local HTTP, no rendered server-side bash.
+                    # an SSH port-forward (kernel-allocated local port →
+                    # remote 8085) and talks to Kestra via local HTTP,
+                    # no rendered server-side bash.
                     # CRITICAL: env-var prefix MUST sit on `uv run`, not on
                     # `echo`. `VAR=value echo … | python …` scopes VAR to the
                     # left-hand `echo` only — the Python process after the
