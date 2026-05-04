@@ -2937,6 +2937,153 @@ def test_run_mirror_setup_fork_only_first_iteration() -> None:
 
 
 @responses.activate
+def test_run_mirror_setup_fork_retries_on_next_iteration_after_transient_failure() -> None:
+    """Multi-mirror loop: first fork attempt fails (transient
+    user-token mint glitch), second iteration retries the fork
+    against the next mirror and succeeds. Final result shows the
+    successful fork — not the earlier transient failure.
+
+    Mirrors the legacy bash's FORKED_WORKSPACE flag semantics:
+    only set on HTTP 202/409 success, so failure leaves the flag
+    unset and later iterations get another attempt. (Copilot R3)
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=200, json={"id": 1})
+    # First mirror: created OK
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1", status=404)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=201, json={"id": 10})
+    # First user-token mint: persistent failure (initial + delete + retry)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+    # First-iteration collab still happens
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r1/collaborators/stefan",
+        status=204,
+    )
+    # Second mirror: created OK
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2", status=404)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=201, json={"id": 11})
+    # Second iteration: user-token mint succeeds this time
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/users/stefan/tokens",
+        status=201,
+        json={"sha1": "user-tok"},
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/forks",
+        status=202,
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+        status=204,
+    )
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/collaborators/stefan",
+        status=204,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-r2/mirror-sync",
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/repos/stefan/r2_stefan/merge-upstream",
+        status=200,
+    )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=[
+            "https://github.com/o/r1.git",
+            "https://github.com/o/r2.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    # Final fork is the SECOND mirror's successful fork, NOT the
+    # first iteration's transient failure.
+    assert result.fork is not None
+    assert result.fork.status == "created"
+    assert result.fork.name == "r2_stefan"
+    assert result.is_success is True
+    assert result.collaborator_added_count == 2
+
+
+@responses.activate
+def test_run_mirror_setup_surfaces_last_fork_failure_when_every_attempt_fails() -> None:
+    """Multi-mirror loop where every fork attempt fails — final
+    result surfaces the LAST attempt's diagnostic in
+    ``fork.status="failed"`` so the operator can debug. Without
+    this, fork=None would be ambiguous with the no-user-configured
+    branch. (Copilot R3)
+    """
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/users/admin", status=200, json={"id": 1})
+    # Both mirrors create OK; both fork attempts fail (user-token
+    # mint persistent fail).
+    for repo in ("r1", "r2"):
+        responses.add(
+            responses.GET,
+            f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-{repo}",
+            status=404,
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/api/v1/repos/migrate",
+            status=201,
+            json={"id": 10},
+        )
+        responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+        responses.add(
+            responses.DELETE,
+            f"{BASE_URL}/api/v1/users/stefan/tokens/nexus-workspace-fork",
+            status=204,
+        )
+        responses.add(responses.POST, f"{BASE_URL}/api/v1/users/stefan/tokens", status=500)
+        responses.add(
+            responses.PUT,
+            f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-{repo}/collaborators/stefan",
+            status=204,
+        )
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username="stefan",
+        gh_mirror_repos=[
+            "https://github.com/o/r1.git",
+            "https://github.com/o/r2.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    # fork=last_fork_failure (the second iteration's attempt) so the
+    # operator sees a diagnostic — not None.
+    assert result.fork is not None
+    assert result.fork.status == "failed"
+    assert result.fork.name == "r2_stefan"
+    assert "user token" in result.fork.detail
+    assert result.is_success is False
+
+
+@responses.activate
 def test_run_mirror_setup_unsafe_basename_marks_failed_and_continues() -> None:
     """A repo URL whose basename contains shell-meta chars (e.g.
     ``?`` or ``;``) derives an unsafe ``mirror_name``. Without the

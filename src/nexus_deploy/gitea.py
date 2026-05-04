@@ -1697,6 +1697,7 @@ def run_mirror_setup(
 
     mirrors: list[MirrorResult] = []
     fork: ForkResult | None = None
+    last_fork_failure: ForkResult | None = None
     fork_synced = False
     collaborator_added_count = 0
 
@@ -1751,6 +1752,12 @@ def run_mirror_setup(
 
         # Fork the FIRST successful mirror into the user's namespace
         # (idempotent across spin-ups via the existing-fork 409 branch).
+        # On transient failure (token mint glitch, fork POST 5xx),
+        # retry on the next mirror iteration — matches the legacy
+        # deploy.sh's ``FORKED_WORKSPACE`` flag which only got set
+        # to 1 on HTTP 202/409 success. Without retry, a single
+        # bad first mirror would prevent the fork on every later
+        # mirror in the same loop too. (Copilot R3)
         if fork is None and gitea_user_username:
             sanitized = _sanitize_user_for_fork_name(gitea_user_username)
             fork_name = f"{orig_name}_{sanitized}"
@@ -1763,7 +1770,7 @@ def run_mirror_setup(
                 admin_password=admin_password,
             )
             if user_token is None:
-                fork = ForkResult(
+                attempt: ForkResult = ForkResult(
                     name=fork_name,
                     owner=gitea_user_username,
                     status="failed",
@@ -1788,26 +1795,36 @@ def run_mirror_setup(
                     )
 
                 if fork_status == "202":
-                    fork = ForkResult(
+                    attempt = ForkResult(
                         name=fork_name,
                         owner=gitea_user_username,
                         status="created",
                         detail="POST 202",
                     )
                 elif fork_status == "409":
-                    fork = ForkResult(
+                    attempt = ForkResult(
                         name=fork_name,
                         owner=gitea_user_username,
                         status="already_exists",
                         detail="POST 409",
                     )
                 else:
-                    fork = ForkResult(
+                    attempt = ForkResult(
                         name=fork_name,
                         owner=gitea_user_username,
                         status="failed",
                         detail=f"POST {fork_status}",
                     )
+
+            if attempt.status in ("created", "already_exists"):
+                # Finalize — no more fork attempts on later iterations.
+                fork = attempt
+            else:
+                # Transient failure: keep ``fork=None`` so the next
+                # iteration retries. Save the most recent attempt's
+                # diagnostic so the FINAL result still surfaces the
+                # last failure if every iteration fails.
+                last_fork_failure = attempt
 
         # Grant the user read-only access to the mirror (separate from
         # the fork above — every mirror gets the user as collaborator,
@@ -1827,6 +1844,14 @@ def run_mirror_setup(
             # fast-forward attempt. legacy bash sleeps the same.
             time.sleep(mirror_sync_settle_seconds)
             client.merge_upstream(fork.owner, fork.name, workspace_branch)
+
+    # If every fork attempt across the loop failed, surface the last
+    # one's diagnostic in the final result so the operator can see WHY
+    # the fork never succeeded. (Copilot R3 — without this, a multi-
+    # mirror loop where every fork POST fails would return fork=None
+    # which is indistinguishable from the no-user-configured branch.)
+    if fork is None and last_fork_failure is not None:
+        fork = last_fork_failure
 
     return MirrorSetupResult(
         admin_uid=admin_uid,
