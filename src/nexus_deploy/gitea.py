@@ -879,13 +879,13 @@ class GiteaClient:
         the request body as ``auth_token`` and is never logged
         locally or rendered into argv.
 
-        Returns:
-        - ``CreateRepoResult(status="created")`` on 201 + parseable id.
-        - ``CreateRepoResult(status="already_exists")`` on 409 OR 422
-          where the message contains "already exists".
-        - ``CreateRepoResult(status="failed")`` for other non-201 /
-          missing id paths. Caller routes to a yellow warning per
-          mirror so a single bad URL doesn't abort the whole loop.
+        Returns :class:`MirrorResult`:
+        - ``status="created"`` on 201 + parseable id.
+        - ``status="already_exists"`` on 409 OR 422 where the
+          message contains "already exists".
+        - ``status="failed"`` for other non-201 / missing id paths.
+          Caller routes to a yellow warning per mirror so a single
+          bad URL doesn't abort the whole loop.
         """
         _validate_path_segment(repo_name, kind="repo_name")
         body = {
@@ -1701,6 +1701,27 @@ def run_mirror_setup(
             continue
         orig_name = _basename_no_git(repo_url)
         mirror_name = f"mirror-readonly-{orig_name}"
+
+        # Validate the derived mirror_name BEFORE calling repo_exists
+        # / migrate_mirror — both internally invoke
+        # ``_validate_path_segment`` which raises GiteaError on
+        # unsafe values. Without this guard, one bad URL with
+        # shell-meta chars in the basename (e.g.
+        # ``.../repo?evil`` or ``.../repo;sh``) would propagate the
+        # GiteaError out of the loop and turn into rc=2 (hard
+        # abort), defeating the per-mirror-failed-result intent.
+        # (Copilot R1)
+        try:
+            _validate_path_segment(mirror_name, kind="mirror_name")
+        except GiteaError as exc:
+            mirrors.append(
+                MirrorResult(
+                    name=mirror_name,
+                    status="failed",
+                    detail=f"path validation: {exc}",
+                )
+            )
+            continue
 
         # Idempotent re-deploy: skip migration if mirror already exists.
         try:

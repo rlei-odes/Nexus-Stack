@@ -1145,7 +1145,6 @@ def _gitea_mirror_setup(args: list[str]) -> int:
 
     Required env:
 
-    - ``ADMIN_USERNAME`` — admin user (path-validated)
     - ``GITEA_ADMIN_PASS`` — admin password (basic-auth for the
       temp user-token mint inside the fork flow)
     - ``GITEA_TOKEN`` — admin's bearer token for migrate / collab /
@@ -1156,6 +1155,11 @@ def _gitea_mirror_setup(args: list[str]) -> int:
 
     Optional env:
 
+    - ``ADMIN_USERNAME`` — admin username, path-validated (default
+      ``admin``). Mirrors :class:`NexusConfig`'s ``admin_username``
+      default so the CLI works without the deploy.sh env-passing
+      layer when invoked manually. (Same default as
+      ``gitea woodpecker-oauth`` — Copilot R1 consistency fix.)
     - ``GITEA_USER_USERNAME`` — Gitea username for the per-user fork.
       If unset, the fork step is skipped (mirrors-only mode).
     - ``WORKSPACE_BRANCH`` — branch for the merge-upstream step

@@ -2937,6 +2937,51 @@ def test_run_mirror_setup_fork_only_first_iteration() -> None:
 
 
 @responses.activate
+def test_run_mirror_setup_unsafe_basename_marks_failed_and_continues() -> None:
+    """A repo URL whose basename contains shell-meta chars (e.g.
+    ``?`` or ``;``) derives an unsafe ``mirror_name``. Without the
+    pre-validation guard, ``_validate_path_segment`` inside
+    ``repo_exists`` / ``migrate_mirror`` would raise GiteaError out
+    of the loop → CLI rc=2 (hard abort) — defeating the per-mirror
+    failed-result intent. (Copilot R1)
+
+    Now: bad mirror_name → MirrorResult(failed) + continue, the
+    second mirror still gets processed.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/users/admin",
+        status=200,
+        json={"id": 1},
+    )
+    # Second mirror succeeds normally.
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/repos/admin/mirror-readonly-good", status=404)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/repos/migrate", status=201, json={"id": 10})
+
+    result = run_mirror_setup(
+        base_url=BASE_URL,
+        admin_username="admin",
+        admin_password="admin-pw",
+        gitea_token="admin-tok",
+        gitea_user_username=None,
+        gh_mirror_repos=[
+            # Basename "repo?evil" contains '?' — unsafe in path
+            # segment, must NOT propagate as a raised exception.
+            "https://github.com/o/repo?evil.git",
+            "https://github.com/o/good.git",
+        ],
+        gh_mirror_token="ghp",
+        workspace_branch="main",
+        mirror_sync_settle_seconds=0.0,
+    )
+    # Loop did NOT abort — both URLs got processed.
+    assert len(result.mirrors) == 2
+    assert result.mirrors[0].status == "failed"
+    assert "path validation" in result.mirrors[0].detail
+    assert result.mirrors[1].status == "created"
+
+
+@responses.activate
 def test_run_mirror_setup_partial_failure_continues_loop() -> None:
     """One failed mirror in a multi-mirror loop doesn't abort —
     is_success becomes False but other mirrors still get processed.
