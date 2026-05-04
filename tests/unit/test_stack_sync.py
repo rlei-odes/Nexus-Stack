@@ -52,11 +52,30 @@ from nexus_deploy.stack_sync import (
         ("../bar", False),  # path traversal attempt
         ("foo/bar", False),  # slash
         ("-rf", True),  # leading dash IS allowed; the bash uses `-- "$name"` to terminate options
+        # Round-1 PR #523: bare "." and ".." pass the regex (dots are
+        # in the char class) but ARE path-traversal segments. Explicit
+        # rejection in _is_safe_name covers them.
+        (".", False),
+        ("..", False),
     ],
 )
 def test_is_safe_name_regex(name: str, expected: bool) -> None:
-    """Path-safety regex covers shell meta, whitespace, quotes, newlines."""
+    """Path-safety regex covers shell meta, whitespace, quotes, newlines.
+
+    Explicit ``.`` / ``..`` rejection is layered ON TOP of the regex —
+    the regex's char class includes ``.`` so ``.`` and ``..`` match
+    but are reserved path-traversal segments.
+    """
     assert _is_safe_name(name) is expected
+
+
+def test_is_safe_name_rejects_dot_and_dotdot_explicitly() -> None:
+    """Round-1 PR #523 — `_is_safe_name(".")` and `_is_safe_name("..")`
+    must return False even though the character-class regex matches
+    them. Pinned independently of the parameterized test so a future
+    refactor of the regex doesn't accidentally re-allow them."""
+    assert _is_safe_name(".") is False
+    assert _is_safe_name("..") is False
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +207,58 @@ def test_exec_cleanup_line_exact_match_no_substring_collision() -> None:
         assert (stacks / "jupyter").exists()
         # jupyter-old must be removed despite 'jupyter' being a substring
         assert not (stacks / "jupyter-old").exists()
+
+
+@pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not on PATH")
+def test_exec_cleanup_rm_runs_even_when_compose_down_fails() -> None:
+    """Round-1 PR #523: a stuck container shouldn't block folder removal.
+
+    Legacy deploy.sh used ``docker compose down 2>/dev/null || true``
+    and ran ``rm -rf`` regardless. A previous version of this module
+    inserted a ``continue`` after the down-failure branch which
+    diverged from that contract and left orphan folders behind. This
+    test pins the post-fix behaviour: when ``docker compose down``
+    fails, the folder is STILL removed and BOTH counters move
+    (failed=1 because the down failed, removed=1 because the rm
+    succeeded).
+    """
+    with tempfile.TemporaryDirectory() as tmp_root:
+        # fakebin must live OUTSIDE the stacks dir — otherwise the
+        # cleanup loop iterates fakebin/ as a "disabled stack" and
+        # rm -rf's it before reaching stuck-stack/, leaving the
+        # subsequent docker invocation to fall through to the real
+        # docker on PATH.
+        fake_bin = Path(tmp_root) / "fakebin"
+        fake_bin.mkdir()
+        fake_docker = fake_bin / "docker"
+        fake_docker.write_text(
+            '#!/bin/bash\necho "Error: stuck container" >&2\nexit 1\n',
+        )
+        fake_docker.chmod(0o755)
+
+        stacks = Path(tmp_root) / "stacks"
+        stacks.mkdir()
+        bad = stacks / "stuck-stack"
+        bad.mkdir()
+        (bad / "docker-compose.yml").write_text("services: {}\n")
+
+        script = render_cleanup_script([], stacks_dir=str(stacks))
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        # Down failed (compose.yml present, fake docker exits 1) but
+        # rm -rf still succeeded → failed=1, removed=1.
+        assert "RESULT stopped=0 removed=1 failed=1" in proc.stdout
+        # Folder must be gone
+        assert not bad.exists()
+        # The captured stderr from the failed compose down must
+        # surface in the script's stderr (not be silently swallowed).
+        assert "Error: stuck container" in proc.stderr
 
 
 @pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not on PATH")

@@ -105,10 +105,14 @@ class CleanupResult:
     successfully (their ``docker-compose.yml`` was present).
     ``removed`` counts service folders that ``rm -rf`` cleared. Both
     are strictly per-disabled-service — already-missing folders aren't
-    touched. ``failed`` is the count of disabled services where either
-    ``compose down`` OR ``rm -rf`` exited non-zero. A disabled service
-    with no compose.yml that ``rm -rf`` succeeds on increments
-    ``removed`` only.
+    touched. ``failed`` is incremented once per ``docker compose down``
+    failure AND once per ``rm -rf`` failure, so a single disabled
+    service whose compose-down crashes BUT whose folder is still
+    successfully removed contributes ``failed=1 removed=1`` (the
+    counts intentionally do not sum to "number of disabled services" —
+    they each count distinct sub-failures). A disabled service with
+    no compose.yml that ``rm -rf`` succeeds on increments ``removed``
+    only.
     """
 
     stopped: int
@@ -161,11 +165,19 @@ class StackSyncResult:
 
 
 def _is_safe_name(name: str) -> bool:
-    """True iff ``name`` matches the allow-list regex.
+    """True iff ``name`` matches the allow-list regex AND is not a
+    path-traversal segment.
 
-    Wraps the regex in a function so future tightening (e.g. minimum
-    length, deny-list of reserved bash keywords) lives in one place.
+    The regex ``[A-Za-z0-9._-]+`` permits ``.`` and ``..`` since both
+    are dots-only strings. We reject those explicitly: an enabled
+    service name of ``..`` would make ``local_stacks_dir / ".."``
+    escape the stacks directory on the local side and the rsync
+    target ``nexus:/opt/docker-server/stacks/../..`` escape the
+    remote stacks dir. ``.`` is similarly meaningless and the same
+    class of error. (Round-1 PR #523 finding.)
     """
+    if name in (".", ".."):
+        return False
     return bool(_SAFE_NAME.match(name))
 
 
@@ -211,13 +223,29 @@ for stack_dir in "$STACKS_DIR"/*/; do
     fi
     if [ -f "${{stack_dir}}docker-compose.yml" ]; then
         echo "  Stopping $name (disabled)..." >&2
-        if ( cd "$stack_dir" && docker compose down 2>/dev/null ); then
+        # Capture compose-down stderr to a tmpfile so a failed down
+        # surfaces the underlying error in the deploy log instead of
+        # the unhelpful bare-counter "failed=1" the legacy heredoc
+        # produced. (Round-1 PR #523 finding: 2>/dev/null + bare
+        # counter blocks operator diagnosis.) The tmpfile is read,
+        # re-prefixed, forwarded to stderr, and removed in the same
+        # block — no leftover state.
+        DOWN_STDERR=$(mktemp)
+        if ( cd "$stack_dir" && docker compose down 2>"$DOWN_STDERR" >/dev/null ); then
             STOPPED=$((STOPPED+1))
         else
             echo "  ⚠ docker compose down failed for $name" >&2
+            sed 's/^/      /' "$DOWN_STDERR" >&2
             FAILED=$((FAILED+1))
-            continue
+            # NOTE: we do NOT `continue` here. Legacy deploy.sh used
+            # `docker compose down 2>/dev/null || true` and ran
+            # `rm -rf` regardless — a stuck container shouldn't block
+            # folder removal (next deploy will re-rsync if the stack
+            # is re-enabled). We count the down-failure but still
+            # attempt the removal, matching legacy idempotency.
+            # (Round-1 PR #523 finding.)
         fi
+        rm -f "$DOWN_STDERR"
     fi
     echo "  Removing $name stack folder..." >&2
     if rm -rf "$stack_dir"; then
