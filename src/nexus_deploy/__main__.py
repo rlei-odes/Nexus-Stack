@@ -42,8 +42,15 @@ from nexus_deploy.infisical import (
     compute_folders,
 )
 from nexus_deploy.kestra import run_register_system_flows
+from nexus_deploy.orchestrator import Orchestrator
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
+from nexus_deploy.service_env import (
+    GiteaWorkspaceConfig,
+    ServiceEnvError,
+    append_gitea_workspace_block,
+    render_all_env_files,
+)
 from nexus_deploy.services import run_admin_setups
 from nexus_deploy.setup import (
     SetupError,
@@ -1722,6 +1729,284 @@ def _setup(args: list[str]) -> int:
     return 2
 
 
+def _service_env(args: list[str]) -> int:
+    """`nexus-deploy service-env --enabled <csv> [--stacks-dir PATH]`.
+
+    Replaces deploy.sh L233-1170 (#505 Modul 3.4c). Reads
+    ``SECRETS_JSON`` from stdin + ``BootstrapEnv`` fields from
+    environment variables, renders the per-service ``.env`` files
+    for every enabled service, optionally appends the Gitea
+    workspace block to git-integrated stacks (jupyter / marimo /
+    code-server / meltano / prefect) when Gitea is enabled and
+    the workspace-repo coordinates are provided via env-vars.
+
+    Required env: ``DOMAIN``, ``ADMIN_EMAIL``.
+    Optional env (drives the Gitea workspace append):
+    ``GITEA_REPO_URL``, ``GITEA_USERNAME``, ``GITEA_PASSWORD``,
+    ``GIT_AUTHOR_NAME``, ``GIT_AUTHOR_EMAIL``, ``REPO_NAME``.
+    Optional env (BootstrapEnv): ``GITEA_USER_EMAIL``, ``GITEA_USER_USERNAME``,
+    ``GITEA_REPO_OWNER``, ``OM_PRINCIPAL_DOMAIN``, ``WOODPECKER_GITEA_CLIENT``,
+    ``WOODPECKER_GITEA_SECRET``, ``SSH_KEY_BASE64``.
+
+    Exit codes:
+    - 0: every enabled spec rendered (or skipped per its guard)
+    - 1: at least one render failed but at least one succeeded
+    - 2: hard failure (SFTPGo password missing, write error,
+         unexpected exception)
+    """
+    enabled_str: str | None = None
+    stacks_dir_arg: str | None = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--enabled":
+            if i + 1 >= len(args):
+                print("service-env: --enabled requires a value", file=sys.stderr)
+                return 2
+            enabled_str = args[i + 1]
+            i += 2
+        elif args[i] == "--stacks-dir":
+            if i + 1 >= len(args):
+                print("service-env: --stacks-dir requires a value", file=sys.stderr)
+                return 2
+            stacks_dir_arg = args[i + 1]
+            i += 2
+        else:
+            print(f"service-env: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+    if enabled_str is None:
+        print(
+            "service-env: --enabled <comma-separated-services> is required",
+            file=sys.stderr,
+        )
+        return 2
+    enabled = [s.strip() for s in enabled_str.split(",") if s.strip()]
+    stacks_dir = Path(stacks_dir_arg) if stacks_dir_arg else Path("stacks")
+    if not stacks_dir.is_dir():
+        print(
+            f"service-env: stacks dir {stacks_dir!s} is not a directory",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"service-env: {exc}", file=sys.stderr)
+        return 2
+    bootstrap_env = BootstrapEnv(
+        domain=os.environ.get("DOMAIN") or None,
+        admin_email=os.environ.get("ADMIN_EMAIL") or None,
+        gitea_user_email=os.environ.get("GITEA_USER_EMAIL") or None,
+        gitea_user_username=os.environ.get("GITEA_USER_USERNAME") or None,
+        gitea_repo_owner=os.environ.get("GITEA_REPO_OWNER") or None,
+        repo_name=os.environ.get("REPO_NAME") or None,
+        om_principal_domain=os.environ.get("OM_PRINCIPAL_DOMAIN") or None,
+        woodpecker_gitea_client=os.environ.get("WOODPECKER_GITEA_CLIENT") or None,
+        woodpecker_gitea_secret=os.environ.get("WOODPECKER_GITEA_SECRET") or None,
+        ssh_private_key_base64=os.environ.get("SSH_KEY_BASE64") or None,
+    )
+
+    try:
+        result = render_all_env_files(config, bootstrap_env, enabled, stacks_dir=stacks_dir)
+    except ServiceEnvError as exc:
+        print(f"service-env: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"service-env: unexpected error ({type(exc).__name__})", file=sys.stderr)
+        return 2
+
+    # Per-service stderr log so operators see what was rendered.
+    for r in result.services:
+        if r.status == "rendered":
+            sys.stderr.write(f"  ✓ {r.service}\n")
+        elif r.status == "skipped-not-enabled":
+            pass  # too noisy to log every disabled service
+        elif r.status == "skipped-guard":
+            sys.stderr.write(f"  ⚠ {r.service}: skipped ({r.detail})\n")
+        else:
+            sys.stderr.write(f"  ✗ {r.service}: {r.detail}\n")
+
+    # Optional: append Gitea workspace block. Driven by env-vars
+    # — deploy.sh's bash side derives these from mirror/non-mirror
+    # logic; we just consume them when present.
+    gitea_repo_url = os.environ.get("GITEA_REPO_URL") or ""
+    gitea_username = os.environ.get("GITEA_USERNAME") or ""
+    gitea_password = os.environ.get("GITEA_PASSWORD") or ""
+    git_author_name = os.environ.get("GIT_AUTHOR_NAME") or ""
+    git_author_email = os.environ.get("GIT_AUTHOR_EMAIL") or ""
+    repo_name = os.environ.get("REPO_NAME") or ""
+    if gitea_repo_url and gitea_username and "gitea" in enabled:
+        cfg = GiteaWorkspaceConfig(
+            gitea_repo_url=gitea_repo_url,
+            gitea_username=gitea_username,
+            gitea_password=gitea_password,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
+            repo_name=repo_name,
+        )
+        appended = append_gitea_workspace_block(cfg, enabled, stacks_dir=stacks_dir)
+        for svc in appended:
+            sys.stderr.write(f"  ✓ {svc} Gitea workspace block appended\n")
+
+    print(
+        f"service-env: rendered={result.rendered} skipped={result.skipped} failed={result.failed}",
+    )
+    if result.failed > 0:
+        if result.rendered == 0:
+            return 2
+        return 1
+    return 0
+
+
+def _run_all(args: list[str]) -> int:
+    """`nexus-deploy run-all`.
+
+    Replaces deploy.sh's eval-handoff dance (#505 Modul 3.4b) — calls
+    all migrated module functions in sequence with in-process state
+    handoff, then emits 3 values to stdout (eval-able by surviving
+    deploy.sh bash):
+
+    - ``RESTART_SERVICES=<csv>`` — bash compose-restart loop
+    - ``WOODPECKER_GITEA_CLIENT=<id>`` — written into stacks/woodpecker/.env
+    - ``WOODPECKER_GITEA_SECRET=<secret>`` — written into stacks/woodpecker/.env
+
+    Other state (GITEA_TOKEN, FORK_NAME, FORK_OWNER) is consumed
+    entirely inside the orchestrator and never exits Python.
+
+    Required env: ``ADMIN_EMAIL``, ``REPO_NAME``, ``GITEA_REPO_OWNER``,
+    ``ENABLED_SERVICES``, ``DOMAIN``, ``PROJECT_ID``, ``INFISICAL_TOKEN``.
+    Optional env: ``WORKSPACE_BRANCH`` (default ``main``),
+    ``GH_MIRROR_REPOS``, ``GH_MIRROR_TOKEN``, ``GITEA_USER_USERNAME``,
+    ``GITEA_USER_EMAIL``, ``GITEA_USER_PASS``, ``OM_PRINCIPAL_DOMAIN``,
+    ``INFISICAL_ENV`` (default ``dev``), ``SSH_HOST_ALIAS`` (default ``nexus``).
+
+    Exit codes:
+    - 0: every phase ok or skipped
+    - 1: at least one phase produced status='partial'
+    - 2: at least one phase failed (orchestrator aborted)
+    """
+    if args:
+        print(f"run-all: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    admin_email = os.environ.get("ADMIN_EMAIL") or ""
+    repo_name = os.environ.get("REPO_NAME") or ""
+    gitea_repo_owner = os.environ.get("GITEA_REPO_OWNER") or ""
+    enabled_str = os.environ.get("ENABLED_SERVICES") or ""
+    domain = os.environ.get("DOMAIN") or ""
+    project_id = os.environ.get("PROJECT_ID") or ""
+    infisical_token = os.environ.get("INFISICAL_TOKEN") or ""
+
+    missing = [
+        name
+        for name, val in (
+            ("ADMIN_EMAIL", admin_email),
+            ("REPO_NAME", repo_name),
+            ("GITEA_REPO_OWNER", gitea_repo_owner),
+            ("ENABLED_SERVICES", enabled_str),
+            ("DOMAIN", domain),
+            ("PROJECT_ID", project_id),
+            ("INFISICAL_TOKEN", infisical_token),
+        )
+        if not val
+    ]
+    if missing:
+        print(f"run-all: missing required env: {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    enabled = [s.strip() for s in enabled_str.replace(",", " ").split() if s.strip()]
+    workspace_branch = os.environ.get("WORKSPACE_BRANCH") or "main"
+    gh_mirror_repos_csv = os.environ.get("GH_MIRROR_REPOS") or ""
+    gh_mirror_token = os.environ.get("GH_MIRROR_TOKEN") or None
+    gitea_user_username = os.environ.get("GITEA_USER_USERNAME") or None
+    gitea_user_email = os.environ.get("GITEA_USER_EMAIL") or None
+    gitea_user_password = os.environ.get("GITEA_USER_PASS") or None
+    ssh_host = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    infisical_env = os.environ.get("INFISICAL_ENV") or "dev"
+    gh_mirror_repos = [s.strip() for s in gh_mirror_repos_csv.split(",") if s.strip()]
+
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"run-all: {exc}", file=sys.stderr)
+        return 2
+    bootstrap_env = BootstrapEnv(
+        domain=domain,
+        admin_email=admin_email,
+        gitea_user_email=gitea_user_email,
+        gitea_user_username=gitea_user_username,
+        gitea_repo_owner=gitea_repo_owner,
+        repo_name=repo_name,
+        om_principal_domain=os.environ.get("OM_PRINCIPAL_DOMAIN") or None,
+        woodpecker_gitea_client=os.environ.get("WOODPECKER_GITEA_CLIENT") or None,
+        woodpecker_gitea_secret=os.environ.get("WOODPECKER_GITEA_SECRET") or None,
+        ssh_private_key_base64=os.environ.get("SSH_KEY_BASE64") or None,
+    )
+
+    orchestrator = Orchestrator(
+        config=config,
+        bootstrap_env=bootstrap_env,
+        enabled_services=enabled,
+        repo_name=repo_name,
+        gitea_repo_owner=gitea_repo_owner,
+        workspace_branch=workspace_branch,
+        gh_mirror_repos=gh_mirror_repos,
+        gh_mirror_token=gh_mirror_token,
+        gitea_user_username=gitea_user_username,
+        gitea_user_email=gitea_user_email,
+        gitea_user_password=gitea_user_password,
+        ssh_host=ssh_host,
+        project_id=project_id,
+        infisical_token=infisical_token,
+        infisical_env=infisical_env,
+    )
+
+    try:
+        result = orchestrator.run_all()
+    except SSHError as exc:
+        print(f"run-all: ssh setup failed: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"run-all: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"run-all: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Per-phase log to stderr.
+    for phase in result.phases:
+        marker = {"ok": "✓", "partial": "⚠", "failed": "✗", "skipped": "—"}.get(phase.status, "?")
+        detail = f" — {phase.detail}" if phase.detail else ""
+        sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
+
+    # Eval-able stdout: 3 values for the surviving deploy.sh bash.
+    import shlex as _shlex
+
+    sys.stdout.write(
+        f"RESTART_SERVICES={_shlex.quote(','.join(result.state.restart_services))}\n",
+    )
+    if result.state.woodpecker_client_id is not None:
+        sys.stdout.write(
+            f"WOODPECKER_GITEA_CLIENT={_shlex.quote(result.state.woodpecker_client_id)}\n",
+        )
+    if result.state.woodpecker_client_secret is not None:
+        sys.stdout.write(
+            f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.state.woodpecker_client_secret)}\n",
+        )
+
+    if result.has_hard_failure:
+        return 2
+    if result.has_partial:
+        return 1
+    return 0
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -1814,6 +2099,10 @@ def main() -> int:
         return _stack_sync(args[1:])
     if args[:1] == ["setup"]:
         return _setup(args[1:])
+    if args[:1] == ["service-env"]:
+        return _service_env(args[1:])
+    if args[:1] == ["run-all"]:
+        return _run_all(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -1831,7 +2120,10 @@ def main() -> int:
         "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned), "
         "stack-sync --enabled <comma-list> [--stacks-dir PATH], "
-        "setup ssh-config | wait-ssh | ensure-jq | mount-volume",
+        "setup ssh-config | wait-ssh | ensure-jq | mount-volume, "
+        "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
+        "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
+        "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET)",
         file=sys.stderr,
     )
     return 2
