@@ -166,297 +166,56 @@ SERVER_IP=$(cd "$TOFU_DIR" && tofu output -raw server_ip 2>/dev/null || echo "")
 [ -n "$SERVER_IP" ] && ssh-keygen -R "$SERVER_IP" 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
-# Setup SSH Config with Service Token (replaces existing config)
+# [1/7] + [2/7] + jq + volume mount — Phase 3 Modul 3.4a (#505)
 # -----------------------------------------------------------------------------
-SSH_CONFIG="$HOME/.ssh/config"
+# Was 4 inline bash blocks (~270 LoC): ssh-config rendering with awk-
+# dedup, Service-Token retry+backoff, SSH connectivity loop, jq
+# bootstrap, persistent-volume mount with three-stage fallback.
+# Replaced with `python -m nexus_deploy setup <subcommand>` invocations.
+# Same semantics, same retry schedules; tests pin every Hardening-Round
+# from the legacy block via injected sleep + probe runner.
+#
+# The EXIT-trap setup (REMOTE_CLEANUP_PATHS, RUNNER_CLEANUP_PATHS) stays
+# in bash for now — other migrated modules' deploy.sh wrappers reference
+# those paths to register their tmpfiles. Phase 3 Modul 3.4b
+# (orchestrator.py) replaces the trap with Python contextlib.ExitStack
+# once deploy.sh is just a thin wrapper.
 
 echo -e "${YELLOW}[1/7] Configuring SSH access...${NC}"
-mkdir -p "$HOME/.ssh"
+SSH_HOST="$SSH_HOST" \
+    CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}" \
+    CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET:-}" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy setup ssh-config
 
-# Remove old nexus config if exists (to update with token)
-if grep -q "^Host nexus$" "$SSH_CONFIG" 2>/dev/null; then
-    # Create temp file without the nexus block
-    # This approach handles blocks correctly regardless of position
-    awk '
-        /^Host nexus$/ { skip=1; next }
-        /^Host / && skip { skip=0 }
-        !skip { print }
-    ' "$SSH_CONFIG" > "$SSH_CONFIG.tmp" && mv "$SSH_CONFIG.tmp" "$SSH_CONFIG"
-fi
-
-# Add new config with Service Token support
-if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
-    cat >> "$SSH_CONFIG" << EOF
-
-Host nexus
-  HostName ${SSH_HOST}
-  User root
-  IdentityFile ~/.ssh/id_ed25519
-  IdentitiesOnly yes
-  ProxyCommand bash -c 'TUNNEL_SERVICE_TOKEN_ID=${CF_ACCESS_CLIENT_ID} TUNNEL_SERVICE_TOKEN_SECRET=${CF_ACCESS_CLIENT_SECRET} cloudflared access ssh --hostname %h'
-EOF
-    echo -e "${GREEN}  ✓ SSH config with Service Token added (no browser login required)${NC}"
-    USE_SERVICE_TOKEN=true
-else
-    cat >> "$SSH_CONFIG" << EOF
-
-Host nexus
-  HostName ${SSH_HOST}
-  User root
-  IdentityFile ~/.ssh/id_ed25519
-  IdentitiesOnly yes
-  ProxyCommand cloudflared access ssh --hostname %h
-EOF
-    echo -e "${GREEN}  ✓ SSH config added (browser login required)${NC}"
-    USE_SERVICE_TOKEN=false
-fi
-chmod 600 "$SSH_CONFIG"
-
-# -----------------------------------------------------------------------------
-# Cloudflare Zero Trust Authentication (Service Token required)
-# -----------------------------------------------------------------------------
-if [ "$USE_SERVICE_TOKEN" = "false" ]; then
-    echo ""
-    echo -e "${RED}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║  ${YELLOW}❌ Service Token Required for GitHub Actions Deployment${RED}     ║${NC}"
-    echo -e "${RED}╠═══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${RED}║${NC}  Browser login is not supported in GitHub Actions.              ${RED}║${NC}"
-    echo -e "${RED}║${NC}  Service Token must be configured in Terraform outputs.        ${RED}║${NC}"
-    echo -e "${RED}╚═══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    exit 1
-else
-    echo -e "${GREEN}  ✓ Using Service Token for authentication${NC}"
-fi
 echo ""
-
-# -----------------------------------------------------------------------------
-# Wait for SSH connection
-# -----------------------------------------------------------------------------
 echo -e "${YELLOW}[2/7] Waiting for SSH via Cloudflare Tunnel...${NC}"
+CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}" \
+    CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET:-}" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy setup wait-ssh
 
-# If using Service Token, test it first with retry and exponential backoff
-if [ "$USE_SERVICE_TOKEN" = "true" ]; then
-    echo "  Testing Service Token authentication..."
-    MAX_TOKEN_RETRIES=6
-    echo "  Note: Service Token may need a few seconds to propagate in Cloudflare..."
-    
-    # Initial wait for Service Token propagation (Cloudflare needs time to activate)
-    INITIAL_WAIT=10
-    echo "  Waiting ${INITIAL_WAIT}s for initial propagation..."
-    sleep $INITIAL_WAIT
-
-    TOKEN_RETRY=0
-    BACKOFF=5
-    SSH_ERR=$(mktemp)
-    trap 'rm -f "$SSH_ERR"' EXIT
-
-    while [ $TOKEN_RETRY -lt $MAX_TOKEN_RETRIES ]; do
-        if [ $TOKEN_RETRY -eq $((MAX_TOKEN_RETRIES - 1)) ]; then
-            # Last attempt: verbose SSH for full diagnostics
-            echo "  Last attempt - running with verbose SSH output..."
-            if ssh -v -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o BatchMode=yes nexus 'echo ok' >"$SSH_ERR" 2>&1; then
-                echo -e "${GREEN}  ✓ Service Token authentication successful${NC}"
-                cat "$SSH_ERR"
-                rm -f "$SSH_ERR"
-                trap - EXIT
-                break
-            fi
-            # Print verbose output for diagnostics
-            cat "$SSH_ERR"
-        else
-            if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o BatchMode=yes nexus 'echo ok' 2>"$SSH_ERR"; then
-                echo -e "${GREEN}  ✓ Service Token authentication successful${NC}"
-                rm -f "$SSH_ERR"
-                trap - EXIT
-                break
-            fi
-        fi
-        TOKEN_RETRY=$((TOKEN_RETRY + 1))
-        if [ $TOKEN_RETRY -lt $MAX_TOKEN_RETRIES ]; then
-            echo "  Retry $TOKEN_RETRY/$MAX_TOKEN_RETRIES - waiting ${BACKOFF}s for propagation..."
-            echo -e "  ${DIM}Last error (last 3 lines):${NC}"
-            tail -n 3 "$SSH_ERR" | sed 's/^/    /'
-            sleep $BACKOFF
-            BACKOFF=$((BACKOFF + 5))  # Linear increase: 5s, 10s, 15s, 20s, 25s
-        fi
-    done
-
-    if [ $TOKEN_RETRY -eq $MAX_TOKEN_RETRIES ]; then
-        echo ""
-        echo -e "${RED}╔═══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║  ${YELLOW}❌ Service Token Authentication Failed${RED}                            ║${NC}"
-        echo -e "${RED}╠═══════════════════════════════════════════════════════════════╣${NC}"
-        echo -e "${RED}║${NC}  Service Token authentication failed after $MAX_TOKEN_RETRIES attempts.  ${RED}║${NC}"
-        echo -e "${RED}║${NC}  Browser login fallback is not supported in GitHub Actions.      ${RED}║${NC}"
-        echo -e "${RED}╚═══════════════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        echo -e "${YELLOW}  Diagnostics:${NC}"
-        echo "  SSH Host: $SSH_HOST"
-        echo "  Service Token Client ID: [redacted]"
-        echo "  cloudflared version: $(cloudflared --version 2>&1 || echo 'not found')"
-        if command -v nslookup >/dev/null 2>&1; then
-            echo "  DNS lookup for $SSH_HOST:"
-            nslookup "$SSH_HOST" 2>&1 | head -6
-        else
-            echo "  DNS lookup: nslookup not available"
-        fi
-        echo ""
-        echo -e "${YELLOW}  Last SSH error output:${NC}"
-        cat "$SSH_ERR" 2>/dev/null || echo "    (no error output captured)"
-        rm -f "$SSH_ERR"
-        trap - EXIT
-        echo ""
-        exit 1
-    fi
-fi
-
-MAX_RETRIES=15
-RETRY=0
-TIMEOUT=5
+# EXIT-trap setup — managed in bash through Phase 3.4a; Phase 3.4b
+# replaces with Python contextlib.ExitStack inside orchestrator.run_all.
 SSH_ERR=$(mktemp)
-# Holds remote tmp paths (one per line) that must be removed on the
-# server when the runner exits — including mid-loop interrupts or
-# workflow timeouts. The EXIT trap walks this list and ssh-rm's each.
-# Any later block that mktemp's a file on `nexus` should append the
-# resulting path here, so cleanup is centralised in one trap.
 REMOTE_CLEANUP_PATHS=$(mktemp)
-# RUNNER_CLEANUP_PATHS — same idea as REMOTE_CLEANUP_PATHS but for
-# secret-bearing temp files on the *runner* itself. Any block that
-# mktemp's a runner-local file containing plaintext secrets (Infisical
-# raw responses, base64-decoded credentials, etc.) should append its
-# path here so the EXIT trap reliably wipes them even when the deploy
-# is interrupted, set -e exits early, or a CI runner gets cancelled.
 RUNNER_CLEANUP_PATHS=$(mktemp)
 trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"; if [ -s "$RUNNER_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && rm -f "$p"; done < "$RUNNER_CLEANUP_PATHS"; fi; rm -f "$RUNNER_CLEANUP_PATHS"' EXIT
-while [ $RETRY -lt $MAX_RETRIES ]; do
-    if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$TIMEOUT -o BatchMode=yes nexus 'echo ok' 2>"$SSH_ERR"; then
-        echo -e "${GREEN}  ✓ SSH connection established${NC}"
-        rm -f "$SSH_ERR"
-        # NOTE: do NOT `trap - EXIT` here. The EXIT trap installed at
-        # the top of this section also walks $REMOTE_CLEANUP_PATHS and
-        # ssh-rm's any remote tmp files that downstream blocks (seed
-        # loop, secret-sync, …) registered. Removing the trap on first
-        # SSH success would leave token-bearing curl --config files
-        # behind on the server if the deploy aborts later. The trap'\''s
-        # `rm -f $SSH_ERR` is no-op-safe when the file is already gone.
-        break
-    fi
-    RETRY=$((RETRY + 1))
-    if [ $RETRY -lt $MAX_RETRIES ]; then
-        echo "  Attempt $RETRY/$MAX_RETRIES - waiting for tunnel..."
-        echo -e "  ${DIM}Last error:${NC}"
-        tail -n 1 "$SSH_ERR" | sed 's/^/    /'
-        # Increase timeout gradually: 5s, 5s, 10s, 10s, 15s...
-        if [ $RETRY -lt 3 ]; then
-            TIMEOUT=5
-            sleep 5
-        elif [ $RETRY -lt 7 ]; then
-            TIMEOUT=10
-            sleep 10
-        else
-            TIMEOUT=15
-            sleep 15
-        fi
-    fi
-done
 
-if [ $RETRY -eq $MAX_RETRIES ]; then
-    echo -e "${RED}Timeout waiting for SSH. Check Cloudflare Tunnel status.${NC}"
-    echo -e "${YELLOW}  Last SSH error:${NC}"
-    cat "$SSH_ERR" 2>/dev/null || echo "    (no error output captured)"
-    rm -f "$SSH_ERR"
-    # Don't `trap - EXIT` here. The global EXIT trap handles cleanup
-    # of both $REMOTE_CLEANUP_PATHS and $RUNNER_CLEANUP_PATHS list
-    # files (the latter holds runner-side mktemp paths to plaintext
-    # secrets — registered by later blocks). Disabling the trap on
-    # this early exit would skip those rm-f's. The trap is no-op-safe
-    # for files already removed (`rm -f`) and for empty list files
-    # (the `while read` loop simply matches no lines).
-    exit 1
-fi
+uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy setup ensure-jq
 
-# -----------------------------------------------------------------------------
-# Ensure jq is installed on the server.
-# -----------------------------------------------------------------------------
-# `jq` is now bundled into the cloud-init `apt-get install -y …` step
-# in `tofu/stack/main.tf`, so freshly provisioned VMs (after destroy-all)
-# already have it. This block is for already-running VMs that were
-# created BEFORE that change — without jq, the SFTPGo user-creation
-# heredoc and the Kestra register-flow verification block silently
-# break (jq writes "command not found" to stderr that gets swallowed,
-# the consuming `curl` ends up with empty stdin, and the operator
-# sees mysterious 400/empty responses). Idempotent: `apt-get install`
-# is a near-instant no-op when the package is already present.
-if ! ssh nexus "command -v jq" >/dev/null 2>&1; then
-    echo "  Installing jq on the server (one-time bootstrap for VMs created before jq was added to cloud-init)..."
-    if ! ssh nexus "sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq jq >/dev/null"; then
-        echo -e "${RED}Error: failed to install jq on the server. SFTPGo / Kestra register-verify blocks rely on jq.${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}  ✓ jq installed${NC}"
-fi
-
-# -----------------------------------------------------------------------------
-# Mount persistent volume (if configured)
-# -----------------------------------------------------------------------------
 PERSISTENT_VOLUME_ID=$(cd "$TOFU_DIR" && tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
-
-if [ "$PERSISTENT_VOLUME_ID" != "0" ] && [ -n "$PERSISTENT_VOLUME_ID" ]; then
-    echo ""
-    echo -e "${YELLOW}  Mounting persistent volume (ID: $PERSISTENT_VOLUME_ID)...${NC}"
-    ssh nexus "
-        MOUNT_POINT=/mnt/nexus-data
-
-        # Check if already mounted
-        if mountpoint -q \$MOUNT_POINT 2>/dev/null; then
-            echo '  Volume already mounted at /mnt/nexus-data'
-        else
-            mkdir -p \$MOUNT_POINT
-
-            # Find the volume device (Hetzner volumes appear as /dev/disk/by-id/scsi-0HC_Volume_*)
-            VOLUME_DEVICE=\$(ls /dev/disk/by-id/scsi-0HC_Volume_${PERSISTENT_VOLUME_ID} 2>/dev/null || echo '')
-            if [ -n \"\$VOLUME_DEVICE\" ]; then
-                mount \$VOLUME_DEVICE \$MOUNT_POINT
-                echo '  Volume mounted at /mnt/nexus-data'
-            else
-                echo '  Volume device not found via scsi ID, checking automount...'
-                if mount | grep -q \$MOUNT_POINT; then
-                    echo '  Volume auto-mounted at /mnt/nexus-data'
-                else
-                    echo '  Warning: Could not mount volume - checking /dev/sdb...'
-                    if [ -b /dev/sdb ]; then
-                        mount /dev/sdb \$MOUNT_POINT
-                        echo '  Volume mounted via /dev/sdb'
-                    fi
-                fi
-            fi
-        fi
-
-        # Add fstab entry for persistence across reboots (if not already present)
-        if ! grep -q '/mnt/nexus-data' /etc/fstab; then
-            VOLUME_DEVICE=\$(ls /dev/disk/by-id/scsi-0HC_Volume_${PERSISTENT_VOLUME_ID} 2>/dev/null || echo '/dev/sdb')
-            echo \"\$VOLUME_DEVICE /mnt/nexus-data ext4 defaults,nofail 0 2\" >> /etc/fstab
-            echo '  fstab entry added'
-        fi
-
-        # Create service subdirectories
-        mkdir -p \$MOUNT_POINT/gitea/repos
-        mkdir -p \$MOUNT_POINT/gitea/lfs
-        mkdir -p \$MOUNT_POINT/gitea/db
-
-        # Gitea runs as UID 1000 (git user)
-        chown -R 1000:1000 \$MOUNT_POINT/gitea/repos
-        chown -R 1000:1000 \$MOUNT_POINT/gitea/lfs
-
-        # PostgreSQL runs as UID 70 in alpine images
-        chown -R 70:70 \$MOUNT_POINT/gitea/db
-    "
-    echo -e "${GREEN}  ✓ Persistent volume mounted${NC}"
-else
-    echo ""
-    echo -e "${DIM}  Persistent volume not configured (persistent_volume_id=0)${NC}"
-fi
+PERSISTENT_VOLUME_ID="$PERSISTENT_VOLUME_ID" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy setup mount-volume \
+    || MOUNT_RC=$?
+case "${MOUNT_RC:-0}" in
+    0) ;;
+    1) echo -e "${YELLOW}  ⚠ Persistent volume mount fallback failed (continuing)${NC}" ;;
+    *) echo -e "${RED}  ✗ Persistent volume hard failure (rc=${MOUNT_RC}); aborting${NC}"; exit "${MOUNT_RC}" ;;
+esac
+unset MOUNT_RC
 
 # -----------------------------------------------------------------------------
 # Prepare stacks with secrets

@@ -14,6 +14,10 @@ Currently:
 - ``gitea woodpecker-oauth`` (#505 Modul 2.2f)
 - ``gitea mirror-setup`` (#505 Modul 2.2f part 2)
 - ``stack-sync --enabled <comma-list>`` (#505 Modul 3.3)
+- ``setup ssh-config`` (#505 Modul 3.4a)
+- ``setup wait-ssh`` (#505 Modul 3.4a)
+- ``setup ensure-jq`` (#505 Modul 3.4a)
+- ``setup mount-volume`` (#505 Modul 3.4a)
 """
 
 from __future__ import annotations
@@ -41,6 +45,15 @@ from nexus_deploy.kestra import run_register_system_flows
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 from nexus_deploy.services import run_admin_setups
+from nexus_deploy.setup import (
+    SetupError,
+    SSHConfigSpec,
+    configure_ssh,
+    ensure_jq,
+    mount_persistent_volume,
+    wait_for_service_token,
+    wait_for_ssh,
+)
 from nexus_deploy.ssh import SSHClient, SSHError
 from nexus_deploy.stack_sync import run_stack_sync
 
@@ -1445,6 +1458,234 @@ def _stack_sync(args: list[str]) -> int:
     return 1
 
 
+def _setup_ssh_config(args: list[str]) -> int:
+    """`nexus-deploy setup ssh-config`.
+
+    Replaces deploy.sh L173-231 (#505 Modul 3.4a). Renders the
+    ``Host nexus`` block in ``~/.ssh/config`` with the Cloudflare
+    Access ProxyCommand. Atomic write, mode 0o600.
+
+    Required env: ``SSH_HOST`` (the tunnel hostname),
+    ``CF_ACCESS_CLIENT_ID``, ``CF_ACCESS_CLIENT_SECRET``.
+
+    Aborts (rc=2) when either Service Token component is missing —
+    browser-login fallback is impossible in CI.
+
+    Exit codes:
+    - 0: ssh-config block written
+    - 2: missing required env, missing Service Token, or write failure
+    """
+    if args:
+        print(f"setup ssh-config: unknown args {args!r}", file=sys.stderr)
+        return 2
+    ssh_host = os.environ.get("SSH_HOST", "").strip()
+    cf_id = os.environ.get("CF_ACCESS_CLIENT_ID", "").strip() or None
+    cf_secret = os.environ.get("CF_ACCESS_CLIENT_SECRET", "").strip() or None
+    if not ssh_host:
+        print("setup ssh-config: SSH_HOST env var required", file=sys.stderr)
+        return 2
+    spec = SSHConfigSpec(ssh_host=ssh_host, cf_client_id=cf_id, cf_client_secret=cf_secret)
+    try:
+        configure_ssh(spec)
+    except SetupError as exc:
+        print(f"setup ssh-config: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # Filesystem error (permission, disk full, etc.). Class name
+        # only so a future bug embedding secrets in the path doesn't
+        # leak into the deploy log.
+        print(
+            f"setup ssh-config: write failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"setup ssh-config: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    auth_mode = "Service Token" if spec.has_service_token else "browser login"
+    print(f"setup ssh-config: wrote Host {spec.host_alias} block (auth={auth_mode})")
+    return 0
+
+
+def _setup_wait_ssh(args: list[str]) -> int:
+    """`nexus-deploy setup wait-ssh`.
+
+    Replaces deploy.sh L236-377 (#505 Modul 3.4a). Polls
+    Cloudflare-Access-tunneled SSH until the host accepts a
+    ``BatchMode=yes`` connection.
+
+    When ``CF_ACCESS_CLIENT_ID`` + ``CF_ACCESS_CLIENT_SECRET`` are
+    set in the environment, we do the Service Token propagation
+    wait first (linear backoff 5/10/15/20/25s after a 10s initial
+    sleep). Then the standard SSH-readiness loop (15 retries,
+    exponential timeout).
+
+    Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``),
+    ``CF_ACCESS_CLIENT_ID``, ``CF_ACCESS_CLIENT_SECRET``.
+
+    Exit codes:
+    - 0: SSH connection established
+    - 2: max retries exhausted (Token-test OR readiness loop)
+    """
+    if args:
+        print(f"setup wait-ssh: unknown args {args!r}", file=sys.stderr)
+        return 2
+    host_alias = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    has_token = bool(os.environ.get("CF_ACCESS_CLIENT_ID")) and bool(
+        os.environ.get("CF_ACCESS_CLIENT_SECRET"),
+    )
+    if has_token:
+        sys.stderr.write("  Testing Service Token authentication...\n")
+        token_result = wait_for_service_token(host_alias=host_alias)
+        if not token_result.succeeded:
+            sys.stderr.write(
+                f"  ✗ Service Token authentication failed after {token_result.attempts} attempts\n",
+            )
+            if token_result.last_error:
+                for line in token_result.last_error.splitlines():
+                    sys.stderr.write(f"      {line}\n")
+            return 2
+        sys.stderr.write(
+            f"  ✓ Service Token authentication successful (attempt {token_result.attempts})\n",
+        )
+
+    sys.stderr.write("  Waiting for SSH via Cloudflare Tunnel...\n")
+    ssh_result = wait_for_ssh(host_alias=host_alias)
+    if not ssh_result.succeeded:
+        sys.stderr.write(
+            f"  ✗ SSH connection failed after {ssh_result.attempts} attempts\n",
+        )
+        if ssh_result.last_error:
+            for line in ssh_result.last_error.splitlines():
+                sys.stderr.write(f"      {line}\n")
+        return 2
+    print(
+        f"setup wait-ssh: SSH connection established (attempt {ssh_result.attempts})",
+    )
+    return 0
+
+
+def _setup_ensure_jq(args: list[str]) -> int:
+    """`nexus-deploy setup ensure-jq`.
+
+    Replaces deploy.sh L391-398 (#505 Modul 3.4a). Idempotent
+    ``apt-get install -y jq`` on the remote — bootstrap for VMs
+    that pre-date the cloud-init jq install.
+
+    Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``).
+
+    Exit codes:
+    - 0: jq present (already-installed or newly-installed)
+    - 2: install failed (transport, sudo permission, dpkg lock, etc.)
+    """
+    if args:
+        print(f"setup ensure-jq: unknown args {args!r}", file=sys.stderr)
+        return 2
+    host_alias = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    try:
+        with SSHClient(host_alias) as ssh:
+            installed = ensure_jq(ssh)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"setup ensure-jq: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"setup ensure-jq: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    if installed:
+        print("setup ensure-jq: jq newly installed")
+    else:
+        print("setup ensure-jq: jq already present")
+    return 0
+
+
+def _setup_mount_volume(args: list[str]) -> int:
+    """`nexus-deploy setup mount-volume`.
+
+    Replaces deploy.sh L403-459 (#505 Modul 3.4a). Mounts the
+    Hetzner persistent volume at ``/mnt/nexus-data`` with three-stage
+    device discovery (scsi-id → automount → /dev/sdb fallback) and
+    idempotent fstab entry.
+
+    Required env: ``PERSISTENT_VOLUME_ID`` (Hetzner volume ID, or
+    ``0`` / empty to skip).
+    Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``).
+
+    Exit codes:
+    - 0: mounted, OR skipped (volume_id empty/0), OR already-mounted
+    - 1: every device-discovery fallback failed (deploy continues —
+         downstream stacks that don't need the volume can still come
+         up healthy; operator gets a yellow warning)
+    - 2: invalid volume_id, transport failure, unexpected exception
+    """
+    if args:
+        print(f"setup mount-volume: unknown args {args!r}", file=sys.stderr)
+        return 2
+    volume_id = os.environ.get("PERSISTENT_VOLUME_ID", "").strip()
+    host_alias = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    try:
+        with SSHClient(host_alias) as ssh:
+            result = mount_persistent_volume(volume_id, ssh)
+    except SetupError as exc:
+        print(f"setup mount-volume: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"setup mount-volume: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"setup mount-volume: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    if result.detail == "skipped":
+        print("setup mount-volume: skipped (no PERSISTENT_VOLUME_ID)")
+        return 0
+    if result.mounted:
+        fstab = " (fstab updated)" if result.fstab_added else ""
+        print(f"setup mount-volume: mounted{fstab}")
+        return 0
+    # Every fallback failed — yellow warning, deploy continues.
+    print(
+        f"setup mount-volume: fallback-failed ({result.detail}); "
+        "deploy continues but stacks needing the volume may fail",
+    )
+    return 1
+
+
+def _setup(args: list[str]) -> int:
+    """Dispatch ``nexus-deploy setup <subcommand>``."""
+    if not args:
+        print(
+            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq | mount-volume)",
+            file=sys.stderr,
+        )
+        return 2
+    sub = args[0]
+    rest = args[1:]
+    if sub == "ssh-config":
+        return _setup_ssh_config(rest)
+    if sub == "wait-ssh":
+        return _setup_wait_ssh(rest)
+    if sub == "ensure-jq":
+        return _setup_ensure_jq(rest)
+    if sub == "mount-volume":
+        return _setup_mount_volume(rest)
+    print(f"setup: unknown subcommand {sub!r}", file=sys.stderr)
+    return 2
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -1535,6 +1776,8 @@ def main() -> int:
         return _gitea_mirror_setup(args[2:])
     if args[:1] == ["stack-sync"]:
         return _stack_sync(args[1:])
+    if args[:1] == ["setup"]:
+        return _setup(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -1551,7 +1794,8 @@ def main() -> int:
         "gitea configure (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout), "
         "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned), "
-        "stack-sync --enabled <comma-list> [--stacks-dir PATH]",
+        "stack-sync --enabled <comma-list> [--stacks-dir PATH], "
+        "setup ssh-config | wait-ssh | ensure-jq | mount-volume",
         file=sys.stderr,
     )
     return 2
