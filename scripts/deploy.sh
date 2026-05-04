@@ -1398,50 +1398,23 @@ EOF
     done
 fi
 
-# Sync only enabled stacks
-echo "{\"location\":\"deploy.sh:378\",\"message\":\"Starting stack sync\",\"data\":{\"enabled_services\":\"$ENABLED_SERVICES\"},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-
-for service in $ENABLED_SERVICES; do
-    echo "{\"location\":\"deploy.sh:379\",\"message\":\"Processing service for sync\",\"data\":{\"service\":\"$service\",\"stack_dir_exists\":$([ -d "$STACKS_DIR/$service" ] && echo "true" || echo "false")},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-    if [ -d "$STACKS_DIR/$service" ]; then
-        echo "  Syncing $service..."
-        rsync -av "$STACKS_DIR/$service/" "nexus:$REMOTE_STACKS_DIR/$service/"
-        echo "{\"location\":\"deploy.sh:382\",\"message\":\"Service synced\",\"data\":{\"service\":\"$service\",\"exit_code\":$?},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-    else
-        echo -e "${YELLOW}  Warning: Stack folder 'stacks/$service' not found - skipping${NC}"
-        echo "{\"location\":\"deploy.sh:384\",\"message\":\"Stack folder not found\",\"data\":{\"service\":\"$service\"},\"timestamp\":$(date +%s)000,\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" >> "$LOG_FILE" 2>/dev/null || true
-    fi
-done
-echo -e "${GREEN}  ✓ Stacks synced${NC}"
-
-# -----------------------------------------------------------------------------
-# Stop disabled services
-# -----------------------------------------------------------------------------
+# Phase 3 Modul 3.3 (#505) — was 44 lines: per-stack rsync loop +
+# disabled-stack cleanup ssh heredoc. Both replaced by one CLI call.
+# Same idempotent contract: rsync `stacks/<svc>/` → `:/opt/...stacks/<svc>/`,
+# then docker-compose-down + rm -rf any folder NOT in $ENABLED_SERVICES.
 echo ""
-echo -e "${YELLOW}[4/7] Cleaning up disabled services...${NC}"
-
-ENABLED_LIST=$(echo $ENABLED_SERVICES | tr '\n' ' ')
-
-ssh nexus "
-# Find all stack directories on server
-for stack_dir in $REMOTE_STACKS_DIR/*/; do
-    [ -d \"\$stack_dir\" ] || continue
-    stack_name=\$(basename \"\$stack_dir\")
-    
-    # Check if this stack is in the enabled list
-    if ! echo '$ENABLED_LIST' | grep -qw \"\$stack_name\"; then
-        # Stack is disabled - stop and remove
-        if [ -f \"\${stack_dir}docker-compose.yml\" ]; then
-            echo \"  Stopping \$stack_name (disabled)...\"
-            cd \"\$stack_dir\"
-            docker compose down 2>/dev/null || true
-        fi
-        echo \"  Removing \$stack_name stack folder...\"
-        rm -rf \"\$stack_dir\"
-    fi
-done
-echo '  ✓ Cleanup complete'
-"
+echo -e "${YELLOW}[3+4/7] Syncing stacks and cleaning up disabled ones...${NC}"
+SYNC_RC=0
+uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy stack-sync \
+    --enabled "$(echo "$ENABLED_SERVICES" | tr '\n ' ',,')" \
+    --stacks-dir "$STACKS_DIR" \
+    || SYNC_RC=$?
+case "$SYNC_RC" in
+    0) echo -e "${GREEN}  ✓ Stacks synced and disabled stacks cleaned up${NC}" ;;
+    1) echo -e "${YELLOW}  ⚠ Stack sync had partial failures (continuing)${NC}" ;;
+    *) echo -e "${RED}  ✗ Stack sync hard failure (rc=$SYNC_RC); aborting${NC}"; exit "$SYNC_RC" ;;
+esac
 
 # -----------------------------------------------------------------------------
 # Docker Hub Login (optional - for increased pull rate limits)
