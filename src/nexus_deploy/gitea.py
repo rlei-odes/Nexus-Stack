@@ -451,11 +451,19 @@ class GiteaCli:
         _validate_path_segment(username, kind="username")
         _validate_path_segment(name, kind="token_name")
         # psql DELETE — peer auth via -U inside gitea-db container.
-        # Same approach as :meth:`sync_db_password`. ``|| true``
-        # swallows transient psql errors (gitea-db not yet ready,
-        # connection blip) — if the delete didn't run, the
-        # generate step below will surface "name has been used
-        # already" with full diagnostic.
+        # Same approach as :meth:`sync_db_password`.
+        #
+        # Capture rc + stdout (no ``|| true``, no ``2>/dev/null``).
+        # ``ssh.run_script(check=False)`` already prevents the
+        # subprocess layer from raising on a non-zero exit, so the
+        # earlier "swallow everything" pattern was double-defence
+        # at the cost of debuggability: when the delete failed
+        # silently and the generate later collided with the
+        # surviving token, the operator saw "name has been used
+        # already" but no hint why the delete didn't run. Prepend
+        # the delete diagnostic to ``token_error`` if the subsequent
+        # generate fails (success path: irrelevant, drop it).
+        #
         # SQL injection-safe by construction. Both ``name`` and
         # ``username`` are validated against ``_PATH_SAFE_RE``
         # ([a-zA-Z0-9._-]+) above, so neither can contain a single
@@ -473,11 +481,17 @@ class GiteaCli:
             f"AND uid = (SELECT id FROM \"user\" WHERE lower_name = lower('{username}'));"
         )
         delete_script = (
-            "docker exec gitea-db psql -U nexus-gitea -d gitea "
-            f"-c {shlex.quote(delete_sql)} "
-            ">/dev/null 2>&1 || true\n"
+            f"docker exec gitea-db psql -U nexus-gitea -d gitea -c {shlex.quote(delete_sql)} 2>&1\n"
         )
-        self.ssh.run_script(delete_script, check=False, timeout=30.0)
+        delete_result = self.ssh.run_script(delete_script, check=False, timeout=30.0)
+        delete_diag = ""
+        if delete_result.returncode != 0:
+            # psql / docker error output is non-secret (no row data
+            # in the connection-or-permission-failure paths psql
+            # produces) — safe to surface. Capture first line only.
+            first_line = (delete_result.stdout or "").splitlines()
+            detail = first_line[0][:200] if first_line else "(no output)"
+            delete_diag = f"prior delete rc={delete_result.returncode}: {detail}"
 
         generate_script = (
             "set -euo pipefail\n"
@@ -490,10 +504,15 @@ class GiteaCli:
         if result.returncode != 0:
             # Output examples on failure: "User does not exist" or
             # "Command error: access token name has been used already".
-            # Capture first line only.
+            # Capture first line only. Prepend the delete diagnostic
+            # so name-collision failures can be traced to a prior
+            # delete that didn't actually run.
             first_line = (result.stdout or "").splitlines()
             detail = first_line[0][:200] if first_line else "(no output)"
-            return None, f"CLI rc={result.returncode}: {detail}"
+            msg = f"CLI rc={result.returncode}: {detail}"
+            if delete_diag:
+                msg = f"{delete_diag} | {msg}"
+            return None, msg
 
         # Success output: "Access token was successfully created: <40-hex>"
         match = re.search(r"\b([a-f0-9]{40})\b", result.stdout or "")

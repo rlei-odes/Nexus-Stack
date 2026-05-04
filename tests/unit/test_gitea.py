@@ -490,19 +490,71 @@ def test_round_4_mint_token_idempotent_delete_first() -> None:
     # the unquoted SQL keywords (DELETE FROM, WHERE, AND uid, lower)
     # plus the literal name + username values (which appear inside
     # shlex's `'"'"'` quote-escape but the inner characters survive).
-    # `|| true` swallows transient psql errors (justifies the rc=0
-    # mock above).
     delete_script = ssh.run_script.call_args_list[0][0][0]
     assert "DELETE FROM access_token" in delete_script
     assert "nexus-automation" in delete_script
     assert "WHERE lower_name" in delete_script
     assert "admin" in delete_script
-    assert "|| true" in delete_script
+    # Must NOT swallow stderr — `|| true` and `2>/dev/null` were
+    # removed in the round-4 fix so a psql failure surfaces in
+    # delete_result.stdout for inclusion in token_error.
+    assert "|| true" not in delete_script
+    assert "2>/dev/null" not in delete_script
     # Must NOT use the non-existent gitea CLI subcommand
     # (PR #520 round-3 production bug — `gitea admin user
     # delete-access-token` is hallucinated; psql DELETE is the
     # bulletproof replacement).
     assert "delete-access-token" not in delete_script
+
+
+def test_mint_token_diagnostic_prepends_prior_delete_failure() -> None:
+    """When psql DELETE fails AND generate fails, the diagnostic
+    must include BOTH errors — the delete failure prepended to the
+    generate failure. Without this, a name-collision failure on
+    generate looks unexplainable when the cause is actually that
+    the delete didn't run (gitea-db not ready, transient docker
+    error, etc.). Round-4 follow-up to the diagnostic field.
+    """
+    ssh = _make_ssh(
+        [
+            (
+                1,
+                'psql: error: connection to server at "gitea-db" failed\n',
+            ),  # psql delete fails (DB not ready)
+            (
+                1,
+                "Command error: access token name has been used already\n",
+            ),  # generate then collides
+        ]
+    )
+    sha1, err = GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    assert sha1 is None
+    # Must include both diagnostics, prior delete prepended.
+    assert "prior delete rc=1" in err
+    assert "connection to server" in err
+    assert "CLI rc=1" in err
+    assert "name has been used already" in err
+    # Format: `prior delete ... | CLI ...`
+    assert err.index("prior delete") < err.index("CLI rc=1")
+
+
+def test_mint_token_drops_delete_diagnostic_on_generate_success() -> None:
+    """If delete fails (rc=1) but generate succeeds, the delete
+    diagnostic is irrelevant and must NOT pollute the success
+    return value. Returns (sha1, "").
+    """
+    ssh = _make_ssh(
+        [
+            (1, "psql: connection failed\n"),  # delete fails
+            (
+                0,
+                "Access token was successfully created: " + "f" * 40 + "\n",
+            ),  # generate succeeds anyway (e.g. token didn't exist)
+        ]
+    )
+    sha1, err = GiteaCli(ssh).mint_token("admin", "nexus-automation")
+    assert sha1 == "f" * 40
+    assert err == ""
 
 
 def test_mint_token_returns_diagnostic_on_cli_failure() -> None:
