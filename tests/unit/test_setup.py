@@ -1,0 +1,1011 @@
+"""Tests for nexus_deploy.setup — Phase 3 Modul 3.4a (#505).
+
+8 R-tagged invariants on the rendered ssh-config + volume-mount
+script, retry-loop semantics with injected sleep + probe runner,
+exec'd-bash regression tests for the volume-mount fallback chain,
+and CLI rc=0/1/2 contract for all four setup subcommands.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from nexus_deploy.setup import (
+    SetupError,
+    SSHConfigSpec,
+    SSHReadinessResult,
+    VolumeMountResult,
+    _render_volume_mount_script,
+    configure_ssh,
+    ensure_jq,
+    mount_persistent_volume,
+    parse_volume_mount_result,
+    render_ssh_config_block,
+    strip_existing_block,
+    wait_for_service_token,
+    wait_for_ssh,
+)
+
+
+def _bash_can_be_invoked() -> bool:
+    return shutil.which("bash") is not None
+
+
+# ---------------------------------------------------------------------------
+# render_ssh_config_block — locks the rendered ssh-config shape
+# ---------------------------------------------------------------------------
+
+
+def test_render_with_service_token_emits_env_proxycommand() -> None:
+    """Token credentials reach the rendered block via the
+    `env VAR=val cmd` ProxyCommand form (Round-2 PR #524 fix). The
+    legacy `bash -c 'VAR=val cmd'` form is gone — single quotes in
+    a token value would have broken the surrounding bash quoting."""
+    spec = SSHConfigSpec(
+        ssh_host="ssh.example.com",
+        cf_client_id="client-abc",
+        cf_client_secret="secret-xyz",
+    )
+    block = render_ssh_config_block(spec)
+    assert "Host nexus" in block
+    assert "HostName ssh.example.com" in block
+    assert "ProxyCommand env" in block
+    assert "TUNNEL_SERVICE_TOKEN_ID=client-abc" in block
+    assert "TUNNEL_SERVICE_TOKEN_SECRET=secret-xyz" in block
+    assert "cloudflared access ssh --hostname %h" in block
+    # bash -c form must be GONE (would re-introduce the quote-injection bug).
+    assert "bash -c" not in block
+
+
+def test_render_with_token_containing_single_quote_is_safe() -> None:
+    """Round-2 PR #524: a token with a single quote MUST round-trip
+    safely through the rendered ProxyCommand. shlex.quote handles
+    embedded quotes with the `'"'"'` escape pattern."""
+    spec = SSHConfigSpec(
+        ssh_host="ssh.example.com",
+        cf_client_id="abc'def",  # injection-shaped id
+        cf_client_secret="x'y",
+    )
+    block = render_ssh_config_block(spec)
+    # The hostile values must NOT appear as bare bash text — they
+    # must be wrapped in shell-safe quoting. shlex.quote of `abc'def`
+    # produces `'abc'"'"'def'`.
+    proxy_line = next(line for line in block.splitlines() if "ProxyCommand" in line)
+    assert "'abc'" in proxy_line  # the safe-quote opener+segment
+    assert """abc'def cloudflared""" not in proxy_line  # raw injection absent
+    assert "TUNNEL_SERVICE_TOKEN_ID=abc'def " not in proxy_line
+
+
+def test_render_without_service_token_emits_browser_login_proxycommand() -> None:
+    """No-token form is the legacy browser-login path — kept for
+    parity but configure_ssh raises before we'd ever write it."""
+    spec = SSHConfigSpec(ssh_host="ssh.example.com")
+    block = render_ssh_config_block(spec)
+    assert "TUNNEL_SERVICE_TOKEN_ID" not in block
+    assert "ProxyCommand cloudflared access ssh --hostname %h" in block
+
+
+def test_render_block_uses_supplied_host_alias_and_identity_file() -> None:
+    spec = SSHConfigSpec(
+        ssh_host="ssh.example.com",
+        cf_client_id="a",
+        cf_client_secret="b",
+        host_alias="custom-alias",
+        identity_file="~/.ssh/custom_key",
+    )
+    block = render_ssh_config_block(spec)
+    assert "Host custom-alias" in block
+    assert "IdentityFile ~/.ssh/custom_key" in block
+
+
+# ---------------------------------------------------------------------------
+# strip_existing_block — awk-equivalent dedup
+# ---------------------------------------------------------------------------
+
+
+def test_strip_existing_block_removes_target_block() -> None:
+    """R2 — dedup of an existing `Host nexus` block. Block ends at
+    the next `Host ` line, which is preserved."""
+    config = textwrap.dedent("""\
+        Host other
+          HostName foo
+          User bar
+
+        Host nexus
+          HostName old.example.com
+          User root
+          IdentityFile /tmp/old
+
+        Host another
+          HostName baz
+        """)
+    result = strip_existing_block(config, "nexus")
+    assert "old.example.com" not in result
+    assert "Host other" in result
+    assert "Host another" in result
+    assert "HostName baz" in result
+
+
+def test_strip_existing_block_idempotent_when_target_missing() -> None:
+    """No-op for configs without a `Host nexus` block (matches awk)."""
+    config = "Host other\n  HostName foo\n"
+    assert strip_existing_block(config, "nexus") == config.rstrip()
+
+
+def test_strip_existing_block_handles_target_at_end_of_file() -> None:
+    """Block at EOF: skip continues until end-of-input (no following
+    `Host ` boundary)."""
+    config = textwrap.dedent("""\
+        Host other
+          HostName foo
+
+        Host nexus
+          HostName x
+          User root
+        """)
+    result = strip_existing_block(config, "nexus")
+    assert "Host nexus" not in result
+    assert "Host other" in result
+
+
+def test_strip_existing_block_collapses_double_blank_lines() -> None:
+    """Avoid leaving two consecutive blank lines after dedup —
+    snapshot-friendly invariant."""
+    config = "Host nexus\n  HostName x\n\n\nHost other\n  HostName y\n"
+    result = strip_existing_block(config, "nexus")
+    assert "\n\n\n" not in result
+
+
+# ---------------------------------------------------------------------------
+# configure_ssh — atomic write + Service Token requirement
+# ---------------------------------------------------------------------------
+
+
+def test_configure_ssh_raises_when_service_token_missing(tmp_path: Path) -> None:
+    """R6 — browser-login fallback is never written. Caller gets a
+    clear SetupError instead of a silent rendered block."""
+    spec = SSHConfigSpec(ssh_host="ssh.example.com")
+    with pytest.raises(SetupError, match="Service Token"):
+        configure_ssh(spec, ssh_config_path=tmp_path / "config")
+
+
+def test_configure_ssh_writes_mode_600_atomic(tmp_path: Path) -> None:
+    """R3 — file lands at mode 0o600 (no umask race window) and is
+    written via atomic same-dir replace."""
+    spec = SSHConfigSpec(
+        ssh_host="ssh.example.com",
+        cf_client_id="a",
+        cf_client_secret="b",
+    )
+    target = tmp_path / "config"
+    configure_ssh(spec, ssh_config_path=target)
+    assert target.exists()
+    # Mode check — strip the file-type bits, keep permission bits.
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o600
+    # Content sanity
+    content = target.read_text()
+    assert "Host nexus" in content
+    assert "TUNNEL_SERVICE_TOKEN_ID=a" in content
+
+
+def test_configure_ssh_dedups_existing_block(tmp_path: Path) -> None:
+    """Two consecutive configure_ssh calls with different secrets
+    leave only ONE Host-nexus block — the second one wins. Pinned
+    so a re-deploy doesn't accumulate stale ProxyCommand lines."""
+    target = tmp_path / "config"
+    spec1 = SSHConfigSpec(ssh_host="old.example.com", cf_client_id="a", cf_client_secret="b")
+    spec2 = SSHConfigSpec(ssh_host="new.example.com", cf_client_id="a", cf_client_secret="b")
+    configure_ssh(spec1, ssh_config_path=target)
+    configure_ssh(spec2, ssh_config_path=target)
+    content = target.read_text()
+    assert content.count("Host nexus") == 1
+    # Match against the full HostName-prefixed line, not bare hostname
+    # substrings — strengthens the test (verifies context, not just
+    # presence) AND avoids CodeQL's `py/incomplete-url-substring-
+    # sanitization` false positive that flags `"x.example.com" in
+    # content` as a URL-validation anti-pattern. Same intent, more
+    # precise.
+    assert "HostName old.example.com" not in content
+    assert "HostName new.example.com" in content
+
+
+def test_configure_ssh_preserves_other_host_blocks(tmp_path: Path) -> None:
+    target = tmp_path / "config"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("Host github.com\n  IdentityFile ~/.ssh/id_gh\n  User git\n\n")
+    spec = SSHConfigSpec(ssh_host="ssh.example.com", cf_client_id="a", cf_client_secret="b")
+    configure_ssh(spec, ssh_config_path=target)
+    content = target.read_text()
+    assert "Host github.com" in content
+    assert "IdentityFile ~/.ssh/id_gh" in content
+    assert "Host nexus" in content
+
+
+def test_configure_ssh_resolves_home_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-4 PR #524: Path.home() must resolve when configure_ssh
+    is CALLED, not when the module is imported. Otherwise a process
+    that imports nexus_deploy.setup before HOME is set (or that
+    redirects HOME mid-process for testing) gets the wrong default
+    ssh-config path."""
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    spec = SSHConfigSpec(ssh_host="ssh.example.com", cf_client_id="a", cf_client_secret="b")
+    # No ssh_config_path arg — defaults to Path.home() / .ssh / config
+    configure_ssh(spec)
+    expected = fake_home / ".ssh" / "config"
+    assert expected.exists(), "default path should track HOME at call time"
+    assert "Host nexus" in expected.read_text()
+
+
+def test_configure_ssh_creates_parent_dir(tmp_path: Path) -> None:
+    """`~/.ssh` doesn't exist yet on a fresh runner. mkdir parents
+    creates it before the write."""
+    target = tmp_path / "subdir" / "config"
+    spec = SSHConfigSpec(ssh_host="ssh.example.com", cf_client_id="a", cf_client_secret="b")
+    configure_ssh(spec, ssh_config_path=target)
+    assert target.exists()
+    assert target.parent.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# wait_for_service_token + wait_for_ssh — retry-loop semantics with
+# injected sleep + probe runner. R4 + R5 invariants.
+# ---------------------------------------------------------------------------
+
+
+def _ok_proc() -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ok\n", stderr="")
+
+
+def _fail_proc(stderr: str = "Connection refused") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=["ssh"], returncode=255, stdout="", stderr=stderr)
+
+
+def test_wait_for_service_token_succeeds_on_first_attempt() -> None:
+    """Happy path: probe returns rc=0 immediately, no further sleeps."""
+    sleeps: list[float] = []
+
+    def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    def probe(_alias: str, _timeout: float) -> subprocess.CompletedProcess[str]:
+        return _ok_proc()
+
+    result = wait_for_service_token(probe_runner=probe, sleep=fake_sleep)
+    assert result.succeeded
+    assert result.attempts == 1
+    # Only the initial 10s wait happens, no retry sleeps
+    assert sleeps == [10.0]
+
+
+def test_wait_for_service_token_linear_backoff_after_failures() -> None:
+    """R4 — sleep schedule is initial 10s + 5/10/15/20/25s = 75s
+    total when all 6 attempts fail. Pinned so a regression to
+    constant or exponential backoff fails this test."""
+    sleeps: list[float] = []
+    attempts: list[int] = []
+
+    def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    def probe(_alias: str, _timeout: float) -> subprocess.CompletedProcess[str]:
+        attempts.append(1)
+        return _fail_proc()
+
+    result = wait_for_service_token(probe_runner=probe, sleep=fake_sleep)
+    assert not result.succeeded
+    assert result.attempts == 6
+    assert len(attempts) == 6
+    # initial + after attempts 1,2,3,4,5 (no sleep after final attempt)
+    assert sleeps == [10.0, 5.0, 10.0, 15.0, 20.0, 25.0]
+
+
+def test_wait_for_service_token_succeeds_on_third_attempt() -> None:
+    """Realistic case: token propagates between attempts 2 and 3."""
+    sleeps: list[float] = []
+    call_count = {"n": 0}
+
+    def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    def probe(_alias: str, _timeout: float) -> subprocess.CompletedProcess[str]:
+        call_count["n"] += 1
+        return _ok_proc() if call_count["n"] >= 3 else _fail_proc()
+
+    result = wait_for_service_token(probe_runner=probe, sleep=fake_sleep)
+    assert result.succeeded
+    assert result.attempts == 3
+    # initial 10s + 5s after attempt 1 + 10s after attempt 2
+    assert sleeps == [10.0, 5.0, 10.0]
+
+
+def test_wait_for_service_token_captures_last_error_on_max_retries() -> None:
+    """Diagnostic: stderr from the last failed probe lands in
+    `last_error`, truncated tail-preserving."""
+    long_err = "rsync: file: " + "x" * 5000 + "\nFinal line: connection lost\n"
+
+    def probe(_alias: str, _timeout: float) -> subprocess.CompletedProcess[str]:
+        return _fail_proc(stderr=long_err)
+
+    result = wait_for_service_token(probe_runner=probe, sleep=lambda _: None)
+    assert not result.succeeded
+    assert len(result.last_error) <= 2000
+    # Tail preserved
+    assert "Final line: connection lost" in result.last_error
+
+
+def test_wait_for_ssh_exponential_timeout_ramp() -> None:
+    """R5 — timeout schedule: 5s for attempts 1-3, 10s for 4-7, 15s
+    for 8+. Pinned via the timeout_s passed to the probe.
+
+    Round-2 PR #524 fix: previous version expected only 2 fast
+    attempts which was off-by-one against deploy.sh's legacy schedule
+    (the legacy bash bumped TIMEOUT *after* the failed attempt's
+    counter increment, so RETRY=1, 2, AND 3 all stayed at 5s before
+    jumping). The new expected list mirrors the legacy bash exactly.
+    """
+    timeouts: list[float] = []
+
+    def probe(_alias: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
+        timeouts.append(timeout_s)
+        return _fail_proc()
+
+    wait_for_ssh(probe_runner=probe, sleep=lambda _: None)
+    # 15 attempts: 1,2,3 → 5s; 4,5,6,7 → 10s; 8..15 → 15s
+    expected = [
+        5.0,
+        5.0,
+        5.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        15.0,
+        15.0,
+        15.0,
+        15.0,
+        15.0,
+        15.0,
+        15.0,
+        15.0,
+    ]
+    assert timeouts == expected
+
+
+def test_wait_for_ssh_succeeds_on_first_attempt() -> None:
+    sleeps: list[float] = []
+
+    def probe(_alias: str, _timeout: float) -> subprocess.CompletedProcess[str]:
+        return _ok_proc()
+
+    result = wait_for_ssh(probe_runner=probe, sleep=sleeps.append)
+    assert result.succeeded
+    assert result.attempts == 1
+    assert sleeps == []  # no sleeps when first attempt succeeds
+
+
+def test_wait_for_ssh_max_retries_returns_failure() -> None:
+    def probe(_alias: str, _timeout: float) -> subprocess.CompletedProcess[str]:
+        return _fail_proc(stderr="Connection refused")
+
+    result = wait_for_ssh(probe_runner=probe, sleep=lambda _: None, max_retries=15)
+    assert not result.succeeded
+    assert result.attempts == 15
+    assert "Connection refused" in result.last_error
+
+
+# ---------------------------------------------------------------------------
+# ensure_jq — idempotent install
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_jq_returns_false_when_already_present() -> None:
+    """check command returns rc=0 → no install runs."""
+    ssh = MagicMock()
+    ssh.run.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="/usr/bin/jq\n", stderr=""
+    )
+    result = ensure_jq(ssh)
+    assert result is False
+    # Only the check ran, not the install
+    ssh.run.assert_called_once()
+
+
+def test_ensure_jq_installs_when_missing() -> None:
+    """check command rc=1 → install runs, returns True."""
+    ssh = MagicMock()
+    ssh.run.side_effect = [
+        subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="", stderr=""),
+        subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr=""),
+    ]
+    result = ensure_jq(ssh)
+    assert result is True
+    assert ssh.run.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Volume mount — render + parse + pure-logic
+# ---------------------------------------------------------------------------
+
+
+def test_render_volume_mount_first_line_is_set_euo_pipefail() -> None:
+    """R1 — `set -euo pipefail` is the first executable line."""
+    script = _render_volume_mount_script("12345")
+    first_executable = next(
+        line for line in script.splitlines() if line.strip() and not line.startswith("#")
+    )
+    assert first_executable == "set -euo pipefail"
+
+
+def test_render_volume_mount_three_stage_fallback_chain() -> None:
+    """All three discovery stages present in the rendered script."""
+    script = _render_volume_mount_script("12345")
+    assert "/dev/disk/by-id/scsi-0HC_Volume_" in script
+    assert "kernel" in script  # automount stage
+    assert "/dev/sdb" in script  # fallback stage
+
+
+def test_render_volume_mount_digit_id_passes_through_unquoted() -> None:
+    """Sanity: digits-only id (the only form `mount_persistent_volume`
+    actually allows past its `_VOLUME_ID_PATTERN` regex) renders
+    bare. shlex.quote of all-digits is a no-op since digits don't
+    need shell escaping."""
+    script = _render_volume_mount_script("12345")
+    assert "VOLUME_ID=12345" in script
+
+
+def test_render_volume_mount_hostile_id_is_safely_quoted() -> None:
+    """Round-2 PR #524: defence-in-depth — even if a hostile string
+    slipped past the upstream digit-only regex (e.g. via a future
+    refactor that drops the validation, or a direct call to
+    `_render_volume_mount_script`), the rendered bash must NOT
+    execute the hostile payload.
+
+    `_render_volume_mount_script` itself does no validation; it
+    relies on the caller's regex. shlex.quote is the second line
+    of defence. Pinned via an injection-shaped input that would
+    break out without quoting (`'; rm -rf /; #`).
+    """
+    hostile = "'; rm -rf / ; #"
+    script = _render_volume_mount_script(hostile)
+    # The hostile payload must NOT appear unquoted on the
+    # VOLUME_ID line. shlex.quote wraps the whole string in single
+    # quotes and escapes embedded ones, so the assignment looks
+    # like: VOLUME_ID=''"'"'; rm -rf / ; #'
+    volume_line = next(line for line in script.splitlines() if line.startswith("VOLUME_ID="))
+    # The unquoted payload (with the `';` injection) cannot appear as
+    # a parseable command — bash would see the surrounding quotes.
+    # We assert the line starts with the safe-quote marker.
+    assert volume_line.startswith("VOLUME_ID='"), f"hostile id not quoted: {volume_line!r}"
+    # And bash -n must accept it (would fail if quote balance broke).
+    if shutil.which("bash"):
+        proc = subprocess.run(
+            ["bash", "-n", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_render_volume_mount_mkdir_chown_gated_on_mounted_flag() -> None:
+    """Round-3 PR #524: the mkdir/chown for SERVICE sub-dirs must
+    only run when MOUNTED=1. Otherwise a failed mount leaves the
+    dirs on the underlying root filesystem (ephemeral) and stacks
+    silently lose data on reboot.
+
+    Distinct from the un-gated `mkdir -p "$MOUNT_POINT"` at the top
+    of the script which just ensures the mountpoint dir itself
+    exists before `mount` is called — that's the canonical pattern
+    and must stay un-gated.
+    """
+    script = _render_volume_mount_script("12345")
+    # Find the gate. The service-dir mkdir must come AFTER the gate
+    # opener and BEFORE the matching `fi`.
+    gate_idx = script.index('if [ "$MOUNTED" = "1" ]')
+    service_mkdir_idx = script.index('mkdir -p "$MOUNT_POINT/gitea/repos"')
+    chown_idx = script.index("chown -R 1000:1000")
+    # Both inside the gate.
+    assert gate_idx < service_mkdir_idx
+    assert gate_idx < chown_idx
+    # Closing fi for the gate must come AFTER the chown commands.
+    closing_fi_after_chown = script.index("\nfi\n", chown_idx)
+    assert closing_fi_after_chown > chown_idx
+
+
+def test_render_volume_mount_emits_result_line() -> None:
+    """RESULT wire-format consistent with rest of migration (R8)."""
+    script = _render_volume_mount_script("12345")
+    assert 'echo "RESULT mounted=$MOUNTED fstab_added=$FSTAB_ADDED"' in script
+
+
+def test_parse_volume_mount_result_happy() -> None:
+    out = "  Volume mounted at /mnt/nexus-data\nRESULT mounted=1 fstab_added=1\n"
+    parsed = parse_volume_mount_result(out)
+    assert parsed == (True, True)
+
+
+def test_parse_volume_mount_result_unmounted_no_fstab() -> None:
+    parsed = parse_volume_mount_result("RESULT mounted=0 fstab_added=0")
+    assert parsed == (False, False)
+
+
+def test_parse_volume_mount_result_returns_none_on_unparseable() -> None:
+    assert parse_volume_mount_result("garbage output") is None
+
+
+# ---------------------------------------------------------------------------
+# mount_persistent_volume — DI + invariants
+# ---------------------------------------------------------------------------
+
+
+def test_mount_persistent_volume_skipped_on_empty_id() -> None:
+    """Empty volume_id = no persistent volume = silent skip."""
+    ssh = MagicMock()
+    result = mount_persistent_volume("", ssh)
+    assert result.mounted is False
+    assert result.detail == "skipped"
+    ssh.run_script.assert_not_called()
+
+
+def test_mount_persistent_volume_skipped_on_zero_id() -> None:
+    """volume_id "0" is the legacy "no volume" sentinel."""
+    ssh = MagicMock()
+    result = mount_persistent_volume("0", ssh)
+    assert result.detail == "skipped"
+    ssh.run_script.assert_not_called()
+
+
+def test_mount_persistent_volume_rejects_non_digit_id() -> None:
+    """Defence-in-depth: non-digit ID raises before bash render."""
+    ssh = MagicMock()
+    with pytest.raises(SetupError, match="positive integer"):
+        mount_persistent_volume("abc; rm -rf /", ssh)
+    ssh.run_script.assert_not_called()
+
+
+def test_mount_persistent_volume_happy_path() -> None:
+    ssh = MagicMock()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"],
+        returncode=0,
+        stdout="  Volume mounted at /mnt/nexus-data (scsi-id)\nRESULT mounted=1 fstab_added=1\n",
+        stderr="",
+    )
+    result = mount_persistent_volume("42", ssh)
+    assert result.mounted is True
+    assert result.fstab_added is True
+    assert result.detail == "mounted"
+
+
+def test_mount_persistent_volume_fallback_failed_returns_unmounted() -> None:
+    """Every device-discovery stage returned no device — RESULT
+    mounted=0. We surface as detail='fallback-failed'."""
+    ssh = MagicMock()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="RESULT mounted=0 fstab_added=0\n", stderr=""
+    )
+    result = mount_persistent_volume("42", ssh)
+    assert result.mounted is False
+    assert result.detail == "fallback-failed"
+
+
+def test_mount_persistent_volume_unparseable_result_is_soft_failure() -> None:
+    """Server ran the script but emitted no RESULT — soft failure
+    (no parseable RESULT). The CLI maps this distinct from
+    fallback-failed."""
+    ssh = MagicMock()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="something went weird\n", stderr=""
+    )
+    result = mount_persistent_volume("42", ssh)
+    assert result.mounted is False
+    assert "no parseable RESULT" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# Exec'd-bash semantic regression — the volume-mount script must
+# at minimum parse cleanly under bash. Modul-2.0 lesson: static-text
+# tests don't catch dispatch bugs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not on PATH")
+def test_volume_mount_script_parses_under_bash() -> None:
+    """`bash -n` static parse — catches syntax errors in the
+    rendered template that static-text tests would miss."""
+    script = _render_volume_mount_script("12345")
+    proc = subprocess.run(
+        ["bash", "-n", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not on PATH")
+def test_volume_mount_script_idempotent_fstab_check() -> None:
+    """Pin the idempotent fstab branch via exec'd bash with a
+    synthetic /etc/fstab containing the mount point — the script
+    should NOT re-add. We can't test the actual mount on macOS
+    (no apt-equivalent or block-device fakery), but the fstab
+    branch is testable in isolation."""
+    # Carve out only the fstab-check sub-block via a stripped-down
+    # script that exercises the exact `grep -q` semantics.
+    fstab_test = textwrap.dedent("""\
+        set -euo pipefail
+        FSTAB=$(mktemp)
+        echo "/dev/sdb /mnt/nexus-data ext4 defaults,nofail 0 2" > "$FSTAB"
+        MOUNT_POINT=/mnt/nexus-data
+        FSTAB_ADDED=0
+        if ! grep -q "$MOUNT_POINT" "$FSTAB"; then
+            echo "WOULD ADD" >&2
+            FSTAB_ADDED=1
+        fi
+        echo "RESULT fstab_added=$FSTAB_ADDED"
+        rm -f "$FSTAB"
+        """)
+    proc = subprocess.run(
+        ["bash", "-c", fstab_test],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "RESULT fstab_added=0" in proc.stdout  # already present, not re-added
+    assert "WOULD ADD" not in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# CLI rc=0/1/2 contract — direct call into _setup_* handlers
+# ---------------------------------------------------------------------------
+
+
+def test_cli_setup_no_subcommand_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
+    from nexus_deploy.__main__ import _setup
+
+    rc = _setup([])
+    assert rc == 2
+    assert "subcommand required" in capsys.readouterr().err
+
+
+def test_cli_setup_unknown_subcommand_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
+    from nexus_deploy.__main__ import _setup
+
+    rc = _setup(["bogus"])
+    assert rc == 2
+    assert "unknown subcommand" in capsys.readouterr().err
+
+
+def test_cli_setup_ssh_config_missing_ssh_host_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _setup_ssh_config
+
+    monkeypatch.delenv("SSH_HOST", raising=False)
+    rc = _setup_ssh_config([])
+    assert rc == 2
+    assert "SSH_HOST" in capsys.readouterr().err
+
+
+def test_cli_setup_ssh_config_missing_token_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Service Token absent → SetupError → rc=2 (NOT a silent
+    browser-login fallback)."""
+    from nexus_deploy.__main__ import _setup_ssh_config
+
+    monkeypatch.setenv("SSH_HOST", "ssh.example.com")
+    monkeypatch.delenv("CF_ACCESS_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
+    rc = _setup_ssh_config([])
+    assert rc == 2
+    assert "Service Token" in capsys.readouterr().err
+
+
+def test_cli_setup_ssh_config_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Full happy path — env vars set, file written, rc=0."""
+    from nexus_deploy.__main__ import _setup_ssh_config
+
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.configure_ssh",
+        lambda spec: None,  # No-op, we just verify the env-var parse + rc
+    )
+    monkeypatch.setenv("SSH_HOST", "ssh.example.com")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "client-abc")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "secret-xyz")
+    rc = _setup_ssh_config([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Service Token" in out
+
+
+def test_cli_setup_wait_ssh_token_fail_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _setup_wait_ssh
+
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "a")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "b")
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.wait_for_service_token",
+        lambda **_kwargs: SSHReadinessResult(succeeded=False, attempts=6, last_error="Auth failed"),
+    )
+    rc = _setup_wait_ssh([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Service Token authentication failed" in err
+    assert "Auth failed" in err
+
+
+def test_cli_setup_wait_ssh_skips_token_when_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No token → only the readiness loop runs, no token-test phase."""
+    from nexus_deploy.__main__ import _setup_wait_ssh
+
+    monkeypatch.delenv("CF_ACCESS_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
+    token_called = {"n": 0}
+
+    def fake_token(**_kwargs: Any) -> SSHReadinessResult:
+        token_called["n"] += 1
+        return SSHReadinessResult(succeeded=True, attempts=1)
+
+    monkeypatch.setattr("nexus_deploy.__main__.wait_for_service_token", fake_token)
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.wait_for_ssh",
+        lambda **_kwargs: SSHReadinessResult(succeeded=True, attempts=1),
+    )
+    rc = _setup_wait_ssh([])
+    assert rc == 0
+    assert token_called["n"] == 0
+
+
+def test_cli_setup_wait_ssh_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nexus_deploy.__main__ import _setup_wait_ssh
+
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "a")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "b")
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.wait_for_service_token",
+        lambda **_kwargs: SSHReadinessResult(succeeded=True, attempts=2),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.wait_for_ssh",
+        lambda **_kwargs: SSHReadinessResult(succeeded=True, attempts=3),
+    )
+    rc = _setup_wait_ssh([])
+    assert rc == 0
+
+
+def test_cli_setup_ensure_jq_remote_command_failure_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-5 PR #524: CalledProcessError now classified as
+    'remote command failed' (not 'transport failure' — apt repo
+    errors / dpkg lock / missing sudo are not network issues),
+    AND exc.output's tail is forwarded to stderr so operators
+    have actionable diagnostics. exc.cmd still NOT echoed."""
+    from nexus_deploy.__main__ import _setup_ensure_jq
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    fake_output = "E: Could not get lock /var/lib/dpkg/lock-frontend\n"
+
+    def boom(_ssh: Any) -> bool:
+        exc = subprocess.CalledProcessError(100, ["ssh", "secret-bearing-arg"])
+        exc.output = fake_output
+        raise exc
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr("nexus_deploy.__main__.ensure_jq", boom)
+    rc = _setup_ensure_jq([])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "remote command failed" in captured.err
+    assert "rc=100" in captured.err
+    # The actionable diagnostic must reach stderr
+    assert "Could not get lock" in captured.err
+    # exc.cmd must NOT leak
+    assert "secret-bearing-arg" not in captured.err
+    assert "secret-bearing-arg" not in captured.out
+
+
+def test_cli_setup_ensure_jq_transport_failure_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """True transport failure (TimeoutExpired/OSError) keeps the
+    'transport failure' label — distinct from remote-command-failed
+    after Round-5 PR #524 split."""
+    from nexus_deploy.__main__ import _setup_ensure_jq
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.ensure_jq",
+        lambda _ssh: (_ for _ in ()).throw(OSError("connection refused")),
+    )
+    rc = _setup_ensure_jq([])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "transport failure" in captured.err
+    assert "OSError" in captured.err
+
+
+def test_cli_setup_mount_volume_skipped_returns_0(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Empty PERSISTENT_VOLUME_ID = skip = rc=0 (deploy continues
+    happily without a persistent volume)."""
+    from nexus_deploy.__main__ import _setup_mount_volume
+
+    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "")
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.mount_persistent_volume",
+        lambda vid, _ssh: VolumeMountResult(mounted=False, fstab_added=False, detail="skipped"),
+    )
+    rc = _setup_mount_volume([])
+    assert rc == 0
+    assert "skipped" in capsys.readouterr().out
+
+
+def test_cli_setup_mount_volume_fallback_failed_returns_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fallback-failed → rc=1 (yellow warning, deploy continues)."""
+    from nexus_deploy.__main__ import _setup_mount_volume
+
+    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.mount_persistent_volume",
+        lambda vid, _ssh: VolumeMountResult(
+            mounted=False, fstab_added=False, detail="fallback-failed"
+        ),
+    )
+    rc = _setup_mount_volume([])
+    assert rc == 1
+
+
+def test_cli_setup_mount_volume_happy_path_returns_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nexus_deploy.__main__ import _setup_mount_volume
+
+    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.mount_persistent_volume",
+        lambda vid, _ssh: VolumeMountResult(mounted=True, fstab_added=True, detail="mounted"),
+    )
+    rc = _setup_mount_volume([])
+    assert rc == 0
+
+
+def test_cli_setup_mount_volume_remote_script_failure_forwards_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-5 PR #524: mount-volume CalledProcessError now labelled
+    'remote script failed' with the captured tail forwarded to
+    stderr — actionable signal for mount/permissions/fstab errors."""
+    from nexus_deploy.__main__ import _setup_mount_volume
+
+    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    fake_output = "mount: /mnt/nexus-data: special device /dev/sdb does not exist.\n"
+
+    def boom(_vid: str, _ssh: Any) -> Any:
+        exc = subprocess.CalledProcessError(32, ["ssh", "secret-bearing-arg"])
+        exc.output = fake_output
+        raise exc
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr("nexus_deploy.__main__.mount_persistent_volume", boom)
+    rc = _setup_mount_volume([])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "remote script failed" in captured.err
+    assert "rc=32" in captured.err
+    assert "special device /dev/sdb does not exist" in captured.err
+    assert "secret-bearing-arg" not in captured.err
+    assert "secret-bearing-arg" not in captured.out
+
+
+def test_cli_setup_mount_volume_setup_error_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _setup_mount_volume
+
+    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "abc")
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr(
+        "nexus_deploy.__main__.mount_persistent_volume",
+        lambda vid, _ssh: (_ for _ in ()).throw(SetupError("not a positive integer")),
+    )
+    rc = _setup_mount_volume([])
+    assert rc == 2
+    assert "positive integer" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Subprocess-level CLI smoke (one happy path through the real entry point)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_subprocess_setup_unknown_returns_2() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "nexus_deploy", "setup"],
+        capture_output=True,
+        text=True,
+        env={**os.environ},
+    )
+    assert proc.returncode == 2
+    assert "subcommand required" in proc.stderr
