@@ -1814,6 +1814,39 @@ def test_woodpecker_oauth_aborts_on_delete_transport_error() -> None:
 
 
 @responses.activate
+def test_woodpecker_oauth_aborts_on_non_integer_id() -> None:
+    """Defensive: list entry with name='Woodpecker CI' but a non-int
+    id (None, string, etc.) must abort instead of silently skipping
+    the delete and proceeding to create — that would produce a
+    duplicate.
+
+    Copilot R6: very narrow defensive check (Gitea API contract
+    guarantees integer ids), but keeps the rotation invariant
+    intact under malformed-list-entry conditions.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[{"id": "not-an-int", "name": "Woodpecker CI"}],
+    )
+    # No DELETE or POST mock — neither must be issued.
+    result, err, rotation_started = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "non-integer id" in err
+    assert "rotation NOT started" in err
+    assert rotation_started is False
+    # Only the GET happened; no DELETE / POST issued.
+    assert len(responses.calls) == 1
+    assert responses.calls[0].request.method == "GET"
+
+
+@responses.activate
 def test_delete_oauth_app_5xx_raises_as_ambiguous() -> None:
     """5xx response: server-side failure that may have happened
     after the DELETE was applied → server state UNKNOWN → raise.
