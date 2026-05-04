@@ -68,11 +68,12 @@ from typing import Literal
 
 from nexus_deploy.ssh import SSHClient
 
-# Default ssh-config path. Tests override via the ``ssh_config_path``
-# parameter on :func:`configure_ssh`. CI runners that redirect HOME
-# get the right value automatically (Path.home() resolves at call
-# time against the runner's environment).
-_DEFAULT_SSH_CONFIG = Path.home() / ".ssh" / "config"
+# Default ssh-config path is resolved INSIDE :func:`configure_ssh`
+# (not as a module-level constant) so HOME changes after import
+# take effect — important for tests and CI runners that may
+# redirect HOME mid-process. Round-4 PR #524 finding: the previous
+# module-level constant locked the path at import time, contrary
+# to the docstring's claim about call-time resolution.
 
 
 class SetupError(Exception):
@@ -259,7 +260,10 @@ def configure_ssh(
             "(CF_ACCESS_CLIENT_ID + CF_ACCESS_CLIENT_SECRET) is required. "
             "Browser-login fallback is not supported in CI deployments.",
         )
-    target = ssh_config_path if ssh_config_path is not None else _DEFAULT_SSH_CONFIG
+    # Path.home() resolved here, NOT as a module-level constant —
+    # so HOME changes after import (tests, CI scaffolding) take
+    # effect immediately. Round-4 PR #524 fix.
+    target = ssh_config_path if ssh_config_path is not None else Path.home() / ".ssh" / "config"
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         existing = target.read_text(encoding="utf-8")

@@ -197,10 +197,14 @@ CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}" \
 
 # EXIT-trap setup — managed in bash through Phase 3.4a; Phase 3.4b
 # replaces with Python contextlib.ExitStack inside orchestrator.run_all.
-SSH_ERR=$(mktemp)
+# Round-4 PR #524: dropped the legacy SSH_ERR tmpfile (was used by
+# the old bash retry-loop to capture ssh stderr; the loop is now in
+# Python where the captured stderr lives in SSHReadinessResult.last_error
+# and the tmpfile would just be dead state with a never-cleared rm-f
+# in the trap).
 REMOTE_CLEANUP_PATHS=$(mktemp)
 RUNNER_CLEANUP_PATHS=$(mktemp)
-trap 'rm -f "$SSH_ERR"; if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"; if [ -s "$RUNNER_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && rm -f "$p"; done < "$RUNNER_CLEANUP_PATHS"; fi; rm -f "$RUNNER_CLEANUP_PATHS"' EXIT
+trap 'if [ -s "$REMOTE_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 nexus "rm -f \"$p\"" 2>/dev/null || true; done < "$REMOTE_CLEANUP_PATHS"; fi; rm -f "$REMOTE_CLEANUP_PATHS"; if [ -s "$RUNNER_CLEANUP_PATHS" ]; then while IFS= read -r p; do [ -n "$p" ] && rm -f "$p"; done < "$RUNNER_CLEANUP_PATHS"; fi; rm -f "$RUNNER_CLEANUP_PATHS"' EXIT
 
 uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy setup ensure-jq

@@ -231,6 +231,25 @@ def test_configure_ssh_preserves_other_host_blocks(tmp_path: Path) -> None:
     assert "Host nexus" in content
 
 
+def test_configure_ssh_resolves_home_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-4 PR #524: Path.home() must resolve when configure_ssh
+    is CALLED, not when the module is imported. Otherwise a process
+    that imports nexus_deploy.setup before HOME is set (or that
+    redirects HOME mid-process for testing) gets the wrong default
+    ssh-config path."""
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    spec = SSHConfigSpec(ssh_host="ssh.example.com", cf_client_id="a", cf_client_secret="b")
+    # No ssh_config_path arg — defaults to Path.home() / .ssh / config
+    configure_ssh(spec)
+    expected = fake_home / ".ssh" / "config"
+    assert expected.exists(), "default path should track HOME at call time"
+    assert "Host nexus" in expected.read_text()
+
+
 def test_configure_ssh_creates_parent_dir(tmp_path: Path) -> None:
     """`~/.ssh` doesn't exist yet on a fresh runner. mkdir parents
     creates it before the write."""
