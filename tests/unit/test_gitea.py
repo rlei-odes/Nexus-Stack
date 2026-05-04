@@ -448,7 +448,7 @@ def test_round_4_mint_token_returns_sha1_on_success() -> None:
     """Happy path: CLI returns "Access token was successfully created: <40-hex>"."""
     ssh = _make_ssh(
         [
-            (0, ""),  # delete-access-token best-effort (rc=0 fine)
+            (0, ""),  # psql DELETE best-effort (rc=0 fine)
             (
                 0,
                 "Access token was successfully created: aebafa8bbcff4e5e7edde8dc89571df698648e7d\n",
@@ -912,7 +912,7 @@ def test_create_admin_already_exists_falls_back_to_sync_password() -> None:
     # the fallback ran and the result was overwritten.
     assert result.admin.status == "synced"
     # 6 ssh.run_script calls: db_sync, list, create, sync_password (fallback),
-    # delete-access-token (best-effort), generate-access-token
+    # psql DELETE (best-effort token cleanup), generate-access-token
     assert ssh.run_script.call_count == 6
 
 
