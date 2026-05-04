@@ -1153,12 +1153,16 @@ jobs:
           fi
 
           echo "  Setting SERVER_TYPE secret..."
-          echo "${{ vars.SERVER_TYPE || 'cpx32' }}" | npx wrangler@4 pages secret put SERVER_TYPE \
-            --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set SERVER_TYPE"
+          if ! echo "${{ vars.SERVER_TYPE || 'cpx32' }}" | npx wrangler@4 pages secret put SERVER_TYPE \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "⚠️  Failed to set SERVER_TYPE"
+          fi
 
           echo "  Setting SERVER_LOCATION secret..."
-          echo "${{ vars.SERVER_LOCATION || 'fsn1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
-            --project-name="$PROJECT_NAME" 2>&1 || echo "⚠️  Failed to set SERVER_LOCATION"
+          if ! echo "${{ vars.SERVER_LOCATION || 'fsn1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "⚠️  Failed to set SERVER_LOCATION"
+          fi
 
           if [ -n "$RESEND_API_KEY" ]; then
             echo "  Setting RESEND_API_KEY secret..."
