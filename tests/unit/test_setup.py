@@ -797,16 +797,55 @@ def test_cli_setup_wait_ssh_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rc == 0
 
 
-def test_cli_setup_ensure_jq_transport_failure_returns_2(
+def test_cli_setup_ensure_jq_remote_command_failure_returns_2(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Round-5 PR #524: CalledProcessError now classified as
+    'remote command failed' (not 'transport failure' — apt repo
+    errors / dpkg lock / missing sudo are not network issues),
+    AND exc.output's tail is forwarded to stderr so operators
+    have actionable diagnostics. exc.cmd still NOT echoed."""
     from nexus_deploy.__main__ import _setup_ensure_jq
 
     class _FakeSSHContext:
         def __enter__(self) -> Any:
-            mock = MagicMock()
-            mock.run.side_effect = subprocess.CalledProcessError(1, ["ssh", "secret-bearing-arg"])
-            return mock
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    fake_output = "E: Could not get lock /var/lib/dpkg/lock-frontend\n"
+
+    def boom(_ssh: Any) -> bool:
+        exc = subprocess.CalledProcessError(100, ["ssh", "secret-bearing-arg"])
+        exc.output = fake_output
+        raise exc
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr("nexus_deploy.__main__.ensure_jq", boom)
+    rc = _setup_ensure_jq([])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "remote command failed" in captured.err
+    assert "rc=100" in captured.err
+    # The actionable diagnostic must reach stderr
+    assert "Could not get lock" in captured.err
+    # exc.cmd must NOT leak
+    assert "secret-bearing-arg" not in captured.err
+    assert "secret-bearing-arg" not in captured.out
+
+
+def test_cli_setup_ensure_jq_transport_failure_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """True transport failure (TimeoutExpired/OSError) keeps the
+    'transport failure' label — distinct from remote-command-failed
+    after Round-5 PR #524 split."""
+    from nexus_deploy.__main__ import _setup_ensure_jq
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
 
         def __exit__(self, *_a: Any) -> None:
             return None
@@ -814,17 +853,13 @@ def test_cli_setup_ensure_jq_transport_failure_returns_2(
     monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
     monkeypatch.setattr(
         "nexus_deploy.__main__.ensure_jq",
-        lambda _ssh: (_ for _ in ()).throw(
-            subprocess.CalledProcessError(1, ["ssh", "secret-bearing-arg"])
-        ),
+        lambda _ssh: (_ for _ in ()).throw(OSError("connection refused")),
     )
     rc = _setup_ensure_jq([])
     assert rc == 2
     captured = capsys.readouterr()
     assert "transport failure" in captured.err
-    # exc.cmd must NOT leak into stderr
-    assert "secret-bearing-arg" not in captured.err
-    assert "secret-bearing-arg" not in captured.out
+    assert "OSError" in captured.err
 
 
 def test_cli_setup_mount_volume_skipped_returns_0(
@@ -898,6 +933,42 @@ def test_cli_setup_mount_volume_happy_path_returns_0(monkeypatch: pytest.MonkeyP
     )
     rc = _setup_mount_volume([])
     assert rc == 0
+
+
+def test_cli_setup_mount_volume_remote_script_failure_forwards_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-5 PR #524: mount-volume CalledProcessError now labelled
+    'remote script failed' with the captured tail forwarded to
+    stderr — actionable signal for mount/permissions/fstab errors."""
+    from nexus_deploy.__main__ import _setup_mount_volume
+
+    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
+
+    class _FakeSSHContext:
+        def __enter__(self) -> Any:
+            return MagicMock()
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    fake_output = "mount: /mnt/nexus-data: special device /dev/sdb does not exist.\n"
+
+    def boom(_vid: str, _ssh: Any) -> Any:
+        exc = subprocess.CalledProcessError(32, ["ssh", "secret-bearing-arg"])
+        exc.output = fake_output
+        raise exc
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
+    monkeypatch.setattr("nexus_deploy.__main__.mount_persistent_volume", boom)
+    rc = _setup_mount_volume([])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "remote script failed" in captured.err
+    assert "rc=32" in captured.err
+    assert "special device /dev/sdb does not exist" in captured.err
+    assert "secret-bearing-arg" not in captured.err
+    assert "secret-bearing-arg" not in captured.out
 
 
 def test_cli_setup_mount_volume_setup_error_returns_2(

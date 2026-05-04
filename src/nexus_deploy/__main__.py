@@ -1588,7 +1588,25 @@ def _setup_ensure_jq(args: list[str]) -> int:
     try:
         with SSHClient(host_alias) as ssh:
             installed = ensure_jq(ssh)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+    except subprocess.CalledProcessError as exc:
+        # Round-5 PR #524: jq install failures are usually NOT transport
+        # (apt repo down, dpkg lock, missing sudo) — labelling them as
+        # such misleads operators. Plus the captured remote output (in
+        # exc.output thanks to ssh.run's stdout=PIPE+merge_stderr=True
+        # default) carries the actionable error message but was being
+        # silently dropped. Now: distinct label + truncated tail
+        # forwarded to local stderr. exc.cmd is NOT echoed (defence in
+        # depth: a future bug embedding secrets in argv shouldn't leak).
+        print(
+            f"setup ensure-jq: remote command failed (rc={exc.returncode})",
+            file=sys.stderr,
+        )
+        if exc.output:
+            excerpt = exc.output[-2000:].rstrip()
+            for line in excerpt.splitlines():
+                sys.stderr.write(f"      {line}\n")
+        return 2
+    except (subprocess.TimeoutExpired, OSError) as exc:
         print(
             f"setup ensure-jq: transport failure ({type(exc).__name__})",
             file=sys.stderr,
@@ -1637,7 +1655,25 @@ def _setup_mount_volume(args: list[str]) -> int:
     except SetupError as exc:
         print(f"setup mount-volume: {exc}", file=sys.stderr)
         return 2
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+    except subprocess.CalledProcessError as exc:
+        # Round-5 PR #524: mount-volume failures are usually
+        # remote-script issues (mount permission denied, missing
+        # mount utility, fstab parse error), not transport. The
+        # rendered script contains no secrets — volume_id is
+        # validated as digits-only upstream, every other shell
+        # token is hardcoded — so forwarding the captured tail is
+        # safe and operationally useful. exc.cmd NOT echoed
+        # (defence in depth).
+        print(
+            f"setup mount-volume: remote script failed (rc={exc.returncode})",
+            file=sys.stderr,
+        )
+        if exc.output:
+            excerpt = exc.output[-2000:].rstrip()
+            for line in excerpt.splitlines():
+                sys.stderr.write(f"      {line}\n")
+        return 2
+    except (subprocess.TimeoutExpired, OSError) as exc:
         print(
             f"setup mount-volume: transport failure ({type(exc).__name__})",
             file=sys.stderr,
