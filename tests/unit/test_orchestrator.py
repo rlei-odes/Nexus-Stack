@@ -14,7 +14,7 @@ not new logic. Focus on:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -131,7 +131,7 @@ def _mk_gitea_result(token: str = "abc-token") -> GiteaResult:
         admin=CreateUserResult(name="admin", status="created"),
         user=None,
         token=token,
-        token_error=None,
+        token_error="",
         repo=CreateRepoResult(name="repo", status="created"),
         collaborator_added=False,
         restart_services=("kestra", "jupyter"),
@@ -381,10 +381,12 @@ def test_failed_phase_aborts_downstream_phases(
     phases are NOT invoked."""
     invoked: list[str] = []
 
-    def make_phase(name: str, status: str = "ok") -> Any:
+    def make_phase(
+        name: str, status: Literal["ok", "partial", "failed", "skipped"] = "ok"
+    ) -> Any:
         def phase(_ssh: Any) -> PhaseResult:
             invoked.append(name)
-            return PhaseResult(name=name, status=status)  # type: ignore[arg-type]
+            return PhaseResult(name=name, status=status)
 
         return phase
 
@@ -415,10 +417,12 @@ def test_partial_phase_continues_to_downstream(
     Downstream phases still run."""
     invoked: list[str] = []
 
-    def make_phase(name: str, status: str = "ok") -> Any:
+    def make_phase(
+        name: str, status: Literal["ok", "partial", "failed", "skipped"] = "ok"
+    ) -> Any:
         def phase(_ssh: Any) -> PhaseResult:
             invoked.append(name)
-            return PhaseResult(name=name, status=status)  # type: ignore[arg-type]
+            return PhaseResult(name=name, status=status)
 
         return phase
 
