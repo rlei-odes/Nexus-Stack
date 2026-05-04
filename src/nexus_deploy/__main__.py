@@ -24,7 +24,7 @@ from pathlib import Path
 from nexus_deploy import __version__, hello
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
-from nexus_deploy.gitea import run_configure_gitea, run_woodpecker_oauth_setup
+from nexus_deploy.gitea import GiteaError, run_configure_gitea, run_woodpecker_oauth_setup
 from nexus_deploy.infisical import (
     BootstrapEnv,
     InfisicalClient,
@@ -1007,9 +1007,14 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
     Exit codes:
 
     - 0: created — both env-var lines on stdout, ready to ``eval``
-    - 1: partial — stderr describes WHY (token missing, list/delete/
-      create REST failure). Deploy continues without Woodpecker.
-    - 2: bad args / SSH tunnel / unexpected exception. Abort.
+    - 1: partial — list/delete/create REST failure with rotation
+      NOT started (Gitea state still consistent with the existing
+      Woodpecker .env). Deploy continues without rotating.
+    - 2: hard failure — bad args, missing required env, invalid
+      ADMIN_USERNAME, SSH tunnel failure, transport/unexpected
+      exception, OR rotation half-complete (delete ACK'd or
+      possibly applied but create failed; Woodpecker would 401
+      until next successful deploy if we continued). Abort.
     """
     if args:
         print(f"gitea woodpecker-oauth: unknown args {args!r}", file=sys.stderr)
@@ -1056,6 +1061,16 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
             f"gitea woodpecker-oauth: transport failure ({type(exc).__name__})",
             file=sys.stderr,
         )
+        return 2
+    except GiteaError as exc:
+        # Path-safety violations (unsafe admin_username) and other
+        # input-validation failures inside run_woodpecker_oauth_setup
+        # surface as GiteaError. Their messages are constructed from
+        # fixed format strings + operator-controlled identifiers
+        # (no secrets), so safe to surface verbatim. (Copilot R5 —
+        # the previous catch-all collapsed these to "unexpected
+        # error (GiteaError)" which lost the actionable detail.)
+        print(f"gitea woodpecker-oauth: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
         print(

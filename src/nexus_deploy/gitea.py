@@ -810,22 +810,26 @@ class GiteaClient:
         Used to wipe a stale "Woodpecker CI" app before recreating with
         a fresh client_secret on every deploy.
 
-        Three-way return semantics (Copilot R4 — earlier code folded
-        all three into ``False``, which made operator diagnostics
-        ambiguous):
+        Three-way return semantics (Copilot R4-R5 — earlier code
+        folded all three into ``False``, which made operator
+        diagnostics ambiguous and silently downgraded 5xx to
+        "rotation NOT started" even when Gitea may have already
+        processed the DELETE before the error response was sent):
 
         - ``True``: Gitea ACK'd the delete (204) or the app was
           already gone (404). Server state is KNOWN: app no longer
           exists.
-        - ``False``: Gitea returned a definitive non-success
-          (403 permission denied, 4xx other, 5xx). Server state is
+        - ``False``: Gitea returned a definitive 4xx (403 permission
+          denied, 422 validation, etc.). 4xx semantics in REST are
+          "client problem, server hasn't acted" → server state is
           KNOWN: app still exists. Caller can route to "rotation
           NOT started" with confidence.
         - ``raise GiteaError``: ``requests`` couldn't deliver a
-          response (ConnectionError, Timeout). Server state is
-          UNKNOWN — Gitea may have processed the DELETE before the
-          response was lost. Caller must treat as "rotation possibly
-          started" and abort to avoid the stale-creds outage class.
+          response (ConnectionError, Timeout) OR Gitea returned a
+          5xx. In both cases server state is UNKNOWN — Gitea may
+          have processed the DELETE before the failure. Caller
+          must treat as "rotation possibly started" and abort to
+          avoid the stale-creds outage class. (Copilot R5)
         """
         if not isinstance(app_id, int) or app_id <= 0:
             raise GiteaError(f"delete_oauth_app: invalid app_id {app_id!r}")
@@ -839,7 +843,19 @@ class GiteaClient:
             raise GiteaError(
                 f"delete_oauth_app(id={app_id}) transport ({type(exc).__name__})"
             ) from exc
-        return resp.status_code in (204, 404)
+        if resp.status_code in (204, 404):
+            return True
+        # 5xx: server-side failure — the DELETE may have been applied
+        # before whatever broke broke. Same ambiguity class as a
+        # transport timeout: treat as "rotation possibly started".
+        if 500 <= resp.status_code < 600:
+            raise GiteaError(
+                f"delete_oauth_app(id={app_id}) HTTP {resp.status_code} "
+                "(server-side error, state ambiguous)"
+            )
+        # 4xx (or other unexpected codes): client-side problem,
+        # Gitea hasn't acted on the DELETE. Server state is known.
+        return False
 
     def create_oauth_app(
         self,
@@ -1097,14 +1113,31 @@ def run_woodpecker_oauth_setup(
     - ``result`` is the new :class:`OAuthAppResult` on success, ``None``
       on failure.
     - ``error`` is a short diagnostic on failure, empty on success.
-    - ``rotation_started`` is True iff at least one delete actually
-      happened during this call. The CLI handler uses this to
-      distinguish "before-delete" failures (safe to warn-and-continue:
-      Gitea state untouched, Woodpecker keeps running with the
-      previous spin-up's still-valid credentials) from "after-delete"
-      failures (Gitea has invalidated the old app but no new one is
-      ready: Woodpecker would 401 on every login until manual
-      remediation — must abort the deploy). (Copilot R2)
+    - ``rotation_started`` is True if at least one delete *might
+      have* taken effect during this call:
+
+      - definitively ACK'd by Gitea (204), OR
+      - server-side state UNKNOWN (5xx response or transport
+        timeout — Gitea may have processed the DELETE before the
+        failure surfaced)
+
+      It is False when no delete reached the wire at all (list
+      failed, no matching apps) OR when every attempted delete
+      was definitively rejected by Gitea (4xx with response — the
+      app is KNOWN to still exist).
+
+      The CLI handler uses this to dispatch:
+
+      - True + result is None → rc=2 (abort): Gitea state may have
+        moved past the previous OAuth pair, deploy must stop or
+        Woodpecker keeps running with possibly-invalidated creds.
+      - False + result is None → rc=1 (warn-and-continue): Gitea
+        state untouched (or definitively rejected the rotation),
+        Woodpecker's existing .env stays consistent.
+      - True + result is set → rc=0: rotation completed cleanly.
+
+      (Copilot R2 — initial flag; R5 — refined semantics for
+      transport ambiguity, 5xx, and multi-app loop progress.)
 
     Auth: token-bearer (the GITEA_TOKEN minted in 2.2e/2.2e-fix).
     The list/delete/create endpoints all accept token auth as the
@@ -1156,6 +1189,9 @@ def run_woodpecker_oauth_setup(
                 try:
                     deleted = client.delete_oauth_app(app_id)
                 except GiteaError as exc:
+                    # Transport-ambiguity branch: server state UNKNOWN
+                    # → mark rotation_started=True regardless of any
+                    # prior loop progress.
                     return (
                         None,
                         f"delete_oauth_app(id={app_id}): {exc} — "
@@ -1163,11 +1199,23 @@ def run_woodpecker_oauth_setup(
                         True,
                     )
                 if not deleted:
+                    # Definitive non-success on THIS app, but a PRIOR
+                    # iteration in the same loop may have already
+                    # successfully deleted a duplicate-named app —
+                    # preserve the accumulated rotation_started state
+                    # rather than discarding it. Without this, a
+                    # multi-app deployment where the first delete
+                    # succeeds and the second is rejected would
+                    # report rotation_started=False (rc=1, deploy
+                    # continues) while Woodpecker is now running on
+                    # a creds pair Gitea has already invalidated.
+                    # (Copilot R5)
                     return (
                         None,
                         f"delete_oauth_app(id={app_id}): rejected by Gitea — "
-                        "refusing to create duplicate (rotation NOT started)",
-                        False,
+                        "refusing to create duplicate (rotation "
+                        f"{'partially started' if rotation_started else 'NOT started'})",
+                        rotation_started,
                     )
                 rotation_started = True
 

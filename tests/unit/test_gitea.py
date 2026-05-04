@@ -1814,6 +1814,94 @@ def test_woodpecker_oauth_aborts_on_delete_transport_error() -> None:
 
 
 @responses.activate
+def test_delete_oauth_app_5xx_raises_as_ambiguous() -> None:
+    """5xx response: server-side failure that may have happened
+    after the DELETE was applied → server state UNKNOWN → raise.
+
+    Copilot R5: previously 5xx was bucketed with 4xx as "definitive
+    non-success", which silently treated a server-side error
+    occurring AFTER the DELETE was applied as 'rotation NOT
+    started'. That would leave Woodpecker on Gitea-invalidated
+    creds. 5xx now raises GiteaError with 'state ambiguous'.
+    """
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/42",
+        status=503,
+    )
+    with pytest.raises(GiteaError, match="state ambiguous"):
+        _client(token="t").delete_oauth_app(42)
+
+
+@responses.activate
+def test_woodpecker_oauth_preserves_rotation_state_across_loop_iterations() -> None:
+    """Multi-app loop: first delete succeeds, second delete rejected →
+    rotation_started must remain True (the first delete already
+    happened; if we returned False the CLI would warn-and-continue
+    while Gitea has already invalidated the prior app's creds).
+
+    Copilot R5: the False-return path used to discard the
+    accumulated loop progress unconditionally.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        status=200,
+        json=[
+            {"id": 1, "name": "Woodpecker CI"},
+            {"id": 2, "name": "Woodpecker CI"},
+        ],
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/1",
+        status=204,  # first delete succeeds
+    )
+    responses.add(
+        responses.DELETE,
+        f"{BASE_URL}/api/v1/user/applications/oauth2/2",
+        status=403,  # second delete rejected
+    )
+    result, err, rotation_started = run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert result is None
+    assert "rejected by Gitea" in err
+    # Critical: rotation_started must be True because the first
+    # delete already invalidated app id=1's creds.
+    assert rotation_started is True
+    # And the diagnostic should reflect the partial state.
+    assert "partially started" in err
+
+
+def test_cli_woodpecker_oauth_surfaces_gitea_error_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GiteaError from path-safety violation must surface verbatim,
+    not get collapsed to 'unexpected error (GiteaError)'.
+
+    Copilot R5: the catch-all `except Exception` previously hid
+    the actionable 'unsafe admin_username: ...' detail.
+    """
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("GITEA_TOKEN", "tok")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin;rm -rf /")
+    _setup_fake_ssh(monkeypatch)
+
+    from nexus_deploy.__main__ import _gitea_woodpecker_oauth
+
+    rc = _gitea_woodpecker_oauth([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Actionable detail visible — not 'unexpected error (GiteaError)'
+    assert "unsafe admin_username" in err
+    assert "unexpected error" not in err
+
+
+@responses.activate
 def test_woodpecker_oauth_aborts_on_definitive_delete_rejection() -> None:
     """Definitive 403/5xx delete rejection: rotation_started=False
     (Gitea KNOWS the app still exists), but still aborts the create
