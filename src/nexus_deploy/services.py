@@ -369,13 +369,13 @@ def render_lakefs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     hetzner_server_q = shlex.quote(hetzner_server)
     wait = _render_wait_healthy(
         name="lakefs",
-        url="http://localhost:8000/api/v1/healthcheck",
+        url="http://localhost:8200/api/v1/healthcheck",
         timeout_seconds=60,
     )
     return f"""
 lakefs_hook() {{
     {wait}
-    CFG=$(curl -s --max-time 10 'http://localhost:8000/api/v1/config' 2>/dev/null || echo "")
+    CFG=$(curl -s --max-time 10 'http://localhost:8200/api/v1/config' 2>/dev/null || echo "")
     SETUP_DONE=false
     if echo "$CFG" | grep -q '"setup_complete":true'; then
         SETUP_DONE=true
@@ -383,7 +383,7 @@ lakefs_hook() {{
     if [ "$SETUP_DONE" = "false" ]; then
         SETUP_BODY=$(NEXUS_AK={access_q} NEXUS_SK={secret_q} jq -n \\
             '{{username: "nexus-lakefs", key: {{access_key_id: env.NEXUS_AK, secret_access_key: env.NEXUS_SK}}}}')
-        SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -X POST 'http://localhost:8000/api/v1/setup_lakefs' \\
+        SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -X POST 'http://localhost:8200/api/v1/setup_lakefs' \\
             --max-time 30 \\
             -H 'Content-Type: application/json' \\
             --data-binary @- 2>/dev/null || echo "")
@@ -417,7 +417,7 @@ lakefs_hook() {{
     chmod 600 "$LFS_CFG"
     trap 'rm -f "$LFS_CFG"' RETURN
     printf 'user = "%s:%s"\\n' {access_q} {secret_q} > "$LFS_CFG"
-    REPO_RESP=$(printf '%s' "$REPO_BODY" | curl -s -X POST 'http://localhost:8000/api/v1/repositories' \\
+    REPO_RESP=$(printf '%s' "$REPO_BODY" | curl -s -X POST 'http://localhost:8200/api/v1/repositories' \\
         --config "$LFS_CFG" \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
@@ -777,10 +777,12 @@ superset_hook
 
 # ---------------------------------------------------------------------------
 # Modul 3.4d — admin-setup hooks for the remaining 6 stacks
-# (Uptime Kuma, Garage, Wiki.js, Dify, Windmill — bash-render hooks
-# in this section; SFTPGo as a Python hook below in the python-hook
-# section because its 3-stage JWT + R2-vfs flow needs Python-side
-# control flow + ScriptRunner). Migrated from deploy.sh L995-L2497.
+# (Uptime Kuma, Garage, Wiki.js, Dify, Windmill, SFTPGo — all
+# bash-render hooks in this section). SFTPGo was originally planned
+# as a Python hook (filestash-style with two SSH round-trips), but
+# its JSON construction is built remote-side via ``jq -n env``, so
+# no Python-side mutation is needed and the bash-render pattern is
+# uniform across all six. Migrated from deploy.sh L995-L2497.
 # ---------------------------------------------------------------------------
 
 
@@ -842,7 +844,19 @@ def render_garage_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     return f"""
 garage_hook() {{
 {wait}
-    LAYOUT_CHECK=$(docker exec garage /garage layout show 2>&1 || echo "")
+    # Capture the layout-show exit status separately. Legacy deploy.sh
+    # used `|| echo ""` here, which silently treats ANY failure
+    # (Docker daemon unhealthy, container missing, RPC timeout) as
+    # "already-configured" because the grep then doesn't match.
+    # We surface the exit status so genuine container failures
+    # report `failed` instead of false-positive `already-configured`.
+    LAYOUT_RC=0
+    LAYOUT_CHECK=$(docker exec garage /garage layout show 2>&1) || LAYOUT_RC=$?
+    if [ "$LAYOUT_RC" -ne 0 ]; then
+        echo "  ⚠ garage layout show failed (rc=$LAYOUT_RC) — container or daemon unhealthy" >&2
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
     if ! echo "$LAYOUT_CHECK" | grep -q "No nodes currently have"; then
         echo "RESULT hook=garage status=already-configured"
         return 0
@@ -882,8 +896,11 @@ def render_wikijs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """Wiki.js: GraphQL ``setup`` mutation (creates admin + finalises install).
 
     Mirrors deploy.sh:2390-2424. Two-step:
-    1. Wait for ``/healthz`` to return body containing ``ok`` (case
-       insensitive). Bounded to 90s.
+    1. Wait for ``/healthz`` to return HTTP 200. Bounded to 90s.
+       (The legacy bash also grepped the body for ``ok``, but Wiki.js
+       returns plain ``OK`` only when status is 200, so the
+       status-only check is equivalent — and matches the
+       ``_render_wait_healthy`` helper used by every other hook.)
     2. POST GraphQL mutation ``setup($input: SetupInput!)`` with
        admin email + password (twice, "confirm" field) + site URL.
        Wiki.js returns ``{succeeded: true}`` on first run,
@@ -1059,7 +1076,7 @@ def render_windmill_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     secret_q = shlex.quote(superadmin_secret)
     wait = _render_wait_healthy(
         name="windmill",
-        url="http://localhost:8000/api/version",
+        url="http://localhost:8200/api/version",
         timeout_seconds=120,
         interval_seconds=3,
     )
@@ -1080,7 +1097,7 @@ windmill_hook() {{
     LOGIN_BODY=$(NEXUS_P={secret_q} jq -n \\
         '{{email: "admin@windmill.dev", password: env.NEXUS_P}}')
     LOGIN_RESP=$(printf '%s' "$LOGIN_BODY" | curl -s -c "$WM_COOKIES" \\
-        -X POST 'http://localhost:8000/api/auth/login' \\
+        -X POST 'http://localhost:8200/api/auth/login' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
         --data-binary @- 2>/dev/null || echo "")
@@ -1093,7 +1110,7 @@ windmill_hook() {{
     fi
     # Step 2: check for existing workspaces beyond the default `admins`.
     WS_LIST=$(curl -s -b "$WM_COOKIES" --max-time 10 \\
-        'http://localhost:8000/api/workspaces/list' 2>/dev/null || echo "[]")
+        'http://localhost:8200/api/workspaces/list' 2>/dev/null || echo "[]")
     if echo "$WS_LIST" | jq -e '.[] | select(.id != "admins")' >/dev/null 2>&1; then
         echo "RESULT hook=windmill status=already-configured"
         return 0
@@ -1102,7 +1119,7 @@ windmill_hook() {{
     CREATE_BODY=$(jq -n '{{id: "{workspace_name}", name: "Nexus", username: "admin"}}')
     CREATE_RESP=$(printf '%s' "$CREATE_BODY" | curl -s -b "$WM_COOKIES" \\
         -o /dev/null -w '%{{http_code}}' \\
-        -X POST 'http://localhost:8000/api/workspaces/create' \\
+        -X POST 'http://localhost:8200/api/workspaces/create' \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
         --data-binary @- 2>/dev/null || echo "000")
@@ -1289,9 +1306,14 @@ sftpgo_hook() {{
         201|409) ;;  # created or already-exists are both fine
         *) echo "  ⚠ sftpgo R2 folder POST returned HTTP $R2_STATUS" >&2 ;;
     esac
-    # Hetzner folder is optional — only if all 5 HZ fields are present.
+    # Hetzner folder is optional — only if all 5 HZ fields are present
+    # (bucket + server + region + access_key + secret_key). Mirrors
+    # legacy deploy.sh:1206-1207. We check the base64'd-form lengths
+    # because that's what's available in this scope; the access/secret
+    # base64 strings are non-empty iff their plaintext is non-empty.
     VFOLDERS_JSON='[{{"name":"cloudflare_r2","virtual_path":"/cloudflare_r2","quota_size":-1,"quota_files":-1}}]'
-    if [ -n "$SFTPGO_HZ_BUCKET" ] && [ -n "$SFTPGO_HZ_SERVER" ] && [ -n "$SFTPGO_HZ_REGION" ]; then
+    if [ -n "$SFTPGO_HZ_BUCKET" ] && [ -n "$SFTPGO_HZ_SERVER" ] && [ -n "$SFTPGO_HZ_REGION" ] \\
+       && [ -n "$SFTPGO_HZ_AK_B64" ] && [ -n "$SFTPGO_HZ_SK_B64" ]; then
         HZ_STATUS=$(sftpgo_post_folder \\
             "hetzner_s3" "$SFTPGO_HZ_BUCKET_B64" "$SFTPGO_HZ_ENDPOINT_B64" "$SFTPGO_HZ_REGION" "$SFTPGO_HZ_AK_B64" "$SFTPGO_HZ_SK_B64")
         case "$HZ_STATUS" in

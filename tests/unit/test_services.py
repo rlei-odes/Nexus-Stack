@@ -97,7 +97,7 @@ def _make_env(admin_email: str = "ops@example.com") -> BootstrapEnv:
 
 def test_supported_hooks_contains_all_specs() -> None:
     """Modul 2.2b (5 REST) + 2.2c (2 docker-exec) + 2.2d (Filestash, python)
-    + 3.4d (5 remaining admin-setups)."""
+    + 3.4d (6 remaining admin-setups)."""
     assert set(supported_hooks()) == {
         # 2.2b — REST first-init
         "portainer",
@@ -452,6 +452,18 @@ def test_render_garage_hook_idempotency_branches() -> None:
     assert "RESULT hook=garage status=failed" in script
 
 
+def test_render_garage_hook_layout_show_failure_reports_failed() -> None:
+    """R-exit-status: layout-show exit status is captured separately
+    so a Docker-daemon / container-missing failure reports `failed`,
+    not false-positive `already-configured`. Legacy deploy.sh used
+    `|| echo ""` here which silently swallowed real failures."""
+    script = render_garage_hook(_make_config(), _make_env())
+    # LAYOUT_RC captured separately, gated before the grep
+    assert "LAYOUT_RC=0" in script
+    assert "|| LAYOUT_RC=$?" in script
+    assert 'if [ "$LAYOUT_RC" -ne 0 ]' in script
+
+
 def test_render_garage_hook_validates_node_id_as_64_hex() -> None:
     """R-validate: node-id length and charset are checked before use."""
     script = render_garage_hook(_make_config(), _make_env())
@@ -557,6 +569,15 @@ def test_render_windmill_hook_basic() -> None:
     assert 'id: "nexus"' in script
 
 
+def test_render_windmill_hook_pins_host_port_8200() -> None:
+    """R-port: Windmill compose maps 8200:8000. Hook MUST hit
+    localhost:8200 from the SSH host, not the in-container port 8000.
+    Pinned to catch port-mapping drift if the compose file changes."""
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "localhost:8200" in script
+    assert "localhost:8000" not in script
+
+
 def test_render_windmill_hook_skips_when_secret_empty() -> None:
     config = _make_config(windmill_superadmin_secret="")
     script = render_windmill_hook(config, _make_env())
@@ -618,13 +639,19 @@ def test_render_sftpgo_hook_dir_prep_inside_container() -> None:
     assert "chown -R 1000:1000 /var/lib/sftpgo/users /var/lib/sftpgo/folders" in script
 
 
-def test_render_sftpgo_hook_hetzner_folder_optional() -> None:
-    """Hetzner virtual folder gated on all 3 HZ_BUCKET/SERVER/REGION fields."""
+def test_render_sftpgo_hook_hetzner_folder_gated_on_all_5_fields() -> None:
+    """Hetzner virtual folder gated on all 5 HZ_* fields (bucket + server
+    + region + access_key + secret_key) — matches legacy deploy.sh:1206.
+    A 3-field gate would attempt the POST with empty creds and fail."""
     script = render_sftpgo_hook(_make_config(), _make_env())
-    # Conditional gate on the 3 fields
-    assert (
-        '[ -n "$SFTPGO_HZ_BUCKET" ] && [ -n "$SFTPGO_HZ_SERVER" ] && [ -n "$SFTPGO_HZ_REGION" ]'
-    ) in script
+    for var in (
+        "SFTPGO_HZ_BUCKET",
+        "SFTPGO_HZ_SERVER",
+        "SFTPGO_HZ_REGION",
+        "SFTPGO_HZ_AK_B64",
+        "SFTPGO_HZ_SK_B64",
+    ):
+        assert f'[ -n "${var}" ]' in script, f"missing {var} guard"
     # Both vfolder JSON variants present (one with hetzner_s3, one without)
     assert '"name":"cloudflare_r2"' in script
     assert '"name":"hetzner_s3"' in script
