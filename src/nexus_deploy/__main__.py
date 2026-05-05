@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import requests
+
 from nexus_deploy import __version__, hello
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
@@ -44,6 +46,11 @@ from nexus_deploy.infisical import (
 )
 from nexus_deploy.kestra import run_register_system_flows
 from nexus_deploy.orchestrator import Orchestrator
+from nexus_deploy.r2_tokens import (
+    DEFAULT_NEXUS_R2_PREFIX,
+    build_inventory,
+    cleanup_orphan_tokens,
+)
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 from nexus_deploy.service_env import (
@@ -2060,6 +2067,162 @@ def _service_env(args: list[str]) -> int:
     return 0
 
 
+def _r2_tokens(args: list[str]) -> int:
+    """`nexus-deploy r2-tokens <list|cleanup>`.
+
+    Audit + reconciliation utility for Cloudflare R2 user API tokens.
+    Surfaces the 50-token-per-account hard cap and lets operators
+    proactively delete orphan ``nexus-r2-*`` tokens left behind by
+    earlier destroy/setup cycles (see #530 for the bug history).
+
+    Subcommands:
+
+    - ``list``: dry-run inventory. Prints account-wide token total +
+      remaining slots + the matched ``nexus-r2-*`` subset. Always
+      exit 0; deploy.sh / cron can scrape the output.
+    - ``cleanup --name <name>``: delete every token whose name equals
+      <name>. Used by re-setup to ensure no orphan exists before
+      ``init-r2-state.sh`` mints a fresh token.
+    - ``cleanup --prefix <prefix>``: delete every token whose name
+      starts with <prefix>. Refuses unless prefix begins with
+      ``nexus-r2-`` (defence-in-depth: prevents wiping the
+      ``Nexus-Stack`` / ``Nexus2`` / build tokens documented as
+      protected in CLAUDE.md).
+
+    Required env: ``TF_VAR_cloudflare_api_token`` (or
+    ``CLOUDFLARE_API_TOKEN``).
+
+    Exit codes:
+    - 0: success (list / cleanup completed; per-token failures within
+         cleanup are reported but don't change the rc)
+    - 1: cleanup completed with at least one delete failure
+    - 2: bad args / missing env / network error / API listing failed
+    """
+    if not args:
+        print(
+            "r2-tokens: subcommand required (list | cleanup --name|--prefix VALUE [--apply])",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Tofu convention is lowercase TF_VAR_*; the upper-case alias is
+    # the more common dotenv style. SIM112 wants UPPERCASE only — but
+    # the lowercase form is the one Tofu / our setup-control-plane
+    # workflow already exports. Honor both with a noqa so SIM112's
+    # blanket rule doesn't conflict with the established convention.
+    api_token = (
+        os.environ.get("TF_VAR_cloudflare_api_token")  # noqa: SIM112
+        or os.environ.get("CLOUDFLARE_API_TOKEN")
+        or ""
+    ).strip()
+    if not api_token:
+        print(
+            "r2-tokens: TF_VAR_cloudflare_api_token (or CLOUDFLARE_API_TOKEN) required",
+            file=sys.stderr,
+        )
+        return 2
+
+    sub = args[0]
+    rest = args[1:]
+
+    if sub == "list":
+        list_prefix = DEFAULT_NEXUS_R2_PREFIX
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--prefix":
+                if i + 1 >= len(rest):
+                    print("r2-tokens list: --prefix requires a value", file=sys.stderr)
+                    return 2
+                list_prefix = rest[i + 1]
+                i += 2
+            else:
+                print(f"r2-tokens list: unknown arg {rest[i]!r}", file=sys.stderr)
+                return 2
+        try:
+            inventory = build_inventory(api_token=api_token, prefix=list_prefix)
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"r2-tokens list: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"r2-tokens list: total={inventory.total} / 50  "
+            f"remaining={inventory.remaining_slots}  "
+            f"prefix={list_prefix!r}  matched={len(inventory.matched)}",
+        )
+        if inventory.near_cap:
+            sys.stderr.write(
+                f"  ⚠ Approaching the 50-token cap (remaining={inventory.remaining_slots})\n",
+            )
+        for token in inventory.matched:
+            issued = token.issued_on or "?"
+            print(f"  {token.id}  {issued}  {token.name}")
+        return 0
+
+    if sub == "cleanup":
+        name: str | None = None
+        prefix: str | None = None
+        apply_changes = False
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--name":
+                if i + 1 >= len(rest):
+                    print("r2-tokens cleanup: --name requires a value", file=sys.stderr)
+                    return 2
+                name = rest[i + 1]
+                i += 2
+            elif rest[i] == "--prefix":
+                if i + 1 >= len(rest):
+                    print("r2-tokens cleanup: --prefix requires a value", file=sys.stderr)
+                    return 2
+                prefix = rest[i + 1]
+                i += 2
+            elif rest[i] == "--apply":
+                apply_changes = True
+                i += 1
+            else:
+                print(f"r2-tokens cleanup: unknown arg {rest[i]!r}", file=sys.stderr)
+                return 2
+        if (name is None) == (prefix is None):
+            print(
+                "r2-tokens cleanup: pass exactly one of --name VALUE or --prefix VALUE",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            result = cleanup_orphan_tokens(
+                api_token=api_token,
+                name=name,
+                prefix=prefix,
+                dry_run=not apply_changes,
+            )
+        except ValueError as exc:
+            # Validation error (e.g. prefix doesn't start with nexus-r2-).
+            print(f"r2-tokens cleanup: {exc}", file=sys.stderr)
+            return 2
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"r2-tokens cleanup: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"r2-tokens cleanup: total_before={result.total_tokens_before}  "
+            f"matched={len(result.matched)}  "
+            f"deleted={result.deleted_count}  failed={result.failed_count}  "
+            f"dry_run={result.dry_run}",
+        )
+        for token in result.matched:
+            issued = token.issued_on or "?"
+            print(f"  matched: {token.id}  {issued}  {token.name}")
+        for d in result.deletions:
+            status = "OK" if d.deleted else f"FAILED ({d.error})"
+            print(f"  delete: {d.id}  {d.name}  {status}")
+        if not apply_changes:
+            sys.stderr.write(
+                "  (dry-run; pass --apply to actually delete)\n",
+            )
+        return 0 if result.is_success else 1
+
+    print(f"r2-tokens: unknown subcommand {sub!r}", file=sys.stderr)
+    return 2
+
+
 def _run_all(args: list[str]) -> int:
     """`nexus-deploy run-all`.
 
@@ -2308,6 +2471,8 @@ def main() -> int:
         return _service_env(args[1:])
     if args[:1] == ["run-all"]:
         return _run_all(args[1:])
+    if args[:1] == ["r2-tokens"]:
+        return _r2_tokens(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
