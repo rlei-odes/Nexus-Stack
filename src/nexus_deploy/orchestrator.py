@@ -155,11 +155,6 @@ class Orchestrator:
     state: OrchestratorState = field(default_factory=OrchestratorState)
     results: list[PhaseResult] = field(default_factory=list)
 
-    # Test seams — production callers leave these as None. Tests
-    # inject mocks to assert state-handoff without spinning up real
-    # SSHClient + remote workers.
-    infisical_client_factory: Callable[[NexusConfig, BootstrapEnv], object] | None = None
-
     def run_all(self) -> OrchestratorResult:
         """Execute all phases in deterministic order.
 

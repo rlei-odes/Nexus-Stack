@@ -663,13 +663,12 @@ def test_cli_run_all_no_gitea_token_in_stdout(
     )
     with patch.object(Orchestrator, "run_all", return_value=fake_result):
         _run_all([])
-    out = capsys.readouterr().out
-    err = capsys.readouterr().err
-    assert "SECRET-TOKEN-ABCDEF" not in out
-    assert "SECRET-TOKEN-ABCDEF" not in err
-    assert "GITEA_TOKEN" not in out
-    assert "FORK_NAME" not in out
-    assert "FORK_OWNER" not in out
+    captured = capsys.readouterr()
+    assert "SECRET-TOKEN-ABCDEF" not in captured.out
+    assert "SECRET-TOKEN-ABCDEF" not in captured.err
+    assert "GITEA_TOKEN" not in captured.out
+    assert "FORK_NAME" not in captured.out
+    assert "FORK_OWNER" not in captured.out
 
 
 def test_phase_infisical_skipped_without_creds(

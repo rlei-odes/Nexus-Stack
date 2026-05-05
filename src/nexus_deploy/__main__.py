@@ -1844,7 +1844,16 @@ def _service_env(args: list[str]) -> int:
     git_author_name = os.environ.get("GIT_AUTHOR_NAME") or ""
     git_author_email = os.environ.get("GIT_AUTHOR_EMAIL") or ""
     repo_name = os.environ.get("REPO_NAME") or ""
-    if gitea_repo_url and gitea_username and "gitea" in enabled:
+    # Require the full set of workspace coords before appending the
+    # block — a partial set would write a broken .env (empty
+    # PASSWORD or author fields) that's harder to diagnose than a
+    # missing block. deploy.sh's bash derives all six in lockstep,
+    # so requiring all of them here just hardens against direct
+    # CLI invocation with partial env-vars.
+    workspace_coords_complete = all(
+        (gitea_repo_url, gitea_username, gitea_password, git_author_name, git_author_email),
+    )
+    if workspace_coords_complete and "gitea" in enabled:
         cfg = GiteaWorkspaceConfig(
             gitea_repo_url=gitea_repo_url,
             gitea_username=gitea_username,
@@ -1997,17 +2006,18 @@ def _run_all(args: list[str]) -> int:
     # Eval-able stdout: 3 values for the surviving deploy.sh bash.
     import shlex as _shlex
 
+    # Always emit all 3 lines so a previous run's shell vars don't
+    # leak into the next deploy via `eval` reading a stale value
+    # when a phase skipped or failed early.
     sys.stdout.write(
         f"RESTART_SERVICES={_shlex.quote(','.join(result.state.restart_services))}\n",
     )
-    if result.state.woodpecker_client_id is not None:
-        sys.stdout.write(
-            f"WOODPECKER_GITEA_CLIENT={_shlex.quote(result.state.woodpecker_client_id)}\n",
-        )
-    if result.state.woodpecker_client_secret is not None:
-        sys.stdout.write(
-            f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.state.woodpecker_client_secret)}\n",
-        )
+    sys.stdout.write(
+        f"WOODPECKER_GITEA_CLIENT={_shlex.quote(result.state.woodpecker_client_id or '')}\n",
+    )
+    sys.stdout.write(
+        f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.state.woodpecker_client_secret or '')}\n",
+    )
 
     if result.has_hard_failure:
         return 2

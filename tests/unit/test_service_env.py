@@ -367,8 +367,17 @@ def test_filestash_emits_config_json_when_s3_configured(
     assert "connections" in parsed
     # We have R2 + Hetzner configured in fixture, External is empty
     labels = [c["label"] for c in parsed["connections"]]
-    assert "Cloudflare R2" in labels
-    assert "Hetzner Object Storage" in labels
+    assert "R2 Datalake" in labels
+    assert "Hetzner Storage" in labels
+    # Middleware shape (legacy parity): identity_provider + attribute_mapping
+    assert "middleware" in parsed
+    assert parsed["middleware"]["identity_provider"]["type"] == "passthrough"
+    assert parsed["middleware"]["attribute_mapping"]["related_backend"] == "R2 Datalake"
+    # params is JSON-stringified per legacy (Filestash encrypts each)
+    decoded_params = _json.loads(parsed["middleware"]["attribute_mapping"]["params"])
+    # Bucket paths must be /<bucket>/ (leading + trailing slash)
+    assert decoded_params["R2 Datalake"]["path"] == "/r2-bucket/"
+    assert decoded_params["Hetzner Storage"]["path"] == "/general-bucket/"
 
 
 def test_filestash_no_config_json_when_no_s3(
