@@ -79,6 +79,7 @@ def _make_config(**overrides: Any) -> NexusConfig:
         # Modul 3.4d
         "wikijs_admin_password": "wiki-pass",
         "dify_admin_password": "dify-pass",
+        "windmill_admin_password": "wm-admin-pass",
         "windmill_superadmin_secret": "wm-secret",
         "sftpgo_admin_password": "sftpgo-admin",
         "sftpgo_user_password": "sftpgo-user",
@@ -577,11 +578,11 @@ def test_render_dify_hook_cookie_trap_on_return() -> None:
 def test_render_windmill_hook_basic() -> None:
     script = render_windmill_hook(_make_config(), _make_env())
     assert "windmill_hook()" in script
-    assert "/api/auth/login" in script
-    assert "/api/workspaces/list" in script
+    # All 4 legacy steps present
+    assert "/api/users/create" in script
     assert "/api/workspaces/create" in script
-    # Workspace name must be "nexus" for stability across migration —
-    # jq syntax with bare keys (becomes JSON {"id": "nexus", ...} at runtime)
+    assert "/api/users/setpassword" in script
+    # Workspace name must be "nexus" for stability across migration
     assert 'id: "nexus"' in script
 
 
@@ -594,31 +595,77 @@ def test_render_windmill_hook_pins_host_port_8200() -> None:
     assert "localhost:8000" not in script
 
 
-def test_render_windmill_hook_skips_when_secret_empty() -> None:
-    config = _make_config(windmill_superadmin_secret="")
-    script = render_windmill_hook(config, _make_env())
+def test_render_windmill_hook_skips_when_any_required_field_empty() -> None:
+    """Skip when any of secret/admin_password/admin_email is empty —
+    the legacy gate required all 3."""
+    for kw in (
+        {"windmill_superadmin_secret": ""},
+        {"windmill_admin_password": ""},
+    ):
+        config = _make_config(**kw)
+        script = render_windmill_hook(config, _make_env())
+        assert "RESULT hook=windmill status=skipped-not-ready" in script
+        assert "windmill_hook()" not in script
+    # admin_email empty
+    env = BootstrapEnv(domain="example.com")
+    script = render_windmill_hook(_make_config(), env)
     assert "RESULT hook=windmill status=skipped-not-ready" in script
-    assert "windmill_hook()" not in script
 
 
-def test_render_windmill_hook_already_configured_branch() -> None:
-    """If a non-default workspace exists, hook reports already-configured."""
+def test_render_windmill_hook_creates_admin_user() -> None:
+    """Step 1: legacy creates super_admin=true user for ADMIN_EMAIL."""
     script = render_windmill_hook(_make_config(), _make_env())
-    assert "jq -e '.[] | select(.id != \"admins\")'" in script
-    assert "RESULT hook=windmill status=already-configured" in script
+    assert "super_admin: true" in script
+    # Email goes via env-var to jq, not --arg
+    assert "NEXUS_E=" in script
+
+
+def test_render_windmill_hook_creates_regular_user_when_gitea_user_email_differs() -> None:
+    """Step 2: legacy conditionally creates super_admin=false user
+    for GITEA_USER_EMAIL when it differs from ADMIN_EMAIL."""
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "super_admin: false" in script
+    assert "GITEA_UE=" in script
+    # Conditional gate
+    assert '[ -n "$GITEA_UE" ]' in script
+
+
+def test_render_windmill_hook_secures_default_admin_account() -> None:
+    """R-security (Step 4): MUST rotate admin@windmill.dev password
+    away from the long-lived WINDMILL_SUPERADMIN_SECRET. Without
+    this, anyone with the secret could log in as the default admin.
+    Legacy deploy.sh:2456-2459."""
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "openssl rand -base64 32" in script
+    assert "/api/users/setpassword" in script
+
+
+def test_render_windmill_hook_bearer_via_curl_config_not_argv() -> None:
+    """R-secret-transport: WINDMILL_SUPERADMIN_SECRET reaches curl
+    via mode-600 --config tmpfile (RETURN trap), NOT via -H argv."""
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "WM_CFG=$(mktemp)" in script
+    assert 'chmod 600 "$WM_CFG"' in script
+    assert "trap 'rm -f \"$WM_CFG\"' RETURN" in script
+    # No -H "Authorization: Bearer" argv
+    assert '-H "Authorization' not in script
+    assert "-H 'Authorization" not in script
 
 
 def test_render_windmill_hook_secret_via_env_var_not_argv() -> None:
+    """jq calls receive secrets via NEXUS_E / NEXUS_P / NEXUS_RP env vars."""
     script = render_windmill_hook(_make_config(), _make_env())
     assert "NEXUS_P=" in script
     assert "--arg password" not in script
+    assert "--arg email" not in script
 
 
-def test_render_windmill_hook_create_response_code_dispatch() -> None:
-    """200/201 → configured; 409 → already-configured; else → failed."""
+def test_render_windmill_hook_workspace_response_dispatch() -> None:
+    """Workspace-create body \"nexus\" / 'created' → configured;
+    'already exists' → already-configured; else → failed."""
     script = render_windmill_hook(_make_config(), _make_env())
-    assert "200|201)" in script
-    assert "409)" in script
+    assert "RESULT hook=windmill status=configured" in script
+    assert "RESULT hook=windmill status=already-configured" in script
     assert "RESULT hook=windmill status=failed" in script
 
 

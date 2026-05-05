@@ -1052,83 +1052,114 @@ dify_hook
 
 
 def render_windmill_hook(config: NexusConfig, env: BootstrapEnv) -> str:
-    """Windmill: superadmin login + workspace creation.
+    """Windmill: 4-step bootstrap (admin user, optional regular user,
+    workspace, secure default account).
 
-    Mirrors deploy.sh:1355-1443. Stages:
+    Mirrors deploy.sh:2376-2459. All 4 steps use ``WINDMILL_SUPERADMIN_SECRET``
+    as the Bearer token (NOT a session cookie — Windmill's superadmin
+    secret authenticates the Admin API directly).
+
+    Stages:
     1. Wait for ``/api/version`` to return 200 (Windmill is up).
-    2. Login as the bootstrapped superadmin (``admin@windmill.dev``
-        with ``WINDMILL_SUPERADMIN_SECRET`` as password) → POST
-        ``/api/auth/login`` → cookie jar.
-    3. Pre-check ``/api/workspaces/list`` — if a non-default
-        workspace already exists, skip with ``already-configured``.
-    4. Create the ``nexus`` workspace via ``/api/workspaces/create``.
+    2. POST ``/users/create`` for ``$ADMIN_EMAIL`` with
+       ``super_admin: true`` and ``$WINDMILL_ADMIN_PASS`` —
+       gives operators the documented login.
+    3. POST ``/users/create`` for ``$GITEA_USER_EMAIL`` (only if it
+       differs from $ADMIN_EMAIL) with ``super_admin: false`` and
+       the same password — non-admin user identity for workflow
+       authorship.
+    4. POST ``/workspaces/create`` with ``{id: "nexus", name: "Nexus
+       Stack"}`` — creates the working namespace.
+    5. POST ``/users/setpassword`` with a newly-generated random
+       password to rotate the bootstrapped ``admin@windmill.dev``
+       account away from ``$WINDMILL_SUPERADMIN_SECRET``. **Critical
+       security step** — without this, anyone with the secret could
+       log in as the default admin.
 
     Idempotency contract:
-    - Workspace ``nexus`` (or any workspace beyond the auto-default
-        ``admins``) already exists → ``already-configured``
-    - Login + create both succeed → ``configured``
-    - Login fails → ``failed``
-    - Workspace-create fails → ``failed``
+    - Step 2/3 see "already exists" → continue (legacy did the same)
+    - Step 4 returns ``"nexus"`` body or "created" → configured;
+      "already exists" → already-configured
+    - Step 5 always re-rotates (cheap and ensures the default
+      account stays sealed across re-runs)
+    - Final hook status is driven by Step 4's outcome:
+      - 200/201 / "nexus" body → ``configured``
+      - 409 / "already exists" → ``already-configured``
+      - else → ``failed``
+
+    Bearer-token transport: ``WINDMILL_SUPERADMIN_SECRET`` is written
+    to a mode-600 ``curl --config`` tmpfile (RETURN-trap cleanup) so
+    it never reaches curl's argv via ``-H``. Same pattern as LakeFS /
+    OpenMetadata.
     """
     superadmin_secret = config.windmill_superadmin_secret or ""
-    if not superadmin_secret:
+    admin_password = config.windmill_admin_password or ""
+    admin_email = env.admin_email or ""
+    if not superadmin_secret or not admin_password or not admin_email:
         return 'echo "RESULT hook=windmill status=skipped-not-ready"\n'
     secret_q = shlex.quote(superadmin_secret)
+    pw_q = shlex.quote(admin_password)
+    admin_q = shlex.quote(admin_email)
+    user_email_q = shlex.quote(env.gitea_user_email or "")
     wait = _render_wait_healthy(
         name="windmill",
         url="http://localhost:8200/api/version",
         timeout_seconds=120,
         interval_seconds=3,
     )
-    # Workspace name must match the legacy deploy.sh value to keep
-    # any user-side bookmarks / API tokens stable across the migration.
-    workspace_name = "nexus"
     return f"""
 windmill_hook() {{
 {wait}
-    # Cookie jar tmpfile — mode-600, cleaned on RETURN trap.
-    WM_COOKIES=$(mktemp)
-    chmod 600 "$WM_COOKIES"
-    trap 'rm -f "$WM_COOKIES"' RETURN
-    # Step 1: superadmin login. The bootstrapped account is
-    # `admin@windmill.dev` with WINDMILL_SUPERADMIN_SECRET as
-    # password — set on first start via Windmill's env-var-driven
-    # admin-bootstrap (see stacks/windmill/docker-compose.yml).
-    LOGIN_BODY=$(NEXUS_P={secret_q} jq -n \\
-        '{{email: "admin@windmill.dev", password: env.NEXUS_P}}')
-    LOGIN_RESP=$(printf '%s' "$LOGIN_BODY" | curl -s -c "$WM_COOKIES" \\
-        -X POST 'http://localhost:8200/api/auth/login' \\
-        --max-time 30 \\
-        -H 'Content-Type: application/json' \\
-        --data-binary @- 2>/dev/null || echo "")
-    # Login response is the bare token string on success; HTTP 200
-    # + non-empty body. On failure: 401 + error JSON.
-    if [ -z "$LOGIN_RESP" ] || echo "$LOGIN_RESP" | grep -q '"error"'; then
-        echo "  ⚠ Windmill superadmin login failed" >&2
-        echo "RESULT hook=windmill status=failed"
-        return 0
+    # Bearer-token tmpfile — mode-600, cleaned via RETURN trap.
+    WM_CFG=$(mktemp)
+    chmod 600 "$WM_CFG"
+    trap 'rm -f "$WM_CFG"' RETURN
+    NEXUS_S={secret_q} sh -c 'printf "header = \\"Authorization: Bearer %s\\"\\nheader = \\"Content-Type: application/json\\"\\n" "$NEXUS_S"' > "$WM_CFG"
+    # Step 1: create the admin user (super_admin=true) for ADMIN_EMAIL.
+    # NEXUS_E / NEXUS_P route email + password through env vars to jq —
+    # NEVER `--arg`, which would land them in jq's argv.
+    ADMIN_CREATE_BODY=$(NEXUS_E={admin_q} NEXUS_P={pw_q} jq -n \\
+        '{{email: env.NEXUS_E, password: env.NEXUS_P, super_admin: true, name: "Admin"}}')
+    printf '%s' "$ADMIN_CREATE_BODY" | curl -s --config "$WM_CFG" \\
+        -X POST 'http://localhost:8200/api/users/create' \\
+        --max-time 30 --data-binary @- >/dev/null 2>&1 || true
+    # Step 2: optional regular user for GITEA_USER_EMAIL (if set and
+    # differs from ADMIN_EMAIL). Single-address: USER_EMAIL may be a
+    # comma-list, GITEA_USER_EMAIL is the single resolved address.
+    GITEA_UE={user_email_q}
+    if [ -n "$GITEA_UE" ] && [ "$GITEA_UE" != {admin_q} ]; then
+        USER_CREATE_BODY=$(NEXUS_E="$GITEA_UE" NEXUS_P={pw_q} jq -n \\
+            '{{email: env.NEXUS_E, password: env.NEXUS_P, super_admin: false, name: "User"}}')
+        printf '%s' "$USER_CREATE_BODY" | curl -s --config "$WM_CFG" \\
+            -X POST 'http://localhost:8200/api/users/create' \\
+            --max-time 30 --data-binary @- >/dev/null 2>&1 || true
     fi
-    # Step 2: check for existing workspaces beyond the default `admins`.
-    WS_LIST=$(curl -s -b "$WM_COOKIES" --max-time 10 \\
-        'http://localhost:8200/api/workspaces/list' 2>/dev/null || echo "[]")
-    if echo "$WS_LIST" | jq -e '.[] | select(.id != "admins")' >/dev/null 2>&1; then
-        echo "RESULT hook=windmill status=already-configured"
-        return 0
-    fi
-    # Step 3: create `{workspace_name}` workspace.
-    CREATE_BODY=$(jq -n '{{id: "{workspace_name}", name: "Nexus", username: "admin"}}')
-    CREATE_RESP=$(printf '%s' "$CREATE_BODY" | curl -s -b "$WM_COOKIES" \\
-        -o /dev/null -w '%{{http_code}}' \\
+    # Step 3: create the `nexus` workspace. Capture HTTP body (rather
+    # than just status code) because Windmill returns the workspace id
+    # as a JSON-encoded string on success (e.g. \"nexus\").
+    WS_BODY=$(jq -n '{{id: "nexus", name: "Nexus Stack"}}')
+    WS_RESP=$(printf '%s' "$WS_BODY" | curl -s --config "$WM_CFG" \\
         -X POST 'http://localhost:8200/api/workspaces/create' \\
-        --max-time 30 \\
-        -H 'Content-Type: application/json' \\
-        --data-binary @- 2>/dev/null || echo "000")
-    case "$CREATE_RESP" in
-        200|201) echo "RESULT hook=windmill status=configured" ;;
-        409)     echo "RESULT hook=windmill status=already-configured" ;;
-        *)       echo "  ⚠ Windmill workspace create returned HTTP $CREATE_RESP" >&2
-                 echo "RESULT hook=windmill status=failed" ;;
-    esac
+        --max-time 30 --data-binary @- 2>/dev/null || echo "")
+    # Step 4 (always): rotate `admin@windmill.dev` away from
+    # WINDMILL_SUPERADMIN_SECRET. Critical security step — without
+    # this, anyone with the (long-lived) secret could log in as the
+    # default admin. Generate a fresh random password every spin-up.
+    RANDOM_PW=$(openssl rand -base64 32)
+    DEFPW_BODY=$(NEXUS_RP="$RANDOM_PW" jq -n '{{password: env.NEXUS_RP}}')
+    printf '%s' "$DEFPW_BODY" | curl -s --config "$WM_CFG" \\
+        -X POST 'http://localhost:8200/api/users/setpassword' \\
+        --max-time 30 --data-binary @- >/dev/null 2>&1 || true
+    unset RANDOM_PW
+    # Final status driven by workspace-create outcome.
+    if [ "$WS_RESP" = '"nexus"' ] || echo "$WS_RESP" | grep -qi 'created'; then
+        echo "RESULT hook=windmill status=configured"
+    elif echo "$WS_RESP" | grep -qi 'already exists'; then
+        echo "RESULT hook=windmill status=already-configured"
+    else
+        echo "  ⚠ Windmill workspace create response: ${{WS_RESP:-no response}}" >&2
+        echo "RESULT hook=windmill status=failed"
+    fi
 }}
 windmill_hook
 """
