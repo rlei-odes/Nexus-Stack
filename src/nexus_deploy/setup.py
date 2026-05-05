@@ -693,7 +693,19 @@ chmod 700 /root/.ssh
 # (cat $KEY_PATH.pub, ssh-keygen -lf for fingerprint) would silently
 # fail and we'd report a misleading keypair_generated=1 while Wetty
 # can't actually SSH.
-if [ ! -f "$KEY_PATH" ]; then
+# Regenerate if EITHER file is missing — not just $KEY_PATH. A stale
+# private key with a missing/corrupted .pub (manual cleanup, partial
+# write, fs corruption) would otherwise pass the keygen-skip check
+# but later `cat "$KEY_PATH.pub"` would yield empty PUBKEY → the
+# authorized_keys append silently no-ops (empty grep -F matches the
+# whole file → PUBKEY_ADD stays 0) and Wetty can't actually SSH.
+# Removing both files first lets ssh-keygen emit a fresh, consistent
+# pair (it would refuse to overwrite an existing $KEY_PATH).
+if [ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]; then
+    if [ -f "$KEY_PATH" ] || [ -f "$KEY_PATH.pub" ]; then
+        echo "  ⚠ Wetty keypair half-present (one of $KEY_PATH / .pub missing) — regenerating" >&2
+        rm -f "$KEY_PATH" "$KEY_PATH.pub"
+    fi
     if ! ssh-keygen -t ed25519 -f "$KEY_PATH" -N '' -C "$KEY_COMMENT" >/dev/null 2>&1; then
         echo "  ⚠ ssh-keygen failed — Wetty will not have a working SSH key" >&2
         echo "RESULT_WETTY keypair_generated=0 pubkey_added=0 agent_started=0 key_added_to_agent=0 auth_sock_written=0"

@@ -449,7 +449,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "wetty"; then
         || WETTY_RC=$?
     case "$WETTY_RC" in
         0) echo -e "${GREEN}  ✓ SSH-Agent configured for Wetty${NC}" ;;
-        1) echo -e "${YELLOW}  ⚠ Wetty SSH-Agent setup produced no parseable result (continuing — Wetty is non-critical)${NC}" ;;
+        1) echo -e "${YELLOW}  ⚠ Wetty SSH-Agent setup soft-failed — see stderr above (continuing — Wetty is non-critical)${NC}" ;;
         *) echo -e "${RED}  ✗ Wetty SSH-Agent setup failed (rc=$WETTY_RC); aborting${NC}"; exit "$WETTY_RC" ;;
     esac
 fi

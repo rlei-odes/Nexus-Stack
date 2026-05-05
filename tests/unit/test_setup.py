@@ -1197,6 +1197,23 @@ def test_setup_wetty_ssh_agent_returns_none_on_unparseable_stdout() -> None:
     assert result is None
 
 
+def test_render_wetty_agent_script_regenerates_on_half_present_keypair() -> None:
+    """R-half-keypair (#530 R3 #4): the keygen-skip gate must check
+    BOTH $KEY_PATH and $KEY_PATH.pub. If only one exists (manual
+    cleanup, partial write, fs corruption), regenerate — otherwise
+    a stale private key + missing .pub would yield empty PUBKEY +
+    silently broken authorized_keys append."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    # Gate is OR-of-missing, not just $KEY_PATH-missing
+    assert 'if [ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]; then' in script
+    # Half-present case must rm -f BOTH before calling ssh-keygen
+    # (ssh-keygen refuses to overwrite an existing $KEY_PATH).
+    assert 'if [ -f "$KEY_PATH" ] || [ -f "$KEY_PATH.pub" ]; then' in script
+    assert 'rm -f "$KEY_PATH" "$KEY_PATH.pub"' in script
+
+
 def test_render_wetty_agent_script_validates_agent_responsiveness() -> None:
     """R-agent-validate (#530 R2 #1): after `ssh-agent -a SOCKET -s`
     we must validate that the spawned agent is actually responsive

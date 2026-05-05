@@ -2120,10 +2120,16 @@ def _r2_tokens(args: list[str]) -> int:
     ``CLOUDFLARE_API_TOKEN``).
 
     Exit codes:
-    - 0: success (list / cleanup completed; per-token failures within
-         cleanup are reported but don't change the rc)
-    - 1: cleanup completed with at least one delete failure
+    - 0: ``list`` always returns 0; ``cleanup`` returns 0 only when
+         every matched token deleted successfully (or dry-run with no
+         per-token attempts). Backed by ``CleanupResult.is_success``.
+    - 1: ``cleanup`` completed but at least one per-token delete
+         failed (the loop continues — every attempt is reported in
+         stdout — but the rc reflects the partial-failure so callers
+         like deploy.sh / a follow-up cron run can re-attempt).
     - 2: bad args / missing env / network error / API listing failed
+         / safety guard hit (e.g. ``--prefix`` doesn't start with
+         ``nexus-r2-``).
     """
     if not args:
         print(
