@@ -776,6 +776,662 @@ superset_hook
 
 
 # ---------------------------------------------------------------------------
+# Modul 3.4d — admin-setup hooks for the remaining 6 stacks
+# (Uptime Kuma, Garage, Wiki.js, Dify, Windmill, SFTPGo — all
+# bash-render hooks in this section). SFTPGo was originally planned
+# as a Python hook (filestash-style with two SSH round-trips), but
+# its JSON construction is built remote-side via ``jq -n env``, so
+# no Python-side mutation is needed and the bash-render pattern is
+# uniform across all six. Migrated from deploy.sh L995-L2497.
+# ---------------------------------------------------------------------------
+
+
+def render_uptime_kuma_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """Uptime Kuma: manual-setup placeholder (issue #145).
+
+    The Socket.io-based admin bootstrap fails from inside the
+    container — see legacy ``deploy.sh:1296-1306`` for the disabled
+    block. Until #145 is fixed, this hook emits a stderr warning
+    pointing operators at Infisical for credentials and reports
+    ``skipped-not-ready``. Registering it explicitly (instead of
+    leaving the no-op in deploy.sh) gives operators a hook line in
+    the workflow log + makes it trivial to swap in the real
+    auto-setup the moment Socket.io / container networking
+    constraints are resolved.
+    """
+    del config, env  # signature uniform across hooks
+    return """
+uptime_kuma_hook() {
+    echo "  ⚠ Uptime Kuma requires manual setup on first login (issue #145)" >&2
+    echo "    Credentials available in Infisical" >&2
+    echo "RESULT hook=uptime-kuma status=skipped-not-ready"
+}
+uptime_kuma_hook
+"""
+
+
+def render_garage_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """Garage: layout assign + apply + key create (one-time, idempotent).
+
+    Three docker-exec calls on the ``garage`` container:
+    1. ``/garage layout show`` — detect already-configured (legacy
+       check ``"No nodes currently have"`` substring); skip with
+       ``already-configured`` if configured.
+    2. ``/garage node id`` — fetch node ID, validate as 64-hex,
+       slice to first-16 short form (Garage's layout commands use
+       the short form).
+    3. ``/garage layout assign -z dc1 -c 100G $NODE_ID`` +
+       ``/garage layout apply --version 1`` + ``/garage key create
+       nexus-garage-key``.
+
+    Mirrors deploy.sh:1318-1354. Wait via ``/health`` HTTP probe
+    on the admin API (port 3903) bounded to 30s wall-clock.
+
+    Idempotency contract:
+    - Already-configured (any node has a role) → ``already-configured``
+    - Layout missing nodes / new install → assign + apply + key →
+      ``configured``
+    - Node-id fetch fails / non-hex / wrong length → ``failed``
+      (operator must investigate; auto-retry on next spin-up)
+    """
+    del config, env  # admin token comes via .env, not into the hook
+    wait = _render_wait_healthy(
+        name="garage",
+        url="http://localhost:3903/health",
+        timeout_seconds=30,
+        interval_seconds=2,
+    )
+    return f"""
+garage_hook() {{
+{wait}
+    # Capture the layout-show exit status separately. Legacy deploy.sh
+    # used `|| echo ""` here, which silently treats ANY failure
+    # (Docker daemon unhealthy, container missing, RPC timeout) as
+    # "already-configured" because the grep then doesn't match.
+    # We surface the exit status so genuine container failures
+    # report `failed` instead of false-positive `already-configured`.
+    LAYOUT_RC=0
+    LAYOUT_CHECK=$(docker exec garage /garage layout show 2>&1) || LAYOUT_RC=$?
+    if [ "$LAYOUT_RC" -ne 0 ]; then
+        echo "  ⚠ garage layout show failed (rc=$LAYOUT_RC) — container or daemon unhealthy" >&2
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
+    if ! echo "$LAYOUT_CHECK" | grep -q "No nodes currently have"; then
+        echo "RESULT hook=garage status=already-configured"
+        return 0
+    fi
+    # Node id is the first line of `/garage node id`. Validate as
+    # 64-char hex before using — legacy deploy.sh did the same to
+    # avoid running layout commands with garbage if Garage wasn't
+    # fully ready (the earlier wait probe already gates this, but
+    # belt-and-braces).
+    FULL_NODE_ID=$(docker exec garage /garage node id 2>&1 | head -1 || echo "")
+    if [ -z "$FULL_NODE_ID" ] || [ ${{#FULL_NODE_ID}} -ne 64 ] \\
+       || ! echo "$FULL_NODE_ID" | grep -qE '^[0-9a-fA-F]{{64}}$'; then
+        echo "  ⚠ Garage node id missing or malformed — layout setup skipped" >&2
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
+    NODE_ID="${{FULL_NODE_ID:0:16}}"
+    if ! docker exec garage /garage layout assign -z dc1 -c 100G "$NODE_ID" >/dev/null 2>&1; then
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
+    if ! docker exec garage /garage layout apply --version 1 >/dev/null 2>&1; then
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
+    # `key create` is idempotent on the Garage side (returns the
+    # existing key if it already exists), so we don't distinguish
+    # already-exists from fresh-create. But we DO need to
+    # distinguish 'idempotent no-op' from 'docker daemon unhealthy /
+    # container missing' — the latter must surface as `failed`,
+    # not silently report `configured`. Same class as the
+    # layout-show R1 fix.
+    KEY_RC=0
+    docker exec garage /garage key create nexus-garage-key >/dev/null 2>&1 || KEY_RC=$?
+    if [ "$KEY_RC" -ne 0 ]; then
+        echo "  ⚠ garage key create failed (rc=$KEY_RC) — container or daemon unhealthy" >&2
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
+    echo "RESULT hook=garage status=configured"
+}}
+garage_hook
+"""
+
+
+def render_wikijs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """Wiki.js: GraphQL ``setup`` mutation (creates admin + finalises install).
+
+    Mirrors deploy.sh:2390-2424. Two-step:
+    1. Wait for ``/healthz`` to return HTTP 200. Bounded to 90s.
+       (The legacy bash also grepped the body for ``ok``, but Wiki.js
+       returns plain ``OK`` only when status is 200, so the
+       status-only check is equivalent — and matches the
+       ``_render_wait_healthy`` helper used by every other hook.)
+    2. POST GraphQL mutation ``setup($input: SetupInput!)`` with
+       admin email + password (twice, "confirm" field) + site URL.
+       Wiki.js returns ``{succeeded: true}`` on first run,
+       ``{...message: "...already...}`` on re-run.
+
+    Idempotency contract:
+    - First run: setup succeeds → ``configured``
+    - Re-run: response message contains "already" → ``already-configured``
+    - Other: ``failed``
+
+    Email source: legacy used ``$GITEA_USER_EMAIL`` if non-empty
+    else ``$ADMIN_EMAIL``. We use ``env.gitea_user_email`` falling
+    back to ``env.admin_email`` for the same effect (single-address
+    user identity for the Wiki).
+    """
+    password = config.wikijs_admin_password or ""
+    email = env.gitea_user_email or env.admin_email or ""
+    domain = env.domain or ""
+    if not password or not email or not domain:
+        return 'echo "RESULT hook=wikijs status=skipped-not-ready"\n'
+    password_q = shlex.quote(password)
+    email_q = shlex.quote(email)
+    site_url_q = shlex.quote(f"https://wiki.{domain}")
+    wait = _render_wait_healthy(
+        name="wikijs",
+        url="http://localhost:3005/healthz",
+        timeout_seconds=90,
+        interval_seconds=3,
+        # Wiki.js's /healthz returns plain text "OK" with 200; STATUS
+        # check is sufficient. The legacy deploy.sh additionally
+        # grepped the body for 'ok' but a true 200 is the same signal.
+    )
+    return f"""
+wikijs_hook() {{
+{wait}
+    # Build the GraphQL setup mutation body via jq -n with env-var
+    # inputs (NOT --arg, which would put values into jq's argv).
+    SETUP_BODY=$(NEXUS_E={email_q} NEXUS_P={password_q} NEXUS_U={site_url_q} jq -n \\
+        '{{query: "mutation ($input: SetupInput!) {{ setup(input: $input) {{ responseResult {{ succeeded message }} }} }}",
+           variables: {{input: {{adminEmail: env.NEXUS_E, adminPassword: env.NEXUS_P, adminPasswordConfirm: env.NEXUS_P, siteUrl: env.NEXUS_U, telemetry: false}}}}}}')
+    SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -X POST 'http://localhost:3005/graphql' \\
+        --max-time 30 \\
+        -H 'Content-Type: application/json' \\
+        --data-binary @- 2>/dev/null || echo "")
+    if echo "$SETUP_RESP" | grep -q '"succeeded":true'; then
+        echo "RESULT hook=wikijs status=configured"
+    elif echo "$SETUP_RESP" | grep -qi 'already'; then
+        echo "RESULT hook=wikijs status=already-configured"
+    else
+        echo "RESULT hook=wikijs status=failed"
+    fi
+}}
+wikijs_hook
+"""
+
+
+def render_dify_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """Dify: 2-step admin bootstrap (``/console/api/init`` → ``/console/api/setup``).
+
+    Mirrors deploy.sh:2425-2497. Three stages:
+    1. Wait for the API to return 200/302/307 on ``/`` (Dify's
+       redirect-to-/install pattern indicates the API is alive).
+       Bounded to 120s — Dify cold-starts slowly.
+    2. Pre-check ``/console/api/setup`` GET — if step ``finished``,
+       skip with ``already-configured``.
+    3. POST ``/console/api/init`` with the init password (cookie-jar
+       captures the session). Then POST ``/console/api/setup`` with
+       admin email + name + password (using the cookie). Dify
+       responds ``{result:"success"}`` on success.
+
+    Idempotency contract:
+    - ``/setup`` reports ``"step":"finished"`` → ``already-configured``
+    - Init+setup both succeed → ``configured``
+    - Init validation fails → ``failed`` (init password is the same
+      as admin password — if init rejects it, setup will too)
+    - Other → ``failed``
+
+    Cookie-jar is a mode-600 tmpfile cleaned via RETURN trap.
+    """
+    password = config.dify_admin_password or ""
+    email = env.admin_email or ""
+    if not password or not email:
+        return 'echo "RESULT hook=dify status=skipped-not-ready"\n'
+    password_q = shlex.quote(password)
+    email_q = shlex.quote(email)
+    # Dify's wait predicate is "200 OR 302 OR 307" — uniform 200-only
+    # check would skip-not-ready while Dify is doing its install
+    # redirect dance. Render a custom wait loop instead of using
+    # _render_wait_healthy.
+    return f"""
+dify_hook() {{
+    # Two-stage readiness: wait for HTTP 200/302/307 on /.
+    READY=false
+    SECONDS=0
+    while [ "$SECONDS" -lt 120 ]; do
+        STATUS=$(curl -s -o /dev/null -w '%{{http_code}}' --connect-timeout 3 --max-time 5 'http://localhost:8501/' 2>/dev/null || echo "000")
+        case "$STATUS" in
+            200|302|307) READY=true; break ;;
+        esac
+        sleep 3
+    done
+    if [ "$READY" != "true" ]; then
+        echo "  ⚠ dify not ready after 120s — skipping setup" >&2
+        echo "RESULT hook=dify status=skipped-not-ready"
+        return 0
+    fi
+    # Brief settling delay for Dify's API container — mirrors the
+    # legacy 5s sleep after readiness probes returned.
+    sleep 5
+    SETUP_CHECK=$(curl -s --max-time 10 'http://localhost:8501/console/api/setup' 2>/dev/null || echo "")
+    if echo "$SETUP_CHECK" | grep -q '"step":"finished"'; then
+        echo "RESULT hook=dify status=already-configured"
+        return 0
+    fi
+    # Cookie jar tmpfile — mode-600, cleaned on RETURN.
+    DIFY_COOKIES=$(mktemp)
+    chmod 600 "$DIFY_COOKIES"
+    trap 'rm -f "$DIFY_COOKIES"' RETURN
+    # Step 1: validate init password.
+    INIT_BODY=$(NEXUS_P={password_q} jq -n '{{password: env.NEXUS_P}}')
+    INIT_RESP=$(printf '%s' "$INIT_BODY" | curl -s -c "$DIFY_COOKIES" \\
+        -X POST 'http://localhost:8501/console/api/init' \\
+        --max-time 30 \\
+        -H 'Content-Type: application/json' \\
+        --data-binary @- 2>/dev/null || echo "")
+    if ! echo "$INIT_RESP" | grep -q '"result":"success"'; then
+        # Cleanup + trap reset on early-exit too — same set-u-leak
+        # concern as the success-path cleanup below. R6 fixed only
+        # the success path; R7 caught this matching failure path.
+        rm -f "$DIFY_COOKIES"
+        trap - RETURN
+        echo "  ⚠ Dify init validation failed — configure manually at /install" >&2
+        echo "RESULT hook=dify status=failed"
+        return 0
+    fi
+    # Step 2: create admin account using the session cookie.
+    SETUP_BODY=$(NEXUS_E={email_q} NEXUS_P={password_q} jq -n \\
+        '{{email: env.NEXUS_E, name: "Admin", password: env.NEXUS_P}}')
+    SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -b "$DIFY_COOKIES" \\
+        -X POST 'http://localhost:8501/console/api/setup' \\
+        --max-time 30 \\
+        -H 'Content-Type: application/json' \\
+        --data-binary @- 2>/dev/null || echo "")
+    # Explicit cleanup + trap reset before exit. The orchestrator
+    # runs all hooks in one shell with `set -u`; a lingering RETURN
+    # trap referencing $DIFY_COOKIES would fire on a later hook's
+    # function-return and could trip set -u if the var is unset.
+    # Same pattern as LakeFS / OpenMetadata.
+    rm -f "$DIFY_COOKIES"
+    trap - RETURN
+    if echo "$SETUP_RESP" | grep -q '"result":"success"'; then
+        echo "RESULT hook=dify status=configured"
+    elif echo "$SETUP_RESP" | grep -qi 'already'; then
+        echo "RESULT hook=dify status=already-configured"
+    else
+        echo "RESULT hook=dify status=failed"
+    fi
+}}
+dify_hook
+"""
+
+
+def render_windmill_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """Windmill: 5-stage bootstrap (readiness wait, admin user,
+    optional regular user, workspace, secure default account).
+
+    Mirrors deploy.sh:2376-2459. All API stages use
+    ``WINDMILL_SUPERADMIN_SECRET`` as the Bearer token (NOT a session
+    cookie — Windmill's superadmin secret authenticates the Admin
+    API directly).
+
+    Stages:
+    1. Wait for ``/api/version`` to return 200 (Windmill is up).
+    2. POST ``/users/create`` for ``$ADMIN_EMAIL`` with
+       ``super_admin: true`` and ``$WINDMILL_ADMIN_PASS`` —
+       gives operators the documented login.
+    3. POST ``/users/create`` for ``$GITEA_USER_EMAIL`` (only if it
+       differs from $ADMIN_EMAIL) with ``super_admin: false`` and
+       the same password — non-admin user identity for workflow
+       authorship.
+    4. POST ``/workspaces/create`` with ``{id: "nexus", name: "Nexus
+       Stack"}`` — creates the working namespace.
+    5. POST ``/users/setpassword`` with a newly-generated random
+       password to rotate the bootstrapped ``admin@windmill.dev``
+       account away from ``$WINDMILL_SUPERADMIN_SECRET``. **Critical
+       security step** — without this, anyone with the secret could
+       log in as the default admin.
+
+    Idempotency contract:
+    - Step 2/3 see "already exists" → continue (legacy did the same)
+    - Step 4 returns ``"nexus"`` body or "created" → configured;
+      "already exists" → already-configured
+    - Step 5 always re-rotates (cheap and ensures the default
+      account stays sealed across re-runs)
+    - Final hook status is driven by Step 4's outcome:
+      - 200/201 / "nexus" body → ``configured``
+      - 409 / "already exists" → ``already-configured``
+      - else → ``failed``
+
+    Bearer-token transport: ``WINDMILL_SUPERADMIN_SECRET`` is written
+    to a mode-600 ``curl --config`` tmpfile (RETURN-trap cleanup) so
+    it never reaches curl's argv via ``-H``. Same pattern as LakeFS /
+    OpenMetadata.
+    """
+    superadmin_secret = config.windmill_superadmin_secret or ""
+    admin_password = config.windmill_admin_password or ""
+    admin_email = env.admin_email or ""
+    if not superadmin_secret or not admin_password or not admin_email:
+        return 'echo "RESULT hook=windmill status=skipped-not-ready"\n'
+    secret_q = shlex.quote(superadmin_secret)
+    pw_q = shlex.quote(admin_password)
+    admin_q = shlex.quote(admin_email)
+    user_email_q = shlex.quote(env.gitea_user_email or "")
+    wait = _render_wait_healthy(
+        name="windmill",
+        url="http://localhost:8200/api/version",
+        timeout_seconds=120,
+        interval_seconds=3,
+    )
+    return f"""
+windmill_hook() {{
+{wait}
+    # Bearer-token tmpfile — mode-600, cleaned via RETURN trap.
+    WM_CFG=$(mktemp)
+    chmod 600 "$WM_CFG"
+    trap 'rm -f "$WM_CFG"' RETURN
+    NEXUS_S={secret_q} sh -c 'printf "header = \\"Authorization: Bearer %s\\"\\nheader = \\"Content-Type: application/json\\"\\n" "$NEXUS_S"' > "$WM_CFG"
+    # Step 1: create the admin user (super_admin=true) for ADMIN_EMAIL.
+    # NEXUS_E / NEXUS_P route email + password through env vars to jq —
+    # NEVER `--arg`, which would land them in jq's argv.
+    ADMIN_CREATE_BODY=$(NEXUS_E={admin_q} NEXUS_P={pw_q} jq -n \\
+        '{{email: env.NEXUS_E, password: env.NEXUS_P, super_admin: true, name: "Admin"}}')
+    printf '%s' "$ADMIN_CREATE_BODY" | curl -s --config "$WM_CFG" \\
+        -X POST 'http://localhost:8200/api/users/create' \\
+        --max-time 30 --data-binary @- >/dev/null 2>&1 || true
+    # Step 2: optional regular user for GITEA_USER_EMAIL (if set and
+    # differs from ADMIN_EMAIL). Single-address: USER_EMAIL may be a
+    # comma-list, GITEA_USER_EMAIL is the single resolved address.
+    GITEA_UE={user_email_q}
+    if [ -n "$GITEA_UE" ] && [ "$GITEA_UE" != {admin_q} ]; then
+        USER_CREATE_BODY=$(NEXUS_E="$GITEA_UE" NEXUS_P={pw_q} jq -n \\
+            '{{email: env.NEXUS_E, password: env.NEXUS_P, super_admin: false, name: "User"}}')
+        printf '%s' "$USER_CREATE_BODY" | curl -s --config "$WM_CFG" \\
+            -X POST 'http://localhost:8200/api/users/create' \\
+            --max-time 30 --data-binary @- >/dev/null 2>&1 || true
+    fi
+    # Step 3: create the `nexus` workspace. Capture HTTP body (rather
+    # than just status code) because Windmill returns the workspace id
+    # as a JSON-encoded string on success (e.g. \"nexus\").
+    WS_BODY=$(jq -n '{{id: "nexus", name: "Nexus Stack"}}')
+    WS_RESP=$(printf '%s' "$WS_BODY" | curl -s --config "$WM_CFG" \\
+        -X POST 'http://localhost:8200/api/workspaces/create' \\
+        --max-time 30 --data-binary @- 2>/dev/null || echo "")
+    # Step 4 (always): rotate `admin@windmill.dev` away from
+    # WINDMILL_SUPERADMIN_SECRET. Critical security step — without
+    # this, anyone with the (long-lived) secret could log in as the
+    # default admin. Generate a fresh random password every spin-up.
+    # Capture the HTTP status — if the rotation fails (wrong secret,
+    # API error), emit a stderr warning AND override the final hook
+    # status to `failed`. Silencing this with `|| true` would have
+    # left the default admin usable while the hook reported success.
+    RANDOM_PW=$(openssl rand -base64 32)
+    DEFPW_BODY=$(NEXUS_RP="$RANDOM_PW" jq -n '{{password: env.NEXUS_RP}}')
+    DEFPW_STATUS=$(printf '%s' "$DEFPW_BODY" | curl -s --config "$WM_CFG" \\
+        -o /dev/null -w '%{{http_code}}' \\
+        -X POST 'http://localhost:8200/api/users/setpassword' \\
+        --max-time 30 --data-binary @- 2>/dev/null || echo "000")
+    unset RANDOM_PW
+    # Explicit cleanup + trap reset. Orchestrator runs all hooks
+    # in one shell with `set -u`; a lingering RETURN trap referencing
+    # $WM_CFG would fire on a later hook's function-return and trip
+    # set -u once the var is unset. Same pattern as LakeFS / OpenMetadata.
+    rm -f "$WM_CFG"
+    trap - RETURN
+    # Final status combines workspace-create outcome AND the
+    # security-critical default-admin rotation. Either failing →
+    # hook reports failed.
+    case "$DEFPW_STATUS" in
+        200|204) ;;  # rotation succeeded
+        *)
+            echo "  ⚠ Windmill default-admin password rotation returned HTTP $DEFPW_STATUS — admin@windmill.dev may still be usable with the superadmin secret" >&2
+            echo "RESULT hook=windmill status=failed"
+            return 0
+            ;;
+    esac
+    if [ "$WS_RESP" = '"nexus"' ] || echo "$WS_RESP" | grep -qi 'created'; then
+        echo "RESULT hook=windmill status=configured"
+    elif echo "$WS_RESP" | grep -qi 'already exists'; then
+        echo "RESULT hook=windmill status=already-configured"
+    else
+        echo "  ⚠ Windmill workspace create response: ${{WS_RESP:-no response}}" >&2
+        echo "RESULT hook=windmill status=failed"
+    fi
+}}
+windmill_hook
+"""
+
+
+def render_sftpgo_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """SFTPGo: 6-stage admin bootstrap + R2 default-user creation.
+
+    The biggest hook in the file (~250 LoC of rendered bash). Mirrors
+    deploy.sh:1000-1305 — kept as a single rendered bash function
+    rather than a Python hook because all the JSON construction
+    happens remote-side via ``jq -n`` env-vars (no Python-side typed
+    mutation needed, unlike Filestash). Single SSH round-trip.
+
+    Stages:
+    1. Two-stage readiness: ``/healthz`` 200 AND ``/api/v2/token``
+       basic-auth login succeeds (admin SQLite row written). Bounded
+       to 60 iterations of 2s = 120s. Without the second check we'd
+       hit the token endpoint before admin-init finished writing.
+    2. R2 credentials guard: SFTPGo runs but no default user is
+       created if R2 creds are missing (operator must configure
+       manually); reports ``skipped-not-ready`` with that detail.
+    3. Mint admin JWT via ``/api/v2/token`` (basic-auth).
+    4. Pre-create local FS scratch dirs inside the container
+       (``/var/lib/sftpgo/users/nexus-default``,
+       ``/var/lib/sftpgo/folders/cloudflare_r2``,
+       ``/var/lib/sftpgo/folders/hetzner_s3``) with chown 1000:1000.
+       Without this, first SFTP listing fails ``lstat: no such file``.
+    5. POST ``/api/v2/folders`` for R2 (always) and Hetzner Object
+       Storage (only if all 5 HZ_* fields present).
+    6. POST ``/api/v2/users`` with the local-FS scratch home + the
+       registered virtual folders attached.
+
+    Idempotency contract (status mapping is driven by the FINAL
+    user-POST HTTP code; folder POSTs run unconditionally before
+    that and only emit a stderr warning on non-{201,409} responses):
+    - User POST 201 → ``configured`` (fresh install, or wiped volume)
+    - User POST 400 / 409 → ``already-configured`` (named-volume
+      preserves the user row across in-place spin-ups)
+    - User POST any other code → ``failed``
+    - Healthz/token probe times out → ``skipped-not-ready``
+    - R2 missing → ``skipped-not-ready`` (operator configures
+      manually in admin UI)
+    - JWT mint fails (admin login 401) → ``failed``
+
+    Argv-safety: admin password / user password / R2-secret-key /
+    Hetzner-secret-key all pass through base64 env-var → remote
+    bash → ``printf builtin → base64 -d → env-var → jq -n env``.
+    No secret bytes ever land in argv on the runner OR remote shell.
+    """
+    admin_password = config.sftpgo_admin_password or ""
+    user_password = config.sftpgo_user_password or ""
+    r2_bucket = config.r2_data_bucket or ""
+    r2_endpoint = config.r2_data_endpoint or ""
+    r2_access_key = config.r2_data_access_key or ""
+    r2_secret_key = config.r2_data_secret_key or ""
+    if not admin_password or not user_password:
+        return 'echo "RESULT hook=sftpgo status=skipped-not-ready"\n'
+    if not (r2_bucket and r2_endpoint and r2_access_key and r2_secret_key):
+        # R2-missing case: log a stderr diagnostic so operators see
+        # why no default user was created. SFTPGo admin still up via
+        # SFTPGO_DEFAULT_ADMIN_* env vars; user-creation is the
+        # part that needs R2 to map to a virtual folder.
+        return (
+            'echo "  ⚠ sftpgo: R2 datalake credentials missing — '
+            'default user not created (configure manually in admin UI)" >&2\n'
+            'echo "RESULT hook=sftpgo status=skipped-not-ready"\n'
+        )
+    # All four R2 fields populated → render the full bootstrap.
+    # Hetzner is optional; rendered per-spin-up based on which fields
+    # are populated. We embed *all* four base64'd values unconditionally
+    # — the inner `[ -n ... ]` guards on the remote side decide whether
+    # to actually call sftpgo_post_folder for the Hetzner backend.
+    hz_bucket = config.hetzner_s3_bucket_general or ""
+    hz_server = config.hetzner_s3_server or ""
+    hz_region = config.hetzner_s3_region or ""
+    hz_access_key = config.hetzner_s3_access_key or ""
+    hz_secret_key = config.hetzner_s3_secret_key or ""
+    return f"""
+sftpgo_hook() {{
+    # Two-stage readiness: /healthz must answer 200 (process is up,
+    # HTTP server bound), THEN /api/v2/token basic-auth must succeed
+    # (admin SQLite row written). Without the second check, we hit
+    # /api/v2/token while admin-init is still in flight and get 401
+    # → "admin login failed", and the run looks green.
+    SFTPGO_ADMIN_B64=$(printf '%s' {shlex.quote(admin_password)} | base64 | tr -d '\\n')
+    SFTPGO_USER_B64=$(printf '%s' {shlex.quote(user_password)} | base64 | tr -d '\\n')
+    SFTPGO_R2_BUCKET_B64=$(printf '%s' {shlex.quote(r2_bucket)} | base64 | tr -d '\\n')
+    SFTPGO_R2_ENDPOINT_B64=$(printf '%s' {shlex.quote(r2_endpoint)} | base64 | tr -d '\\n')
+    SFTPGO_R2_AK_B64=$(printf '%s' {shlex.quote(r2_access_key)} | base64 | tr -d '\\n')
+    SFTPGO_R2_SK_B64=$(printf '%s' {shlex.quote(r2_secret_key)} | base64 | tr -d '\\n')
+    SFTPGO_HZ_BUCKET={shlex.quote(hz_bucket)}
+    SFTPGO_HZ_SERVER={shlex.quote(hz_server)}
+    SFTPGO_HZ_REGION={shlex.quote(hz_region)}
+    SFTPGO_HZ_AK_B64=$(printf '%s' {shlex.quote(hz_access_key)} | base64 | tr -d '\\n')
+    SFTPGO_HZ_SK_B64=$(printf '%s' {shlex.quote(hz_secret_key)} | base64 | tr -d '\\n')
+    SFTPGO_HZ_BUCKET_B64=$(printf '%s' {shlex.quote(hz_bucket)} | base64 | tr -d '\\n')
+    SFTPGO_HZ_ENDPOINT_B64=$(printf '%s' {shlex.quote(hz_server)} | base64 | tr -d '\\n')
+    READY=false
+    SECONDS=0
+    while [ "$SECONDS" -lt 120 ]; do
+        STATUS=$(curl -s -o /dev/null -w '%{{http_code}}' --connect-timeout 3 --max-time 5 'http://localhost:8090/healthz' 2>/dev/null || echo "000")
+        if [ "$STATUS" = "200" ]; then
+            # /healthz is up; now verify admin login (admin row exists in SQLite).
+            ADMIN_PW=$(printf '%s' "$SFTPGO_ADMIN_B64" | base64 -d)
+            CFG=$(mktemp); chmod 600 "$CFG"
+            printf 'user = "nexus-sftpgo:%s"\\n' "$ADMIN_PW" > "$CFG"
+            TOKEN_STATUS=$(curl -s -o /dev/null -w '%{{http_code}}' --config "$CFG" --connect-timeout 3 --max-time 5 'http://localhost:8090/api/v2/token' 2>/dev/null || echo "000")
+            rm -f "$CFG"
+            unset ADMIN_PW
+            if [ "$TOKEN_STATUS" = "200" ]; then READY=true; break; fi
+        fi
+        sleep 2
+    done
+    if [ "$READY" != "true" ]; then
+        echo "  ⚠ sftpgo not ready after 120s — skipping default-user creation" >&2
+        echo "RESULT hook=sftpgo status=skipped-not-ready"
+        return 0
+    fi
+    # Mint the admin JWT. Same argv-safety pattern as the readiness
+    # probe (mode-600 curl --config tmpfile).
+    ADMIN_PW=$(printf '%s' "$SFTPGO_ADMIN_B64" | base64 -d)
+    LOGIN_CFG=$(mktemp); chmod 600 "$LOGIN_CFG"
+    trap 'rm -f "$LOGIN_CFG"' RETURN
+    printf 'user = "nexus-sftpgo:%s"\\n' "$ADMIN_PW" > "$LOGIN_CFG"
+    TOKEN_RESP=$(curl -s --config "$LOGIN_CFG" --max-time 10 'http://localhost:8090/api/v2/token' 2>/dev/null || echo "")
+    rm -f "$LOGIN_CFG"
+    trap - RETURN
+    unset ADMIN_PW
+    SFTPGO_TOKEN=$(printf '%s' "$TOKEN_RESP" | jq -r '.access_token // empty' 2>/dev/null)
+    if [ -z "$SFTPGO_TOKEN" ]; then
+        echo "  ⚠ sftpgo admin login failed — default user not created" >&2
+        echo "RESULT hook=sftpgo status=failed"
+        return 0
+    fi
+    SFTPGO_TOKEN_B64=$(printf '%s' "$SFTPGO_TOKEN" | base64 | tr -d '\\n')
+    unset SFTPGO_TOKEN
+    # Pre-create the local-FS scratch dirs that home_dir + each
+    # folder's mapped_path expect. Without these, the first SFTP
+    # listing returns "Failed to get directory listing" with no hint
+    # that the dirs are missing. uid 1000 is SFTPGo's runtime user.
+    if ! docker exec --user 0 sftpgo sh -c \\
+        'mkdir -p /var/lib/sftpgo/users/nexus-default /var/lib/sftpgo/folders/cloudflare_r2 /var/lib/sftpgo/folders/hetzner_s3 \\
+         && chown -R 1000:1000 /var/lib/sftpgo/users /var/lib/sftpgo/folders' >/dev/null 2>&1; then
+        echo "  ⚠ sftpgo dir-prep (mkdir/chown) failed — first login may report 'Failed to get directory listing'" >&2
+    fi
+    # Helper: POST a virtual folder. Returns the HTTP status code
+    # via stdout (caller captures with $()). All secret values reach
+    # the remote env via base64 → printf builtin → base64 -d → env
+    # var. jq -n reads the env vars (NOT --arg argv).
+    sftpgo_post_folder() {{
+        local _name="$1" _bucket_b64="$2" _endpoint_b64="$3" _region="$4" _ak_b64="$5" _sk_b64="$6"
+        TOKEN_LOCAL=$(printf '%s' "$SFTPGO_TOKEN_B64" | base64 -d)
+        BUCKET_LOCAL=$(printf '%s' "$_bucket_b64" | base64 -d)
+        ENDPOINT_LOCAL=$(printf '%s' "$_endpoint_b64" | base64 -d)
+        AK_LOCAL=$(printf '%s' "$_ak_b64" | base64 -d)
+        SK_LOCAL=$(printf '%s' "$_sk_b64" | base64 -d)
+        FCFG=$(mktemp); chmod 600 "$FCFG"
+        printf 'header = "Authorization: Bearer %s"\\nheader = "Content-Type: application/json"\\n' "$TOKEN_LOCAL" > "$FCFG"
+        FOLDER_STATUS=$(NAME="$_name" BUCKET="$BUCKET_LOCAL" ENDPOINT="$ENDPOINT_LOCAL" REGION="$_region" AK="$AK_LOCAL" SK="$SK_LOCAL" jq -n \\
+            '{{name: env.NAME,
+              mapped_path: ("/var/lib/sftpgo/folders/" + env.NAME),
+              filesystem: {{provider: 1, s3config: {{bucket: env.BUCKET, endpoint: env.ENDPOINT, region: env.REGION, access_key: env.AK, access_secret: {{payload: env.SK, status: "Plain"}}, key_prefix: "", force_path_style: true}}}}}}' \\
+            | curl -s -o /dev/null -w '%{{http_code}}' \\
+              -X POST 'http://localhost:8090/api/v2/folders' \\
+              --config "$FCFG" \\
+              --data-binary @- 2>/dev/null || echo "000")
+        rm -f "$FCFG"
+        unset TOKEN_LOCAL BUCKET_LOCAL ENDPOINT_LOCAL AK_LOCAL SK_LOCAL
+        printf '%s' "$FOLDER_STATUS"
+    }}
+    # R2 folder is always registered (we already validated R2 creds above).
+    R2_STATUS=$(sftpgo_post_folder \\
+        "cloudflare_r2" "$SFTPGO_R2_BUCKET_B64" "$SFTPGO_R2_ENDPOINT_B64" "auto" "$SFTPGO_R2_AK_B64" "$SFTPGO_R2_SK_B64")
+    case "$R2_STATUS" in
+        201|409) ;;  # created or already-exists are both fine
+        *) echo "  ⚠ sftpgo R2 folder POST returned HTTP $R2_STATUS" >&2 ;;
+    esac
+    # Hetzner folder is optional — only if all 5 HZ fields are present
+    # (bucket + server + region + access_key + secret_key). Mirrors
+    # legacy deploy.sh:1206-1207. We check the base64'd-form lengths
+    # because that's what's available in this scope; the access/secret
+    # base64 strings are non-empty iff their plaintext is non-empty.
+    VFOLDERS_JSON='[{{"name":"cloudflare_r2","virtual_path":"/cloudflare_r2","quota_size":-1,"quota_files":-1}}]'
+    if [ -n "$SFTPGO_HZ_BUCKET" ] && [ -n "$SFTPGO_HZ_SERVER" ] && [ -n "$SFTPGO_HZ_REGION" ] \\
+       && [ -n "$SFTPGO_HZ_AK_B64" ] && [ -n "$SFTPGO_HZ_SK_B64" ]; then
+        HZ_STATUS=$(sftpgo_post_folder \\
+            "hetzner_s3" "$SFTPGO_HZ_BUCKET_B64" "$SFTPGO_HZ_ENDPOINT_B64" "$SFTPGO_HZ_REGION" "$SFTPGO_HZ_AK_B64" "$SFTPGO_HZ_SK_B64")
+        case "$HZ_STATUS" in
+            201|409)
+                VFOLDERS_JSON='[{{"name":"cloudflare_r2","virtual_path":"/cloudflare_r2","quota_size":-1,"quota_files":-1}},{{"name":"hetzner_s3","virtual_path":"/hetzner_s3","quota_size":-1,"quota_files":-1}}]'
+                ;;
+            *) echo "  ⚠ sftpgo Hetzner folder POST returned HTTP $HZ_STATUS" >&2 ;;
+        esac
+    fi
+    # Helper: POST the user with home_dir + virtual folders.
+    TOKEN_LOCAL=$(printf '%s' "$SFTPGO_TOKEN_B64" | base64 -d)
+    USER_PW=$(printf '%s' "$SFTPGO_USER_B64" | base64 -d)
+    UCFG=$(mktemp); chmod 600 "$UCFG"
+    trap 'rm -f "$UCFG"' RETURN
+    printf 'header = "Authorization: Bearer %s"\\nheader = "Content-Type: application/json"\\n' "$TOKEN_LOCAL" > "$UCFG"
+    USER_STATUS=$(VFOLDERS="$VFOLDERS_JSON" PASSWORD="$USER_PW" jq -n \\
+        '{{username: "nexus-default",
+          password: env.PASSWORD,
+          home_dir: "/var/lib/sftpgo/users/nexus-default",
+          permissions: {{"/": ["*"], "/cloudflare_r2": ["*"], "/hetzner_s3": ["*"]}},
+          status: 1,
+          filesystem: {{provider: 0}},
+          virtual_folders: (env.VFOLDERS | fromjson)}}' \\
+        | curl -s -o /dev/null -w '%{{http_code}}' \\
+          -X POST 'http://localhost:8090/api/v2/users' \\
+          --config "$UCFG" \\
+          --data-binary @- 2>/dev/null || echo "000")
+    rm -f "$UCFG"
+    trap - RETURN
+    unset TOKEN_LOCAL USER_PW SFTPGO_TOKEN_B64 SFTPGO_ADMIN_B64 SFTPGO_USER_B64
+    case "$USER_STATUS" in
+        201)     echo "RESULT hook=sftpgo status=configured" ;;
+        400|409) echo "RESULT hook=sftpgo status=already-configured" ;;
+        *)       echo "  ⚠ sftpgo user POST returned HTTP $USER_STATUS — configure manually" >&2
+                 echo "RESULT hook=sftpgo status=failed" ;;
+    esac
+}}
+sftpgo_hook
+"""
+
+
+# ---------------------------------------------------------------------------
 # Modul 2.2d — Filestash (Python-side file mutation).
 #
 # Filestash stores its admin-side state in a JSON file inside the
@@ -1202,6 +1858,13 @@ _HOOK_REGISTRY: dict[str, HookRenderer] = {
     # Modul 2.2c — docker-exec CLI hooks
     "redpanda": render_redpanda_hook,
     "superset": render_superset_hook,
+    # Modul 3.4d — REST + docker-exec hooks (the remaining admin-setups)
+    "uptime-kuma": render_uptime_kuma_hook,
+    "garage": render_garage_hook,
+    "wikijs": render_wikijs_hook,
+    "dify": render_dify_hook,
+    "windmill": render_windmill_hook,
+    "sftpgo": render_sftpgo_hook,
 }
 
 
