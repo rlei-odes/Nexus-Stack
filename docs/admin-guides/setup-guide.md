@@ -157,7 +157,7 @@ This token allows the initial setup workflow to automatically save R2 credential
 
 | Variable Name | Default | Description |
 |---------------|---------|-------------|
-| `SERVER_LOCATION` | `fsn1` | Hetzner datacenter region for the VM (`fsn1`, `nbg1`, `hel1`). Change if your preferred region has availability issues. |
+| `SERVER_LOCATION` | `fsn1` | Hetzner datacenter region for the VM. EU options: `fsn1` (Falkenstein), `nbg1` (Nuremberg), `hel1` (Helsinki). US option: `ash` (Ashburn). Change if your preferred region has availability issues — see the troubleshooting note below. |
 | `HETZNER_S3_LOCATION` | `fsn1` | Hetzner Object Storage region (independent from server location). Propagated to OpenTofu and all S3 operations automatically. Only change if your buckets are in a different region. |
 
 > **Note:** Hetzner server availability fluctuates per region and instance type — both ARM (`cax*`) and x86 (`cpx*`) can hit `resource_unavailable` during capacity crunches. Check current stock before deploying via the third-party tracker [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status). If your preferred region is empty, switch `SERVER_LOCATION` to one that shows green for your instance type. Common availability: `fsn1` (Falkenstein) and `nbg1` (Nuremberg) usually have the best stock, `hel1` (Helsinki) and `ash` (US-East) can be alternatives.
