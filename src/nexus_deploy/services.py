@@ -1049,6 +1049,13 @@ dify_hook() {{
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
         --data-binary @- 2>/dev/null || echo "")
+    # Explicit cleanup + trap reset before exit. The orchestrator
+    # runs all hooks in one shell with `set -u`; a lingering RETURN
+    # trap referencing $DIFY_COOKIES would fire on a later hook's
+    # function-return and could trip set -u if the var is unset.
+    # Same pattern as LakeFS / OpenMetadata.
+    rm -f "$DIFY_COOKIES"
+    trap - RETURN
     if echo "$SETUP_RESP" | grep -q '"result":"success"'; then
         echo "RESULT hook=dify status=configured"
     elif echo "$SETUP_RESP" | grep -qi 'already'; then
@@ -1161,6 +1168,12 @@ windmill_hook() {{
         -X POST 'http://localhost:8200/api/users/setpassword' \\
         --max-time 30 --data-binary @- >/dev/null 2>&1 || true
     unset RANDOM_PW
+    # Explicit cleanup + trap reset. Orchestrator runs all hooks
+    # in one shell with `set -u`; a lingering RETURN trap referencing
+    # $WM_CFG would fire on a later hook's function-return and trip
+    # set -u once the var is unset. Same pattern as LakeFS / OpenMetadata.
+    rm -f "$WM_CFG"
+    trap - RETURN
     # Final status driven by workspace-create outcome.
     if [ "$WS_RESP" = '"nexus"' ] || echo "$WS_RESP" | grep -qi 'created'; then
         echo "RESULT hook=windmill status=configured"

@@ -583,9 +583,17 @@ def test_render_dify_hook_password_via_env_var_not_argv() -> None:
 
 
 def test_render_dify_hook_cookie_trap_on_return() -> None:
-    """R-tmpfile-cleanup: cookie jar removed on function-scoped RETURN trap."""
+    """R-tmpfile-cleanup: cookie jar removed on function-scoped RETURN
+    trap, AND the trap is explicitly cleared via 'trap - RETURN'
+    before function-return so it doesn't leak across hooks. Same
+    pattern as LakeFS / OpenMetadata. The orchestrator runs all
+    hooks in one shell with 'set -u'; a leaked RETURN trap
+    referencing DIFY_COOKIES would trip set -u on a later hook."""
     script = render_dify_hook(_make_config(), _make_env())
     assert "trap 'rm -f \"$DIFY_COOKIES\"' RETURN" in script
+    # Explicit cleanup + trap reset before exit
+    assert 'rm -f "$DIFY_COOKIES"' in script
+    assert "trap - RETURN" in script
 
 
 def test_render_windmill_hook_basic() -> None:
@@ -655,11 +663,17 @@ def test_render_windmill_hook_secures_default_admin_account() -> None:
 
 def test_render_windmill_hook_bearer_via_curl_config_not_argv() -> None:
     """R-secret-transport: WINDMILL_SUPERADMIN_SECRET reaches curl
-    via mode-600 --config tmpfile (RETURN trap), NOT via -H argv."""
+    via mode-600 --config tmpfile (RETURN trap), NOT via -H argv.
+    Plus: the RETURN trap is explicitly cleared before function-
+    return so it doesn't leak across hooks (orchestrator runs all
+    hooks in one shell with set -u)."""
     script = render_windmill_hook(_make_config(), _make_env())
     assert "WM_CFG=$(mktemp)" in script
     assert 'chmod 600 "$WM_CFG"' in script
     assert "trap 'rm -f \"$WM_CFG\"' RETURN" in script
+    # Explicit cleanup + trap reset before exit
+    assert 'rm -f "$WM_CFG"' in script
+    assert "trap - RETURN" in script
     # No -H "Authorization: Bearer" argv
     assert '-H "Authorization' not in script
     assert "-H 'Authorization" not in script
