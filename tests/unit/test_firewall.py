@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -76,6 +77,20 @@ def test_parse_malformed_root_raises() -> None:
         parse_firewall_rules("{not valid json")
 
 
+def test_parse_skips_pure_suffix_keys() -> None:
+    """A key like ``-1`` (empty service after suffix-strip) is skipped
+    silently — the legacy bash form ``[ -z \"$service\" ]`` did the
+    same when ``jq -r`` produced an empty service portion."""
+    raw = json.dumps(
+        {
+            "-1": {"port": 9092},
+            "kestra-1": {"port": 8080},
+        },
+    )
+    rules = parse_firewall_rules(raw)
+    assert {r.service for r in rules} == {"kestra"}
+
+
 def test_parse_skips_non_dict_entries_and_invalid_ports() -> None:
     """Per-key resilience: silently skip entries that don't have a
     parseable ``port`` field — matches the legacy `jq -r` behavior
@@ -131,6 +146,47 @@ def test_get_compose_first_service_malformed_yaml_returns_none(
 ) -> None:
     compose = tmp_path / "docker-compose.yml"
     compose.write_text("services:\n  - not\n  - a\n  - dict\n")
+    assert get_compose_first_service(compose) is None
+
+
+def test_get_compose_first_service_yaml_syntax_error_returns_none(
+    tmp_path: Path,
+) -> None:
+    """A real YAML syntax error (unclosed quote, bad indent) → None.
+    Distinct from the previous test which had VALID yaml that just
+    parsed to a non-dict shape — this hits the YAMLError branch."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  postgres: {\n    image: 'unclosed\n")
+    assert get_compose_first_service(compose) is None
+
+
+def test_get_compose_first_service_non_dict_root_returns_none(
+    tmp_path: Path,
+) -> None:
+    """A compose file whose top-level is not a mapping (string, list,
+    null) → None. Hits the 'isinstance(data, dict)' guard."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("just a plain string at root\n")
+    assert get_compose_first_service(compose) is None
+
+
+def test_get_compose_first_service_unreadable_returns_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read failure (permission denied, transient FS issue) → None,
+    not a raised OSError that would crash the whole compile pass."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  postgres:\n    image: postgres\n")
+
+    original_read_text = Path.read_text
+
+    def _raising_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == compose:
+            raise OSError("simulated read failure")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _raising_read_text)
     assert get_compose_first_service(compose) is None
 
 
@@ -390,6 +446,83 @@ def test_write_overrides_per_file_failure_aggregation(tmp_path: Path) -> None:
     assert ok_target in write.written
     assert any(p == bad_target for p, _ in write.failed)
     assert not write.is_success
+
+
+def test_generate_result_is_success_property() -> None:
+    """``GenerateResult.is_success`` is always True — compilation
+    treats skipped services as warnings, not errors. (Hard failures
+    raise; they never reach a GenerateResult instance.) The property
+    exists so the CLI can match the standard '<Result>.is_success'
+    pattern shared across modules."""
+    empty = GenerateResult(compiled=(), redpanda=None, zero_entry=True)
+    assert empty.is_success is True
+    with_skipped = GenerateResult(
+        compiled=(),
+        redpanda=None,
+        skipped=("ghost-service",),
+        zero_entry=False,
+    )
+    assert with_skipped.is_success is True
+
+
+def test_write_overrides_redpanda_override_failure_aggregated(
+    tmp_path: Path,
+) -> None:
+    """RedPanda override-write fails (target dir replaced by a
+    directory-shaped tree) → ``WriteResult.failed`` records the
+    failure, but the rest of the writes (config, non-redpanda
+    overrides) still proceed."""
+    rp_override_path = tmp_path / "stacks" / "redpanda" / OVERRIDE_FILENAME
+    rp_config_path = tmp_path / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+    # Create the override target as a directory so atomic_write fails.
+    rp_override_path.parent.mkdir(parents=True)
+    rp_override_path.mkdir()
+    result = GenerateResult(
+        compiled=(),
+        redpanda=RedpandaArtifacts(
+            override=CompiledOverride(
+                service="redpanda",
+                target_path=rp_override_path,
+                yaml_content="services:\n  redpanda: {ports: ['9092:19092']}\n",
+            ),
+            config_path=rp_config_path,
+            config_yaml="advertised_kafka_api: redpanda-kafka.example.com\n",
+        ),
+        zero_entry=False,
+    )
+    write = write_overrides(result)
+    assert any(p == rp_override_path for p, _ in write.failed)
+    # Config write must STILL succeed despite the override failure.
+    assert rp_config_path in write.written
+    assert rp_config_path.is_file()
+
+
+def test_write_overrides_redpanda_config_failure_aggregated(
+    tmp_path: Path,
+) -> None:
+    """RedPanda config-write fails (target replaced by a directory) →
+    failure recorded, override write still succeeds."""
+    rp_override_path = tmp_path / "stacks" / "redpanda" / OVERRIDE_FILENAME
+    rp_config_path = tmp_path / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+    rp_config_path.parent.mkdir(parents=True)
+    rp_config_path.mkdir()
+    result = GenerateResult(
+        compiled=(),
+        redpanda=RedpandaArtifacts(
+            override=CompiledOverride(
+                service="redpanda",
+                target_path=rp_override_path,
+                yaml_content="services:\n  redpanda: {ports: ['9092:19092']}\n",
+            ),
+            config_path=rp_config_path,
+            config_yaml="advertised_kafka_api: redpanda-kafka.example.com\n",
+        ),
+        zero_entry=False,
+    )
+    write = write_overrides(result)
+    assert any(p == rp_config_path for p, _ in write.failed)
+    assert rp_override_path in write.written
+    assert rp_override_path.is_file()
 
 
 def test_write_overrides_includes_redpanda_artifacts(tmp_path: Path) -> None:

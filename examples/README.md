@@ -27,6 +27,7 @@ examples/workspace-seeds/
 ├── marimo/
 │   ├── _nexus_spark.py             (Spark Connect helper — `from _nexus_spark import get_spark`)
 │   ├── Getting_Started_PySpark.py  (seed Marimo notebook demonstrating PySpark + Spark SQL via Ibis)
+│   ├── Getting_Started_DuckDB.py   (seed Marimo notebook walking through DuckDB: in-memory queries, remote parquet over httpfs, mo.sql native cells)
 │   └── NYC_Taxi_Pipeline.py        (seed Marimo notebook: NYC TLC bootstrap to Hetzner S3 + Spark analytics — mirror of Kestra's r2-taxi-pipeline)
 ├── prefect/
 │   ├── prefect.yaml                (deployment manifest — `pull:` re-clones workspace repo per run, no schedule by convention)
