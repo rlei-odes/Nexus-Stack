@@ -504,6 +504,58 @@ def test_append_gitea_skips_when_env_missing(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_render_prefect_emits_r2_credentials(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-prefect-r2-explicit (#531 R4 #9): the four R2_* keys MUST
+    appear in stacks/prefect/.env. The seeded NYC Green-Taxi flow
+    reads them at task entry; an accidentally-dropped key would crash
+    the flow with a confusing boto/DuckDB error instead of a clear
+    'configure R2 first' hint, so this test pins the contract
+    explicitly rather than relying on the catch-all generic-render
+    smoke test."""
+    config = full_config.model_copy(
+        update={
+            "r2_data_endpoint": "https://r2.example.com",
+            "r2_data_access_key": "ak-prefect",
+            "r2_data_secret_key": "sk-prefect",
+            "r2_data_bucket": "prefect-bucket",
+        },
+    )
+    render_all_env_files(config, full_env, ["prefect"], stacks_dir=tmp_path)
+    prefect_env = (tmp_path / "prefect" / ".env").read_text()
+    assert "R2_ENDPOINT=https://r2.example.com" in prefect_env
+    assert "R2_ACCESS_KEY=ak-prefect" in prefect_env
+    assert "R2_SECRET_KEY=sk-prefect" in prefect_env
+    assert "R2_BUCKET=prefect-bucket" in prefect_env
+
+
+def test_render_prefect_emits_empty_r2_when_unconfigured(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """When the optional R2 datalake isn't configured (r2_data_*
+    fields blank), the R2_* keys are still written but with empty
+    values. The Prefect flow's upfront precondition check catches
+    those and raises a clear error rather than letting boto crash
+    at runtime."""
+    config = full_config.model_copy(
+        update={
+            "r2_data_endpoint": "",
+            "r2_data_access_key": "",
+            "r2_data_secret_key": "",
+            "r2_data_bucket": "",
+        },
+    )
+    render_all_env_files(config, full_env, ["prefect"], stacks_dir=tmp_path)
+    prefect_env = (tmp_path / "prefect" / ".env").read_text()
+    # Keys present, values empty — the seed flow reads via os.environ.get
+    # which returns "" (falsy) in the precondition check.
+    assert "R2_ENDPOINT=\n" in prefect_env
+    assert "R2_ACCESS_KEY=\n" in prefect_env
+    assert "R2_SECRET_KEY=\n" in prefect_env
+    assert "R2_BUCKET=\n" in prefect_env
+
+
 def test_render_all_writes_only_enabled_services(
     full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
 ) -> None:

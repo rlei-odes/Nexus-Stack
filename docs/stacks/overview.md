@@ -226,7 +226,7 @@ Stream + batch processing, two databases, an orchestrator, a notebook, full obse
 
 ## Resource considerations
 
-The default Hetzner server is **`cx43` (Intel-shared, 8 vCPU, 16 GB RAM, 160 GB SSD, x86) in `hel1` (Helsinki)** which handles 25–30 typical services comfortably. For lighter setups, switch to **`cpx22` (2 vCPU, 4 GB RAM)** or **`cx32` (Intel, 4 vCPU, 8 GB)** to save cost; for heavier workloads, larger sizes are available in the Control Plane configuration. ARM (`cax`) variants are still supported via the `SERVER_TYPE` repo variable but no longer the default — see the project README for the rationale.
+The default Hetzner server is **`cx43` (Intel-shared, 8 vCPU, 16 GB RAM, 160 GB SSD, x86) in `hel1` (Helsinki)** which handles 25–30 typical services comfortably. For lighter setups, switch to **`cpx22` (2 vCPU, 4 GB RAM)** or **`cx32` (Intel, 4 vCPU, 8 GB)** to save cost; for heavier workloads, larger sizes are available via the **`SERVER_TYPE` GitHub repository variable** (Settings → Secrets and variables → Actions → Variables — see [setup-guide.md](../admin-guides/setup-guide.md#optional-repository-variables) for the full list of supported overrides). The Control Plane web UI displays the current value but doesn't let you edit it; changes go through the repo-variable + spin-up workflow. ARM (`cax`) variants are still supported via `SERVER_TYPE` but no longer the default — see the project README for the rationale.
 
 Memory-hungry stacks to watch out for:
 

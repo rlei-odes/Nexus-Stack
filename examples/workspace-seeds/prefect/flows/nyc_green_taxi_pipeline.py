@@ -45,9 +45,10 @@ CLOUDFRONT = "https://d37ci6vzurychx.cloudfront.net/trip-data"
 def download_month(month: str) -> bytes:
     """Pull one Green-Taxi month from NYC TLC's CloudFront and return raw parquet bytes.
 
-    Prefect retries the task once on transient HTTP errors (CloudFront
-    occasionally 5xx's during long sessions); two retries plus the original
-    attempt is enough to clear that without masking real upstream outages.
+    Prefect retries the task up to TWO times on transient HTTP errors
+    (CloudFront occasionally 5xx's during long sessions) — three total
+    attempts including the initial one. Enough to clear flaky CDN
+    behavior without masking real upstream outages.
     """
     url = f"{CLOUDFRONT}/green_tripdata_2025-{month}.parquet"
     print(f"[download] {url}")

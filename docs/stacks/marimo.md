@@ -44,7 +44,11 @@ The Marimo container is a thin gRPC client — the driver-JVM lives in the dedic
 
 ### Quickstart
 
-A seed notebook ships in every workspace at `nexus_seeds/marimo/Getting_Started_PySpark.py` (auto-cloned from your Gitea workspace repo on first launch). Open it from `https://marimo.<your-domain>` and hit **Run all**. A second seed notebook `nexus_seeds/marimo/NYC_Taxi_Pipeline.py` shows the bootstrap-to-S3 + Spark-analytics pattern.
+Three seed notebooks ship in every workspace under `nexus_seeds/marimo/` (auto-cloned from your Gitea workspace repo on first launch). Open from `https://marimo.<your-domain>` and hit **Run all** on whichever one matches what you're trying to learn:
+
+- **`Getting_Started_PySpark.py`** — minimal "spin up a SparkSession via Spark Connect, run a job, render results" walkthrough. Start here.
+- **`Getting_Started_DuckDB.py`** — DuckDB walkthrough that doesn't need the Spark stack at all: in-memory queries, `range()` synthetic data, remote parquet over `httpfs`, aggregate + window functions, Polars/Pandas/PyArrow conversion, and Marimo's native `mo.sql()` reactive cell. Useful as a single-node analytics baseline before reaching for Spark.
+- **`NYC_Taxi_Pipeline.py`** — end-to-end bootstrap-to-S3 + Spark-analytics pattern using DuckDB for the upload step and Spark for the read+aggregate.
 
 The minimal pattern is:
 

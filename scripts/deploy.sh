@@ -506,8 +506,23 @@ esac
 # any that exist remotely but not locally.
 echo ""
 echo -e "${YELLOW}Cleaning up orphan firewall overrides on server...${NC}"
+# Local listing — `|| true` is OK here because an empty local list
+# is a legitimate state (zero-entry mode: every remote file is an
+# orphan that needs removing).
 LOCAL_FW_LIST=$(cd stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort || true)
-REMOTE_FW_LIST=$(ssh nexus 'cd /opt/docker-server/stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort' || true)
+# Remote listing — must fail-fast: if SSH itself fails (network
+# blip, expired Cloudflare-Access token, host unavailable), an empty
+# REMOTE_FW_LIST would make `comm -23` produce an empty ORPHANS set
+# and the cleanup would silently skip stale files. Capture the
+# subprocess rc separately so we can distinguish 'connected, no
+# files found' (rc=0, empty stdout) from 'SSH failed' (rc != 0).
+REMOTE_FW_RC=0
+REMOTE_FW_LIST=$(ssh nexus 'cd /opt/docker-server/stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort') || REMOTE_FW_RC=$?
+if [ "$REMOTE_FW_RC" -ne 0 ]; then
+    echo -e "${RED}  ✗ Failed to list firewall overrides on server (ssh rc=$REMOTE_FW_RC) — cannot determine orphans; aborting${NC}" >&2
+    echo -e "${RED}    Continuing with stale-cleanup skipped would risk leaving previously-removed firewall ports exposed${NC}" >&2
+    exit 1
+fi
 ORPHANS=$(comm -23 <(echo "$REMOTE_FW_LIST") <(echo "$LOCAL_FW_LIST") | grep -v '^$' || true)
 if [ -n "$ORPHANS" ]; then
     # Track failures and abort the deploy if any rm fails. compose_runner
@@ -534,9 +549,19 @@ else
 fi
 # RedPanda's rendered firewall config is the same idea — if it's
 # absent locally (Python step removed it), make sure it's absent on
-# the server too. Idempotent: rm -f never fails on missing files.
+# the server too. `rm -f` returns 0 on missing files (idempotent),
+# so a non-zero rc here actually means the SSH transport failed —
+# which has the same fail-fast obligation as the orphan-cleanup
+# above: silently leaving the file in place would let
+# `setup_redpanda_hook` keep using the external-listener config and
+# advertise `redpanda-kafka.<domain>` even though the firewall is
+# closed.
 if [ ! -f "stacks/redpanda/config/redpanda-firewall.yaml" ]; then
-    ssh nexus 'rm -f /opt/docker-server/stacks/redpanda/config/redpanda-firewall.yaml' 2>/dev/null || true
+    if ! ssh nexus 'rm -f /opt/docker-server/stacks/redpanda/config/redpanda-firewall.yaml'; then
+        echo -e "${RED}  ✗ Failed to remove stale redpanda-firewall.yaml on server (SSH transport error)${NC}" >&2
+        echo -e "${RED}    Aborting — leaving the file would cause setup_redpanda_hook to advertise external listeners while the firewall is closed${NC}" >&2
+        exit 1
+    fi
 fi
 
 # Copy firewall override files to server (only for enabled services)
