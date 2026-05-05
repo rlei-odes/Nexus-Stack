@@ -3,8 +3,18 @@
 # After seeding this file lands at `nexus_seeds/prefect/prefect.yaml`
 # in the user's Gitea workspace repo (the `nexus_seeds/` prefix
 # segregates Nexus-managed files from user-authored content; see
-# examples/README.md). To deploy this manifest from the prefect
-# container or a checkout: `cd nexus_seeds/prefect && prefect deploy`.
+# examples/README.md). To deploy this manifest:
+#   - From a local checkout of the workspace repo (recommended):
+#     `cd nexus_seeds/prefect && prefect deploy` (path is relative
+#     to the repo root).
+#   - From inside the prefect-worker container: the workspace repo
+#     is cloned at `/flows/$REPO_NAME/` per `pull:` step at run
+#     time, so the equivalent invocation is
+#     `cd /flows/$REPO_NAME/nexus_seeds/prefect && prefect deploy`.
+# Either way the cwd at `prefect deploy` time is this manifest's
+# parent directory, and the `requirements_file` / `entrypoint`
+# paths below resolve relative to the cloned repo root that the
+# `pull:` step's `git_clone` produces.
 #
 # `pull:` runs at flow-RUN time (not deploy time) and is what gives us
 # the "edit in Gitea, hit Run, done" loop without needing a stack
@@ -56,9 +66,11 @@ deployments:
       seeded flow on different TLC datasets so you can compare engines
       side-by-side without overwriting each other's R2 output).
 
-      Edit prefect/flows/nyc_green_taxi_pipeline.py in your Gitea
-      workspace repo, push, and re-run the deployment — the worker
-      re-clones from Gitea via the `pull:` step above on every run.
+      Edit nexus_seeds/prefect/flows/nyc_green_taxi_pipeline.py in
+      your Gitea workspace repo (it's seeded under the nexus_seeds/
+      prefix, not at the repo root), push, and re-run the deployment
+      — the worker re-clones from Gitea via the `pull:` step above
+      on every run.
 
       Manual trigger only (no schedule). Default `months=["01","02"]`
       keeps each Run light; pass a longer list to widen.

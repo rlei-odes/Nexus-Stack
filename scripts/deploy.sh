@@ -483,6 +483,39 @@ case "$FW_RC" in
     *) echo -e "${RED}  ✗ Firewall override generation failed (rc=$FW_RC); aborting${NC}"; exit "$FW_RC" ;;
 esac
 
+# Cleanup orphan firewall overrides on the server. The Python
+# nexus_deploy.firewall step above already removed stale local files
+# (when an operator removed a firewall rule from Tofu, or in zero-
+# entry mode), but stack-sync earlier in this script does NOT use
+# `rsync --delete`, so the equivalent stale files on the SERVER
+# persist. Without this cleanup, `compose_runner` keeps `-f`-layering
+# them into every `docker compose up`, leaving the host port mapping
+# exposed even though Tofu was supposed to close it. Build a
+# newline-separated list of expected `<svc>/docker-compose.firewall.yml`
+# rel-paths locally, list the same paths on the server, and ssh-rm
+# any that exist remotely but not locally.
+echo ""
+echo -e "${YELLOW}Cleaning up orphan firewall overrides on server...${NC}"
+LOCAL_FW_LIST=$(cd stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort || true)
+REMOTE_FW_LIST=$(ssh nexus 'cd /opt/docker-server/stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort' || true)
+ORPHANS=$(comm -23 <(echo "$REMOTE_FW_LIST") <(echo "$LOCAL_FW_LIST") | grep -v '^$' || true)
+if [ -n "$ORPHANS" ]; then
+    echo "$ORPHANS" | while IFS= read -r orphan; do
+        echo "  Removing orphan: stacks/$orphan"
+        ssh nexus "rm -f /opt/docker-server/stacks/$orphan" || {
+            echo -e "${YELLOW}    Warning: failed to remove /opt/docker-server/stacks/$orphan${NC}" >&2
+        }
+    done
+else
+    echo "  No orphan firewall overrides on server"
+fi
+# RedPanda's rendered firewall config is the same idea — if it's
+# absent locally (Python step removed it), make sure it's absent on
+# the server too. Idempotent: rm -f never fails on missing files.
+if [ ! -f "stacks/redpanda/config/redpanda-firewall.yaml" ]; then
+    ssh nexus 'rm -f /opt/docker-server/stacks/redpanda/config/redpanda-firewall.yaml' 2>/dev/null || true
+fi
+
 # Copy firewall override files to server (only for enabled services)
 echo ""
 echo -e "${YELLOW}Copying firewall override files to server...${NC}"

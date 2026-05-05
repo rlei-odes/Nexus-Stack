@@ -24,6 +24,17 @@ description: |
   4 GB Kestra container. Lower it for large payloads, raise it for
   many small ones.
 
+  IMPORTANT: input URLs MUST be unique. Kestra's `each_parallel`
+  keys per-iteration outputs by `taskrun.value` (the loop value),
+  so two identical URLs in `urls` would collide on the same
+  `outputs.download[<dup-url>]` map entry — both download tasks
+  write to the same key and the second silently overwrites the
+  first. The R2 keys themselves stay distinct (each gets a unique
+  `idx<N>-<hash>` segment), but both R2 objects would carry the
+  SECOND download's payload. If your input list might contain
+  duplicates, dedupe it upstream (the task that emits `urls`) or
+  add a leading dedup task before this loop.
+
   This file was seeded into your Gitea workspace repo from
   `nexus-stack/examples/workspace-seeds/kestra/flows/parallel-http-fetch-to-r2.yaml`.
   Edit the file in Gitea — Kestra picks up the change within 15 minutes

@@ -350,12 +350,30 @@ def _(mo):
           — the file lives in Marimo's named volume across container
           restarts. Useful for keeping intermediate analytical tables
           between notebook sessions.
-        - **Read from R2 / Hetzner S3**: the Infisical secret-sync writes
-          ``HETZNER_S3_*`` env vars into ``/app/.infisical.env`` on every
-          spin-up; DuckDB's httpfs picks up ``AWS_ACCESS_KEY_ID`` /
-          ``AWS_SECRET_ACCESS_KEY`` automatically from the environment.
-          See ``NYC_Taxi_Pipeline.py`` for the Spark-side pattern (DuckDB
-          uses ``s3://...`` URLs the same way).
+        - **Read from Hetzner Object Storage**: the Infisical secret-sync
+          writes ``HETZNER_S3_*`` env vars into ``/app/.infisical.env``
+          on every spin-up. DuckDB's ``httpfs`` doesn't auto-read
+          those — pass them explicitly via DuckDB SETs (the
+          ``NYC_Taxi_Pipeline.py`` seed does this for the Spark side
+          via ``SET s3_endpoint``, ``SET s3_access_key_id``,
+          ``SET s3_secret_access_key`` from the env vars before
+          issuing the query). Same pattern works here:
+
+          ```python
+          import os
+          con.sql(f\"\"\"
+              SET s3_endpoint = '{os.environ["HETZNER_S3_ENDPOINT"].removeprefix("https://")}';
+              SET s3_access_key_id = '{os.environ["HETZNER_S3_ACCESS_KEY"]}';
+              SET s3_secret_access_key = '{os.environ["HETZNER_S3_SECRET_KEY"]}';
+              SET s3_url_style = 'path';
+          \"\"\")
+          # then read with: SELECT * FROM read_parquet('s3://<bucket>/path/file.parquet')
+          ```
+          (DuckDB DOES auto-pick up ``AWS_ACCESS_KEY_ID`` /
+          ``AWS_SECRET_ACCESS_KEY`` from the environment when those
+          specific names are set, but Marimo's secret-sync uses the
+          ``HETZNER_S3_*`` naming, so the explicit ``SET`` is the
+          path that works without renaming env vars.)
         - **JOIN across formats**: DuckDB happily JOINs a parquet on R2
           with a CSV on disk with a Postgres table via the ``postgres``
           extension. Mix-and-match without ETL.

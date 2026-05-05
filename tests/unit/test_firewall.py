@@ -624,9 +624,7 @@ def test_write_overrides_keeps_redpanda_config_when_redpanda_compiled(
     # pattern (the `"<host>" in <text>` shape, which is meant for code
     # that uses substring as a *sanitization gate*, not a test
     # assertion on hardcoded data). Equivalent verification.
-    assert (
-        rp_config.read_text() == "advertised_kafka_api: redpanda-kafka.example.com\n"
-    )
+    assert rp_config.read_text() == "advertised_kafka_api: redpanda-kafka.example.com\n"
 
 
 def test_write_overrides_stale_cleanup_unlink_failure_aggregated(
@@ -725,9 +723,7 @@ def test_write_overrides_includes_redpanda_artifacts(tmp_path: Path) -> None:
     # Exact-equals (see the matching note on the redpanda artifacts test
     # earlier in this file) to keep the assertion outside CodeQL's
     # URL-substring-sanitization pattern.
-    assert (
-        config_path.read_text() == "advertised_kafka_api: redpanda-kafka.example.com\n"
-    )
+    assert config_path.read_text() == "advertised_kafka_api: redpanda-kafka.example.com\n"
 
 
 # ---------------------------------------------------------------------------
