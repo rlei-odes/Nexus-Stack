@@ -2514,7 +2514,9 @@ def main() -> int:
         "Available: --version, hello, "
         "config dump-shell [--tofu-dir PATH (default: tofu/stack) | --stdin], "
         "infisical bootstrap (reads SECRETS_JSON from stdin + env vars), "
-        "secret-sync --stack <jupyter|marimo>, "
+        "infisical provision-admin (env: ADMIN_EMAIL + INFISICAL_PASS; emits "
+        "INFISICAL_TOKEN + PROJECT_ID), "
+        "secret-sync --stack <jupyter|marimo|kestra>, "
         "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/], "
         "compose up --enabled <comma-list>, "
         "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin), "
@@ -2523,10 +2525,12 @@ def main() -> int:
         "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned), "
         "stack-sync --enabled <comma-list> [--stacks-dir PATH], "
-        "setup ssh-config | wait-ssh | ensure-jq | mount-volume, "
+        "setup ssh-config | wait-ssh | ensure-jq | mount-volume | wetty-ssh-agent, "
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
-        "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET)",
+        "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
+        "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
+        "(env: TF_VAR_cloudflare_api_token)",
         file=sys.stderr,
     )
     return 2

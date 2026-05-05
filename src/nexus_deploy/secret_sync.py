@@ -79,15 +79,20 @@ class StackTarget:
 
     Three stacks are supported:
 
-    - **jupyter**, **marimo**: write plaintext ``KEY=value`` lines to
-      ``.infisical.env`` (separate from ``.env``). Restart via
-      ``docker compose up -d <stack>`` on change. The original
-      legacy-bash family (#510).
+    - **jupyter**, **marimo**: write dotenv-style ``KEY="<escaped-value>"``
+      lines to ``.infisical.env`` (separate from ``.env``). The value
+      is sed-escaped (``\\\\``→``\\\\\\\\``, ``"``→``\\\\"``) and double-
+      quoted so dotenv parsers accept characters that would otherwise
+      break the line; multi-line values are skipped earlier (their
+      newlines couldn't survive a single-line shell-readable form).
+      Restart via ``docker compose up -d <stack>`` on change. The
+      original legacy-bash family (#510).
     - **kestra**: write ``SECRET_<KEY>=<base64-value>`` lines to ``.env``
-      directly (no separate ``.infisical.env``). Force-recreate the
-      container so Kestra's ``EnvVarSecretProvider`` re-reads the
-      SECRET_* env vars at process start. Migrated in this PR
-      (Modul 3.4f).
+      directly — no quoting (base64 output is already safe for a
+      single-line env-var) and no separate ``.infisical.env`` file.
+      Force-recreate the container so Kestra's ``EnvVarSecretProvider``
+      re-reads the SECRET_* env vars at process start. Migrated in
+      this PR (Modul 3.4f).
 
     The render pipeline is shared; ``key_prefix``, ``use_base64_values``,
     ``env_file_basename``, ``legacy_env_file_basename``, and

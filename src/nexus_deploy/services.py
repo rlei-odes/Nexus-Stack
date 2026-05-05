@@ -1483,7 +1483,8 @@ pg_ducklake_hook() {
             >/dev/null 2>&1; then
         echo "RESULT hook=pg-ducklake status=configured"
     else
-        echo "  ⚠ pg_ducklake bootstrap SQL re-apply failed (check container logs)" >&2
+        echo "  ⚠ pg_ducklake bootstrap SQL re-apply failed — re-run manually to see the actual psql error:" >&2
+        echo "    ssh nexus 'docker exec pg-ducklake psql -U nexus-pgducklake -d ducklake -f /docker-entrypoint-initdb.d/00-ducklake-bootstrap.sql'" >&2
         echo "RESULT hook=pg-ducklake status=failed"
     fi
 }
