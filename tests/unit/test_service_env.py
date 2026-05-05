@@ -629,7 +629,7 @@ def test_render_all_marimo_then_append_gitea_block_succeeds(
     assert "WORKSPACE_BRANCH=main" in content
 
 
-def test_render_all_marimo_then_append_gitea_block_writes_custom_branch(
+def test_render_all_prefect_then_append_gitea_block_writes_custom_branch(
     full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
 ) -> None:
     """R-workspace-branch (#531 R8 #4): a non-default branch (e.g.

@@ -85,19 +85,35 @@ def upload_month(month: str, body: bytes) -> str:
 
 
 @task(log_prints=True)
-def aggregate_stats() -> dict:
-    """Run a DuckDB query over every green_tripdata_*.parquet that lives at
-    nexus-tutorials/NYC/ on R2 and return a summary dict.
+def aggregate_stats(months: list[str]) -> dict:
+    """Run a DuckDB query over the EXACT set of green_tripdata parquets
+    this flow-run uploaded (one path per month, not a wildcard) and
+    return a summary dict.
 
-    Reads via httpfs + the S3-compatible R2 endpoint — no intermediate copy.
-    The wildcard widens automatically when you extend the months list above.
+    Originally this used a `green_tripdata_*.parquet` wildcard, which
+    matched every file already on R2 — so a re-run with a smaller
+    `months` set would still report stats for previously-uploaded
+    months and the output wouldn't match what the user just asked
+    for. Switched to an explicit list of `s3://...` paths matching
+    the months argument so the result is consistent with the
+    invocation.
 
-    Note: Green-Taxi parquets use `lpep_pickup_datetime` / `lpep_dropoff_datetime`
-    (Yellow uses `tpep_*`). If you adapt this flow to Yellow, update the column
-    names accordingly.
+    Reads via httpfs + the S3-compatible R2 endpoint — no
+    intermediate copy.
+
+    Note: Green-Taxi parquets use `lpep_pickup_datetime` /
+    `lpep_dropoff_datetime` (Yellow uses `tpep_*`). If you adapt
+    this flow to Yellow, update the column names accordingly.
     """
     bucket = os.environ["R2_BUCKET"]
     endpoint_host = os.environ["R2_ENDPOINT"].removeprefix("https://").removeprefix("http://")
+    # Explicit per-month paths; DuckDB's read_parquet accepts a list
+    # and unions them. Sort for stability (deterministic earliest/
+    # latest in the result).
+    paths = ", ".join(
+        f"'s3://{bucket}/nexus-tutorials/NYC/green_tripdata_2025-{m}.parquet'"
+        for m in sorted(set(months))
+    )
     sql = f"""
         INSTALL httpfs;
         LOAD httpfs;
@@ -114,9 +130,7 @@ def aggregate_stats() -> dict:
             ROUND(AVG(passenger_count), 2)   AS avg_passengers,
             MIN(lpep_pickup_datetime)        AS earliest_pickup,
             MAX(lpep_pickup_datetime)        AS latest_pickup
-        FROM read_parquet(
-            's3://{bucket}/nexus-tutorials/NYC/green_tripdata_*.parquet'
-        );
+        FROM read_parquet([{paths}]);
     """
     con = duckdb.connect(":memory:")
     row = con.execute(sql).fetchone()
@@ -184,7 +198,7 @@ def nyc_green_taxi_pipeline(months: list[str] | None = None) -> dict:
         body = download_month(m)
         upload_month(m, body)
 
-    stats = aggregate_stats()
+    stats = aggregate_stats(months)
     log.info(
         "─── NYC Green-Taxi 2025 — Quick-Stats ──────────────────\n"
         "  Trips:           %s\n"
