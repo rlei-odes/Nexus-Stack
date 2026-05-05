@@ -9,10 +9,13 @@ description: |
     1. http.Download — GET the URL, store the response body as a
        Kestra-managed temp file.
     2. s3.Upload — push that temp file into R2 under
-       `<r2_prefix>/dt=YYYY-MM-DD/hr=HH/<filename>`. Date/hour
-       partitioning means re-runs land in different keys instead of
-       overwriting each other (good for time-series ingestion;
-       browse history-by-folder in Cloudflare R2).
+       `<r2_prefix>/dt=YYYY-MM-DD/hr=HH/<filename>`. The hour-stamp
+       in the path means runs in DIFFERENT hours land in different
+       keys; runs in the SAME hour overwrite each other (idempotent
+       within an hour, sliced into separate folders across hours).
+       For a true append-style log of every run, add the execution-id
+       to the key (see the parallel-http-fetch-to-r2.yaml seed for an
+       index-suffix pattern that solves the same problem).
 
   Default source: Open-Meteo current-day forecast for Lucerne (no
   API key, generous free quota — see https://open-meteo.com/en/terms).
@@ -74,8 +77,9 @@ tasks:
 
   # ---------------------------------------------------------------------
   # 2. Upload the temp file into R2 with a date/hour-partitioned key.
-  #    Re-running on a different hour drops a new file alongside the old
-  #    one — turns this flow into a poor-man's hourly archiver.
+  #    Re-running in a DIFFERENT hour drops a new file alongside the old
+  #    one (poor-man's hourly archiver). Re-running in the SAME hour
+  #    overwrites — that's intentional idempotency at the hour granularity.
   # ---------------------------------------------------------------------
   - id: upload
     type: io.kestra.plugin.aws.s3.Upload

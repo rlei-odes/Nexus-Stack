@@ -410,10 +410,23 @@ def _render_pgadmin(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_prefect(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """Prefect: DB + UI vars + R2 credentials.
+
+    R2_* are exposed in stacks/prefect/.env (the same pattern Jupyter
+    uses for HETZNER_S3_*) so seeded flows can read them via
+    ``os.environ["R2_ENDPOINT"]`` etc. without a separate Infisical
+    secret-sync setup. Empty values are kept as empty strings — the
+    flow can detect that and raise a clear 'configure R2 first'
+    error instead of crashing with KeyError at runtime.
+    """
     return RenderedEnv(
         env_vars={
             "PREFECT_DB_PASSWORD": c.prefect_db_password or "",
             "PREFECT_UI_API_URL": f"https://prefect.{e.domain or ''}/api",
+            "R2_ENDPOINT": c.r2_data_endpoint or "",
+            "R2_ACCESS_KEY": c.r2_data_access_key or "",
+            "R2_SECRET_KEY": c.r2_data_secret_key or "",
+            "R2_BUCKET": c.r2_data_bucket or "",
         },
     )
 

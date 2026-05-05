@@ -410,19 +410,33 @@ def _atomic_write(path: Path, content: str) -> None:
 def write_overrides(
     result: GenerateResult,
     *,
+    stacks_dir: Path | None = None,
     remove_stale: bool = True,
 ) -> WriteResult:
-    """Atomic-write each compiled artifact to its target path.
+    """Atomic-write each compiled artifact to its target path, then
+    (when ``remove_stale=True``, the default) delete any
+    ``docker-compose.firewall.yml`` files belonging to services NOT
+    present in ``result.compiled`` — including ALL of them when
+    ``zero_entry=True``.
 
-    ``remove_stale=True`` (default) deletes any pre-existing
-    ``docker-compose.firewall.yml`` in *enabled* stacks NOT present
-    in ``result.compiled`` — but ONLY when ``zero_entry=True``. The
-    legacy bash didn't do this cleanup; we leave it as a no-op for
-    parity (a future PR can add Zero-Entry-mode cleanup behind a
-    flag if operators ever ask for it). The parameter is kept in
-    the signature so callers can opt in later.
+    Without this cleanup, removing a firewall rule from Tofu would
+    NOT actually remove the host port mapping on the next deploy:
+    the stale ``stacks/<svc>/docker-compose.firewall.yml`` would
+    still be on disk, ``stack-sync`` would still rsync it to the
+    server, and ``compose_runner`` would still layer it onto every
+    ``docker compose up`` via ``-f docker-compose.firewall.yml``.
+    The legacy bash had the same hole; this migration plugs it.
+
+    RedPanda's two artifacts (``docker-compose.firewall.yml`` AND the
+    rendered ``config/redpanda-firewall.yaml``) are both removed when
+    RedPanda has no firewall ports — leaving the rendered yaml in
+    place would keep ``setup_redpanda_hook`` (services.py) running
+    in firewall-mode after the operator already removed the rules.
+
+    ``stacks_dir`` is required for the cleanup pass to know where to
+    walk; if None, the cleanup is skipped (back-compat for a caller
+    that only wants the writes). The CLI always passes it.
     """
-    del remove_stale  # reserved for a future cleanup pass
     written: list[Path] = []
     failed: list[tuple[Path, str]] = []
 
@@ -446,6 +460,34 @@ def write_overrides(
         except OSError as exc:
             failed.append((rp.config_path, str(exc)))
 
+    if remove_stale and stacks_dir is not None:
+        kept = {c.target_path for c in result.compiled}
+        if result.redpanda is not None:
+            kept.add(result.redpanda.override.target_path)
+        # Walk every stack directory and unlink any
+        # docker-compose.firewall.yml that isn't in the compiled
+        # write set (i.e. either zero-entry mode OR the operator
+        # removed this specific service's firewall rule from Tofu).
+        stacks_root = stacks_dir / "stacks"
+        if stacks_root.is_dir():
+            for stale in stacks_root.glob(f"*/{OVERRIDE_FILENAME}"):
+                if stale not in kept:
+                    try:
+                        stale.unlink()
+                    except OSError as exc:
+                        failed.append((stale, f"stale-cleanup: {exc}"))
+        # The rendered redpanda-firewall.yaml only exists when there
+        # WERE redpanda firewall ports; if there aren't anymore, drop
+        # it so setup_redpanda_hook doesn't keep using the stale
+        # external-listener config.
+        if result.redpanda is None:
+            redpanda_config = stacks_dir / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+            if redpanda_config.is_file():
+                try:
+                    redpanda_config.unlink()
+                except OSError as exc:
+                    failed.append((redpanda_config, f"stale-cleanup: {exc}"))
+
     return WriteResult(written=tuple(written), failed=tuple(failed))
 
 
@@ -455,15 +497,20 @@ def configure(
     stacks_dir: Path,
     domain: str,
 ) -> tuple[GenerateResult, WriteResult]:
-    """One-shot orchestration: compile + write. CLI calls this."""
+    """One-shot orchestration: compile + write + stale-cleanup.
+
+    Even in ``zero_entry`` mode we still call :func:`write_overrides`
+    (with an empty ``compiled`` set) so the stale-cleanup pass runs
+    — that's the whole point: a previously-non-empty firewall_rules
+    that's now empty MUST trigger removal of the stale .yml files,
+    otherwise the host port mappings persist on the next deploy.
+    """
     gen = compile_overrides(
         firewall_json=firewall_json,
         stacks_dir=stacks_dir,
         domain=domain,
     )
-    if gen.zero_entry:
-        return gen, WriteResult(written=())
-    write = write_overrides(gen)
+    write = write_overrides(gen, stacks_dir=stacks_dir)
     return gen, write
 
 

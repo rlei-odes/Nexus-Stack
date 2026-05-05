@@ -101,8 +101,15 @@ tasks:
         bucket: "{{ secret('R2_BUCKET') }}"
         # The `taskrun.value | sha256 | substring(0,8)` derivation gives
         # a stable 8-char slug per URL. The `taskrun.iteration`
-        # variable is each iteration's 0-based index, padded for sort
-        # stability.
+        # variable is each iteration's 0-based index, used as a unique
+        # tag so two URLs that hash to the same prefix can't collide.
+        # NOTE: index is NOT zero-padded — for >10 URLs the R2 listing
+        # will lexicographically sort `idx10` before `idx2`. That's
+        # acceptable for a teaching seed (default `urls` has 3 entries).
+        # If you grow the input list past 9 URLs and need execution-
+        # order listings, switch the `idx{{...}}` segment to a Pebble
+        # `string.format` like `{{ '%03d' | format(taskrun.iteration) }}`
+        # to get zero-padded `idx002`, `idx010`, etc.
         key: "{{ inputs.r2_prefix }}/dt={{ now() | date('yyyy-MM-dd') }}/hr={{ now() | date('HH') }}/idx{{ taskrun.iteration }}-{{ taskrun.value | sha256 | substring(0,8) }}.json"
         from: "{{ outputs.download[taskrun.value].uri }}"
 

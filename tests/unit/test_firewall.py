@@ -525,6 +525,177 @@ def test_write_overrides_redpanda_config_failure_aggregated(
     assert rp_override_path.is_file()
 
 
+def test_write_overrides_removes_stale_for_removed_service(
+    tmp_path: Path,
+) -> None:
+    """R-stale-cleanup (#531 R1): when an operator removes a firewall
+    rule from Tofu (e.g. drops `kestra` from the firewall_rules map),
+    the next configure pass MUST delete `stacks/kestra/docker-compose.
+    firewall.yml`. Without this, stack-sync rsyncs the stale file to
+    the server AND compose_runner keeps `-f`-layering it on every
+    `docker compose up` — host port stays exposed even though the
+    operator already removed it from Tofu."""
+    stale_path = tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME
+    stale_path.parent.mkdir(parents=True)
+    stale_path.write_text(
+        "services:\n  kestra:\n    ports:\n    - 8080:8080\n",
+    )
+    # Compile a result that has NO kestra rule (operator dropped it).
+    other_path = tmp_path / "stacks" / "postgres" / OVERRIDE_FILENAME
+    result = GenerateResult(
+        compiled=(
+            CompiledOverride(
+                service="postgres",
+                target_path=other_path,
+                yaml_content="services:\n  postgres:\n    ports:\n    - 5432:5432\n",
+            ),
+        ),
+        redpanda=None,
+        zero_entry=False,
+    )
+    write_overrides(result, stacks_dir=tmp_path)
+    assert not stale_path.exists(), "stale kestra override must be removed"
+    assert other_path.is_file(), "non-stale postgres override must remain"
+
+
+def test_write_overrides_zero_entry_removes_all_existing(tmp_path: Path) -> None:
+    """R-zero-entry-cleanup (#531 R1): when firewall_rules is empty
+    AFTER previously having entries, ALL pre-existing
+    docker-compose.firewall.yml files must be removed. Otherwise the
+    operator's 'remove all firewall rules' Tofu apply would have no
+    effect on the running deployment."""
+    for svc in ("kestra", "postgres", "redpanda"):
+        p = tmp_path / "stacks" / svc / OVERRIDE_FILENAME
+        p.parent.mkdir(parents=True)
+        p.write_text(f"services:\n  {svc}:\n    ports:\n    - 1234:1234\n")
+    result = GenerateResult(
+        compiled=(),
+        redpanda=None,
+        zero_entry=True,
+    )
+    write_overrides(result, stacks_dir=tmp_path)
+    for svc in ("kestra", "postgres", "redpanda"):
+        assert not (tmp_path / "stacks" / svc / OVERRIDE_FILENAME).exists()
+
+
+def test_write_overrides_zero_entry_removes_redpanda_config(
+    tmp_path: Path,
+) -> None:
+    """R-zero-entry-redpanda-config (#531 R1): the rendered
+    redpanda-firewall.yaml is only valid when RedPanda has firewall
+    ports; if all firewall rules are removed, this file must be
+    cleaned up too — otherwise setup_redpanda_hook (services.py)
+    keeps mounting the external-listener config and RedPanda starts
+    advertising `redpanda-kafka.<domain>` even though the firewall
+    is closed."""
+    rp_config = tmp_path / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+    rp_config.parent.mkdir(parents=True)
+    rp_config.write_text("advertised_kafka_api: redpanda-kafka.old.example.com\n")
+    result = GenerateResult(compiled=(), redpanda=None, zero_entry=True)
+    write_overrides(result, stacks_dir=tmp_path)
+    assert not rp_config.exists()
+
+
+def test_write_overrides_keeps_redpanda_config_when_redpanda_compiled(
+    tmp_path: Path,
+) -> None:
+    """Don't delete the redpanda-firewall.yaml in the same call
+    that just (re-)wrote it — the WriteResult tracks it as written;
+    cleanup logic must NOT undo writes from the same pass."""
+    rp_override = tmp_path / "stacks" / "redpanda" / OVERRIDE_FILENAME
+    rp_config = tmp_path / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+    result = GenerateResult(
+        compiled=(),
+        redpanda=RedpandaArtifacts(
+            override=CompiledOverride(
+                service="redpanda",
+                target_path=rp_override,
+                yaml_content="services:\n  redpanda: {ports: ['9092:19092']}\n",
+            ),
+            config_path=rp_config,
+            config_yaml="advertised_kafka_api: redpanda-kafka.example.com\n",
+        ),
+        zero_entry=False,
+    )
+    write_overrides(result, stacks_dir=tmp_path)
+    assert rp_override.is_file()
+    assert rp_config.is_file()
+    assert "redpanda-kafka.example.com" in rp_config.read_text()
+
+
+def test_write_overrides_stale_cleanup_unlink_failure_aggregated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OSError on the stale-cleanup unlink (e.g. concurrent removal,
+    permission denied) is aggregated into ``WriteResult.failed`` —
+    we don't crash the whole write pass."""
+    stale_path = tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME
+    stale_path.parent.mkdir(parents=True)
+    stale_path.write_text("stale\n")
+
+    original_unlink = Path.unlink
+
+    def _raising_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == stale_path:
+            raise OSError("simulated unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _raising_unlink)
+
+    result = GenerateResult(compiled=(), redpanda=None, zero_entry=True)
+    write = write_overrides(result, stacks_dir=tmp_path)
+    assert any(p == stale_path and "stale-cleanup" in err for p, err in write.failed)
+
+
+def test_write_overrides_stale_redpanda_config_unlink_failure_aggregated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OSError on stale redpanda-firewall.yaml unlink → aggregated
+    into ``WriteResult.failed``, not raised."""
+    rp_config = tmp_path / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+    rp_config.parent.mkdir(parents=True)
+    rp_config.write_text("stale: yaml\n")
+
+    original_unlink = Path.unlink
+
+    def _raising_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == rp_config:
+            raise OSError("simulated rp-config unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _raising_unlink)
+
+    result = GenerateResult(compiled=(), redpanda=None, zero_entry=True)
+    write = write_overrides(result, stacks_dir=tmp_path)
+    assert any(p == rp_config and "stale-cleanup" in err for p, err in write.failed)
+
+
+def test_write_overrides_no_stacks_dir_skips_cleanup_pass(tmp_path: Path) -> None:
+    """When ``stacks_dir/stacks/`` doesn't exist (e.g. a fresh test
+    fixture or a project layout without stacks/), the cleanup pass
+    short-circuits without raising. The redpanda-firewall.yaml
+    cleanup also depends on the stacks/ tree being present."""
+    # tmp_path has no stacks/ subdir
+    result = GenerateResult(compiled=(), redpanda=None, zero_entry=True)
+    write = write_overrides(result, stacks_dir=tmp_path)
+    assert write.is_success
+    assert write.written == ()
+    assert write.failed == ()
+
+
+def test_write_overrides_remove_stale_false_skips_cleanup(tmp_path: Path) -> None:
+    """``remove_stale=False`` opts out of the cleanup pass — for the
+    rare back-compat caller that wants writes-only behaviour."""
+    stale_path = tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME
+    stale_path.parent.mkdir(parents=True)
+    stale_path.write_text("stale\n")
+    result = GenerateResult(compiled=(), redpanda=None, zero_entry=True)
+    write_overrides(result, stacks_dir=tmp_path, remove_stale=False)
+    assert stale_path.exists()
+
+
 def test_write_overrides_includes_redpanda_artifacts(tmp_path: Path) -> None:
     """RedPanda's two artifacts (override + config) both land on disk."""
     override_path = tmp_path / "stacks" / "redpanda" / OVERRIDE_FILENAME

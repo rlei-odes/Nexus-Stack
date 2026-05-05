@@ -1,14 +1,19 @@
 # Prefect deployment manifest — seeded by Nexus-Stack.
 #
-# Lives at the workspace-repo root because that's where `prefect deploy`
-# looks for it by default. The same path inside the prefect-worker
-# container is `/flows/<repo-name>/prefect.yaml`.
+# After seeding this file lands at `nexus_seeds/prefect/prefect.yaml`
+# in the user's Gitea workspace repo (the `nexus_seeds/` prefix
+# segregates Nexus-managed files from user-authored content; see
+# examples/README.md). To deploy this manifest from the prefect
+# container or a checkout: `cd nexus_seeds/prefect && prefect deploy`.
 #
 # `pull:` runs at flow-RUN time (not deploy time) and is what gives us
 # the "edit in Gitea, hit Run, done" loop without needing a stack
 # re-spin. Two steps:
 #   1. git_clone — re-clones the workspace repo into a fresh tmpdir on
-#      every run so the worker always has the latest code.
+#      every run so the worker always has the latest code. After the
+#      clone, the cwd IS the repo root, so the seeded files live at
+#      `<tmpdir>/nexus_seeds/prefect/...`. All paths below are
+#      relative to that repo root.
 #   2. pip_install_requirements — installs the Python deps the seeded
 #      flow needs (boto3 for R2 uploads, duckdb for stats, httpx for
 #      the CloudFront download). Cached by the worker after the first
@@ -32,11 +37,13 @@ pull:
       branch: main
       access_token: "{{ $GITEA_PASSWORD }}"
   - prefect.deployments.steps.pip_install_requirements:
-      requirements_file: prefect/requirements.txt
+      # Path is relative to the cloned repo root, NOT to this
+      # prefect.yaml's location. Seeds land under nexus_seeds/.
+      requirements_file: nexus_seeds/prefect/requirements.txt
 
 deployments:
   - name: nyc-green-taxi-pipeline
-    entrypoint: prefect/flows/nyc_green_taxi_pipeline.py:nyc_green_taxi_pipeline
+    entrypoint: nexus_seeds/prefect/flows/nyc_green_taxi_pipeline.py:nyc_green_taxi_pipeline
     work_pool:
       name: local-pool
     tags:
