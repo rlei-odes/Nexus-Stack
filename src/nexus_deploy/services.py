@@ -1074,12 +1074,13 @@ dify_hook
 
 
 def render_windmill_hook(config: NexusConfig, env: BootstrapEnv) -> str:
-    """Windmill: 4-step bootstrap (admin user, optional regular user,
-    workspace, secure default account).
+    """Windmill: 5-stage bootstrap (readiness wait, admin user,
+    optional regular user, workspace, secure default account).
 
-    Mirrors deploy.sh:2376-2459. All 4 steps use ``WINDMILL_SUPERADMIN_SECRET``
-    as the Bearer token (NOT a session cookie — Windmill's superadmin
-    secret authenticates the Admin API directly).
+    Mirrors deploy.sh:2376-2459. All API stages use
+    ``WINDMILL_SUPERADMIN_SECRET`` as the Bearer token (NOT a session
+    cookie — Windmill's superadmin secret authenticates the Admin
+    API directly).
 
     Stages:
     1. Wait for ``/api/version`` to return 200 (Windmill is up).
@@ -1209,7 +1210,7 @@ windmill_hook
 
 
 def render_sftpgo_hook(config: NexusConfig, env: BootstrapEnv) -> str:
-    """SFTPGo: 3-stage admin bootstrap + R2 default-user creation.
+    """SFTPGo: 6-stage admin bootstrap + R2 default-user creation.
 
     The biggest hook in the file (~250 LoC of rendered bash). Mirrors
     deploy.sh:1000-1305 — kept as a single rendered bash function
