@@ -1851,7 +1851,14 @@ def _service_env(args: list[str]) -> int:
     # so requiring all of them here just hardens against direct
     # CLI invocation with partial env-vars.
     workspace_coords_complete = all(
-        (gitea_repo_url, gitea_username, gitea_password, git_author_name, git_author_email),
+        (
+            gitea_repo_url,
+            gitea_username,
+            gitea_password,
+            git_author_name,
+            git_author_email,
+            repo_name,
+        ),
     )
     if workspace_coords_complete and "gitea" in enabled:
         cfg = GiteaWorkspaceConfig(

@@ -37,7 +37,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -67,9 +66,12 @@ class SidecarFile:
 class RenderedEnv:
     """Result of a single service's render function.
 
-    ``env_vars`` becomes ``KEY=value`` lines in the ``.env`` file,
-    quoted minimally (no quoting unless the value contains shell
-    meta-characters; deploy.sh's heredocs were similarly liberal).
+    ``env_vars`` becomes ``KEY=value`` lines in the ``.env`` file —
+    values are emitted verbatim with no quoting (matching the legacy
+    bash heredocs, which also wrote unquoted values). Service-specific
+    escaping that the consumer expects (e.g. Filestash's ``$$`` for
+    docker-compose-substitution-in-bcrypt) happens inside the
+    individual render function before the value reaches this struct.
     ``sidecars`` are extra files written alongside.
     ``mode`` is the ``.env`` permission mode — most services use
     0o644; SFTPGo uses 0o600 because it stores admin credentials
@@ -1122,7 +1124,3 @@ def append_gitea_workspace_block(
         _atomic_write(env_path, new_content, mode=0o644)
         appended.append(svc)
     return tuple(appended)
-
-
-# Surface a `sys` reference so __main__.py forward-imports cleanly.
-_ = sys

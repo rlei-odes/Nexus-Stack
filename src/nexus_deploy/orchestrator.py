@@ -34,11 +34,12 @@ phase with status="partial" continues — operator gets a yellow
 warning, downstream phases still run. Same rc=0/1/2 dispatch as
 all other migrated CLIs.
 
-``contextlib.ExitStack`` manages tmpfile + ssh-tunnel cleanup
-across the whole run. Each phase that needs an HTTP port-forward
-to the nexus server opens it inside its own method via
-``stack.enter_context(ssh.port_forward(...))`` so the tunnel is
-always torn down before the next phase, even on failure.
+``contextlib.ExitStack`` manages the SSH client lifetime in
+:meth:`Orchestrator.run_all`. Each phase that needs an HTTP
+port-forward to the nexus server opens it inside its own method
+via a local ``with ssh.port_forward(...)`` block so the tunnel
+is torn down before the phase returns — the ExitStack is not
+passed into phases.
 """
 
 from __future__ import annotations
@@ -46,7 +47,6 @@ from __future__ import annotations
 import contextlib
 import socket
 import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -644,7 +644,3 @@ __all__ = [
     "OrchestratorState",
     "PhaseResult",
 ]
-
-
-# Surface sys ref so __main__ imports cleanly through this module.
-_ = sys
