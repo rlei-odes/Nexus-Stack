@@ -849,14 +849,24 @@ def setup_wetty_ssh_agent(
     """Render + run the wetty-agent setup script. Returns None on
     unparseable output (soft failure — operator sees the script's
     forwarded stderr; the deploy continues without aborting since
-    Wetty is a non-critical UI service)."""
+    Wetty is a non-critical UI service).
+
+    ``check=True``: the rendered script ALWAYS terminates with
+    ``exit 0`` (fail-fast paths emit a parseable all-zero RESULT line
+    + ``exit 0``), so a non-zero returncode here can only mean the
+    SSH transport itself broke (rc=255, connection drop, ...). Letting
+    ``CalledProcessError`` propagate so the CLI handler maps it to
+    rc=2 ("transport failure") instead of silently returning None and
+    falling through to the rc=1 "soft fail" branch — caught in
+    #530 R4.
+    """
     script = render_wetty_agent_script(
         key_path=key_path,
         key_comment=key_comment,
         agent_socket=agent_socket,
         wetty_env_file=wetty_env_file,
     )
-    completed = ssh.run_script(script, check=False)
+    completed = ssh.run_script(script, check=True)
     # Forward non-RESULT stderr lines (the script's own diagnostics)
     # to the local terminal so operators see e.g. ssh-keygen errors.
     for line in completed.stdout.splitlines():

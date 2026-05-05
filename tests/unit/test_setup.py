@@ -1197,6 +1197,35 @@ def test_setup_wetty_ssh_agent_returns_none_on_unparseable_stdout() -> None:
     assert result is None
 
 
+def test_setup_wetty_ssh_agent_propagates_transport_failure() -> None:
+    """R-transport-failure-as-rc-2 (#530 R4 #1): SSH transport
+    failure (rc=255, connection drop) must propagate as
+    CalledProcessError so the CLI maps it to rc=2 ('transport
+    failure'), not silently to None → rc=1 ('soft fail'). The
+    rendered script always ends with exit 0, so a non-zero rc from
+    run_script can only mean the transport broke."""
+    import subprocess
+
+    from nexus_deploy.setup import setup_wetty_ssh_agent
+
+    class _BrokenSSH:
+        def run_script(
+            self, _script: str, *, check: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            # check=True is what the wrapper now passes; mimic the
+            # behaviour of subprocess.run(check=True) on rc != 0.
+            assert check is True, "wrapper must pass check=True"
+            raise subprocess.CalledProcessError(
+                returncode=255,
+                cmd=["ssh", "nexus", "bash"],
+                output="kex_exchange_identification: Connection closed",
+            )
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        setup_wetty_ssh_agent(_BrokenSSH())  # type: ignore[arg-type]
+    assert exc_info.value.returncode == 255
+
+
 def test_render_wetty_agent_script_regenerates_on_half_present_keypair() -> None:
     """R-half-keypair (#530 R3 #4): the keygen-skip gate must check
     BOTH $KEY_PATH and $KEY_PATH.pub. If only one exists (manual
