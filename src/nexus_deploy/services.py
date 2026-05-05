@@ -882,10 +882,20 @@ garage_hook() {{
         echo "RESULT hook=garage status=failed"
         return 0
     fi
-    # `key create` is idempotent on the Garage side — if the key
-    # exists, it returns the existing one rather than erroring,
-    # so we don't gate on its exit code separately.
-    docker exec garage /garage key create nexus-garage-key >/dev/null 2>&1 || true
+    # `key create` is idempotent on the Garage side (returns the
+    # existing key if it already exists), so we don't distinguish
+    # already-exists from fresh-create. But we DO need to
+    # distinguish 'idempotent no-op' from 'docker daemon unhealthy /
+    # container missing' — the latter must surface as `failed`,
+    # not silently report `configured`. Same class as the
+    # layout-show R1 fix.
+    KEY_RC=0
+    docker exec garage /garage key create nexus-garage-key >/dev/null 2>&1 || KEY_RC=$?
+    if [ "$KEY_RC" -ne 0 ]; then
+        echo "  ⚠ garage key create failed (rc=$KEY_RC) — container or daemon unhealthy" >&2
+        echo "RESULT hook=garage status=failed"
+        return 0
+    fi
     echo "RESULT hook=garage status=configured"
 }}
 garage_hook
@@ -1356,7 +1366,6 @@ sftpgo_hook() {{
         esac
     fi
     # Helper: POST the user with home_dir + virtual folders.
-    VFOLDERS_B64=$(printf '%s' "$VFOLDERS_JSON" | base64 | tr -d '\\n')
     TOKEN_LOCAL=$(printf '%s' "$SFTPGO_TOKEN_B64" | base64 -d)
     USER_PW=$(printf '%s' "$SFTPGO_USER_B64" | base64 -d)
     UCFG=$(mktemp); chmod 600 "$UCFG"
@@ -1383,10 +1392,6 @@ sftpgo_hook() {{
         *)       echo "  ⚠ sftpgo user POST returned HTTP $USER_STATUS — configure manually" >&2
                  echo "RESULT hook=sftpgo status=failed" ;;
     esac
-    # _Just_ for cleanliness — VFOLDERS_B64 was unused (we passed
-    # VFOLDERS_JSON directly via env). Keep the variable but unset
-    # for hygiene if future refactors switch to base64.
-    unset VFOLDERS_B64
 }}
 sftpgo_hook
 """

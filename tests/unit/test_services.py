@@ -481,6 +481,19 @@ def test_render_garage_hook_layout_show_failure_reports_failed() -> None:
     assert 'if [ "$LAYOUT_RC" -ne 0 ]' in script
 
 
+def test_render_garage_hook_key_create_failure_reports_failed() -> None:
+    """R-exit-status: key-create's exit status is also captured.
+    Garage `key create` is idempotent (returns the existing key
+    on re-run), so success doesn't prove fresh-create — but a
+    non-zero exit DOES prove a real failure (daemon down /
+    container missing) and must surface as `failed` rather than
+    silent `configured`. Same class as the layout-show fix."""
+    script = render_garage_hook(_make_config(), _make_env())
+    assert "KEY_RC=0" in script
+    assert "|| KEY_RC=$?" in script
+    assert 'if [ "$KEY_RC" -ne 0 ]' in script
+
+
 def test_render_garage_hook_validates_node_id_as_64_hex() -> None:
     """R-validate: node-id length and charset are checked before use."""
     script = render_garage_hook(_make_config(), _make_env())
