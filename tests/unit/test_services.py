@@ -524,17 +524,25 @@ def test_render_wikijs_hook_skips_when_email_empty() -> None:
 
 
 def test_render_wikijs_hook_prefers_gitea_user_email_over_admin_email() -> None:
-    """When both are set, gitea_user_email wins (single-address user identity)."""
+    """When both are set, gitea_user_email wins (single-address user
+    identity). Use disjoint email values so the check is unambiguous —
+    shlex.quote('admin@example.com') returns the bare string (no
+    shell-special chars), so the previous assertion
+    'NEXUS_E=...admin@example.com... not in script' would have passed
+    even if the hook had buggily used admin_email (it would have been
+    embedded as NEXUS_E=admin@example.com without quotes). Using a
+    distinctive admin-only token here avoids that false-positive."""
     env = BootstrapEnv(
         domain="example.com",
-        admin_email="admin@example.com",
+        admin_email="admin-should-not-appear@example.org",
         gitea_user_email="user@example.com",
     )
     script = render_wikijs_hook(_make_config(), env)
-    # The email is shlex-quoted and embedded as NEXUS_E= — check the user@ form lands
     assert "user@example.com" in script
-    # And admin@ does NOT (keeps the assertion specific)
-    assert "NEXUS_E='admin@example.com'" not in script
+    # The admin email's distinctive prefix MUST NOT appear anywhere
+    # in the rendered script — pins both the gitea-user-wins choice
+    # AND defends against shlex.quote rendering ambiguities.
+    assert "admin-should-not-appear" not in script
 
 
 def test_render_wikijs_hook_password_via_env_var_not_argv() -> None:
@@ -659,10 +667,21 @@ def test_render_windmill_hook_secures_default_admin_account() -> None:
     """R-security (Step 4): MUST rotate admin@windmill.dev password
     away from the long-lived WINDMILL_SUPERADMIN_SECRET. Without
     this, anyone with the secret could log in as the default admin.
-    Legacy deploy.sh:2456-2459."""
+    Legacy deploy.sh:2456-2459.
+
+    Plus: rotation HTTP status must be CHECKED, not silenced. A
+    failed rotation (wrong secret, API error) must surface as
+    'failed' with a stderr warning, not silently report 'configured'
+    while the default admin stays usable."""
     script = render_windmill_hook(_make_config(), _make_env())
     assert "openssl rand -base64 32" in script
     assert "/api/users/setpassword" in script
+    # Status capture (NOT silenced)
+    assert "DEFPW_STATUS=" in script
+    assert "200|204)" in script  # success branch
+    # Failure path: warns AND aborts to 'failed'
+    assert "default-admin password rotation returned HTTP" in script
+    assert "may still be usable with the superadmin secret" in script
 
 
 def test_render_windmill_hook_bearer_via_curl_config_not_argv() -> None:

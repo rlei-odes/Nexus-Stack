@@ -1167,11 +1167,16 @@ windmill_hook() {{
     # WINDMILL_SUPERADMIN_SECRET. Critical security step — without
     # this, anyone with the (long-lived) secret could log in as the
     # default admin. Generate a fresh random password every spin-up.
+    # Capture the HTTP status — if the rotation fails (wrong secret,
+    # API error), emit a stderr warning AND override the final hook
+    # status to `failed`. Silencing this with `|| true` would have
+    # left the default admin usable while the hook reported success.
     RANDOM_PW=$(openssl rand -base64 32)
     DEFPW_BODY=$(NEXUS_RP="$RANDOM_PW" jq -n '{{password: env.NEXUS_RP}}')
-    printf '%s' "$DEFPW_BODY" | curl -s --config "$WM_CFG" \\
+    DEFPW_STATUS=$(printf '%s' "$DEFPW_BODY" | curl -s --config "$WM_CFG" \\
+        -o /dev/null -w '%{{http_code}}' \\
         -X POST 'http://localhost:8200/api/users/setpassword' \\
-        --max-time 30 --data-binary @- >/dev/null 2>&1 || true
+        --max-time 30 --data-binary @- 2>/dev/null || echo "000")
     unset RANDOM_PW
     # Explicit cleanup + trap reset. Orchestrator runs all hooks
     # in one shell with `set -u`; a lingering RETURN trap referencing
@@ -1179,7 +1184,17 @@ windmill_hook() {{
     # set -u once the var is unset. Same pattern as LakeFS / OpenMetadata.
     rm -f "$WM_CFG"
     trap - RETURN
-    # Final status driven by workspace-create outcome.
+    # Final status combines workspace-create outcome AND the
+    # security-critical default-admin rotation. Either failing →
+    # hook reports failed.
+    case "$DEFPW_STATUS" in
+        200|204) ;;  # rotation succeeded
+        *)
+            echo "  ⚠ Windmill default-admin password rotation returned HTTP $DEFPW_STATUS — admin@windmill.dev may still be usable with the superadmin secret" >&2
+            echo "RESULT hook=windmill status=failed"
+            return 0
+            ;;
+    esac
     if [ "$WS_RESP" = '"nexus"' ] || echo "$WS_RESP" | grep -qi 'created'; then
         echo "RESULT hook=windmill status=configured"
     elif echo "$WS_RESP" | grep -qi 'already exists'; then
