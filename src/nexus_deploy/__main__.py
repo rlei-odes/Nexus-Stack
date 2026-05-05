@@ -307,7 +307,15 @@ def _infisical_provision_admin(args: list[str]) -> int:
     # readable outcome (the eval-able stdout is for shell consumption).
     sys.stderr.write(f"infisical provision-admin: status={result.status}\n")
 
-    if result.status in ("loaded-existing", "freshly-bootstrapped"):
+    # rc=0 ONLY when the provision actually produced usable credentials
+    # (token AND project_id both populated). A `loaded-existing` /
+    # `freshly-bootstrapped` status with a dropped token (e.g.
+    # malformed-base64 → parse_provision_result returned None for
+    # token) MUST be reported as soft-fail so deploy.sh doesn't print
+    # "✓ Infisical provisioned" while emitting empty
+    # INFISICAL_TOKEN= / PROJECT_ID= lines that downstream eval'd
+    # consumers would treat as legitimate. Caught in #530 R2.
+    if result.status in ("loaded-existing", "freshly-bootstrapped") and result.has_credentials:
         return 0
     return 1
 
@@ -1828,9 +1836,16 @@ def _setup_wetty_ssh_agent(args: list[str]) -> int:
 
     Exit codes:
     - 0: all 5 steps completed (whether they were no-ops or made changes)
-    - 1: soft failure — script ran but emitted no parseable RESULT
-         (the operator sees the forwarded stderr; deploy continues
-         since Wetty is non-critical)
+         AND the .env file was written (i.e. ``auth_sock_written=1``).
+         A no-op idempotent run is still rc=0 because the .env append
+         is unconditional on the happy path.
+    - 1: soft failure — either (a) the script ran but emitted no
+         parseable RESULT, or (b) ``auth_sock_written=0`` (the fail-fast
+         paths in render_wetty_agent_script emit a parseable
+         all-zero RESULT line, so the absence of the .env write is a
+         real failure even though the script returned 0). Deploy
+         continues since Wetty is non-critical, but the operator sees
+         the forwarded stderr.
     - 2: hard transport / unexpected error
     """
     if args:
@@ -1885,6 +1900,18 @@ def _setup_wetty_ssh_agent(args: list[str]) -> int:
         parts.append("env-written")
     summary = "+".join(parts) if parts else "all-noop"
     print(f"setup wetty-ssh-agent: {summary}")
+    # auth_sock_written=0 means render_wetty_agent_script's fail-fast
+    # paths fired (ssh-agent unresponsive OR sed/printf to .env failed).
+    # Surface as rc=1 so the workflow log shows the soft-fail signal —
+    # deploy.sh continues since Wetty is non-critical but the operator
+    # sees that the agent socket isn't actually plumbed through.
+    if not result.auth_sock_written:
+        print(
+            "setup wetty-ssh-agent: soft-fail — SSH_AUTH_SOCK not written "
+            "to wetty/.env (Wetty container won't see agent socket)",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

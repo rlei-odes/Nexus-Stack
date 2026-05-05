@@ -966,3 +966,109 @@ def test_provision_admin_unparseable_stdout_returns_not_ready() -> None:
     )
     assert result.status == "not-ready"
     assert result.token is None
+
+
+def test_cli_infisical_provision_admin_returns_1_when_creds_dropped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R-creds-required-for-rc-0 (#530 R2 #4): a `loaded-existing` /
+    `freshly-bootstrapped` status with token=None (e.g. invalid-UTF8
+    base64 decode dropped the token) MUST be reported as rc=1, not
+    rc=0. Otherwise deploy.sh prints '✓ Infisical provisioned' while
+    eval'ing empty INFISICAL_TOKEN= / PROJECT_ID= lines that
+    downstream consumers treat as legitimate."""
+    import nexus_deploy.__main__ as main_mod
+    from nexus_deploy.infisical import ProvisionResult
+
+    class _FakeSSH:
+        def __init__(self, _alias: str) -> None:
+            del _alias
+
+        def __enter__(self) -> _FakeSSH:
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            return None
+
+        def run_script(self, _s: str, *, check: bool = False) -> subprocess.CompletedProcess[str]:
+            del check
+            return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
+
+    # Bypass the real provision_admin: simulate the dropped-token case
+    def _fake_provision(
+        *,
+        admin_email: str,
+        admin_password: str,
+        **_kwargs: object,
+    ) -> ProvisionResult:
+        del admin_email, admin_password
+        return ProvisionResult(
+            status="loaded-existing",
+            token=None,  # dropped (invalid utf-8 etc.)
+            project_id=None,
+        )
+
+    monkeypatch.setenv("ADMIN_EMAIL", "ops@example.com")
+    monkeypatch.setenv("INFISICAL_PASS", "pw")
+    monkeypatch.setattr(main_mod, "SSHClient", _FakeSSH)
+    monkeypatch.setattr(main_mod, "provision_admin", _fake_provision)
+
+    rc = main_mod._infisical_provision_admin([])
+    assert rc == 1, "loaded-existing without credentials must be soft-fail"
+    captured = capsys.readouterr()
+    # The handler still writes the eval lines (deploy.sh's eval needs to
+    # CLEAR stale values from prior runs), but the rc=1 signals the
+    # soft-fail so deploy.sh skips the "✓ Infisical provisioned" branch.
+    # Critically the values must be EMPTY-quoted, not stale or garbage.
+    assert "INFISICAL_TOKEN=''" in captured.out
+    assert "PROJECT_ID=''" in captured.out
+
+
+def test_cli_infisical_provision_admin_returns_0_with_full_creds(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Happy path: token + project_id both populated → rc=0 + eval
+    lines on stdout."""
+    import nexus_deploy.__main__ as main_mod
+    from nexus_deploy.infisical import ProvisionResult
+
+    class _FakeSSH:
+        def __init__(self, _alias: str) -> None:
+            del _alias
+
+        def __enter__(self) -> _FakeSSH:
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            return None
+
+        def run_script(self, _s: str, *, check: bool = False) -> subprocess.CompletedProcess[str]:
+            del check
+            return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
+
+    def _fake_provision(
+        *,
+        admin_email: str,
+        admin_password: str,
+        **_kwargs: object,
+    ) -> ProvisionResult:
+        del admin_email, admin_password
+        return ProvisionResult(
+            status="freshly-bootstrapped",
+            token="real-token",
+            project_id="ws-real",
+        )
+
+    monkeypatch.setenv("ADMIN_EMAIL", "ops@example.com")
+    monkeypatch.setenv("INFISICAL_PASS", "pw")
+    monkeypatch.setattr(main_mod, "SSHClient", _FakeSSH)
+    monkeypatch.setattr(main_mod, "provision_admin", _fake_provision)
+
+    rc = main_mod._infisical_provision_admin([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # shlex.quote leaves [a-zA-Z0-9_@%+=:,./-] unquoted, wraps others.
+    assert "INFISICAL_TOKEN=" in out
+    assert "real-token" in out
+    assert "PROJECT_ID=" in out
+    assert "ws-real" in out

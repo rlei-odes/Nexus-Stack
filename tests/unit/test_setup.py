@@ -1195,3 +1195,144 @@ def test_setup_wetty_ssh_agent_returns_none_on_unparseable_stdout() -> None:
 
     result = setup_wetty_ssh_agent(_FakeSSH())  # type: ignore[arg-type]
     assert result is None
+
+
+def test_render_wetty_agent_script_validates_agent_responsiveness() -> None:
+    """R-agent-validate (#530 R2 #1): after `ssh-agent -a SOCKET -s`
+    we must validate that the spawned agent is actually responsive
+    (socket present + `ssh-add -l` not rc=2). Without this validation
+    a silent ssh-agent failure would still set AGENT_STARTED=1 and we'd
+    falsely report success on a broken socket."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    # Must wrap the ssh-agent eval in a conditional (not `|| true`)
+    assert 'if eval "$(ssh-agent -a "$SOCKET" -s)"' in script
+    # Must check both the socket file AND ssh-add response
+    assert 'if [ -S "$SOCKET" ] && SSH_AUTH_SOCK="$SOCKET" ssh-add -l' in script
+    # rc=1 (no keys loaded) is still OK; only rc>=2 (can't connect) bails
+    assert 'if [ "$ADD_RC" = "1" ]' in script
+
+
+def test_render_wetty_agent_script_fail_fast_on_env_append_failure() -> None:
+    """R-env-write-guarded (#530 R2 #2): the .env append must be
+    conditionally guarded; on failure emit RESULT_WETTY with
+    auth_sock_written=0 + bail. Legacy unconditional `>> $ENV_FILE`
+    + `AUTH_SOCK_WROTE=1` lied about the write succeeding when the
+    file/dir was unwritable."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    # printf must be wrapped in `if ... 2>/dev/null; then` not unconditional
+    assert 'if printf \'SSH_AUTH_SOCK=%s\\n\' "$SSH_AUTH_SOCK" >> "$ENV_FILE"' in script
+    # The else-branch emits a parseable RESULT_WETTY with auth_sock_written=0
+    assert "auth_sock_written=0" in script
+
+
+def test_render_wetty_agent_script_ssh_add_failure_leaves_key_added_zero() -> None:
+    """R-ssh-add-non-fatal (#530 R2 #2 part b): ssh-add failure should
+    NOT bail (key file + agent socket still exist; operator can retry)
+    but MUST leave KEY_ADDED=0 so the operator sees the discrepancy
+    in RESULT_WETTY rather than a misleading 1."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    # ssh-add wrapped in `if ... ; then KEY_ADDED=1` (no unconditional set)
+    assert 'if ssh-add "$KEY_PATH" >/dev/null 2>&1; then' in script
+    # Legacy unconditional pattern must be gone
+    assert 'ssh-add "$KEY_PATH" >/dev/null 2>&1 || true' not in script
+
+
+def test_render_wetty_agent_script_step_numbering_aligns_with_docstring() -> None:
+    """R-step-numbering (#530 R2 #3): inline step comments use 2-6
+    (not 1-5) so they align with the docstring's '1. mkdir + chmod 700'
+    precondition + 'steps 2-6 produce a 0/1 in RESULT_WETTY' framing."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    assert "# Step 2: ssh-keygen" in script
+    assert "# Step 3: append pubkey" in script
+    assert "# Step 4: ssh-agent" in script
+    assert "# Step 5: ssh-add" in script
+    assert "# Step 6: write SSH_AUTH_SOCK=" in script
+    # Old numbering is gone
+    assert "# Step 1: ssh-keygen" not in script
+
+
+def test_cli_setup_wetty_ssh_agent_returns_1_when_auth_sock_not_written(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R-soft-fail-on-missing-env-write (#530 R2 #6): when the
+    fail-fast paths in render_wetty_agent_script emit a parseable
+    RESULT_WETTY with auth_sock_written=0, the CLI handler must
+    surface rc=1 (not rc=0). Without this, deploy.sh would log a
+    misleading 'all 5 steps ok' for a Wetty container that won't
+    actually see the agent socket."""
+    import subprocess as _sp
+
+    from nexus_deploy.__main__ import _setup_wetty_ssh_agent
+
+    class _FakeSSH:
+        def __init__(self, _alias: str) -> None:
+            del _alias
+
+        def __enter__(self) -> _FakeSSH:
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            return None
+
+        def run_script(self, _script: str, *, check: bool = False) -> _sp.CompletedProcess[str]:
+            del check
+            return _sp.CompletedProcess(
+                args=["ssh"],
+                returncode=0,
+                stdout=(
+                    "RESULT_WETTY keypair_generated=1 pubkey_added=1 "
+                    "agent_started=0 key_added_to_agent=0 auth_sock_written=0\n"
+                ),
+                stderr="",
+            )
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _FakeSSH)
+    rc = _setup_wetty_ssh_agent([])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "soft-fail" in err
+    assert "SSH_AUTH_SOCK not written" in err
+
+
+def test_cli_setup_wetty_ssh_agent_happy_path_returns_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: auth_sock_written=1 → rc=0 even when other flags
+    are mixed (idempotent re-run)."""
+    import subprocess as _sp
+
+    from nexus_deploy.__main__ import _setup_wetty_ssh_agent
+
+    class _FakeSSH:
+        def __init__(self, _alias: str) -> None:
+            del _alias
+
+        def __enter__(self) -> _FakeSSH:
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            return None
+
+        def run_script(self, _script: str, *, check: bool = False) -> _sp.CompletedProcess[str]:
+            del check
+            return _sp.CompletedProcess(
+                args=["ssh"],
+                returncode=0,
+                stdout=(
+                    "RESULT_WETTY keypair_generated=0 pubkey_added=0 "
+                    "agent_started=0 key_added_to_agent=0 auth_sock_written=1\n"
+                ),
+                stderr="",
+            )
+
+    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _FakeSSH)
+    rc = _setup_wetty_ssh_agent([])
+    assert rc == 0

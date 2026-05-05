@@ -1443,7 +1443,9 @@ def render_pg_ducklake_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     never make it into the running Postgres without this re-apply.
 
     Two stages:
-    1. Wait for ``pg_isready`` (15 iterations of 2s = 30s ceiling).
+    1. Wait for ``pg_isready`` — 30s wall-clock bound (``$SECONDS``-gated
+       loop, ``sleep 2`` per iteration, so up to ~15 probes plus the
+       partial second the loop entered on).
     2. Exec ``psql -f /docker-entrypoint-initdb.d/00-ducklake-bootstrap.sql``
        inside the container. Idempotent — the SQL itself uses
        ``DO $$ ... drop_secret EXCEPTION WHEN OTHERS THEN NULL ... $$``

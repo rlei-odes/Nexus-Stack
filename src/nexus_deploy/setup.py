@@ -682,7 +682,11 @@ AUTH_SOCK_WROTE=0
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 
-# Step 1: ssh-keygen if absent. Fail-fast (echo RESULT_WETTY with
+# Inline-step numbering matches the docstring's "1. mkdir + chmod 700"
+# precondition above. The flags below correspond to docstring steps
+# 2-6 (steps that produce a 0/1 in RESULT_WETTY).
+#
+# Step 2: ssh-keygen if absent. Fail-fast (echo RESULT_WETTY with
 # keypair_generated=0 + bail) when ssh-keygen reports non-zero OR
 # either of the expected output files ($KEY_PATH / $KEY_PATH.pub)
 # isn't on disk afterwards. Without this check, downstream steps
@@ -705,7 +709,7 @@ if [ ! -f "$KEY_PATH" ]; then
     KEYPAIR_GEN=1
 fi
 
-# Step 2: append pubkey to authorized_keys (idempotent — full-line
+# Step 3: append pubkey to authorized_keys (idempotent — full-line
 # match so a partial duplicate doesn't false-positive).
 PUBKEY=$(cat "$KEY_PATH.pub")
 touch /root/.ssh/authorized_keys
@@ -715,9 +719,13 @@ if ! grep -qF "$PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
     PUBKEY_ADD=1
 fi
 
-# Step 3: ssh-agent. Two probes: (a) socket file present, (b) agent
+# Step 4: ssh-agent. Two probes: (a) socket file present, (b) agent
 # responsive (`ssh-add -l` exit code). A dead-socket from a previous
-# crash needs cleaning up before we can start a fresh agent.
+# crash needs cleaning up before we can start a fresh agent. After
+# starting, validate the agent IS responsive — without the validation,
+# `ssh-agent` failing silently (`|| true` was needed for the eval +
+# subshell case) would still set AGENT_STARTED=1 and we'd report
+# success for a broken socket.
 mkdir -p "$(dirname "$SOCKET")"
 AGENT_OK=0
 if [ -S "$SOCKET" ]; then
@@ -728,12 +736,38 @@ if [ -S "$SOCKET" ]; then
     fi
 fi
 if [ "$AGENT_OK" = "0" ]; then
-    eval "$(ssh-agent -a "$SOCKET" -s)" >/dev/null 2>&1 || true
-    AGENT_STARTED=1
+    # `ssh-agent -a SOCKET -s` prints `SSH_AUTH_SOCK=...; SSH_AGENT_PID=...`
+    # to stdout for eval; on success the agent forks and listens on
+    # SOCKET. Capture the eval's exit AND validate the result.
+    if eval "$(ssh-agent -a "$SOCKET" -s)" >/dev/null 2>&1; then
+        # Validate: socket file must exist AND the agent must respond.
+        # ssh-add -l exit code: 0=keys loaded, 1=no keys but agent OK,
+        # 2=can't connect (the failure case we're guarding against).
+        if [ -S "$SOCKET" ] && SSH_AUTH_SOCK="$SOCKET" ssh-add -l >/dev/null 2>&1; then
+            AGENT_STARTED=1
+        else
+            ADD_RC=0
+            SSH_AUTH_SOCK="$SOCKET" ssh-add -l >/dev/null 2>&1 || ADD_RC=$?
+            # rc=1 (no keys) is OK; rc=2 (can't connect) is a real failure.
+            if [ "$ADD_RC" = "1" ]; then
+                AGENT_STARTED=1
+            else
+                echo "  ⚠ ssh-agent started but socket isn't responsive — Wetty SSH-Agent setup incomplete" >&2
+                echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+                exit 0
+            fi
+        fi
+    else
+        echo "  ⚠ ssh-agent failed to start — Wetty SSH-Agent setup incomplete" >&2
+        echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+        exit 0
+    fi
 fi
 export SSH_AUTH_SOCK="$SOCKET"
 
-# Step 4: ssh-add the key if its fingerprint isn't already loaded.
+# Step 5: ssh-add the key if its fingerprint isn't already loaded.
+# Set KEY_ADDED=1 only on a successful add (legacy form unconditionally
+# set it after `|| true`, which masked an actual ssh-add failure).
 KEY_FP=$(ssh-keygen -lf "$KEY_PATH" 2>/dev/null | awk '{{print $2}}' || echo "")
 KEY_LOADED=0
 if [ -n "$KEY_FP" ]; then
@@ -742,18 +776,35 @@ if [ -n "$KEY_FP" ]; then
     fi
 fi
 if [ "$KEY_LOADED" = "0" ]; then
-    ssh-add "$KEY_PATH" >/dev/null 2>&1 || true
-    KEY_ADDED=1
+    if ssh-add "$KEY_PATH" >/dev/null 2>&1; then
+        KEY_ADDED=1
+    else
+        echo "  ⚠ ssh-add failed — Wetty key not loaded into agent" >&2
+        # Don't fail-fast: ssh-add can fail for a non-existent key (we
+        # already gated above) or transient agent issue. Leave
+        # KEY_ADDED=0 so the operator sees the discrepancy in the
+        # RESULT_WETTY line; the key file + agent socket still exist
+        # so the operator can ssh-add manually if needed.
+        :
+    fi
 fi
 
-# Step 5: write SSH_AUTH_SOCK= to wetty's .env (idempotent — strip
-# any prior line first). Done unconditionally because the agent
-# socket path is part of the contract Wetty's compose reads from.
+# Step 6: write SSH_AUTH_SOCK= to wetty's .env (idempotent — strip
+# any prior line first). Set AUTH_SOCK_WROTE=1 only after the append
+# succeeds; an mkdir/permission failure shouldn't be reported as
+# "written".
 if [ -f "$ENV_FILE" ]; then
-    sed -i '/^SSH_AUTH_SOCK=/d' "$ENV_FILE"
+    if ! sed -i '/^SSH_AUTH_SOCK=/d' "$ENV_FILE" 2>/dev/null; then
+        echo "  ⚠ failed to strip existing SSH_AUTH_SOCK= line from $ENV_FILE — Wetty .env may have stale entries" >&2
+    fi
 fi
-printf 'SSH_AUTH_SOCK=%s\\n' "$SSH_AUTH_SOCK" >> "$ENV_FILE"
-AUTH_SOCK_WROTE=1
+if printf 'SSH_AUTH_SOCK=%s\\n' "$SSH_AUTH_SOCK" >> "$ENV_FILE" 2>/dev/null; then
+    AUTH_SOCK_WROTE=1
+else
+    echo "  ⚠ failed to append SSH_AUTH_SOCK= to $ENV_FILE — Wetty container won't see the agent socket" >&2
+    echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=$AGENT_STARTED key_added_to_agent=$KEY_ADDED auth_sock_written=0"
+    exit 0
+fi
 
 echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=$AGENT_STARTED key_added_to_agent=$KEY_ADDED auth_sock_written=$AUTH_SOCK_WROTE"
 """
