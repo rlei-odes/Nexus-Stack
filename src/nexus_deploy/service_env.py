@@ -1119,6 +1119,15 @@ class GiteaWorkspaceConfig:
     git_author_name: str
     git_author_email: str
     repo_name: str
+    # Default branch of the workspace repo, derived by deploy.sh from
+    # the mirrored upstream's default-branch detection
+    # (scripts/deploy.sh:326-357). Stays "main" for non-mirrored
+    # workspaces. Used by stacks whose runtime needs to know the
+    # explicit branch — e.g. the Prefect manifest's `pull:` step
+    # which calls `git_clone(repository=..., branch=$WORKSPACE_BRANCH)`.
+    # Fresh installs still get a working clone via the env-var
+    # default in the seed manifest if this field were ever empty.
+    workspace_branch: str = "main"
 
 
 def _strip_gitea_block(content: str) -> str:
@@ -1144,6 +1153,7 @@ GIT_AUTHOR_EMAIL={cfg.git_author_email}
 GIT_COMMITTER_NAME={cfg.git_author_name}
 GIT_COMMITTER_EMAIL={cfg.git_author_email}
 REPO_NAME={cfg.repo_name}
+WORKSPACE_BRANCH={cfg.workspace_branch}
 {_GITEA_BLOCK_END}
 """
 

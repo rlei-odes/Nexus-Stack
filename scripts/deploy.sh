@@ -390,6 +390,7 @@ printf '%s' "$SECRETS_JSON" | \
     GITEA_PASSWORD="${GITEA_GIT_PASS:-}" \
     GIT_AUTHOR_NAME="${GIT_AUTHOR:-}" \
     GIT_AUTHOR_EMAIL="${GIT_EMAIL:-}" \
+    WORKSPACE_BRANCH="${WORKSPACE_BRANCH:-main}" \
     OM_PRINCIPAL_DOMAIN="${OM_PRINCIPAL_DOMAIN:-}" \
     uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy service-env \

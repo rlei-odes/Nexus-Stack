@@ -843,6 +843,35 @@ def test_cli_firewall_configure_happy_path(
     assert (tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME).is_file()
 
 
+def test_cli_firewall_configure_skipped_service_returns_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """R-skipped-rc1 (#531 R7 #4): when a service is in firewall_rules
+    but its docker-compose.yml is missing/unparseable, the CLI must
+    return rc=1 — NOT rc=0. Existing override stays on disk (per the
+    R5 #1 safety invariant) but the deployed firewall state may not
+    match Tofu if the operator changed the port for that stack.
+    Surfacing as rc=1 is the only way deploy.sh can decide to abort
+    rather than finishing green on a stale override."""
+    from nexus_deploy.__main__ import _firewall_configure
+
+    _make_synthetic_stacks(tmp_path)
+    # Remove the kestra compose so it gets skipped, but the firewall
+    # rule still references it.
+    (tmp_path / "stacks" / "kestra" / "docker-compose.yml").unlink()
+    json_str = json.dumps(
+        {"kestra-1": {"port": 8080}, "postgres-1": {"port": 5432}},
+    )
+    monkeypatch.setattr("sys.stdin", _StdinFake(json_str))
+    rc = _firewall_configure(["--project-root", str(tmp_path), "--domain", "example.com"])
+    assert rc == 1, "skipped service must return rc=1, not rc=0"
+    err = capsys.readouterr().err
+    assert "skipped" in err
+    assert "rc=1" in err or "may not match Tofu" in err
+
+
 def test_cli_firewall_configure_unknown_arg_returns_2(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

@@ -2055,6 +2055,11 @@ def _service_env(args: list[str]) -> int:
     git_author_name = os.environ.get("GIT_AUTHOR_NAME") or ""
     git_author_email = os.environ.get("GIT_AUTHOR_EMAIL") or ""
     repo_name = os.environ.get("REPO_NAME") or ""
+    # WORKSPACE_BRANCH is OPTIONAL — defaults to 'main' when unset
+    # (deploy.sh-only path: the bash detects the upstream's default
+    # branch and exports this var; non-mirrored stacks just stay on
+    # 'main'). Direct-CLI invocation without it gets the same default.
+    workspace_branch = os.environ.get("WORKSPACE_BRANCH") or "main"
     # Require the full set of workspace coords before appending the
     # block — a partial set would write a broken .env (empty
     # PASSWORD or author fields) that's harder to diagnose than a
@@ -2079,6 +2084,7 @@ def _service_env(args: list[str]) -> int:
             git_author_name=git_author_name,
             git_author_email=git_author_email,
             repo_name=repo_name,
+            workspace_branch=workspace_branch,
         )
         appended = append_gitea_workspace_block(cfg, enabled, stacks_dir=stacks_dir)
         for svc in appended:
@@ -2184,11 +2190,32 @@ def _firewall_configure(args: list[str]) -> int:
         f"written={len(write.written)} failed={len(write.failed)}",
     )
     for service in gen.skipped:
-        sys.stderr.write(f"  ⚠ skipped {service} (no parseable docker-compose.yml)\n")
+        sys.stderr.write(
+            f"  ✗ skipped {service} (no parseable docker-compose.yml — "
+            f"existing override kept on disk per the safety invariant, "
+            f"but Tofu's firewall_rules for this stack went unrendered "
+            f"this run)\n",
+        )
 
     if write.failed:
         if not write.written:
             return 2
+        return 1
+    if gen.skipped:
+        # rc=1 when ANY service was skipped — the existing
+        # docker-compose.firewall.yml stays in place (per the safety
+        # invariant from R5 #1: don't delete a still-Tofu-requested
+        # override when its compose.yml is transiently unparseable),
+        # but the deployed firewall state may not match what Tofu
+        # CURRENTLY requests if the operator changed the port for
+        # this stack. Surfacing as soft-fail (not rc=2 hard abort)
+        # so deploy.sh can decide; deploy.sh treats rc=1 as 'state
+        # inconsistent with Tofu, abort'.
+        sys.stderr.write(
+            f"firewall configure: {len(gen.skipped)} service(s) skipped — "
+            f"deployed firewall state may not match Tofu; surface as rc=1 "
+            f"so the workflow doesn't finish green on a stale override\n",
+        )
         return 1
     return 0
 
