@@ -585,15 +585,19 @@ def test_render_dify_hook_password_via_env_var_not_argv() -> None:
 def test_render_dify_hook_cookie_trap_on_return() -> None:
     """R-tmpfile-cleanup: cookie jar removed on function-scoped RETURN
     trap, AND the trap is explicitly cleared via 'trap - RETURN'
-    before function-return so it doesn't leak across hooks. Same
-    pattern as LakeFS / OpenMetadata. The orchestrator runs all
-    hooks in one shell with 'set -u'; a leaked RETURN trap
-    referencing DIFY_COOKIES would trip set -u on a later hook."""
+    before EVERY function-return path (success AND init-failure
+    early-exit) so it doesn't leak across hooks. Same pattern as
+    LakeFS / OpenMetadata. The orchestrator runs all hooks in one
+    shell with 'set -u'; a leaked RETURN trap referencing
+    DIFY_COOKIES would trip set -u on a later hook."""
     script = render_dify_hook(_make_config(), _make_env())
     assert "trap 'rm -f \"$DIFY_COOKIES\"' RETURN" in script
-    # Explicit cleanup + trap reset before exit
-    assert 'rm -f "$DIFY_COOKIES"' in script
-    assert "trap - RETURN" in script
+    # Cleanup + trap-reset must appear at least TWICE: once on the
+    # success path (after the setup POST) and once on the init-
+    # failure early-exit path. R7 caught the missing one on the
+    # init-failure path.
+    assert script.count('rm -f "$DIFY_COOKIES"') >= 2
+    assert script.count("trap - RETURN") >= 2
 
 
 def test_render_windmill_hook_basic() -> None:

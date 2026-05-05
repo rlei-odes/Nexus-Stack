@@ -1037,6 +1037,11 @@ dify_hook() {{
         -H 'Content-Type: application/json' \\
         --data-binary @- 2>/dev/null || echo "")
     if ! echo "$INIT_RESP" | grep -q '"result":"success"'; then
+        # Cleanup + trap reset on early-exit too — same set-u-leak
+        # concern as the success-path cleanup below. R6 fixed only
+        # the success path; R7 caught this matching failure path.
+        rm -f "$DIFY_COOKIES"
+        trap - RETURN
         echo "  ⚠ Dify init validation failed — configure manually at /install" >&2
         echo "RESULT hook=dify status=failed"
         return 0
