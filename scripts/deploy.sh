@@ -560,8 +560,14 @@ fi
 # advertise `redpanda-kafka.<domain>` even though the firewall is
 # closed.
 if [ ! -f "stacks/redpanda/config/redpanda-firewall.yaml" ]; then
-    if ! ssh nexus 'rm -f /opt/docker-server/stacks/redpanda/config/redpanda-firewall.yaml'; then
-        echo -e "${RED}  ✗ Failed to remove stale redpanda-firewall.yaml on server (SSH transport error)${NC}" >&2
+    # Use sudo: an earlier firewall-enabled deploy chowns the redpanda
+    # config dir to 101:101 (see this script's RedPanda config copy
+    # block below). The plain `nexus` SSH user can't unlink files
+    # owned by 101:101 — without sudo, the next 'disable RedPanda
+    # firewall mode' deploy would silently leave the stale yaml in
+    # place and abort on the SSH-rc=1 check above (Permission denied).
+    if ! ssh nexus 'sudo rm -f /opt/docker-server/stacks/redpanda/config/redpanda-firewall.yaml'; then
+        echo -e "${RED}  ✗ Failed to remove stale redpanda-firewall.yaml on server (SSH transport error or sudo denied)${NC}" >&2
         echo -e "${RED}    Aborting — leaving the file would cause setup_redpanda_hook to advertise external listeners while the firewall is closed${NC}" >&2
         exit 1
     fi

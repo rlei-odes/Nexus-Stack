@@ -1203,6 +1203,23 @@ jobs:
           # Store domain in D1 config (escape single quotes)
           ESCAPED_DOMAIN=${DOMAIN//\'/\'\'}
           npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('domain', '$ESCAPED_DOMAIN', datetime('now'))"
+
+          # Store SERVER_TYPE and SERVER_LOCATION in D1 config too. The
+          # schema.sql seeds these via INSERT OR IGNORE, so a fresh
+          # database picks up the schema defaults (cx43/hel1) — but a
+          # repo with non-default SERVER_TYPE / SERVER_LOCATION
+          # variables would NOT have those values land in D1, since
+          # /api/info reads from D1 first (control-plane/functions/api/
+          # info.js:92-103) the dashboard would display the wrong
+          # value until the next spin-up overwrote the row. INSERT OR
+          # REPLACE here ensures the repo-var value is the source of
+          # truth from the very first control-plane deployment.
+          ESCAPED_SERVER_TYPE="${{ vars.SERVER_TYPE || 'cx43' }}"
+          ESCAPED_SERVER_TYPE=${ESCAPED_SERVER_TYPE//\'/\'\'}
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_type', '$ESCAPED_SERVER_TYPE', datetime('now'))"
+          ESCAPED_SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'hel1' }}"
+          ESCAPED_SERVER_LOCATION=${ESCAPED_SERVER_LOCATION//\'/\'\'}
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_location', '$ESCAPED_SERVER_LOCATION', datetime('now'))"
           
           # Add initial log entry (sanitize run_id as numeric)
           RUN_ID=$(printf '%d' "${{ github.run_id }}" 2>/dev/null || echo "0")
