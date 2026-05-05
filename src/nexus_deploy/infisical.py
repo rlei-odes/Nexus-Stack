@@ -353,8 +353,17 @@ echo "RESULT status=freshly-bootstrapped token=$NEW_TOKEN_B64 project_id=$NEW_PR
 
 def parse_provision_result(stdout: str) -> ProvisionResult | None:
     """Extract the RESULT line from the rendered script's stdout. Returns
-    None if no parseable RESULT line exists (treated as
-    transport-failure by the CLI dispatcher)."""
+    None if no parseable RESULT line exists.
+
+    The caller (``provision_admin``) substitutes a
+    ``ProvisionResult(status="not-ready", ...)`` for the None — and
+    the CLI dispatcher then maps that to **rc=1** (soft-fail, warn-
+    and-continue), NOT rc=2. Real transport failures (SSH connection
+    drops, timeouts) raise ``CalledProcessError`` / ``OSError`` from
+    the runner BEFORE we reach this parser, and those are what the
+    CLI's rc=2 branch catches. Without a RESULT line the script ran
+    end-to-end but didn't reach the success path — that's a soft
+    Infisical-bootstrap-not-ready signal, not a transport break."""
     import base64
 
     match = _PROVISION_RESULT_RE.search(stdout)
