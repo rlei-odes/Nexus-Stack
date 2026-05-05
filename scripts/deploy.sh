@@ -283,764 +283,36 @@ echo "$ENV_CONTENT" | ssh nexus "cat > $REMOTE_STACKS_DIR/.env"
 echo -e "${GREEN}  ✓ Global .env config created (DOMAIN + image versions)${NC}"
 
 
-# Generate Infisical .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "infisical"; then
-    echo "  Generating Infisical config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/infisical/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-ENCRYPTION_KEY=$INFISICAL_ENCRYPTION_KEY
-AUTH_SECRET=$INFISICAL_AUTH_SECRET
-POSTGRES_PASSWORD=$INFISICAL_DB_PASSWORD
-EOF
-    echo -e "${GREEN}  ✓ Infisical .env generated${NC}"
-fi
-
-# Generate Grafana .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "grafana"; then
-    echo "  Generating Grafana config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/grafana/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-GRAFANA_ADMIN_USER=$ADMIN_USERNAME
-GRAFANA_ADMIN_PASSWORD=$GRAFANA_PASS
-EOF
-    echo -e "${GREEN}  ✓ Grafana .env generated${NC}"
-fi
-
-# Generate Dagster .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "dagster"; then
-    echo "  Generating Dagster config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/dagster/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-DAGSTER_DB_PASSWORD=$DAGSTER_DB_PASS
-EOF
-    echo -e "${GREEN}  ✓ Dagster .env generated${NC}"
-fi
-
-# Generate Kestra .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "kestra"; then
-    echo "  Generating Kestra config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/kestra/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-KESTRA_ADMIN_USER=$ADMIN_EMAIL
-KESTRA_ADMIN_PASSWORD=$KESTRA_PASS
-KESTRA_DB_PASSWORD=$KESTRA_DB_PASS
-KESTRA_URL=https://kestra.${DOMAIN}
-EOF
-    echo -e "${GREEN}  ✓ Kestra .env generated${NC}"
-fi
-
-# Generate CloudBeaver .env from OpenTofu secrets (auto-config on first boot)
-if echo "$ENABLED_SERVICES" | grep -qw "cloudbeaver"; then
-    echo "  Generating CloudBeaver config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/cloudbeaver/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-CB_SERVER_NAME=Nexus CloudBeaver
-CB_SERVER_URL=https://cloudbeaver.${DOMAIN}
-CB_ADMIN_NAME=nexus-cloudbeaver
-CB_ADMIN_PASSWORD=$CLOUDBEAVER_PASS
-EOF
-    echo -e "${GREEN}  ✓ CloudBeaver .env generated${NC}"
-fi
-
-# Generate Mage AI .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "mage"; then
-    echo "  Generating Mage AI config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/mage/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-MAGE_ADMIN_PASSWORD=$MAGE_PASS
-EOF
-    echo -e "${GREEN}  ✓ Mage AI .env generated${NC}"
-fi
-
-# Generate MinIO .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "minio"; then
-    echo "  Generating MinIO config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/minio/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-MINIO_ROOT_USER=nexus-minio
-MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASS
-EOF
-    echo -e "${GREEN}  ✓ MinIO .env generated${NC}"
-fi
-
-# Generate SFTPGo .env from OpenTofu secrets.
-# Only the admin password is consumed by docker-compose env-substitution
-# (SFTPGo bootstraps the admin from SFTPGO_DEFAULT_ADMIN_*). The default
-# user `nexus-default` is created later via the SFTPGo REST API once the
-# container is up.
-#
-# Empty-password guard: if either `SFTPGO_ADMIN_PASS` or `SFTPGO_USER_PASS`
-# arrives empty (typical cause: SFTPGo got enabled without running
-# OpenTofu first, so the `random_password.sftpgo_admin` /
-# `random_password.sftpgo_user` resources aren't in state yet and
-# `jq -r '... // empty'` returned ""), abort the deploy. Writing the
-# .env anyway would let docker-compose start SFTPGo with a blank-
-# password admin (= a public Cloudflare-Access-protected service with
-# no second auth factor) — that's a security regression worth failing
-# fast on, not just warning. Recovery is one step: run `tofu apply`,
-# then re-run spin-up. Fail-fast here is consistent with other tofu-
-# state-required errors in deploy.sh (e.g., empty $DOMAIN at line 108).
-if echo "$ENABLED_SERVICES" | grep -qw "sftpgo"; then
-    if [ -z "$SFTPGO_ADMIN_PASS" ] || [ -z "$SFTPGO_USER_PASS" ]; then
-        echo -e "${RED}Error: SFTPGo is enabled but admin/user password is empty in OpenTofu state.${NC}"
-        echo -e "${RED}       Cause: random_password.sftpgo_admin and/or random_password.sftpgo_user${NC}"
-        echo -e "${RED}       are not in state yet. Run \`tofu apply\` (which is what the spin-up${NC}"
-        echo -e "${RED}       workflow does before deploy.sh) and re-run, then SECRETS_JSON will${NC}"
-        echo -e "${RED}       carry .sftpgo_admin_password / .sftpgo_user_password.${NC}"
-        exit 1
-    fi
-    echo "  Generating SFTPGo config from OpenTofu secrets..."
-    mkdir -p "$STACKS_DIR/sftpgo"
-    # umask 077 inside a subshell forces the .env to be created at
-    # mode 0600 from byte 0, so the admin password is never visible
-    # to other local users on the runner (or on the VM after rsync,
-    # which preserves modes). chmod 600 after-the-fact is also
-    # applied as belt-and-braces in case the file already existed
-    # at a wider permission and `cat >` only truncates content,
-    # not mode.
-    (
-        umask 077
-        cat > "$STACKS_DIR/sftpgo/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-SFTPGO_ADMIN_PASSWORD=$SFTPGO_ADMIN_PASS
-EOF
-    )
-    chmod 600 "$STACKS_DIR/sftpgo/.env"
-    echo -e "${GREEN}  ✓ SFTPGo .env generated (mode 0600)${NC}"
-fi
-
-# Generate RedPanda Console .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "redpanda-console"; then
-    echo "  Generating RedPanda Console config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/redpanda-console/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-REDPANDA_ADMIN_PASS=$REDPANDA_ADMIN_PASS
-EOF
-    echo -e "${GREEN}  ✓ RedPanda Console .env generated${NC}"
-fi
-
-# Generate Hoppscotch .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "hoppscotch"; then
-    echo "  Generating Hoppscotch config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/hoppscotch/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-DATABASE_URL=postgres://nexus-hoppscotch:${HOPPSCOTCH_DB_PASS}@hoppscotch-db:5432/hoppscotch
-POSTGRES_PASSWORD=${HOPPSCOTCH_DB_PASS}
-JWT_SECRET=${HOPPSCOTCH_JWT}
-SESSION_SECRET=${HOPPSCOTCH_SESSION}
-DATA_ENCRYPTION_KEY=${HOPPSCOTCH_ENCRYPTION}
-REDIRECT_URL=https://hoppscotch.${DOMAIN}
-WHITELISTED_ORIGINS=https://hoppscotch.${DOMAIN}
-VITE_BASE_URL=https://hoppscotch.${DOMAIN}
-VITE_SHORTCODE_BASE_URL=https://hoppscotch.${DOMAIN}
-VITE_ADMIN_URL=https://hoppscotch.${DOMAIN}/admin
-VITE_BACKEND_GQL_URL=https://hoppscotch.${DOMAIN}/backend/graphql
-VITE_BACKEND_WS_URL=wss://hoppscotch.${DOMAIN}/backend/graphql
-VITE_BACKEND_API_URL=https://hoppscotch.${DOMAIN}/backend/v1
-VITE_ALLOWED_AUTH_PROVIDERS=EMAIL
-MAILER_USE_CUSTOM_CONFIGS=true
-MAILER_SMTP_ENABLE=false
-TOKEN_SALT_COMPLEXITY=10
-MAGIC_LINK_TOKEN_VALIDITY=3
-REFRESH_TOKEN_VALIDITY=604800000
-ACCESS_TOKEN_VALIDITY=86400000
-ENABLE_SUBPATH_BASED_ACCESS=false
-EOF
-    echo -e "${GREEN}  ✓ Hoppscotch .env generated${NC}"
-fi
-
-# Generate Meltano .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "meltano"; then
-    echo "  Generating Meltano config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/meltano/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-MELTANO_DB_PASSWORD=${MELTANO_DB_PASS}
-EOF
-    echo -e "${GREEN}  ✓ Meltano .env generated${NC}"
-fi
-
-# Generate Soda .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "soda"; then
-    echo "  Generating Soda config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/soda/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-SODA_DB_PASSWORD=${SODA_DB_PASS}
-EOF
-    echo -e "${GREEN}  ✓ Soda .env generated${NC}"
-fi
-
-# Generate PostgreSQL .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "postgres"; then
-    echo "  Generating PostgreSQL config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/postgres/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-POSTGRES_PASSWORD=${POSTGRES_PASS}
-EOF
-    echo -e "${GREEN}  ✓ PostgreSQL .env generated${NC}"
-fi
-
-# Generate pg_ducklake .env + init SQL from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "pg-ducklake"; then
-    echo "  Generating pg_ducklake config from OpenTofu secrets..."
-    mkdir -p "$STACKS_DIR/pg-ducklake/init"
-    cat > "$STACKS_DIR/pg-ducklake/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-PG_DUCKLAKE_PASSWORD=${PG_DUCKLAKE_PASS}
-EOF
-
-    # Generate bootstrap SQL - configures S3 secret + default DuckLake path
-    # Require the full set of S3 variables to avoid embedding empty values into the secret
-    if [ -n "$HETZNER_S3_BUCKET_PGDUCKLAKE" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && \
-       [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_SERVER" ] && \
-       [ -n "$HETZNER_S3_REGION" ]; then
-        # Escape values for safe SQL interpolation
-        S3_KEY_SQL=$(escape_sql "$HETZNER_S3_ACCESS_KEY")
-        S3_SECRET_SQL=$(escape_sql "$HETZNER_S3_SECRET_KEY")
-        S3_REGION_SQL=$(escape_sql "$HETZNER_S3_REGION")
-        S3_SERVER_SQL=$(escape_sql "$HETZNER_S3_SERVER")
-        S3_BUCKET_SQL=$(escape_sql "$HETZNER_S3_BUCKET_PGDUCKLAKE")
-        cat > "$STACKS_DIR/pg-ducklake/init/00-ducklake-bootstrap.sql" << EOF
--- Auto-generated by deploy.sh - DO NOT EDIT MANUALLY
--- Re-applied via 'docker exec ... psql -f' after every spin-up
--- to handle credential rotation.
-
--- Drop existing secret if present (idempotent for credential rotation)
-DO \$\$ BEGIN
-    PERFORM duckdb.drop_secret('ducklake_s3');
-EXCEPTION WHEN OTHERS THEN NULL;
-END \$\$;
-
--- Create S3 secret for DuckLake Parquet storage
-SELECT duckdb.create_simple_secret(
-    type := 'S3',
-    name := 'ducklake_s3',
-    key_id := '${S3_KEY_SQL}',
-    secret := '${S3_SECRET_SQL}',
-    region := '${S3_REGION_SQL}',
-    endpoint := '${S3_SERVER_SQL}',
-    url_style := 'path',
-    scope := 's3://${S3_BUCKET_SQL}/'
-);
-
--- Set default storage path for new DuckLake tables
-ALTER SYSTEM SET ducklake.default_table_path = 's3://${S3_BUCKET_SQL}/';
-SELECT pg_reload_conf();
-EOF
-        echo -e "${GREEN}  ✓ pg_ducklake .env + S3 init SQL generated${NC}"
-    else
-        cat > "$STACKS_DIR/pg-ducklake/init/00-ducklake-bootstrap.sql" << EOF
--- Auto-generated by deploy.sh - DO NOT EDIT MANUALLY
--- No Hetzner Object Storage configured - using local volume fallback
-ALTER SYSTEM SET ducklake.default_table_path = '/var/lib/ducklake/';
-SELECT pg_reload_conf();
-EOF
-        echo -e "${YELLOW}  ⚠ pg_ducklake using local volume fallback (no Hetzner S3 configured)${NC}"
-    fi
-fi
-
-# Generate pgAdmin .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "pgadmin"; then
-    echo "  Generating pgAdmin config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/pgadmin/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-ADMIN_EMAIL=${ADMIN_EMAIL}
-PGADMIN_PASSWORD=${PGADMIN_PASS}
-EOF
-    echo -e "${GREEN}  ✓ pgAdmin .env generated${NC}"
-fi
-
-# Generate Prefect .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "prefect"; then
-    echo "  Generating Prefect config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/prefect/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-PREFECT_DB_PASSWORD=${PREFECT_DB_PASS}
-PREFECT_UI_API_URL=https://prefect.${DOMAIN}/api
-EOF
-    echo -e "${GREEN}  ✓ Prefect .env generated${NC}"
-fi
-
-# Generate Windmill .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "windmill"; then
-    echo "  Generating Windmill config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/windmill/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-WINDMILL_DB_PASSWORD=${WINDMILL_DB_PASS}
-WINDMILL_SUPERADMIN_SECRET=${WINDMILL_SUPERADMIN_SECRET}
-DOMAIN=${DOMAIN}
-EOF
-    echo -e "${GREEN}  ✓ Windmill .env generated${NC}"
-fi
-
-# Generate Superset .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "superset"; then
-    echo "  Generating Superset config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/superset/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-SUPERSET_ADMIN_PASSWORD=${SUPERSET_PASS}
-SUPERSET_DB_PASSWORD=${SUPERSET_DB_PASS}
-SUPERSET_SECRET_KEY=${SUPERSET_SECRET}
-ADMIN_EMAIL=${ADMIN_EMAIL}
-DOMAIN=${DOMAIN}
-EOF
-    echo -e "${GREEN}  ✓ Superset .env generated${NC}"
-fi
-
-# Generate OpenMetadata .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "openmetadata"; then
-    echo "  Generating OpenMetadata config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/openmetadata/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-OPENMETADATA_DB_PASSWORD=${OPENMETADATA_DB_PASS}
-OPENMETADATA_AIRFLOW_PASSWORD=${OPENMETADATA_AIRFLOW_PASS}
-OPENMETADATA_FERNET_KEY=${OPENMETADATA_FERNET_KEY}
-OPENMETADATA_PRINCIPAL_DOMAIN=${OM_PRINCIPAL_DOMAIN}
-DOMAIN=${DOMAIN}
-EOF
-    echo -e "${GREEN}  ✓ OpenMetadata .env generated${NC}"
-fi
-
-# Generate Gitea .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "gitea"; then
-    echo "  Generating Gitea config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/gitea/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-GITEA_DB_PASSWORD=${GITEA_DB_PASS}
-DOMAIN=${DOMAIN}
-EOF
-    echo -e "${GREEN}  ✓ Gitea .env generated${NC}"
-fi
-
-# Generate ClickHouse .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "clickhouse"; then
-    echo "  Generating ClickHouse config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/clickhouse/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-CLICKHOUSE_ADMIN_PASSWORD=${CLICKHOUSE_ADMIN_PASS}
-EOF
-    echo -e "${GREEN}  ✓ ClickHouse .env generated${NC}"
-fi
-
-# Generate Trino .env from OpenTofu secrets (catalog connector passwords)
-if echo "$ENABLED_SERVICES" | grep -qw "trino"; then
-    echo "  Generating Trino .env from OpenTofu secrets..."
-    cat > "$STACKS_DIR/trino/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-CLICKHOUSE_ADMIN_PASSWORD=${CLICKHOUSE_ADMIN_PASS}
-POSTGRES_PASSWORD=${POSTGRES_PASS}
-EOF
-    echo -e "${GREEN}  ✓ Trino .env generated${NC}"
-fi
-
-# Generate RustFS .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "rustfs"; then
-    echo "  Generating RustFS config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/rustfs/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-RUSTFS_ACCESS_KEY=nexus-rustfs
-RUSTFS_SECRET_KEY=$RUSTFS_ROOT_PASS
-EOF
-    echo -e "${GREEN}  ✓ RustFS .env generated${NC}"
-fi
-
-# Generate SeaweedFS .env and s3.json from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "seaweedfs"; then
-    echo "  Generating SeaweedFS config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/seaweedfs/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-SEAWEEDFS_ACCESS_KEY=nexus-seaweedfs
-SEAWEEDFS_SECRET_KEY=$SEAWEEDFS_ADMIN_PASS
-EOF
-    # Generate S3 auth config with actual credentials
-    cat > "$STACKS_DIR/seaweedfs/s3.json" << EOF
-{
-  "identities": [
-    {
-      "name": "admin",
-      "credentials": [
-        {
-          "accessKey": "nexus-seaweedfs",
-          "secretKey": "$SEAWEEDFS_ADMIN_PASS"
-        }
-      ],
-      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
-    }
-  ]
-}
-EOF
-    echo -e "${GREEN}  ✓ SeaweedFS .env and s3.json generated${NC}"
-fi
-
-# Generate Garage .env and garage.toml from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "garage"; then
-    echo "  Generating Garage config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/garage/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-GARAGE_ADMIN_TOKEN=$GARAGE_ADMIN_TOKEN
-EOF
-    # Generate garage.toml with admin token
-    cat > "$STACKS_DIR/garage/garage.toml" << EOF
-metadata_dir = "/var/lib/garage/meta"
-data_dir = "/var/lib/garage/data"
-db_engine = "lmdb"
-replication_factor = 1
-
-rpc_bind_addr = "[::]:3901"
-rpc_secret = "$GARAGE_RPC_SECRET"
-
-[s3_api]
-s3_region = "garage"
-api_bind_addr = "[::]:3900"
-root_domain = ".s3.garage.localhost"
-
-[s3_web]
-bind_addr = "[::]:3902"
-root_domain = ".web.garage.localhost"
-
-[admin]
-api_bind_addr = "[::]:3903"
-admin_token = "$GARAGE_ADMIN_TOKEN"
-EOF
-    echo -e "${GREEN}  ✓ Garage .env and garage.toml generated${NC}"
-fi
-
-# Generate LakeFS .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "lakefs"; then
-    echo "  Generating LakeFS config from OpenTofu secrets..."
-
-    # Check if Hetzner Object Storage is configured
-    if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_BUCKET" ]; then
-        echo "  Using Hetzner Object Storage as blockstore..."
-        cat > "$STACKS_DIR/lakefs/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-LAKEFS_DATABASE_TYPE=postgres
-LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://nexus-lakefs:${LAKEFS_DB_PASS}@lakefs-db:5432/lakefs?sslmode=disable
-LAKEFS_AUTH_ENCRYPT_SECRET_KEY=${LAKEFS_ENCRYPT_SECRET}
-LAKEFS_BLOCKSTORE_TYPE=s3
-LAKEFS_BLOCKSTORE_S3_ENDPOINT=https://${HETZNER_S3_SERVER}
-LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE=true
-LAKEFS_BLOCKSTORE_S3_DISCOVER_BUCKET_REGION=false
-LAKEFS_BLOCKSTORE_S3_REGION=${HETZNER_S3_REGION}
-LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID=${HETZNER_S3_ACCESS_KEY}
-LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY=${HETZNER_S3_SECRET_KEY}
-LAKEFS_GATEWAYS_S3_DOMAIN_NAME=s3.lakefs.${DOMAIN}
-# Note: LAKEFS_INSTALLATION_* vars only work with database.type=local
-# Admin user is created via API in Step 7/7
-POSTGRES_PASSWORD=${LAKEFS_DB_PASS}
-EOF
-        echo -e "${GREEN}  ✓ LakeFS .env generated (Hetzner Object Storage backend)${NC}"
-    else
-        echo -e "${YELLOW}  ⚠ Hetzner Object Storage not configured, using local storage${NC}"
-        cat > "$STACKS_DIR/lakefs/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-LAKEFS_DATABASE_TYPE=postgres
-LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://nexus-lakefs:${LAKEFS_DB_PASS}@lakefs-db:5432/lakefs?sslmode=disable
-LAKEFS_AUTH_ENCRYPT_SECRET_KEY=${LAKEFS_ENCRYPT_SECRET}
-LAKEFS_BLOCKSTORE_TYPE=local
-LAKEFS_BLOCKSTORE_LOCAL_PATH=/data
-LAKEFS_GATEWAYS_S3_DOMAIN_NAME=s3.lakefs.${DOMAIN}
-# Note: LAKEFS_INSTALLATION_* vars only work with database.type=local
-# Admin user is created via API in Step 7/7
-POSTGRES_PASSWORD=${LAKEFS_DB_PASS}
-EOF
-        echo -e "${GREEN}  ✓ LakeFS .env generated (local storage backend)${NC}"
-    fi
-fi
-
-# Generate Filestash .env from OpenTofu secrets
-if echo "$ENABLED_SERVICES" | grep -qw "filestash"; then
-    echo "  Generating Filestash config from OpenTofu secrets..."
-
-    # Generate bcrypt hash for admin password
-    if [ -n "$FILESTASH_ADMIN_PASSWORD" ]; then
-        if ! command -v htpasswd >/dev/null 2>&1; then
-            echo "❌ ERROR: 'htpasswd' command not found but FILESTASH_ADMIN_PASSWORD is set."
-            echo "   Please install 'apache2-utils' (Debian/Ubuntu) or 'httpd-tools' (RHEL/CentOS) on the target host."
-            exit 1
-        fi
-
-        FILESTASH_ADMIN_HASH=$(htpasswd -nbBC 10 admin "$FILESTASH_ADMIN_PASSWORD" 2>/dev/null | cut -d: -f2)
-        if [ -z "$FILESTASH_ADMIN_HASH" ]; then
-            echo "❌ ERROR: Failed to generate Filestash admin password hash with 'htpasswd'."
-            exit 1
-        fi
-        # Escape $ in bcrypt hash for Docker Compose .env ($ → $$)
-        FILESTASH_ADMIN_HASH_ESCAPED=$(echo "$FILESTASH_ADMIN_HASH" | sed 's/\$/\$\$/g')
-    else
-        FILESTASH_ADMIN_HASH=""
-        FILESTASH_ADMIN_HASH_ESCAPED=""
-    fi
-
-    # Determine which S3 backends are configured
-    HAS_R2=false
-    HAS_HETZNER=false
-    HAS_EXTERNAL=false
-    if [ -n "$R2_DATA_ENDPOINT" ] && [ -n "$R2_DATA_ACCESS_KEY" ] && [ -n "$R2_DATA_SECRET_KEY" ] && [ -n "$R2_DATA_BUCKET" ]; then
-        HAS_R2=true
-    fi
-    if [ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_ACCESS_KEY" ] && [ -n "$HETZNER_S3_SECRET_KEY" ] && [ -n "$HETZNER_S3_BUCKET_GENERAL" ]; then
-        HAS_HETZNER=true
-    fi
-    if [ -n "$EXTERNAL_S3_ENDPOINT" ] && [ -n "$EXTERNAL_S3_ACCESS_KEY" ] && [ -n "$EXTERNAL_S3_SECRET_KEY" ] && [ -n "$EXTERNAL_S3_BUCKET" ]; then
-        HAS_EXTERNAL=true
-    fi
-
-    if [ "$HAS_R2" = "true" ] || [ "$HAS_HETZNER" = "true" ] || [ "$HAS_EXTERNAL" = "true" ]; then
-        echo "  Pre-configuring Filestash with S3 backend(s)..."
-
-        # Build connections array and params dynamically using jq
-        # IMPORTANT: middleware params MUST be JSON strings (tojson) because
-        # Filestash encrypts/decrypts these fields
-        CONNECTIONS="[]"
-        PARAMS="{}"
-        RELATED_BACKEND=""
-
-        # R2 Datalake (primary if configured)
-        if [ "$HAS_R2" = "true" ]; then
-            CONNECTIONS=$(echo "$CONNECTIONS" | jq '. + [{"type":"s3","label":"R2 Datalake"}]')
-            PARAMS=$(echo "$PARAMS" | jq --arg ak "$R2_DATA_ACCESS_KEY" --arg sk "$R2_DATA_SECRET_KEY" \
-                --arg ep "$R2_DATA_ENDPOINT" --arg bk "$R2_DATA_BUCKET" \
-                '. + {"R2 Datalake":{"type":"s3","access_key_id":$ak,"secret_access_key":$sk,"endpoint":$ep,"region":"auto","path":("/"+$bk+"/")}}')
-            RELATED_BACKEND="R2 Datalake"
-        fi
-
-        # Hetzner Storage
-        if [ "$HAS_HETZNER" = "true" ]; then
-            CONNECTIONS=$(echo "$CONNECTIONS" | jq '. + [{"type":"s3","label":"Hetzner Storage"}]')
-            PARAMS=$(echo "$PARAMS" | jq --arg ak "$HETZNER_S3_ACCESS_KEY" --arg sk "$HETZNER_S3_SECRET_KEY" \
-                --arg ep "https://$HETZNER_S3_SERVER" --arg rg "$HETZNER_S3_REGION" --arg bk "$HETZNER_S3_BUCKET_GENERAL" \
-                '. + {"Hetzner Storage":{"type":"s3","access_key_id":$ak,"secret_access_key":$sk,"endpoint":$ep,"region":$rg,"path":("/"+$bk+"/")}}')
-            [ -z "$RELATED_BACKEND" ] && RELATED_BACKEND="Hetzner Storage"
-        fi
-
-        # External S3
-        if [ "$HAS_EXTERNAL" = "true" ]; then
-            CONNECTIONS=$(echo "$CONNECTIONS" | jq --arg lb "$EXTERNAL_S3_LABEL" '. + [{"type":"s3","label":$lb}]')
-            PARAMS=$(echo "$PARAMS" | jq --arg ak "$EXTERNAL_S3_ACCESS_KEY" --arg sk "$EXTERNAL_S3_SECRET_KEY" \
-                --arg ep "$EXTERNAL_S3_ENDPOINT" --arg rg "$EXTERNAL_S3_REGION" --arg bk "$EXTERNAL_S3_BUCKET" --arg lb "$EXTERNAL_S3_LABEL" \
-                '. + {($lb):{"type":"s3","access_key_id":$ak,"secret_access_key":$sk,"endpoint":$ep,"region":$rg,"path":("/"+$bk+"/")}}')
-            [ -z "$RELATED_BACKEND" ] && RELATED_BACKEND="$EXTERNAL_S3_LABEL"
-        fi
-
-        CONFIG_JSON=$(jq -n --argjson conns "$CONNECTIONS" --argjson params "$PARAMS" --arg rb "$RELATED_BACKEND" '{
-            connections: $conns,
-            middleware: {
-                identity_provider: {type: "passthrough", params: ({"strategy":"direct"} | tojson)},
-                attribute_mapping: {related_backend: $rb, params: ($params | tojson)}
-            }
-        }')
-        CONFIG_BASE64=$(echo "$CONFIG_JSON" | base64 | tr -d '\n')
-
-        cat > "$STACKS_DIR/filestash/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-CONFIG_JSON=${CONFIG_BASE64}
-ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH_ESCAPED}
-DOMAIN=${DOMAIN}
-EOF
-        BACKENDS=""
-        [ "$HAS_R2" = "true" ] && BACKENDS="R2 Datalake"
-        [ "$HAS_HETZNER" = "true" ] && BACKENDS="${BACKENDS:+$BACKENDS + }Hetzner S3"
-        [ "$HAS_EXTERNAL" = "true" ] && BACKENDS="${BACKENDS:+$BACKENDS + }${EXTERNAL_S3_LABEL}"
-        echo -e "${GREEN}  ✓ Filestash .env generated (${BACKENDS} pre-configured, primary: ${RELATED_BACKEND})${NC}"
-    else
-        # Create minimal .env without S3 pre-configuration
-        cat > "$STACKS_DIR/filestash/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-# Note: S3 backend must be configured manually at /admin
-ADMIN_PASSWORD=${FILESTASH_ADMIN_HASH_ESCAPED}
-DOMAIN=${DOMAIN}
-EOF
-        echo -e "${YELLOW}  ⚠ Filestash .env generated (admin password set, configure S3 at /admin)${NC}"
-    fi
-fi
-
-# Wiki.js
-if echo "$ENABLED_SERVICES" | grep -qw "wikijs" && [ -n "$WIKIJS_DB_PASS" ]; then
-    cat > "$STACKS_DIR/wikijs/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-WIKIJS_DB_PASSWORD=${WIKIJS_DB_PASS}
-EOF
-    echo -e "${GREEN}  ✓ Wiki.js .env generated${NC}"
-fi
-
-# Woodpecker CI
-if echo "$ENABLED_SERVICES" | grep -qw "woodpecker" && [ -n "$WOODPECKER_AGENT_SECRET" ]; then
-    cat > "$STACKS_DIR/woodpecker/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-DOMAIN=${DOMAIN}
-WOODPECKER_AGENT_SECRET=${WOODPECKER_AGENT_SECRET}
-WOODPECKER_ADMIN=${ADMIN_USERNAME:-}
-WOODPECKER_GITEA_CLIENT=${WOODPECKER_GITEA_CLIENT:-}
-WOODPECKER_GITEA_SECRET=${WOODPECKER_GITEA_SECRET:-}
-EOF
-    echo -e "${GREEN}  ✓ Woodpecker CI .env generated${NC}"
-fi
-
-# Apache Spark
-if echo "$ENABLED_SERVICES" | grep -qw "spark"; then
-    cat > "$STACKS_DIR/spark/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-HETZNER_S3_ENDPOINT=${HETZNER_S3_SERVER:+https://${HETZNER_S3_SERVER}}
-HETZNER_S3_ACCESS_KEY=${HETZNER_S3_ACCESS_KEY:-}
-HETZNER_S3_SECRET_KEY=${HETZNER_S3_SECRET_KEY:-}
-HETZNER_S3_BUCKET=${HETZNER_S3_BUCKET_GENERAL:-}
-SPARK_WORKER_CORES=${SPARK_WORKER_CORES:-2}
-SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY:-3g}
-EOF
-    echo -e "${GREEN}  ✓ Spark .env generated${NC}"
-fi
-
-# Apache Flink
-if echo "$ENABLED_SERVICES" | grep -qw "flink"; then
-    cat > "$STACKS_DIR/flink/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-HETZNER_S3_ENDPOINT=${HETZNER_S3_SERVER:+https://${HETZNER_S3_SERVER}}
-HETZNER_S3_ACCESS_KEY=${HETZNER_S3_ACCESS_KEY:-}
-HETZNER_S3_SECRET_KEY=${HETZNER_S3_SECRET_KEY:-}
-HETZNER_S3_BUCKET=${HETZNER_S3_BUCKET_GENERAL:-}
-FLINK_TASKMANAGER_SLOTS=${FLINK_TASKMANAGER_SLOTS:-2}
-EOF
-    echo -e "${GREEN}  ✓ Flink .env generated${NC}"
-fi
-
-# Dinky (Flink SQL IDE)
-if echo "$ENABLED_SERVICES" | grep -qw "dinky"; then
-    if [ -z "${DINKY_ADMIN_PASS:-}" ]; then
-        echo -e "${YELLOW}  ⚠️  DINKY_ADMIN_PASS not set - Dinky will use default credentials${NC}"
-    fi
-    cat > "$STACKS_DIR/dinky/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-DINKY_ADMIN_PASSWORD=${DINKY_ADMIN_PASS:-}
-EOF
-    echo -e "${GREEN}  ✓ Dinky .env generated${NC}"
-fi
-
-# Jupyter PySpark
-if echo "$ENABLED_SERVICES" | grep -qw "jupyter"; then
-    # Set SPARK_MASTER based on whether Spark stack is enabled
-    if echo "$ENABLED_SERVICES" | grep -qw "spark"; then
-        JUPYTER_SPARK_MASTER="spark://spark-master:7077"
-    else
-        JUPYTER_SPARK_MASTER="local[*]"
-    fi
-    cat > "$STACKS_DIR/jupyter/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-SPARK_MASTER=${JUPYTER_SPARK_MASTER}
-HETZNER_S3_ENDPOINT=${HETZNER_S3_SERVER:+https://${HETZNER_S3_SERVER}}
-HETZNER_S3_ACCESS_KEY=${HETZNER_S3_ACCESS_KEY:-}
-HETZNER_S3_SECRET_KEY=${HETZNER_S3_SECRET_KEY:-}
-HETZNER_S3_BUCKET=${HETZNER_S3_BUCKET_GENERAL:-}
-EOF
-    echo -e "${GREEN}  ✓ Jupyter PySpark .env generated${NC}"
-fi
-
-# S3 Manager
-if echo "$ENABLED_SERVICES" | grep -qw "s3manager"; then
-    cat > "$STACKS_DIR/s3manager/.env" << EOF
-# Auto-generated - DO NOT COMMIT
-ACCESS_KEY_ID=${HETZNER_S3_ACCESS_KEY:-}
-SECRET_ACCESS_KEY=${HETZNER_S3_SECRET_KEY:-}
-REGION=${HETZNER_S3_REGION:-}
-ENDPOINT=${HETZNER_S3_SERVER:-}
-USE_SSL=true
-EOF
-    echo -e "${GREEN}  ✓ S3 Manager .env generated${NC}"
-fi
-
-# Appsmith
-if echo "$ENABLED_SERVICES" | grep -qw "appsmith" && [ -n "$APPSMITH_ENCRYPTION_PASSWORD" ] && [ -n "$APPSMITH_ENCRYPTION_SALT" ]; then
-    echo "  Generating Appsmith config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/appsmith/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-APPSMITH_ENCRYPTION_PASSWORD=${APPSMITH_ENCRYPTION_PASSWORD}
-APPSMITH_ENCRYPTION_SALT=${APPSMITH_ENCRYPTION_SALT}
-APPSMITH_DISABLE_TELEMETRY=true
-APPSMITH_CUSTOM_DOMAIN=https://appsmith.${DOMAIN}
-EOF
-    echo -e "${GREEN}  ✓ Appsmith .env generated${NC}"
-fi
-
-# NocoDB
-if echo "$ENABLED_SERVICES" | grep -qw "nocodb" && [ -n "$NOCODB_DB_PASS" ] && [ -n "$NOCODB_ADMIN_PASS" ] && [ -n "$NOCODB_JWT_SECRET" ]; then
-    echo "  Generating NocoDB config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/nocodb/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-NC_DB=pg://nocodb-db:5432?u=nexus-nocodb&p=${NOCODB_DB_PASS}&d=nocodb
-NC_AUTH_JWT_SECRET=${NOCODB_JWT_SECRET}
-NC_ADMIN_EMAIL=${ADMIN_EMAIL}
-NC_ADMIN_PASSWORD=${NOCODB_ADMIN_PASS}
-NC_PUBLIC_URL=https://nocodb.${DOMAIN}
-NOCODB_DB_PASSWORD=${NOCODB_DB_PASS}
-EOF
-    echo -e "${GREEN}  ✓ NocoDB .env generated${NC}"
-fi
-
-# Dify
-if echo "$ENABLED_SERVICES" | grep -qw "dify" && [ -n "$DIFY_DB_PASS" ] && [ -n "$DIFY_ADMIN_PASS" ]; then
-    echo "  Generating Dify config from OpenTofu secrets..."
-    cat > "$STACKS_DIR/dify/.env" << EOF
-# Auto-generated from OpenTofu secrets - DO NOT COMMIT
-DIFY_DB_PASSWORD=${DIFY_DB_PASS}
-DIFY_REDIS_PASSWORD=${DIFY_REDIS_PASS}
-DIFY_SECRET_KEY=${DIFY_SECRET_KEY}
-DIFY_ADMIN_PASSWORD=${DIFY_ADMIN_PASS}
-DIFY_WEAVIATE_API_KEY=${DIFY_WEAVIATE_API_KEY}
-DIFY_SANDBOX_API_KEY=${DIFY_SANDBOX_API_KEY}
-DIFY_PLUGIN_DAEMON_KEY=${DIFY_PLUGIN_DAEMON_KEY}
-DIFY_PLUGIN_INNER_API_KEY=${DIFY_PLUGIN_INNER_API_KEY}
-EOF
-    echo -e "${GREEN}  ✓ Dify .env generated${NC}"
-fi
+# Phase 3 Modul 3.4c (#505) — was 700+ LoC of bash heredocs.
+# All per-service .env files (40+ stacks) now generated by Python's
+# service-env CLI. Workspace-repo coords (GITEA_REPO_URL, REPO_NAME,
+# GITEA_REPO_OWNER, WORKSPACE_BRANCH, GIT_AUTHOR, etc.) stay derived
+# in bash here because they feed BOTH the service-env CLI (via
+# env-vars for the optional Gitea workspace block append) AND the
+# downstream [7/7] orchestrator (also via env-vars).
 
 # Generate Git workspace .env vars for services that integrate with Gitea
-# These vars enable auto-clone of the shared workspace repo at container startup.
-# The clone may fail on first deployment (Gitea starts in parallel), but succeeds
-# on subsequent spin-ups. Services are restarted in Step 7 after repo creation.
-# Security: Credentials are passed via GITEA_USERNAME/GITEA_PASSWORD env vars and
-# injected into containers via .netrc at startup (not embedded in the repo URL).
 if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; then
     # Workspace-config identity: when no separate single-address user is
     # configured (GITEA_USER_EMAIL empty after trim+comma-split), fall back
     # to the admin identity for repo URLs and service .env values.
-    # Downstream service containers need a non-empty username + email for
-    # git operations (empty values would produce invalid URLs like
-    # http://gitea:3000//repo.git). This fallback is config-only and does
-    # NOT reintroduce the email-uniqueness collision the parent PR fixed:
-    # the Gitea user-create block below also gates on
-    # `[ -n "$GITEA_USER_EMAIL" ]` and skips cleanly when empty.
-    #
-    # Gate uses GITEA_USER_EMAIL (not raw USER_EMAIL) so a USER_EMAIL whose
-    # first entry is empty/whitespace (e.g. a leading `,` in the joined
-    # list) correctly routes to the admin fallback.
     if [ -n "$GITEA_USER_EMAIL" ]; then
-        # See top-of-script comment (~line 85) on GITEA_USER_EMAIL vs USER_EMAIL.
         GITEA_USER_USERNAME="${GITEA_USER_EMAIL%%@*}"
     else
         GITEA_USER_USERNAME="$ADMIN_USERNAME"
     fi
     # Determine workspace repo. Three cases:
     # - mirror + user → fork of first mirror into user's namespace
-    # - mirror + no user → admin's mirror-readonly repo directly (still created
-    #   later in the mirror block regardless of USER_EMAIL)
-    # - no mirror → admin's default empty repo (created further below only when
-    #   GH_MIRROR_REPOS is unset)
+    # - mirror + no user → admin's mirror-readonly repo directly
+    # - no mirror → admin's default empty repo
     if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "$GITEA_USER_EMAIL" ]; then
-        # Derive repo name from first mirror URL (e.g. https://github.com/user/Bsc_EDS_GIS_FS2026)
         FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
         WORKSPACE_REPO_NAME=$(basename "$FIRST_MIRROR" .git)
-        # Fork source: admin/mirror-readonly-<name>
-        # Fork name: <originalname>_<sanitized_username> (e.g. Bsc_EDS_GIS_FS2026_stefan_koch)
         GITEA_USER_SANITIZED="${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}"
         REPO_NAME="${WORKSPACE_REPO_NAME}_${GITEA_USER_SANITIZED}"
         GITEA_REPO_OWNER="${GITEA_USER_USERNAME}"
         GITEA_REPO_URL="http://gitea:3000/${GITEA_REPO_OWNER}/${REPO_NAME}.git"
     elif [ -n "${GH_MIRROR_REPOS:-}" ]; then
-        # Mirror configured but no user to fork into: point services at the
-        # admin's mirror-readonly-<name> repo that the mirror block creates
-        # (line ~3261). Without this branch we'd previously fall through to
-        # the default empty-repo name below, which is NOT created when
-        # GH_MIRROR_REPOS is set — service .env values would reference a
-        # non-existent repo.
         FIRST_MIRROR=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
         REPO_NAME="mirror-readonly-$(basename "$FIRST_MIRROR" .git)"
         GITEA_REPO_OWNER="${ADMIN_USERNAME}"
@@ -1052,50 +324,16 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
     fi
 
     # Resolve the workspace repo's default branch.
-    #
-    # Three paths converge on this variable:
-    #   1. Kestra `system.git-sync` / `system.flow-sync` flow YAML
-    #      (`branch: ${WORKSPACE_BRANCH}`)
-    #   2. The post-fork merge-upstream POST (mirror mode only)
-    #   3. Anywhere else in this script that needs a Git ref for the
-    #      workspace repo
-    #
-    # Without this, all three hardcoded `main` and broke for users
-    # mirroring a GitHub repo whose default branch is `master` (or
-    # anything else): SyncFlows clones the wrong branch and silently
-    # syncs nothing; merge-upstream returns 404 and the fork drifts.
-    #
-    # Resolution rules:
-    #   - No mirror: deploy.sh creates the repo itself with `main` →
-    #     `main` is correct, no API call needed.
-    #   - Mirror: query GitHub's REST API for the upstream repo's
-    #     `default_branch`. The fork inherits this value when Gitea
-    #     mirrors + forks the repo. Fall back to `main` on any HTTP
-    #     or parse failure (don't make this a hard dependency — a
-    #     misconfigured GH_MIRROR_TOKEN should warn, not block).
+    # No mirror → 'main'. Mirror → query GitHub API for upstream's
+    # default_branch, fall back to 'main' on any HTTP/parse failure.
     WORKSPACE_BRANCH="main"
     if [ -n "${GH_MIRROR_REPOS:-}" ] && [ -n "${GH_MIRROR_TOKEN:-}" ]; then
         FIRST_MIRROR_FOR_BRANCH=$(echo "$GH_MIRROR_REPOS" | cut -d',' -f1 | tr -d ' ')
-        # Normalize to `owner/repo`:
-        #   - strip `https://github.com/` host prefix
-        #   - strip optional `?…` / `#…` URL parts
-        #   - strip a trailing `/`
-        #   - strip a trailing `.git`
-        # Then validate the result matches `owner/repo` (no inner slashes,
-        # both halves non-empty). Anything else falls back to `main` rather
-        # than building a malformed GitHub API URL.
         GH_OWNER_REPO=$(echo "$FIRST_MIRROR_FOR_BRANCH" \
             | sed -E 's#^https?://github\.com/##; s#[?#].*$##; s#/$##; s#\.git$##')
         if [ -n "$GH_OWNER_REPO" ] && [[ "$GH_OWNER_REPO" =~ ^[^/]+/[^/]+$ ]]; then
-            # Token + URL go through a `curl --config` file (mode 0600)
-            # so $GH_MIRROR_TOKEN never appears in argv (would otherwise
-            # be visible in the runner's `ps` listing while curl runs).
-            # The mktemp + curl + cleanup are wrapped in a subshell with
-            # `trap … EXIT HUP INT TERM` so the token-bearing config file
-            # is always removed — even on Ctrl-C, runner cancellation, or
-            # an unexpected `set -e` exit between mktemp and rm. Same
-            # argv-safe pattern as the Kestra/Infisical paths elsewhere
-            # in this script.
+            # Token + URL go through curl --config (mode 0600) so the
+            # token never appears in argv. Subshell trap ensures cleanup.
             DETECTED_BRANCH=$(
                 GH_API_CFG=$(mktemp)
                 trap 'rm -f "$GH_API_CFG"' EXIT HUP INT TERM
@@ -1120,51 +358,51 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
         fi
     fi
 
-    # Require BOTH a valid single user email and a user password to use user
-    # credentials for service Git integration. Either one missing → fall
-    # back to admin. Gate on GITEA_USER_EMAIL (not USER_EMAIL) so a list
-    # with empty first entry routes to the admin branch.
+    # Workspace identity: USER if both email + password set, else ADMIN.
     if [ -n "$GITEA_USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]; then
         GITEA_GIT_USER="${GITEA_USER_USERNAME}"
         GITEA_GIT_PASS="${GITEA_USER_PASS}"
         GIT_AUTHOR="${GITEA_USER_USERNAME}"
-        # Single-address: GIT_EMAIL is written to service .env files and used
-        # as git author/committer email. USER_EMAIL may be a comma-list;
-        # use GITEA_USER_EMAIL so commit metadata is well-formed.
         GIT_EMAIL="${GITEA_USER_EMAIL}"
     else
-        # Fallback to admin if no user identity/password available
         GITEA_GIT_USER="${ADMIN_USERNAME}"
         GITEA_GIT_PASS="${GITEA_ADMIN_PASS}"
         GIT_AUTHOR="${ADMIN_USERNAME}"
         GIT_EMAIL="${ADMIN_EMAIL}"
     fi
-
-    for SERVICE in jupyter marimo code-server meltano prefect; do
-        if echo "$ENABLED_SERVICES" | grep -qw "$SERVICE"; then
-            echo "  Adding Git workspace config to $SERVICE .env..."
-            ENV_FILE="$STACKS_DIR/$SERVICE/.env"
-            # Idempotent: remove existing Gitea block before writing
-            if [ -f "$ENV_FILE" ]; then
-                sed -i '/^# >>> Gitea workspace repo/,/^# <<< Gitea workspace repo/d' "$ENV_FILE"
-            fi
-            cat >> "$ENV_FILE" << EOF
-# >>> Gitea workspace repo (auto-generated, do not edit)
-GITEA_URL=http://gitea:3000
-GITEA_REPO_URL=${GITEA_REPO_URL}
-GITEA_USERNAME=${GITEA_GIT_USER}
-GITEA_PASSWORD=${GITEA_GIT_PASS}
-GIT_AUTHOR_NAME=${GIT_AUTHOR}
-GIT_AUTHOR_EMAIL=${GIT_EMAIL}
-GIT_COMMITTER_NAME=${GIT_AUTHOR}
-GIT_COMMITTER_EMAIL=${GIT_EMAIL}
-REPO_NAME=${REPO_NAME}
-# <<< Gitea workspace repo
-EOF
-            echo -e "${GREEN}  ✓ $SERVICE Git config added${NC}"
-        fi
-    done
 fi
+
+# Generate per-service .env files via Python service-env CLI.
+# When Gitea is enabled and the workspace coords above were derived,
+# the CLI also appends the marker-wrapped Gitea workspace block to
+# jupyter / marimo / code-server / meltano / prefect.
+echo "  Generating per-service .env files..."
+SERVICE_ENV_RC=0
+printf '%s' "$SECRETS_JSON" | \
+    DOMAIN="$DOMAIN" \
+    ADMIN_EMAIL="$ADMIN_EMAIL" \
+    GITEA_USER_EMAIL="${GITEA_USER_EMAIL:-}" \
+    GITEA_USER_USERNAME="${GITEA_USER_USERNAME:-}" \
+    GITEA_REPO_OWNER="${GITEA_REPO_OWNER:-}" \
+    REPO_NAME="${REPO_NAME:-}" \
+    GITEA_REPO_URL="${GITEA_REPO_URL:-}" \
+    GITEA_USERNAME="${GITEA_GIT_USER:-}" \
+    GITEA_PASSWORD="${GITEA_GIT_PASS:-}" \
+    GIT_AUTHOR_NAME="${GIT_AUTHOR:-}" \
+    GIT_AUTHOR_EMAIL="${GIT_EMAIL:-}" \
+    OM_PRINCIPAL_DOMAIN="${OM_PRINCIPAL_DOMAIN:-}" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy service-env \
+    --enabled "$(echo "$ENABLED_SERVICES" | tr '\n ' ',,')" \
+    --stacks-dir "$STACKS_DIR" \
+    || SERVICE_ENV_RC=$?
+case "${SERVICE_ENV_RC:-0}" in
+    0) echo -e "${GREEN}  ✓ Per-service .env files generated${NC}" ;;
+    1) echo -e "${YELLOW}  ⚠ Some service .env renders failed (continuing)${NC}" ;;
+    *) echo -e "${RED}  ✗ service-env hard failure (rc=${SERVICE_ENV_RC}); aborting${NC}"; exit "${SERVICE_ENV_RC}" ;;
+esac
+unset SERVICE_ENV_RC
+
 
 # Phase 3 Modul 3.3 (#505) — was 44 lines: per-stack rsync loop +
 # disabled-stack cleanup ssh heredoc. Both replaced by one CLI call.

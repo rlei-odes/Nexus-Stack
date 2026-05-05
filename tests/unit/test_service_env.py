@@ -1,0 +1,931 @@
+"""Tests for nexus_deploy.service_env — Phase 3 Modul 3.4c (#505).
+
+Snapshot tests for representative services + special-case tests
+for the 6 quirks (SFTPGo fail-fast, Filestash bcrypt+jq+base64,
+pg-ducklake SQL escape, SeaweedFS/Garage sidecar files, LakeFS
+2-paths, Gitea append-block idempotency).
+"""
+
+from __future__ import annotations
+
+import stat
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from syrupy.assertion import SnapshotAssertion
+
+from nexus_deploy.config import NexusConfig
+from nexus_deploy.infisical import BootstrapEnv
+from nexus_deploy.service_env import (
+    GiteaWorkspaceConfig,
+    ServiceEnvError,
+    _atomic_write,
+    _bcrypt_password,
+    _empty,
+    _escape_sql,
+    _format_env_line,
+    _render_env_file_content,
+    _render_filestash,
+    _render_lakefs,
+    _render_pg_ducklake,
+    _render_seaweedfs,
+    _render_sftpgo,
+    _strip_gitea_block,
+    append_gitea_workspace_block,
+    render_all_env_files,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def full_config() -> NexusConfig:
+    """A NexusConfig populated with every field — used as the
+    snapshot baseline."""
+    return NexusConfig(
+        admin_username="admin",
+        infisical_admin_password="infi-admin-pw",
+        infisical_encryption_key="infi-enc-key",
+        infisical_auth_secret="infi-auth-sec",
+        infisical_db_password="infi-db-pw",
+        portainer_admin_password="port-pw",
+        kuma_admin_password="kuma-pw",
+        grafana_admin_password="graf-pw",
+        dagster_db_password="dagster-pw",
+        kestra_admin_password="kestra-pw",
+        kestra_db_password="kestra-db-pw",
+        n8n_admin_password="n8n-pw",
+        metabase_admin_password="meta-pw",
+        superset_admin_password="superset-pw",
+        superset_db_password="superset-db",
+        superset_secret_key="superset-key",
+        cloudbeaver_admin_password="cb-pw",
+        mage_admin_password="mage-pw",
+        minio_root_password="minio-pw",
+        sftpgo_admin_password="sftpgo-admin",
+        sftpgo_user_password="sftpgo-user",
+        hoppscotch_db_password="hoppscotch-db",
+        hoppscotch_jwt_secret="hoppscotch-jwt",
+        hoppscotch_session_secret="hoppscotch-session",
+        hoppscotch_encryption_key="hoppscotch-enc",
+        meltano_db_password="meltano-pw",
+        soda_db_password="soda-pw",
+        redpanda_admin_password="redpanda-pw",
+        postgres_password="pg-pw",
+        pgducklake_password="ducklake-pw",
+        hetzner_s3_bucket_pgducklake="ducklake-bucket",
+        pgadmin_password="pgadmin-pw",
+        prefect_db_password="prefect-pw",
+        rustfs_root_password="rustfs-pw",
+        seaweedfs_admin_password="seaweed-pw",
+        garage_admin_token="garage-token",
+        garage_rpc_secret="garage-rpc",
+        lakefs_db_password="lakefs-db",
+        lakefs_encrypt_secret="lakefs-enc",
+        lakefs_admin_access_key="lakefs-key",
+        lakefs_admin_secret_key="lakefs-sec",
+        hetzner_s3_server="fsn1.your-objectstorage.com",
+        hetzner_s3_region="fsn1",
+        hetzner_s3_access_key="hetzner-access",
+        hetzner_s3_secret_key="hetzner-secret",
+        hetzner_s3_bucket_lakefs="lakefs-bucket",
+        hetzner_s3_bucket_general="general-bucket",
+        external_s3_endpoint="",
+        external_s3_region="auto",
+        external_s3_access_key="",
+        external_s3_secret_key="",
+        external_s3_bucket="",
+        external_s3_label="External Storage",
+        r2_data_endpoint="https://r2.cloudflare.com/account",
+        r2_data_access_key="r2-access",
+        r2_data_secret_key="r2-secret",
+        r2_data_bucket="r2-bucket",
+        filestash_admin_password="filestash-pw",
+        windmill_admin_password="windmill-admin",
+        windmill_db_password="windmill-db",
+        windmill_superadmin_secret="windmill-super",
+        openmetadata_admin_password="om-admin",
+        openmetadata_db_password="om-db",
+        openmetadata_airflow_password="om-airflow",
+        openmetadata_fernet_key="om-fernet",
+        gitea_admin_password="gitea-admin",
+        gitea_user_password="gitea-user",
+        gitea_db_password="gitea-db",
+        clickhouse_admin_password="ch-pw",
+        wikijs_admin_password="wiki-admin",
+        wikijs_db_password="wiki-db",
+        woodpecker_agent_secret="wp-agent-sec",
+        nocodb_admin_password="nocodb-admin",
+        nocodb_db_password="nocodb-db",
+        nocodb_jwt_secret="nocodb-jwt",
+        dinky_admin_password="dinky-pw",
+        appsmith_encryption_password="appsmith-enc-pw",
+        appsmith_encryption_salt="appsmith-salt",
+        dify_admin_password="dify-admin",
+        dify_db_password="dify-db",
+        dify_redis_password="dify-redis",
+        dify_secret_key="dify-secret",
+        dify_weaviate_api_key="dify-weaviate",
+        dify_sandbox_api_key="dify-sandbox",
+        dify_plugin_daemon_key="dify-daemon",
+        dify_plugin_inner_api_key="dify-inner",
+    )
+
+
+@pytest.fixture
+def full_env() -> BootstrapEnv:
+    return BootstrapEnv(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_user_email="user@example.com",
+        gitea_user_username="user",
+        gitea_repo_owner="admin",
+        repo_name="nexus-example-com-gitea",
+        om_principal_domain="example.com",
+        woodpecker_gitea_client="wp-client-id",
+        woodpecker_gitea_secret="wp-client-secret",
+        ssh_private_key_base64="c2g6c2g6Cg==",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def test_empty_treats_none_and_empty_string_alike() -> None:
+    assert _empty(None) is True
+    assert _empty("") is True
+    assert _empty("x") is False
+    assert _empty(" ") is False  # not stripped — matches deploy.sh
+
+
+def test_escape_sql_doubles_single_quotes() -> None:
+    assert _escape_sql("plain") == "plain"
+    assert _escape_sql("a'b") == "a''b"
+    assert _escape_sql("''") == "''''"
+
+
+def test_format_env_line_no_quoting_newline_terminated() -> None:
+    assert _format_env_line("KEY", "value") == "KEY=value\n"
+    # Empty value still produces KEY=\n (matches deploy.sh `${VAR:-}`)
+    assert _format_env_line("KEY", "") == "KEY=\n"
+
+
+def test_render_env_file_content_in_dict_order() -> None:
+    out = _render_env_file_content({"A": "1", "B": "2", "C": "3"})
+    assert out == "A=1\nB=2\nC=3\n"
+
+
+# ---------------------------------------------------------------------------
+# SFTPGo — fail-fast guard
+# ---------------------------------------------------------------------------
+
+
+def test_sftpgo_raises_on_empty_admin_password(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """R-guard: empty admin password aborts the deploy. Mirrors
+    deploy.sh:368-380 fail-fast."""
+    config = full_config.model_copy(update={"sftpgo_admin_password": ""})
+    with pytest.raises(ServiceEnvError, match="SFTPGO_ADMIN_PASSWORD"):
+        _render_sftpgo(config, full_env)
+
+
+def test_sftpgo_raises_on_empty_user_password(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    config = full_config.model_copy(update={"sftpgo_user_password": ""})
+    with pytest.raises(ServiceEnvError, match="SFTPGO_USER_PASSWORD"):
+        _render_sftpgo(config, full_env)
+
+
+def test_sftpgo_renders_with_mode_0o600(full_config: NexusConfig, full_env: BootstrapEnv) -> None:
+    """R-security: SFTPGo .env mode is 0o600 (admin credential in cleartext)."""
+    rendered = _render_sftpgo(full_config, full_env)
+    assert rendered.mode == 0o600
+    assert rendered.env_vars == {"SFTPGO_ADMIN_PASSWORD": "sftpgo-admin"}
+
+
+# ---------------------------------------------------------------------------
+# pg-ducklake — conditional S3 bootstrap SQL with SQL escape
+# ---------------------------------------------------------------------------
+
+
+def test_pg_ducklake_local_only_when_no_s3(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """No Hetzner S3 → fallback SQL only sets local table path."""
+    config = full_config.model_copy(update={"hetzner_s3_server": ""})
+    rendered = _render_pg_ducklake(config, full_env)
+    assert len(rendered.sidecars) == 1
+    sql = rendered.sidecars[0].content
+    assert "ducklake.default_table_path = '/var/lib/ducklake/'" in sql
+    assert "create_simple_secret" not in sql
+    assert "drop_secret" not in sql
+
+
+def test_pg_ducklake_with_s3_creates_secret(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    rendered = _render_pg_ducklake(full_config, full_env)
+    sql = rendered.sidecars[0].content
+    assert "duckdb.create_simple_secret(" in sql
+    assert "duckdb.drop_secret('ducklake_s3')" in sql
+    assert "key_id := 'hetzner-access'" in sql
+    assert "endpoint := 'fsn1.your-objectstorage.com'" in sql
+    assert "scope := 's3://ducklake-bucket/'" in sql
+    assert "ducklake.default_table_path = 's3://ducklake-bucket/'" in sql
+    assert "pg_reload_conf()" in sql
+
+
+def test_pg_ducklake_sql_escapes_single_quotes_in_secret(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """R-injection: a secret containing single quotes must be SQL-escaped."""
+    config = full_config.model_copy(update={"hetzner_s3_secret_key": "evil'; DROP TABLE--"})
+    rendered = _render_pg_ducklake(config, full_env)
+    sql = rendered.sidecars[0].content
+    # Single quotes doubled, no unescaped '
+    assert "secret := 'evil''; DROP TABLE--'" in sql
+    # The dangerous unquoted form must NOT appear
+    assert "'; DROP TABLE--';" not in sql.replace("''", "")
+
+
+def test_pg_ducklake_sidecar_path_is_init_subdir(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    rendered = _render_pg_ducklake(full_config, full_env)
+    assert rendered.sidecars[0].relative_path == "init/00-ducklake-bootstrap.sql"
+
+
+# ---------------------------------------------------------------------------
+# SeaweedFS — sidecar s3.json
+# ---------------------------------------------------------------------------
+
+
+def test_seaweedfs_renders_s3_json_sidecar(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    rendered = _render_seaweedfs(full_config, full_env)
+    assert len(rendered.sidecars) == 1
+    sidecar = rendered.sidecars[0]
+    assert sidecar.relative_path == "s3.json"
+    # Parse it back and check shape
+    import json as _json
+
+    parsed = _json.loads(sidecar.content)
+    assert parsed["identities"][0]["name"] == "admin"
+    assert parsed["identities"][0]["credentials"][0]["accessKey"] == "nexus-seaweedfs"
+    assert parsed["identities"][0]["credentials"][0]["secretKey"] == "seaweed-pw"
+    assert "Admin" in parsed["identities"][0]["actions"]
+
+
+# ---------------------------------------------------------------------------
+# LakeFS — 2-path conditional (S3 vs local)
+# ---------------------------------------------------------------------------
+
+
+def test_lakefs_local_when_no_s3(full_config: NexusConfig, full_env: BootstrapEnv) -> None:
+    """When Hetzner S3 vars are missing, LakeFS falls back to local
+    blockstore."""
+    config = full_config.model_copy(update={"hetzner_s3_server": ""})
+    rendered = _render_lakefs(config, full_env)
+    assert rendered.env_vars["LAKEFS_BLOCKSTORE_TYPE"] == "local"
+    assert "LAKEFS_BLOCKSTORE_LOCAL_PATH" in rendered.env_vars
+    assert "LAKEFS_BLOCKSTORE_S3_ENDPOINT" not in rendered.env_vars
+
+
+def test_lakefs_s3_path_emits_all_s3_fields(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    rendered = _render_lakefs(full_config, full_env)
+    assert rendered.env_vars["LAKEFS_BLOCKSTORE_TYPE"] == "s3"
+    assert (
+        rendered.env_vars["LAKEFS_BLOCKSTORE_S3_ENDPOINT"] == "https://fsn1.your-objectstorage.com"
+    )
+    assert rendered.env_vars["LAKEFS_BLOCKSTORE_S3_REGION"] == "fsn1"
+    assert "LAKEFS_BLOCKSTORE_LOCAL_PATH" not in rendered.env_vars
+
+
+def test_lakefs_postgres_connection_string_includes_password(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    rendered = _render_lakefs(full_config, full_env)
+    assert "lakefs-db" in rendered.env_vars["LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING"]
+
+
+# ---------------------------------------------------------------------------
+# Filestash — bcrypt + jq + base64
+# ---------------------------------------------------------------------------
+
+
+def test_bcrypt_password_returns_bcrypt_hash() -> None:
+    """Sanity test that htpasswd is callable and returns a bcrypt hash."""
+    if subprocess.run(["which", "htpasswd"], capture_output=True).returncode != 0:
+        pytest.skip("htpasswd not installed (apache2-utils)")
+    result = _bcrypt_password("test-pw")
+    assert result.startswith("$2y$") or result.startswith("$2a$") or result.startswith("$2b$")
+
+
+def test_filestash_escapes_dollar_signs_for_compose(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """R-quirk: bcrypt hashes contain ``$`` which needs ``$$`` for
+    docker-compose env parsing."""
+    with patch("nexus_deploy.service_env._bcrypt_password", return_value="$2y$10$hash"):
+        rendered = _render_filestash(full_config, full_env)
+    assert rendered.env_vars["ADMIN_PASSWORD"] == "$$2y$$10$$hash"
+
+
+def test_filestash_no_admin_password_means_empty_admin_field(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    config = full_config.model_copy(update={"filestash_admin_password": ""})
+    rendered = _render_filestash(config, full_env)
+    assert rendered.env_vars["ADMIN_PASSWORD"] == ""
+
+
+def test_filestash_emits_config_json_when_s3_configured(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """At least one S3 backend (R2 in this fixture) → CONFIG_JSON
+    base64-encoded."""
+    with patch("nexus_deploy.service_env._bcrypt_password", return_value="$2y$10$hash"):
+        rendered = _render_filestash(full_config, full_env)
+    assert "CONFIG_JSON" in rendered.env_vars
+    # Base64-decode and parse
+    import base64
+    import json as _json
+
+    decoded = base64.b64decode(rendered.env_vars["CONFIG_JSON"]).decode()
+    parsed = _json.loads(decoded)
+    assert "connections" in parsed
+    # We have R2 + Hetzner configured in fixture, External is empty
+    labels = [c["label"] for c in parsed["connections"]]
+    assert "R2 Datalake" in labels
+    assert "Hetzner Storage" in labels
+    # Middleware shape (legacy parity): identity_provider + attribute_mapping
+    assert "middleware" in parsed
+    assert parsed["middleware"]["identity_provider"]["type"] == "passthrough"
+    assert parsed["middleware"]["attribute_mapping"]["related_backend"] == "R2 Datalake"
+    # params is JSON-stringified per legacy (Filestash encrypts each)
+    decoded_params = _json.loads(parsed["middleware"]["attribute_mapping"]["params"])
+    # Bucket paths must be /<bucket>/ (leading + trailing slash)
+    assert decoded_params["R2 Datalake"]["path"] == "/r2-bucket/"
+    assert decoded_params["Hetzner Storage"]["path"] == "/general-bucket/"
+
+
+def test_filestash_no_config_json_when_no_s3(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """No S3 backends → no CONFIG_JSON line."""
+    no_s3 = full_config.model_copy(
+        update={
+            "r2_data_endpoint": "",
+            "r2_data_access_key": "",
+            "hetzner_s3_server": "",
+            "hetzner_s3_access_key": "",
+            "external_s3_endpoint": "",
+            "external_s3_access_key": "",
+        },
+    )
+    with patch("nexus_deploy.service_env._bcrypt_password", return_value="$2y$10$hash"):
+        rendered = _render_filestash(no_s3, full_env)
+    assert "CONFIG_JSON" not in rendered.env_vars
+
+
+# ---------------------------------------------------------------------------
+# Gitea workspace block — append + idempotency
+# ---------------------------------------------------------------------------
+
+
+def test_strip_gitea_block_on_clean_content_is_noop() -> None:
+    content = "FOO=bar\nBAZ=qux\n"
+    assert _strip_gitea_block(content) == content
+
+
+def test_strip_gitea_block_removes_existing_block() -> None:
+    content = (
+        "FOO=bar\n"
+        "# >>> Gitea workspace repo (auto-generated, do not edit)\n"
+        "GITEA_URL=http://gitea:3000\n"
+        "OLD=stale\n"
+        "# <<< Gitea workspace repo\n"
+        "BAZ=qux\n"
+    )
+    cleaned = _strip_gitea_block(content)
+    assert "OLD=stale" not in cleaned
+    assert ">>> Gitea workspace" not in cleaned
+    assert "FOO=bar" in cleaned
+    assert "BAZ=qux" in cleaned
+
+
+def test_append_gitea_workspace_block_idempotent(tmp_path: Path) -> None:
+    """R-idempotency: re-running adds the block once, doesn't pile."""
+    stacks = tmp_path / "stacks"
+    (stacks / "jupyter").mkdir(parents=True)
+    (stacks / "jupyter" / ".env").write_text("EXISTING=value\n")
+
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="http://gitea:3000/admin/repo",
+        gitea_username="admin",
+        gitea_password="pw",
+        git_author_name="admin",
+        git_author_email="admin@example.com",
+        repo_name="repo",
+    )
+    # First append
+    appended1 = append_gitea_workspace_block(cfg, ["jupyter", "gitea"], stacks_dir=stacks)
+    content1 = (stacks / "jupyter" / ".env").read_text()
+    assert appended1 == ("jupyter",)
+    assert content1.count("# >>> Gitea workspace") == 1
+
+    # Second append with different password — should still have ONE block.
+    cfg2 = GiteaWorkspaceConfig(
+        gitea_repo_url="http://gitea:3000/admin/repo",
+        gitea_username="admin",
+        gitea_password="new-pw",
+        git_author_name="admin",
+        git_author_email="admin@example.com",
+        repo_name="repo",
+    )
+    append_gitea_workspace_block(cfg2, ["jupyter", "gitea"], stacks_dir=stacks)
+    content2 = (stacks / "jupyter" / ".env").read_text()
+    assert content2.count("# >>> Gitea workspace") == 1
+    assert "GITEA_PASSWORD=new-pw" in content2
+    assert "GITEA_PASSWORD=pw\n" not in content2  # old password gone
+    # Original content preserved
+    assert "EXISTING=value" in content2
+
+
+def test_append_gitea_skips_disabled_services(tmp_path: Path) -> None:
+    stacks = tmp_path / "stacks"
+    (stacks / "jupyter").mkdir(parents=True)
+    (stacks / "jupyter" / ".env").write_text("X=1\n")
+
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="x",
+        gitea_username="x",
+        gitea_password="x",
+        git_author_name="x",
+        git_author_email="x",
+        repo_name="x",
+    )
+    # marimo not enabled; jupyter is
+    appended = append_gitea_workspace_block(cfg, ["jupyter"], stacks_dir=stacks)
+    assert appended == ("jupyter",)
+
+
+def test_append_gitea_skips_when_env_missing(tmp_path: Path) -> None:
+    """A service in the enabled list but without .env yet (e.g.
+    spec failed to render) — append silently skips it."""
+    stacks = tmp_path / "stacks"
+    (stacks / "jupyter").mkdir(parents=True)
+    # NO .env file written
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="x",
+        gitea_username="x",
+        gitea_password="x",
+        git_author_name="x",
+        git_author_email="x",
+        repo_name="x",
+    )
+    appended = append_gitea_workspace_block(cfg, ["jupyter"], stacks_dir=stacks)
+    assert appended == ()
+
+
+# ---------------------------------------------------------------------------
+# render_all_env_files — orchestration
+# ---------------------------------------------------------------------------
+
+
+def test_render_all_writes_only_enabled_services(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """Disabled services should NOT have a .env file written."""
+    enabled = ["postgres", "kestra"]
+    result = render_all_env_files(full_config, full_env, enabled, stacks_dir=tmp_path)
+
+    assert (tmp_path / "postgres" / ".env").exists()
+    assert (tmp_path / "kestra" / ".env").exists()
+    # gitea is NOT in enabled
+    assert not (tmp_path / "gitea" / ".env").exists()
+
+    # Counts
+    rendered = {s.service for s in result.services if s.status == "rendered"}
+    assert "postgres" in rendered
+    assert "kestra" in rendered
+    skipped_not_enabled = {s.service for s in result.services if s.status == "skipped-not-enabled"}
+    assert "gitea" in skipped_not_enabled
+
+
+def test_render_all_skipped_guard_does_not_write_file(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """A guard-failure (e.g. wikijs without DB password) should
+    skip the file write entirely."""
+    config = full_config.model_copy(update={"wikijs_db_password": ""})
+    result = render_all_env_files(config, full_env, ["wikijs"], stacks_dir=tmp_path)
+    assert not (tmp_path / "wikijs" / ".env").exists()
+    wikijs_result = next(s for s in result.services if s.service == "wikijs")
+    assert wikijs_result.status == "skipped-guard"
+    assert "WIKIJS_DB_PASS" in wikijs_result.detail
+
+
+def test_render_all_propagates_sftpgo_fail_fast(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """SFTPGo with empty password raises ServiceEnvError — that's
+    a hard-abort signal for the CLI."""
+    config = full_config.model_copy(update={"sftpgo_admin_password": ""})
+    with pytest.raises(ServiceEnvError):
+        render_all_env_files(config, full_env, ["sftpgo"], stacks_dir=tmp_path)
+
+
+def test_render_all_jupyter_uses_local_master_when_no_spark(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-conditional: jupyter SPARK_MASTER depends on whether spark
+    is in the enabled list."""
+    render_all_env_files(full_config, full_env, ["jupyter"], stacks_dir=tmp_path)
+    content = (tmp_path / "jupyter" / ".env").read_text()
+    assert "SPARK_MASTER=local[*]" in content
+
+
+def test_render_all_jupyter_uses_spark_master_when_spark_enabled(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    render_all_env_files(full_config, full_env, ["jupyter", "spark"], stacks_dir=tmp_path)
+    content = (tmp_path / "jupyter" / ".env").read_text()
+    assert "SPARK_MASTER=spark://spark-master:7077" in content
+
+
+def test_render_all_writes_sidecars_for_seaweedfs(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    render_all_env_files(full_config, full_env, ["seaweedfs"], stacks_dir=tmp_path)
+    assert (tmp_path / "seaweedfs" / ".env").exists()
+    assert (tmp_path / "seaweedfs" / "s3.json").exists()
+
+
+def test_render_all_writes_sidecars_for_garage(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    render_all_env_files(full_config, full_env, ["garage"], stacks_dir=tmp_path)
+    assert (tmp_path / "garage" / ".env").exists()
+    assert (tmp_path / "garage" / "garage.toml").exists()
+
+
+def test_render_all_pg_ducklake_writes_init_sql(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    render_all_env_files(full_config, full_env, ["pg-ducklake"], stacks_dir=tmp_path)
+    assert (tmp_path / "pg-ducklake" / ".env").exists()
+    assert (tmp_path / "pg-ducklake" / "init" / "00-ducklake-bootstrap.sql").exists()
+
+
+def test_render_all_sftpgo_writes_with_mode_600(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-security: SFTPGo .env mode is 0o600."""
+    render_all_env_files(full_config, full_env, ["sftpgo"], stacks_dir=tmp_path)
+    file_mode = stat.S_IMODE((tmp_path / "sftpgo" / ".env").stat().st_mode)
+    assert file_mode == 0o600
+
+
+# ---------------------------------------------------------------------------
+# Atomic write — TOCTOU + permission tests (reused setup.py pattern)
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_creates_parent_dir(tmp_path: Path) -> None:
+    target = tmp_path / "subdir" / ".env"
+    _atomic_write(target, "X=1\n")
+    assert target.exists()
+    assert target.read_text() == "X=1\n"
+
+
+def test_atomic_write_default_mode_644(tmp_path: Path) -> None:
+    target = tmp_path / ".env"
+    _atomic_write(target, "X=1\n")
+    file_mode = stat.S_IMODE(target.stat().st_mode)
+    assert file_mode == 0o644
+
+
+def test_atomic_write_explicit_mode_600(tmp_path: Path) -> None:
+    target = tmp_path / ".env"
+    _atomic_write(target, "X=1\n", mode=0o600)
+    file_mode = stat.S_IMODE(target.stat().st_mode)
+    assert file_mode == 0o600
+
+
+def test_atomic_write_replaces_existing(tmp_path: Path) -> None:
+    target = tmp_path / ".env"
+    target.write_text("OLD=1\n")
+    _atomic_write(target, "NEW=2\n")
+    assert target.read_text() == "NEW=2\n"
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests — pin per-service rendered content for selected stacks
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_postgres(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    from nexus_deploy.service_env import _render_postgres
+
+    rendered = _render_postgres(full_config, full_env)
+    assert _render_env_file_content(rendered.env_vars) == snapshot
+
+
+def test_snapshot_kestra(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    from nexus_deploy.service_env import _render_kestra
+
+    rendered = _render_kestra(full_config, full_env)
+    assert _render_env_file_content(rendered.env_vars) == snapshot
+
+
+def test_snapshot_hoppscotch_full(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    """Hoppscotch has 16 vars including derived URLs — snapshot pins
+    the entire shape."""
+    from nexus_deploy.service_env import _render_hoppscotch
+
+    rendered = _render_hoppscotch(full_config, full_env)
+    assert _render_env_file_content(rendered.env_vars) == snapshot
+
+
+def test_snapshot_lakefs_s3(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    rendered = _render_lakefs(full_config, full_env)
+    assert _render_env_file_content(rendered.env_vars) == snapshot
+
+
+def test_snapshot_lakefs_local_fallback(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    config = full_config.model_copy(update={"hetzner_s3_server": ""})
+    rendered = _render_lakefs(config, full_env)
+    assert _render_env_file_content(rendered.env_vars) == snapshot
+
+
+def test_snapshot_pg_ducklake_sql_with_s3(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    rendered = _render_pg_ducklake(full_config, full_env)
+    assert rendered.sidecars[0].content == snapshot
+
+
+def test_snapshot_pg_ducklake_sql_without_s3(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    config = full_config.model_copy(update={"hetzner_s3_server": ""})
+    rendered = _render_pg_ducklake(config, full_env)
+    assert rendered.sidecars[0].content == snapshot
+
+
+def test_snapshot_garage_toml(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    from nexus_deploy.service_env import _render_garage
+
+    rendered = _render_garage(full_config, full_env)
+    assert rendered.sidecars[0].content == snapshot
+
+
+def test_snapshot_seaweedfs_s3_json(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    rendered = _render_seaweedfs(full_config, full_env)
+    assert rendered.sidecars[0].content == snapshot
+
+
+def test_snapshot_dify_full(
+    full_config: NexusConfig, full_env: BootstrapEnv, snapshot: SnapshotAssertion
+) -> None:
+    from nexus_deploy.service_env import _render_dify
+
+    rendered = _render_dify(full_config, full_env)
+    assert _render_env_file_content(rendered.env_vars) == snapshot
+
+
+# ---------------------------------------------------------------------------
+# CLI integration
+# ---------------------------------------------------------------------------
+
+
+def test_cli_service_env_unknown_arg_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
+    from nexus_deploy.__main__ import _service_env
+
+    rc = _service_env(["--bogus"])
+    assert rc == 2
+    assert "unknown arg" in capsys.readouterr().err
+
+
+def test_cli_service_env_missing_enabled_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
+    from nexus_deploy.__main__ import _service_env
+
+    rc = _service_env([])
+    assert rc == 2
+    assert "--enabled" in capsys.readouterr().err
+
+
+def test_cli_service_env_bad_stacks_dir_returns_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _service_env
+
+    bogus = tmp_path / "does-not-exist"
+    rc = _service_env(["--enabled", "postgres", "--stacks-dir", str(bogus)])
+    assert rc == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_simple_render_functions_smoke(full_config: NexusConfig, full_env: BootstrapEnv) -> None:
+    """Smoke-test every simple render function. Each should produce
+    a non-empty env_vars dict for a fully-populated NexusConfig.
+    Catches any field-rename drift between NexusConfig and the
+    render functions."""
+    from nexus_deploy.service_env import (
+        _render_appsmith,
+        _render_clickhouse,
+        _render_cloudbeaver,
+        _render_dagster,
+        _render_dify,
+        _render_dinky,
+        _render_flink,
+        _render_gitea,
+        _render_grafana,
+        _render_hoppscotch,
+        _render_infisical,
+        _render_kestra,
+        _render_mage,
+        _render_meltano,
+        _render_minio,
+        _render_nocodb,
+        _render_openmetadata,
+        _render_pgadmin,
+        _render_postgres,
+        _render_prefect,
+        _render_redpanda_console,
+        _render_rustfs,
+        _render_s3manager,
+        _render_soda,
+        _render_spark,
+        _render_superset,
+        _render_trino,
+        _render_wikijs,
+        _render_windmill,
+        _render_woodpecker,
+    )
+
+    simple_renders = (
+        _render_infisical,
+        _render_grafana,
+        _render_dagster,
+        _render_kestra,
+        _render_cloudbeaver,
+        _render_mage,
+        _render_minio,
+        _render_redpanda_console,
+        _render_hoppscotch,
+        _render_meltano,
+        _render_soda,
+        _render_postgres,
+        _render_pgadmin,
+        _render_prefect,
+        _render_windmill,
+        _render_superset,
+        _render_openmetadata,
+        _render_gitea,
+        _render_clickhouse,
+        _render_trino,
+        _render_rustfs,
+        _render_woodpecker,
+        _render_spark,
+        _render_flink,
+        _render_dinky,
+        _render_s3manager,
+        _render_wikijs,
+        _render_appsmith,
+        _render_nocodb,
+        _render_dify,
+    )
+    for render in simple_renders:
+        result = render(full_config, full_env)
+        # All simple renders should produce env_vars when fully populated
+        # (no skip_reason for happy-path).
+        assert result.skip_reason is None or render is _render_dinky
+        assert result.env_vars  # non-empty
+        # Defensive: no hidden None values leaked
+        for v in result.env_vars.values():
+            assert isinstance(v, str)
+
+
+def test_appsmith_skipped_when_salt_missing(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    from nexus_deploy.service_env import _render_appsmith
+
+    config = full_config.model_copy(update={"appsmith_encryption_salt": ""})
+    rendered = _render_appsmith(config, full_env)
+    assert rendered.skip_reason is not None
+
+
+def test_nocodb_skipped_when_jwt_missing(full_config: NexusConfig, full_env: BootstrapEnv) -> None:
+    from nexus_deploy.service_env import _render_nocodb
+
+    config = full_config.model_copy(update={"nocodb_jwt_secret": ""})
+    rendered = _render_nocodb(config, full_env)
+    assert rendered.skip_reason is not None
+
+
+def test_dify_skipped_when_admin_pass_missing(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    from nexus_deploy.service_env import _render_dify
+
+    config = full_config.model_copy(update={"dify_admin_password": ""})
+    rendered = _render_dify(config, full_env)
+    assert rendered.skip_reason is not None
+
+
+def test_woodpecker_skipped_when_agent_secret_missing(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    from nexus_deploy.service_env import _render_woodpecker
+
+    config = full_config.model_copy(update={"woodpecker_agent_secret": ""})
+    rendered = _render_woodpecker(config, full_env)
+    assert rendered.skip_reason is not None
+
+
+def test_render_all_renders_full_stack_combination(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """Smoke: enable a representative full stack list (one of each
+    quirk class) and confirm render-all completes without raise."""
+    enabled = [
+        "infisical",
+        "postgres",
+        "kestra",
+        "gitea",
+        "clickhouse",
+        "spark",
+        "jupyter",
+        "pg-ducklake",
+        "lakefs",
+        "seaweedfs",
+        "garage",
+        "filestash",
+        "trino",
+        "appsmith",
+        "dify",
+    ]
+    with patch("nexus_deploy.service_env._bcrypt_password", return_value="$2y$10$h"):
+        result = render_all_env_files(full_config, full_env, enabled, stacks_dir=tmp_path)
+    assert result.failed == 0
+    assert result.rendered >= 10  # most should render
+
+
+def test_servicerenderresult_status_is_success_property() -> None:
+    from nexus_deploy.service_env import ServiceEnvResult, ServiceRenderResult
+
+    ok = ServiceEnvResult(
+        services=(ServiceRenderResult(service="a", status="rendered"),),
+    )
+    assert ok.is_success is True
+    assert ok.failed == 0
+
+    bad = ServiceEnvResult(
+        services=(ServiceRenderResult(service="a", status="failed", detail="boom"),),
+    )
+    assert bad.is_success is False
+    assert bad.failed == 1
+
+
+def test_cli_service_env_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _service_env
+
+    secrets = "{}"
+    monkeypatch.setattr("sys.stdin.read", lambda: secrets)
+    monkeypatch.setenv("DOMAIN", "example.com")
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
+    rc = _service_env(["--enabled", "postgres", "--stacks-dir", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "rendered=1" in out
+    assert (tmp_path / "postgres" / ".env").exists()
