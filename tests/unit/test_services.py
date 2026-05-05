@@ -36,6 +36,8 @@ from nexus_deploy.services import (
     _render_filestash_push_script,
     configure_filestash,
     parse_results,
+    render_dify_hook,
+    render_garage_hook,
     render_lakefs_hook,
     render_metabase_hook,
     render_n8n_hook,
@@ -43,7 +45,11 @@ from nexus_deploy.services import (
     render_portainer_hook,
     render_redpanda_hook,
     render_remote_script,
+    render_sftpgo_hook,
     render_superset_hook,
+    render_uptime_kuma_hook,
+    render_wikijs_hook,
+    render_windmill_hook,
     run_admin_setups,
     supported_hooks,
 )
@@ -65,6 +71,16 @@ def _make_config(**overrides: Any) -> NexusConfig:
         # Modul 2.2c
         "redpanda_admin_password": "rp-pass",
         "superset_admin_password": "su-pass",
+        # Modul 3.4d
+        "wikijs_admin_password": "wiki-pass",
+        "dify_admin_password": "dify-pass",
+        "windmill_superadmin_secret": "wm-secret",
+        "sftpgo_admin_password": "sftpgo-admin",
+        "sftpgo_user_password": "sftpgo-user",
+        "r2_data_bucket": "r2-bucket",
+        "r2_data_endpoint": "https://r2.example.com",
+        "r2_data_access_key": "r2-ak",
+        "r2_data_secret_key": "r2-sk",
     }
     defaults.update(overrides)
     return NexusConfig.from_secrets_json(json.dumps(defaults))
@@ -79,8 +95,9 @@ def _make_env(admin_email: str = "ops@example.com") -> BootstrapEnv:
 # ---------------------------------------------------------------------------
 
 
-def test_supported_hooks_contains_all_2_2b_and_2_2c_and_2_2d_specs() -> None:
-    """Modul 2.2b (5 REST hooks) + 2.2c (2 docker-exec) + 2.2d (Filestash, python-side)."""
+def test_supported_hooks_contains_all_specs() -> None:
+    """Modul 2.2b (5 REST) + 2.2c (2 docker-exec) + 2.2d (Filestash, python)
+    + 3.4d (5 remaining admin-setups)."""
     assert set(supported_hooks()) == {
         # 2.2b — REST first-init
         "portainer",
@@ -93,6 +110,13 @@ def test_supported_hooks_contains_all_2_2b_and_2_2c_and_2_2d_specs() -> None:
         "superset",
         # 2.2d — python-side mutation
         "filestash",
+        # 3.4d — remaining admin-setups
+        "uptime-kuma",
+        "garage",
+        "wikijs",
+        "dify",
+        "windmill",
+        "sftpgo",
     }
 
 
@@ -394,6 +418,256 @@ def test_render_superset_hook_email_via_dash_e_not_argv() -> None:
     rendered bash for debug-ability."""
     script = render_superset_hook(_make_config(), _make_env(admin_email="ops@example.com"))
     assert '-e ADMIN_EMAIL="$ADMIN_EMAIL"' in script
+
+
+# ---------------------------------------------------------------------------
+# Modul 3.4d — Uptime Kuma, Garage, Wiki.js, Dify, Windmill, SFTPGo
+# ---------------------------------------------------------------------------
+
+
+def test_render_uptime_kuma_hook_always_skipped() -> None:
+    """Uptime Kuma is a manual-setup placeholder per issue #145."""
+    script = render_uptime_kuma_hook(_make_config(), _make_env())
+    assert "uptime_kuma_hook()" in script
+    assert "RESULT hook=uptime-kuma status=skipped-not-ready" in script
+    assert "issue #145" in script
+
+
+def test_render_garage_hook_basic() -> None:
+    script = render_garage_hook(_make_config(), _make_env())
+    assert "garage_hook()" in script
+    # Three-step layout setup
+    assert "/garage layout show" in script
+    assert "/garage layout assign -z dc1 -c 100G" in script
+    assert "/garage layout apply --version 1" in script
+    assert "/garage key create nexus-garage-key" in script
+
+
+def test_render_garage_hook_idempotency_branches() -> None:
+    """Already-configured (any node has a role) → already-configured;
+    fresh layout → configured; node-id missing → failed."""
+    script = render_garage_hook(_make_config(), _make_env())
+    assert "RESULT hook=garage status=already-configured" in script
+    assert "RESULT hook=garage status=configured" in script
+    assert "RESULT hook=garage status=failed" in script
+
+
+def test_render_garage_hook_validates_node_id_as_64_hex() -> None:
+    """R-validate: node-id length and charset are checked before use."""
+    script = render_garage_hook(_make_config(), _make_env())
+    assert "${#FULL_NODE_ID} -ne 64" in script
+    assert "[0-9a-fA-F]{64}" in script
+
+
+def test_render_wikijs_hook_basic() -> None:
+    script = render_wikijs_hook(_make_config(), _make_env())
+    assert "wikijs_hook()" in script
+    assert "/graphql" in script
+    assert "mutation ($input: SetupInput!)" in script
+    assert "siteUrl: env.NEXUS_U" in script
+
+
+def test_render_wikijs_hook_skips_when_password_empty() -> None:
+    config = _make_config(wikijs_admin_password="")
+    script = render_wikijs_hook(config, _make_env())
+    assert "wikijs_hook()" not in script
+    assert "RESULT hook=wikijs status=skipped-not-ready" in script
+
+
+def test_render_wikijs_hook_skips_when_email_empty() -> None:
+    """Email comes from gitea_user_email or admin_email — both empty → skip."""
+    env = BootstrapEnv(domain="example.com")  # no admin_email, no gitea_user_email
+    script = render_wikijs_hook(_make_config(), env)
+    assert "RESULT hook=wikijs status=skipped-not-ready" in script
+
+
+def test_render_wikijs_hook_prefers_gitea_user_email_over_admin_email() -> None:
+    """When both are set, gitea_user_email wins (single-address user identity)."""
+    env = BootstrapEnv(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_user_email="user@example.com",
+    )
+    script = render_wikijs_hook(_make_config(), env)
+    # The email is shlex-quoted and embedded as NEXUS_E= — check the user@ form lands
+    assert "user@example.com" in script
+    # And admin@ does NOT (keeps the assertion specific)
+    assert "NEXUS_E='admin@example.com'" not in script
+
+
+def test_render_wikijs_hook_password_via_env_var_not_argv() -> None:
+    """R-secret: GraphQL body builds via NEXUS_P=… jq -n env, not --arg."""
+    script = render_wikijs_hook(_make_config(), _make_env())
+    assert "NEXUS_P=" in script
+    # No --arg pass-through (would land password in jq's argv)
+    assert "--arg pass" not in script
+
+
+def test_render_dify_hook_basic() -> None:
+    script = render_dify_hook(_make_config(), _make_env())
+    assert "dify_hook()" in script
+    assert "/console/api/init" in script
+    assert "/console/api/setup" in script
+    # Cookie jar tmpfile
+    assert "DIFY_COOKIES=$(mktemp)" in script
+    assert 'chmod 600 "$DIFY_COOKIES"' in script
+
+
+def test_render_dify_hook_skips_when_password_empty() -> None:
+    config = _make_config(dify_admin_password="")
+    script = render_dify_hook(config, _make_env())
+    assert "RESULT hook=dify status=skipped-not-ready" in script
+    assert "dify_hook()" not in script
+
+
+def test_render_dify_hook_already_configured_via_setup_check() -> None:
+    """R-idempotent: pre-check `/setup` → already-configured if step finished."""
+    script = render_dify_hook(_make_config(), _make_env())
+    assert '"step":"finished"' in script
+    assert "RESULT hook=dify status=already-configured" in script
+
+
+def test_render_dify_hook_handles_307_redirect_in_readiness() -> None:
+    """Dify's redirect-to-/install pattern (HTTP 307) counts as ready."""
+    script = render_dify_hook(_make_config(), _make_env())
+    assert "200|302|307)" in script
+
+
+def test_render_dify_hook_password_via_env_var_not_argv() -> None:
+    script = render_dify_hook(_make_config(), _make_env())
+    # Init body and setup body both use NEXUS_P= env-var
+    assert "NEXUS_P=" in script
+    assert "--arg password" not in script
+
+
+def test_render_dify_hook_cookie_trap_on_return() -> None:
+    """R-tmpfile-cleanup: cookie jar removed on function-scoped RETURN trap."""
+    script = render_dify_hook(_make_config(), _make_env())
+    assert "trap 'rm -f \"$DIFY_COOKIES\"' RETURN" in script
+
+
+def test_render_windmill_hook_basic() -> None:
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "windmill_hook()" in script
+    assert "/api/auth/login" in script
+    assert "/api/workspaces/list" in script
+    assert "/api/workspaces/create" in script
+    # Workspace name must be "nexus" for stability across migration —
+    # jq syntax with bare keys (becomes JSON {"id": "nexus", ...} at runtime)
+    assert 'id: "nexus"' in script
+
+
+def test_render_windmill_hook_skips_when_secret_empty() -> None:
+    config = _make_config(windmill_superadmin_secret="")
+    script = render_windmill_hook(config, _make_env())
+    assert "RESULT hook=windmill status=skipped-not-ready" in script
+    assert "windmill_hook()" not in script
+
+
+def test_render_windmill_hook_already_configured_branch() -> None:
+    """If a non-default workspace exists, hook reports already-configured."""
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "jq -e '.[] | select(.id != \"admins\")'" in script
+    assert "RESULT hook=windmill status=already-configured" in script
+
+
+def test_render_windmill_hook_secret_via_env_var_not_argv() -> None:
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "NEXUS_P=" in script
+    assert "--arg password" not in script
+
+
+def test_render_windmill_hook_create_response_code_dispatch() -> None:
+    """200/201 → configured; 409 → already-configured; else → failed."""
+    script = render_windmill_hook(_make_config(), _make_env())
+    assert "200|201)" in script
+    assert "409)" in script
+    assert "RESULT hook=windmill status=failed" in script
+
+
+def test_render_sftpgo_hook_basic() -> None:
+    script = render_sftpgo_hook(_make_config(), _make_env())
+    assert "sftpgo_hook()" in script
+    # Two-stage readiness probe
+    assert "/healthz" in script
+    assert "/api/v2/token" in script
+    assert "/api/v2/folders" in script
+    assert "/api/v2/users" in script
+
+
+def test_render_sftpgo_hook_skips_when_admin_or_user_pass_empty() -> None:
+    for kw in ({"sftpgo_admin_password": ""}, {"sftpgo_user_password": ""}):
+        config = _make_config(**kw)
+        script = render_sftpgo_hook(config, _make_env())
+        assert "RESULT hook=sftpgo status=skipped-not-ready" in script
+        assert "sftpgo_hook()" not in script
+
+
+def test_render_sftpgo_hook_skips_with_warning_when_r2_missing() -> None:
+    """R2 creds drive the default-user vfs; missing → warn-and-skip."""
+    config = _make_config(r2_data_bucket="")
+    script = render_sftpgo_hook(config, _make_env())
+    assert "RESULT hook=sftpgo status=skipped-not-ready" in script
+    assert "R2 datalake credentials missing" in script
+
+
+def test_render_sftpgo_hook_dir_prep_inside_container() -> None:
+    """Pre-creates home_dir + folder mapped_path; chown 1000:1000."""
+    script = render_sftpgo_hook(_make_config(), _make_env())
+    assert "mkdir -p /var/lib/sftpgo/users/nexus-default" in script
+    assert "chown -R 1000:1000 /var/lib/sftpgo/users /var/lib/sftpgo/folders" in script
+
+
+def test_render_sftpgo_hook_hetzner_folder_optional() -> None:
+    """Hetzner virtual folder gated on all 3 HZ_BUCKET/SERVER/REGION fields."""
+    script = render_sftpgo_hook(_make_config(), _make_env())
+    # Conditional gate on the 3 fields
+    assert (
+        '[ -n "$SFTPGO_HZ_BUCKET" ] && [ -n "$SFTPGO_HZ_SERVER" ] && [ -n "$SFTPGO_HZ_REGION" ]'
+    ) in script
+    # Both vfolder JSON variants present (one with hetzner_s3, one without)
+    assert '"name":"cloudflare_r2"' in script
+    assert '"name":"hetzner_s3"' in script
+
+
+def test_render_sftpgo_hook_status_dispatch() -> None:
+    """201 → configured; 400/409 → already-configured; else → failed."""
+    script = render_sftpgo_hook(_make_config(), _make_env())
+    # Final user POST status-code case
+    assert "201)" in script
+    assert "400|409)" in script
+    assert "RESULT hook=sftpgo status=failed" in script
+
+
+def test_render_sftpgo_hook_secrets_via_base64_env_not_argv() -> None:
+    """R-secret-transport: all 4 secrets (admin, user, R2 access/secret)
+    flow through ``printf '%s' <quoted> | base64`` (printf is a bash
+    builtin → no fork-exec → no `ps` exposure on the runner side),
+    then are decoded remote-side from env vars. They MUST NOT reach
+    jq via ``--arg`` or curl via ``-H`` argv.
+    """
+    config = _make_config(
+        sftpgo_admin_password="ADM-SECRET-XYZ",
+        sftpgo_user_password="USR-SECRET-XYZ",
+        r2_data_secret_key="R2-SECRET-XYZ",
+    )
+    script = render_sftpgo_hook(config, _make_env())
+    # Each secret reaches base64 via a printf-builtin pipe (printf
+    # is a bash builtin → no fork-exec → no `ps` exposure on the
+    # runner side). shlex.quote may render the value bare or
+    # single-quoted depending on the chars; both forms reach printf.
+    for secret in ("ADM-SECRET-XYZ", "USR-SECRET-XYZ", "R2-SECRET-XYZ"):
+        # Match either bare or single-quoted form
+        assert (
+            f"printf '%s' {secret} | base64" in script
+            or f"printf '%s' '{secret}' | base64" in script
+        ), f"secret {secret!r} not piped to base64 via printf-builtin"
+    # No --arg to jq (would land secrets in jq's argv)
+    assert "--arg pass" not in script
+    assert "--arg secret" not in script
+    # No -H Authorization argv (we use mode-600 curl --config tmpfile instead)
+    assert '-H "Authorization' not in script
+    assert "-H 'Authorization" not in script
 
 
 # ---------------------------------------------------------------------------
@@ -833,13 +1107,14 @@ def test_run_admin_setups_filters_unknown_services() -> None:
     run_admin_setups(
         _make_config(),
         _make_env(),
-        # gitea + dify are not yet in any registry (bash or python)
-        ["portainer", "gitea", "dify"],
+        # gitea + jupyter are not in any admin-setup registry
+        # (gitea uses its own dedicated module; jupyter has no admin hook)
+        ["portainer", "gitea", "jupyter"],
         script_runner=capture,
     )
-    # gitea + dify (not in any registry) must NOT reach the script
+    # gitea + jupyter (not in any registry) must NOT reach the script
     assert "gitea_hook" not in captured["script"]
-    assert "dify_hook" not in captured["script"]
+    assert "jupyter_hook" not in captured["script"]
     assert "portainer_hook" in captured["script"]
 
 
@@ -854,8 +1129,8 @@ def test_run_admin_setups_all_unknown_returns_empty_result() -> None:
     result = run_admin_setups(
         _make_config(),
         _make_env(),
-        # neither gitea nor dify are in any registry
-        ["gitea", "dify"],
+        # neither gitea nor jupyter are in any registry
+        ["gitea", "jupyter"],
         script_runner=runner,
     )
     assert result == SetupResult(hooks=())
