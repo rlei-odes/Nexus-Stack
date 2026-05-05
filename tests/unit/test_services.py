@@ -164,6 +164,17 @@ def test_render_lakefs_hook_skips_when_keys_empty() -> None:
     assert script.strip() == 'echo "RESULT hook=lakefs status=skipped-not-ready"'
 
 
+def test_render_lakefs_hook_pins_host_port_8000() -> None:
+    """R-port: LakeFS compose maps 8000:8000. Hook MUST hit
+    localhost:8000 from the SSH host. Pinned to catch port-mapping
+    drift if the compose file changes (and to defend against a
+    repeat of the cross-hook search-replace bug from PR #529 R1
+    that incorrectly pushed LakeFS to 8200 alongside Windmill)."""
+    script = render_lakefs_hook(_make_config(), _make_env())
+    assert "localhost:8000" in script
+    assert "localhost:8200" not in script
+
+
 def test_render_openmetadata_hook_skips_when_password_empty() -> None:
     script = render_openmetadata_hook(_make_config(openmetadata_admin_password=""), _make_env())
     assert script.strip() == 'echo "RESULT hook=openmetadata status=skipped-not-ready"'

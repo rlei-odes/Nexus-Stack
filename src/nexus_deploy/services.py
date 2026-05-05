@@ -369,13 +369,13 @@ def render_lakefs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     hetzner_server_q = shlex.quote(hetzner_server)
     wait = _render_wait_healthy(
         name="lakefs",
-        url="http://localhost:8200/api/v1/healthcheck",
+        url="http://localhost:8000/api/v1/healthcheck",
         timeout_seconds=60,
     )
     return f"""
 lakefs_hook() {{
     {wait}
-    CFG=$(curl -s --max-time 10 'http://localhost:8200/api/v1/config' 2>/dev/null || echo "")
+    CFG=$(curl -s --max-time 10 'http://localhost:8000/api/v1/config' 2>/dev/null || echo "")
     SETUP_DONE=false
     if echo "$CFG" | grep -q '"setup_complete":true'; then
         SETUP_DONE=true
@@ -383,7 +383,7 @@ lakefs_hook() {{
     if [ "$SETUP_DONE" = "false" ]; then
         SETUP_BODY=$(NEXUS_AK={access_q} NEXUS_SK={secret_q} jq -n \\
             '{{username: "nexus-lakefs", key: {{access_key_id: env.NEXUS_AK, secret_access_key: env.NEXUS_SK}}}}')
-        SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -X POST 'http://localhost:8200/api/v1/setup_lakefs' \\
+        SETUP_RESP=$(printf '%s' "$SETUP_BODY" | curl -s -X POST 'http://localhost:8000/api/v1/setup_lakefs' \\
             --max-time 30 \\
             -H 'Content-Type: application/json' \\
             --data-binary @- 2>/dev/null || echo "")
@@ -417,7 +417,7 @@ lakefs_hook() {{
     chmod 600 "$LFS_CFG"
     trap 'rm -f "$LFS_CFG"' RETURN
     printf 'user = "%s:%s"\\n' {access_q} {secret_q} > "$LFS_CFG"
-    REPO_RESP=$(printf '%s' "$REPO_BODY" | curl -s -X POST 'http://localhost:8200/api/v1/repositories' \\
+    REPO_RESP=$(printf '%s' "$REPO_BODY" | curl -s -X POST 'http://localhost:8000/api/v1/repositories' \\
         --config "$LFS_CFG" \\
         --max-time 30 \\
         -H 'Content-Type: application/json' \\
