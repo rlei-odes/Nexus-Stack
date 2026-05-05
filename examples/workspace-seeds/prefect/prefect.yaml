@@ -8,13 +8,18 @@
 #     `cd nexus_seeds/prefect && prefect deploy` (path is relative
 #     to the repo root).
 #   - From inside the prefect-worker container: the workspace repo
-#     is cloned at `/flows/$REPO_NAME/` per `pull:` step at run
-#     time, so the equivalent invocation is
+#     is cloned at `/flows/$REPO_NAME/` by the WORKER STARTUP
+#     `git clone` (stacks/prefect/docker-compose.yml:88-89), NOT by
+#     this manifest's `pull:` step (which only reclones at flow-RUN
+#     time, into a fresh tmpdir, for already-registered deployments).
+#     So the equivalent invocation is
 #     `cd /flows/$REPO_NAME/nexus_seeds/prefect && prefect deploy`.
 # Either way the cwd at `prefect deploy` time is this manifest's
 # parent directory, and the `requirements_file` / `entrypoint`
 # paths below resolve relative to the cloned repo root that the
-# `pull:` step's `git_clone` produces.
+# WORKER STARTUP `git clone` produces — the `pull:` step's runtime
+# `git_clone` is a separate, later mechanism that operates on the
+# already-registered deployment.
 #
 # `pull:` runs at flow-RUN time (not deploy time) and is what gives us
 # the "edit in Gitea, hit Run, done" loop without needing a stack

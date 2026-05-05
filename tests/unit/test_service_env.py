@@ -612,15 +612,46 @@ def test_render_all_marimo_then_append_gitea_block_succeeds(
     appended = append_gitea_workspace_block(cfg, ["marimo"], stacks_dir=tmp_path)
     assert appended == ("marimo",)
     content = (tmp_path / "marimo" / ".env").read_text()
-    # Assert ALL FOUR env-vars Marimo's clone step depends on. The
+    # Assert ALL env-vars the Gitea-integrated stacks depend on. The
     # original bug was that ZERO of them landed in .env (file didn't
     # exist for the appender), but a future regression that drops
-    # only one of the four (e.g. GITEA_PASSWORD) would still let
-    # the clone fail in production. Each line is asserted explicitly.
+    # only one (e.g. GITEA_PASSWORD or WORKSPACE_BRANCH) would still
+    # let the clone fail in production — Prefect's `pull:` step
+    # explicitly references WORKSPACE_BRANCH in the seeded manifest,
+    # and Marimo's clone step needs the four GITEA_* + REPO_NAME.
+    # Each line is asserted explicitly.
     assert "GITEA_REPO_URL=http://gitea:3000/owner/workspace.git" in content
     assert "GITEA_USERNAME=ops" in content
     assert "GITEA_PASSWORD=pw" in content
     assert "REPO_NAME=workspace" in content
+    # WORKSPACE_BRANCH defaults to "main" when not explicitly set on
+    # the GiteaWorkspaceConfig — locks the back-compat default in.
+    assert "WORKSPACE_BRANCH=main" in content
+
+
+def test_render_all_marimo_then_append_gitea_block_writes_custom_branch(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-workspace-branch (#531 R8 #4): a non-default branch (e.g.
+    'master' on a mirrored upstream) must propagate to .env so
+    Prefect's `pull:` step and any Kestra/Meltano clone step uses
+    the right ref. Without explicit coverage, a future regression
+    that ignores the cfg.workspace_branch field would silently keep
+    'main' and break mirrored Prefect workspaces."""
+    render_all_env_files(full_config, full_env, ["prefect"], stacks_dir=tmp_path)
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="http://gitea:3000/owner/workspace.git",
+        gitea_username="ops",
+        gitea_password="pw",
+        git_author_name="Operator",
+        git_author_email="ops@example.com",
+        repo_name="workspace",
+        workspace_branch="master",
+    )
+    append_gitea_workspace_block(cfg, ["prefect"], stacks_dir=tmp_path)
+    content = (tmp_path / "prefect" / ".env").read_text()
+    assert "WORKSPACE_BRANCH=master" in content
+    assert "WORKSPACE_BRANCH=main" not in content
 
 
 def test_render_all_skipped_guard_does_not_write_file(

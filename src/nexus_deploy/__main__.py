@@ -2113,12 +2113,28 @@ def _firewall_configure(args: list[str]) -> int:
     template-substituted ``stacks/redpanda/config/redpanda-firewall.yaml``.
 
     Exit codes:
-    - 0: success (every artifact written; or zero-entry mode — empty
-         firewall_rules input → no overrides needed)
-    - 1: at least one write failed but at least one succeeded
-         (deploy.sh continues; operator sees per-file diagnostic)
-    - 2: bad args / unparseable JSON / missing RedPanda template /
-         missing --domain when RedPanda has ports
+    - 0: full success — every artifact written cleanly AND nothing
+         was skipped, OR zero-entry mode with no stale-cleanup
+         failures.
+    - 1: state is inconsistent with what Tofu requested. Several
+         distinct conditions all surface as rc=1 because deploy.sh
+         treats this exit code as a single 'abort, state is
+         inconsistent' branch:
+         - At least one per-file write failed but at least one
+           succeeded (partial failure).
+         - Zero-entry mode but the stale-cleanup pass had per-file
+           failures — silent rc=0 here would let stale overrides
+           keep host ports exposed contrary to Tofu.
+         - At least one service was SKIPPED because its
+           ``docker-compose.yml`` was missing or unparseable. The
+           service's existing override stays on disk per the safety
+           invariant (never delete a still-Tofu-requested override
+           on a transient compose error), but the deployed firewall
+           may not match Tofu if the operator changed that stack's
+           port THIS run.
+    - 2: hard error — bad args / unparseable JSON / missing RedPanda
+         template file / missing --domain when RedPanda has ports.
+         deploy.sh aborts.
     """
     from .firewall import configure as fw_configure
 
