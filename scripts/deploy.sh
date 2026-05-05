@@ -534,19 +534,25 @@ if [ -n "$ORPHANS" ]; then
     # The subshell-pipe loop can't increment a parent variable, so
     # failures are accumulated by appending to a tempfile that the
     # parent shell reads back via wc -l after the loop finishes.
+    # Use mktemp (not /tmp/...$$) so a previous interrupted deploy that
+    # crashed before its rm -f doesn't leave stale entries that a later
+    # PID-reused shell reads back as 'this run failed'.
+    FW_ORPHAN_FAILS=$(mktemp -t firewall-orphan-fails.XXXXXX)
+    # Cleanup on every script exit (success OR failure) so we don't
+    # accumulate /tmp clutter across runs.
+    # shellcheck disable=SC2064  # intentional EXIT-time expansion
+    trap "rm -f \"$FW_ORPHAN_FAILS\"" EXIT
     echo "$ORPHANS" | while IFS= read -r orphan; do
         echo "  Removing orphan: stacks/$orphan"
         if ! ssh nexus "rm -f /opt/docker-server/stacks/$orphan"; then
             echo -e "${RED}    ✗ Failed to remove /opt/docker-server/stacks/$orphan${NC}" >&2
-            echo "/opt/docker-server/stacks/$orphan" >> /tmp/firewall-orphan-fails.$$
+            echo "/opt/docker-server/stacks/$orphan" >> "$FW_ORPHAN_FAILS"
         fi
     done
-    if [ -s /tmp/firewall-orphan-fails.$$ ]; then
-        echo -e "${RED}  ✗ Orphan firewall removal failed for $(wc -l < /tmp/firewall-orphan-fails.$$ | tr -d ' ') file(s) on the server — aborting (host ports may still be exposed)${NC}" >&2
-        rm -f /tmp/firewall-orphan-fails.$$
+    if [ -s "$FW_ORPHAN_FAILS" ]; then
+        echo -e "${RED}  ✗ Orphan firewall removal failed for $(wc -l < "$FW_ORPHAN_FAILS" | tr -d ' ') file(s) on the server — aborting (host ports may still be exposed)${NC}" >&2
         exit 1
     fi
-    rm -f /tmp/firewall-orphan-fails.$$
 else
     echo "  No orphan firewall overrides on server"
 fi
