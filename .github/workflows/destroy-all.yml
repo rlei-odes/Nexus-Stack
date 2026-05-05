@@ -94,8 +94,8 @@ jobs:
         run: |
           # Stack config (emails from secrets)
           cat > tofu/stack/config.tfvars << EOF
-          server_type     = "${{ vars.SERVER_TYPE || 'cpx32' }}"
-          server_location = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          server_type     = "${{ vars.SERVER_TYPE || 'cx43' }}"
+          server_location = "${{ vars.SERVER_LOCATION || 'hel1' }}"
           server_image    = "ubuntu-24.04"
           ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
           ssh_private_key_path = "~/.ssh/id_ed25519"
@@ -127,8 +127,8 @@ jobs:
           
           # Control Plane config
           cat > tofu/control-plane/config.tfvars << EOF
-          server_type         = "${{ vars.SERVER_TYPE || 'cpx32' }}"
-          server_location     = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          server_type         = "${{ vars.SERVER_TYPE || 'cx43' }}"
+          server_location     = "${{ vars.SERVER_LOCATION || 'hel1' }}"
           domain              = "${{ secrets.DOMAIN }}"
           subdomain_separator = "${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}"
           admin_email         = "${{ secrets.TF_VAR_admin_email }}"

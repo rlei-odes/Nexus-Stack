@@ -117,22 +117,22 @@ environment:
 **Symptom:** the `Apply infrastructure` step in the workflow fails with a Hetzner API error like:
 
 ```
-Error: server type cpx32 is not available in fsn1
+Error: server type cx43 is not available in hel1
 ```
 
 or, more generically, a `resource_unavailable` rejection during `tofu apply`.
 
-**Root cause:** Hetzner sells out of specific instance types in specific datacenters during capacity crunches. Both ARM (`cax*`) and x86 (`cpx*`) are affected; the situation can change hour-by-hour.
+**Root cause:** Hetzner sells out of specific instance types in specific datacenters during capacity crunches. Both ARM (`cax*`) and x86 (`cx*` / `cpx*`) are affected; the situation can change hour-by-hour.
 
 **How to check current stock:** the third-party live tracker [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) lists availability per region × instance type. Look for a green cell at the intersection of your desired region and instance type.
 
 **Fix:**
 
-1. Open [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) and find a region where your instance type (default: `cpx32`) is green.
-2. Set `SERVER_LOCATION` to that region in your GitHub repository's variables (Settings → Secrets and variables → Actions → Variables → `SERVER_LOCATION`). Common alternatives: `fsn1` (Falkenstein), `nbg1` (Nuremberg), `hel1` (Helsinki), `ash` (US-East).
+1. Open [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) and find a region where your instance type (default: `cx43`) is green.
+2. Set `SERVER_LOCATION` to that region in your GitHub repository's variables (Settings → Secrets and variables → Actions → Variables → `SERVER_LOCATION`). Common alternatives: `hel1` (Helsinki), `fsn1` (Falkenstein), `nbg1` (Nuremberg), `ash` (US-East).
 3. Re-run the workflow.
 
-If no datacenter has stock for your instance type, fall back to a smaller variant temporarily (e.g. `cpx21` instead of `cpx32`) by overriding `SERVER_TYPE`. Note that some Nexus stacks (Spark, Dify, Kestra) can be memory-hungry, so a smaller VM may need fewer enabled stacks.
+If no datacenter has stock for your instance type, fall back to a smaller variant temporarily (e.g. `cx32` or `cpx32` instead of `cx43`) by overriding `SERVER_TYPE`. Note that some Nexus stacks (Spark, Dify, Kestra) can be memory-hungry, so a smaller VM may need fewer enabled stacks.
 
 ## General Tips
 

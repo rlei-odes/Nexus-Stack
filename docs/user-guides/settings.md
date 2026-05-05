@@ -18,8 +18,8 @@ Read-only facts about the current deployment.
 
 | Field | Description |
 |-------|-------------|
-| **Server Type** | Hetzner server model (e.g. `cpx32`) |
-| **Location** | Hetzner datacenter code (`fsn1`, `nbg1`, `hel1`) |
+| **Server Type** | Hetzner server model (e.g. `cx43`) |
+| **Location** | Hetzner datacenter code (`hel1`, `fsn1`, `nbg1`) |
 | **Domain** | Your root domain |
 | **Last Spin Up** | Timestamp of the most recent spin-up |
 | **Last Teardown** | Timestamp of the most recent teardown |

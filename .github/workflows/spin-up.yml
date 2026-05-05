@@ -267,8 +267,8 @@ jobs:
         run: |
           # Stack config (emails from secrets)
           cat > tofu/stack/config.tfvars << EOF
-          server_type     = "${{ vars.SERVER_TYPE || 'cpx32' }}"
-          server_location = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          server_type     = "${{ vars.SERVER_TYPE || 'cx43' }}"
+          server_location = "${{ vars.SERVER_LOCATION || 'hel1' }}"
           server_image    = "ubuntu-24.04"
 
           ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
@@ -561,8 +561,8 @@ jobs:
           fi
           
           # Server config values
-          SERVER_TYPE="${{ vars.SERVER_TYPE || 'cpx32' }}"
-          SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          SERVER_TYPE="${{ vars.SERVER_TYPE || 'cx43' }}"
+          SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'hel1' }}"
           
           # Escape values for safe SQL insertion (single quotes doubled)
           ESCAPED_SERVER_TYPE=${SERVER_TYPE//\'/\'\'}
