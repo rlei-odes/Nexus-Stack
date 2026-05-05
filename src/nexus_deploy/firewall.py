@@ -464,18 +464,32 @@ def write_overrides(
         kept = {c.target_path for c in result.compiled}
         if result.redpanda is not None:
             kept.add(result.redpanda.override.target_path)
+        # ``skipped`` services (compose.yml missing or transiently
+        # unparsable at compile time) MUST be excluded from cleanup
+        # too — Tofu is still requesting the firewall rule for them,
+        # we just couldn't render the override THIS run. Removing the
+        # existing .firewall.yml in that case would silently close a
+        # still-requested host port on the next deploy. The legacy
+        # bash didn't have this hole because it never had a stale-
+        # cleanup pass at all; my R1 cleanup added it but the first
+        # implementation conflated 'skipped' with 'removed'.
+        skipped_targets = {
+            stacks_dir / "stacks" / svc / OVERRIDE_FILENAME for svc in result.skipped
+        }
         # Walk every stack directory and unlink any
         # docker-compose.firewall.yml that isn't in the compiled
-        # write set (i.e. either zero-entry mode OR the operator
-        # removed this specific service's firewall rule from Tofu).
+        # write set AND isn't owned by a skipped service (i.e. either
+        # zero-entry mode OR the operator actually removed this
+        # specific service's firewall rule from Tofu).
         stacks_root = stacks_dir / "stacks"
         if stacks_root.is_dir():
             for stale in stacks_root.glob(f"*/{OVERRIDE_FILENAME}"):
-                if stale not in kept:
-                    try:
-                        stale.unlink()
-                    except OSError as exc:
-                        failed.append((stale, f"stale-cleanup: {exc}"))
+                if stale in kept or stale in skipped_targets:
+                    continue
+                try:
+                    stale.unlink()
+                except OSError as exc:
+                    failed.append((stale, f"stale-cleanup: {exc}"))
         # The rendered redpanda-firewall.yaml only exists when there
         # WERE redpanda firewall ports; if there aren't anymore, drop
         # it so setup_redpanda_hook doesn't keep using the stale

@@ -579,7 +579,7 @@ def test_render_all_writes_only_enabled_services(
 def test_render_all_marimo_creates_env_file_for_gitea_append(
     full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
 ) -> None:
-    """R-marimo-gitea (#XXX): Marimo MUST get a (possibly empty) ``.env``
+    """R-marimo-gitea (#531): Marimo MUST get a (possibly empty) ``.env``
     file from its EnvSpec render — without it,
     ``append_gitea_workspace_block`` sees ``not env_path.exists()``
     and silently skips, leaving Marimo with no GITEA_REPO_URL /

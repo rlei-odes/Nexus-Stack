@@ -30,7 +30,6 @@ UI's "Run" button.
 
 from __future__ import annotations
 
-import io
 import os
 
 import boto3

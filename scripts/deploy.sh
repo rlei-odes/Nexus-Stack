@@ -530,7 +530,9 @@ if [ -n "$ORPHANS" ]; then
     # failed orphan removal means the corresponding host port stays
     # exposed even though Tofu was supposed to close it. Better to fail
     # the deploy loudly than to leave a security-relevant inconsistency.
-    ORPHAN_FAIL_COUNT=0
+    # The subshell-pipe loop can't increment a parent variable, so
+    # failures are accumulated by appending to a tempfile that the
+    # parent shell reads back via wc -l after the loop finishes.
     echo "$ORPHANS" | while IFS= read -r orphan; do
         echo "  Removing orphan: stacks/$orphan"
         if ! ssh nexus "rm -f /opt/docker-server/stacks/$orphan"; then

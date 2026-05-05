@@ -558,6 +558,44 @@ def test_write_overrides_removes_stale_for_removed_service(
     assert other_path.is_file(), "non-stale postgres override must remain"
 
 
+def test_write_overrides_keeps_existing_for_skipped_services(
+    tmp_path: Path,
+) -> None:
+    """R-skipped-not-removed (#531 R5 #1): when ``compile_overrides``
+    skips a service because its ``docker-compose.yml`` is missing or
+    transiently unparsable, the cleanup pass MUST NOT delete that
+    service's existing ``docker-compose.firewall.yml``. Tofu is
+    still requesting the firewall rule for it; we just couldn't
+    render the override THIS run. Deleting it would silently close
+    a still-requested host port on the next deploy."""
+    existing = tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        "services:\n  kestra:\n    ports:\n    - 8080:8080\n",
+    )
+    other = tmp_path / "stacks" / "postgres" / OVERRIDE_FILENAME
+    # Compile result: kestra was rule-requested but skipped (compose.yml
+    # missing/unparsable); postgres compiled successfully.
+    result = GenerateResult(
+        compiled=(
+            CompiledOverride(
+                service="postgres",
+                target_path=other,
+                yaml_content="services:\n  postgres:\n    ports:\n    - 5432:5432\n",
+            ),
+        ),
+        redpanda=None,
+        skipped=("kestra",),
+        zero_entry=False,
+    )
+    write_overrides(result, stacks_dir=tmp_path)
+    assert existing.exists(), (
+        "skipped service's existing override must NOT be removed — Tofu still "
+        "requests the rule, we just couldn't render it this run"
+    )
+    assert other.is_file()
+
+
 def test_write_overrides_zero_entry_removes_all_existing(tmp_path: Path) -> None:
     """R-zero-entry-cleanup (#531 R1): when firewall_rules is empty
     AFTER previously having entries, ALL pre-existing

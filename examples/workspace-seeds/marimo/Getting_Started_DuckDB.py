@@ -12,7 +12,8 @@ So you can ``import duckdb`` directly OR use Marimo's native SQL cells
 This notebook walks through six DuckDB patterns you'll actually use:
 
     1. Sanity check — version + simple SELECT
-    2. Synthetic data via ``generate_series`` — no I/O, runs anywhere
+    2. Synthetic data via the ``range()`` table function — no I/O,
+       runs anywhere
     3. Read remote parquet directly from HTTP via the ``httpfs`` extension
        (auto-loaded; no manual ``INSTALL httpfs`` or ``LOAD httpfs`` needed)
     4. Aggregate + window function on the public NYC Taxi dataset
