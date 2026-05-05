@@ -441,9 +441,13 @@ def _render_superset(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_openmetadata(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """OpenMetadata admin password is NOT written to .env — the legacy
+    bash didn't either (deploy.sh:824-830). It's pushed to Infisical
+    (key ``OPENMETADATA_PASSWORD``) and applied to the running stack
+    via REST in :func:`services.run_admin_setups`. Writing it here
+    would only widen the on-disk secret-exposure surface."""
     return RenderedEnv(
         env_vars={
-            "OPENMETADATA_ADMIN_PASSWORD": c.openmetadata_admin_password or "",
             "OPENMETADATA_DB_PASSWORD": c.openmetadata_db_password or "",
             "OPENMETADATA_AIRFLOW_PASSWORD": c.openmetadata_airflow_password or "",
             "OPENMETADATA_FERNET_KEY": c.openmetadata_fernet_key or "",
