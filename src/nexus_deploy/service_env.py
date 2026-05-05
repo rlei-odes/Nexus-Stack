@@ -282,7 +282,10 @@ def _render_sftpgo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_redpanda_console(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    return RenderedEnv(env_vars={"REDPANDA_ADMIN_PASSWORD": c.redpanda_admin_password or ""})
+    """Legacy used REDPANDA_ADMIN_PASS (not _PASSWORD). Mirrors
+    deploy.sh:649 — keep parity so external tooling/docs that read
+    stacks/redpanda-console/.env see the same key."""
+    return RenderedEnv(env_vars={"REDPANDA_ADMIN_PASS": c.redpanda_admin_password or ""})
 
 
 def _render_hoppscotch(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
