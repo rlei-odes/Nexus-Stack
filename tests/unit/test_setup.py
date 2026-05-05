@@ -1080,13 +1080,18 @@ def test_render_wetty_agent_script_dead_socket_cleanup() -> None:
 
 
 def test_render_wetty_agent_script_authorized_keys_full_line_match() -> None:
-    """R-pubkey-dedup: full-line grep -qF (NOT a substring grep) so a
-    partial / shorter prefix doesn't false-positive. The pubkey line
-    is fixed-string compared against the file."""
+    """R-pubkey-dedup (#530 R5 #2): -F (fixed string) AND -x (whole
+    line) together. -F alone is a substring match — a longer line in
+    authorized_keys containing $PUBKEY as substring would false-
+    positive (skip the append) AND vice-versa. The actual invariant
+    the comment claims is whole-line equality, which only -Fx
+    delivers."""
     from nexus_deploy.setup import render_wetty_agent_script
 
     script = render_wetty_agent_script()
-    assert 'grep -qF "$PUBKEY" /root/.ssh/authorized_keys' in script
+    assert 'grep -qFx "$PUBKEY" /root/.ssh/authorized_keys' in script
+    # Must NOT be the substring-only -F form
+    assert 'grep -qF "$PUBKEY" /root/.ssh/authorized_keys' not in script
 
 
 def test_render_wetty_agent_script_strips_existing_auth_sock_line() -> None:

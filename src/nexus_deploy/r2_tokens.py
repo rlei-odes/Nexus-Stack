@@ -133,11 +133,10 @@ class TokenInventory:
         return self.remaining_slots < 5
 
 
-# Sentinel type for the ``client_factory`` test seam. Callers in
-# production leave ``client_factory=None`` and get the standard
-# ``requests`` module; tests pass a ``MagicMock`` (or a custom stub)
-# that implements ``.get()`` / ``.delete()`` with the same shape as
-# requests' API.
+# Sentinel type for the ``client`` test seam. Callers in production
+# leave ``client=None`` and get the standard ``requests`` module;
+# tests pass a ``MagicMock`` (or a custom stub) that implements
+# ``.get()`` / ``.delete()`` with the same shape as requests' API.
 HttpClient = Any
 
 

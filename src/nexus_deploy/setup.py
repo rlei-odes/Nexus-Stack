@@ -722,11 +722,15 @@ if [ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]; then
 fi
 
 # Step 3: append pubkey to authorized_keys (idempotent — full-line
-# match so a partial duplicate doesn't false-positive).
+# fixed-string match so neither a partial duplicate (existing line
+# contains $PUBKEY as substring) nor a substring of $PUBKEY (existing
+# line that happens to be a substring of the pubkey we're checking)
+# can false-positive. `-F` = fixed string (no regex), `-x` = whole-
+# line match (the actual invariant the comment claims).
 PUBKEY=$(cat "$KEY_PATH.pub")
 touch /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
-if ! grep -qF "$PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
+if ! grep -qFx "$PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
     printf '%s\\n' "$PUBKEY" >> /root/.ssh/authorized_keys
     PUBKEY_ADD=1
 fi
