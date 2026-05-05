@@ -871,8 +871,13 @@ def setup_wetty_ssh_agent(
         wetty_env_file=wetty_env_file,
     )
     completed = ssh.run_script(script, check=True)
-    # Forward non-RESULT stderr lines (the script's own diagnostics)
-    # to the local terminal so operators see e.g. ssh-keygen errors.
+    # Forward non-RESULT diagnostic lines (the script's own ⚠ /
+    # ssh-keygen errors etc.) to the local terminal. SSHClient.run_script
+    # uses merge_stderr=True by default, so the script's stderr is
+    # already folded into completed.stdout — iterating stdout here
+    # captures both the rendered bash's `echo … >&2` warnings AND any
+    # plain stdout, while skipping the parseable RESULT_WETTY line
+    # itself (which the parser below consumes).
     for line in completed.stdout.splitlines():
         if not line.startswith("RESULT_WETTY"):
             sys.stderr.write(line + "\n")
