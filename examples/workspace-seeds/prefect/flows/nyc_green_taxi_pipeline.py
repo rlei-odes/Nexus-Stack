@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 
 import boto3
+import botocore.config
 import duckdb
 import httpx
 from prefect import flow, get_run_logger, task
@@ -65,12 +66,17 @@ def upload_month(month: str, body: bytes) -> str:
     deterministically. R2 credentials come from the prefect-worker
     container's env vars (deploy.sh writes R2_* into stacks/prefect/.env).
     """
+    # `addressing_style="path"` is required for Cloudflare R2: without
+    # it, botocore can fall back to virtual-host-style URLs
+    # (`<bucket>.<account>.r2.cloudflarestorage.com`) which R2 rejects.
+    # Documented in docs/tutorials/databricks/r2-datalake.md.
     s3 = boto3.client(
         "s3",
         endpoint_url=os.environ["R2_ENDPOINT"],
         aws_access_key_id=os.environ["R2_ACCESS_KEY"],
         aws_secret_access_key=os.environ["R2_SECRET_KEY"],
         region_name="auto",
+        config=botocore.config.Config(s3={"addressing_style": "path"}),
     )
     key = f"nexus-tutorials/NYC/green_tripdata_2025-{month}.parquet"
     s3.put_object(Bucket=os.environ["R2_BUCKET"], Key=key, Body=body)
@@ -153,10 +159,13 @@ def nyc_green_taxi_pipeline(months: list[str] | None = None) -> dict:
     # env vars to stacks/prefect/.env unconditionally, but with empty
     # values when the optional R2 datalake isn't configured in
     # OpenTofu (the r2_data_* fields on NexusConfig). Without this
-    # guard, the first `download_month` task would crash deep inside
-    # boto with a confusing 'invalid endpoint URL' / SSL error;
-    # surfacing the missing-R2 case here gives the operator an
-    # actionable next step instead.
+    # guard, the first `upload_month` task would crash deep inside
+    # boto3 (the boto3 S3 client is constructed there with the
+    # R2_* env vars) with a confusing 'invalid endpoint URL' / SSL
+    # error; surfacing the missing-R2 case here gives the operator
+    # an actionable next step instead. (`download_month` reads from
+    # CloudFront and doesn't touch R2 at all, so it would succeed
+    # even with R2_* unset — the failure point is the upload.)
     missing = [
         var
         for var in ("R2_ENDPOINT", "R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_BUCKET")

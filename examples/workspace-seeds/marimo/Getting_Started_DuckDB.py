@@ -111,10 +111,10 @@ def _(con, mo):
 
 @app.cell
 def _(con, mo):
-    # Step 2: generate_series produces a synthetic table with no I/O.
-    # Useful for quick demos, smoke-tests, or warming up a query plan.
-    # `range` here is DuckDB's table function — same shape as Postgres'
-    # `generate_series` but with named bounds.
+    # Step 2: DuckDB's `range()` table function produces a synthetic
+    # table with no I/O. Useful for quick demos, smoke-tests, or
+    # warming up a query plan. (`range` is DuckDB's name; Postgres
+    # calls the equivalent function `generate_series`.)
     synthetic = con.sql(
         """
         SELECT
@@ -287,7 +287,7 @@ def _(mo):
     # an internal DuckDB connection (different from our `con` above —
     # `mo.sql` keeps its own scope-internal DB). Returned value is a
     # Polars DataFrame by default. The cell auto-renders below.
-    fastest_pickup_hours = mo.sql(
+    pickup_hours_distribution = mo.sql(
         """
         SELECT
             EXTRACT(HOUR FROM tpep_pickup_datetime) AS pickup_hour,
@@ -305,30 +305,30 @@ def _(mo):
         ORDER BY pickup_hour
         """,
     )
-    return (fastest_pickup_hours,)
+    return (pickup_hours_distribution,)
 
 
 @app.cell
-def _(fastest_pickup_hours, mo):
+def _(pickup_hours_distribution, mo):
     mo.md(
         """
         Hourly pickup distribution above — the busiest hours and the
         average trip duration in each. Note how ``mo.sql`` returns a
-        Polars DataFrame named ``fastest_pickup_hours`` you can
+        Polars DataFrame named ``pickup_hours_distribution`` you can
         reference in downstream Python cells:
         """,
     )
-    fastest_pickup_hours
+    pickup_hours_distribution
     return
 
 
 @app.cell
-def _(fastest_pickup_hours, mo):
+def _(pickup_hours_distribution, mo):
     # Step 6 continued: downstream Python cell consuming the mo.sql
     # result. Marimo's reactive DAG re-runs this cell whenever the
     # SQL above re-runs.
-    busiest = fastest_pickup_hours.sort("n_trips", descending=True).head(3)
-    quietest = fastest_pickup_hours.sort("n_trips").head(3)
+    busiest = pickup_hours_distribution.sort("n_trips", descending=True).head(3)
+    quietest = pickup_hours_distribution.sort("n_trips").head(3)
     mo.md(
         f"""
         **Busiest 3 hours:** {", ".join(f"{h:02d}:00" for h in busiest["pickup_hour"])}

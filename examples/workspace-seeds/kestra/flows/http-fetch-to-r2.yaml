@@ -88,7 +88,13 @@ tasks:
     accessKeyId: "{{ secret('R2_ACCESS_KEY') }}"
     secretKeyId: "{{ secret('R2_SECRET_KEY') }}"
     bucket: "{{ secret('R2_BUCKET') }}"
-    key: "{{ inputs.r2_prefix }}/dt={{ now() | date('yyyy-MM-dd') }}/hr={{ now() | date('HH') }}/{{ inputs.filename }}"
+    # Use `execution.startDate` (the single, stable per-execution
+    # timestamp Kestra computes at flow start) instead of `now()`,
+    # which would be evaluated TWICE here — once for `dt=` and once
+    # for `hr=`. Around an hour or day rollover those two evaluations
+    # could disagree and produce a path like `dt=2026-05-05/hr=00`
+    # for an object whose hour-stamp belongs to the next date.
+    key: "{{ inputs.r2_prefix }}/dt={{ execution.startDate | date('yyyy-MM-dd') }}/hr={{ execution.startDate | date('HH') }}/{{ inputs.filename }}"
     from: "{{ outputs.download.uri }}"
 
   # ---------------------------------------------------------------------

@@ -612,8 +612,14 @@ def test_render_all_marimo_then_append_gitea_block_succeeds(
     appended = append_gitea_workspace_block(cfg, ["marimo"], stacks_dir=tmp_path)
     assert appended == ("marimo",)
     content = (tmp_path / "marimo" / ".env").read_text()
+    # Assert ALL FOUR env-vars Marimo's clone step depends on. The
+    # original bug was that ZERO of them landed in .env (file didn't
+    # exist for the appender), but a future regression that drops
+    # only one of the four (e.g. GITEA_PASSWORD) would still let
+    # the clone fail in production. Each line is asserted explicitly.
     assert "GITEA_REPO_URL=http://gitea:3000/owner/workspace.git" in content
     assert "GITEA_USERNAME=ops" in content
+    assert "GITEA_PASSWORD=pw" in content
     assert "REPO_NAME=workspace" in content
 
 

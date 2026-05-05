@@ -39,7 +39,7 @@
 # at cohort scale.
 
 name: nexus-tutorials
-prefect-version: 3
+prefect-version: "3"
 
 pull:
   - prefect.deployments.steps.git_clone:
@@ -71,6 +71,17 @@ deployments:
       prefix, not at the repo root), push, and re-run the deployment
       — the worker re-clones from Gitea via the `pull:` step above
       on every run.
+
+      UPGRADE NOTE for existing workspaces: the prefect-worker
+      entrypoint only clones the workspace repo when
+      `/flows/$REPO_NAME/.git` is ABSENT (see
+      stacks/prefect/docker-compose.yml). The `pull:` step above
+      runs at flow-RUN time and re-clones on every Run, so seeded
+      flows DO appear once you trigger a flow-run for them via the
+      Prefect UI. But on an existing stack the deployment manifest
+      itself (this prefect.yaml) only lands in the repo on the next
+      `git pull` from inside the worker container or after wiping
+      the worker volume. Fresh stacks get it automatically.
 
       Manual trigger only (no schedule). Default `months=["01","02"]`
       keeps each Run light; pass a longer list to widen.

@@ -121,7 +121,11 @@ tasks:
         # order listings, switch the `idx{{...}}` segment to a Pebble
         # `string.format` like `{{ '%03d' | format(taskrun.iteration) }}`
         # to get zero-padded `idx002`, `idx010`, etc.
-        key: "{{ inputs.r2_prefix }}/dt={{ now() | date('yyyy-MM-dd') }}/hr={{ now() | date('HH') }}/idx{{ taskrun.iteration }}-{{ taskrun.value | sha256 | substring(0,8) }}.json"
+        # Use `execution.startDate` (single stable per-execution
+        # timestamp) instead of `now()` to avoid the dt= / hr= rollover
+        # race; same fix as in http-fetch-to-r2.yaml — see that
+        # sibling flow for the rationale.
+        key: "{{ inputs.r2_prefix }}/dt={{ execution.startDate | date('yyyy-MM-dd') }}/hr={{ execution.startDate | date('HH') }}/idx{{ taskrun.iteration }}-{{ taskrun.value | sha256 | substring(0,8) }}.json"
         from: "{{ outputs.download[taskrun.value].uri }}"
 
   # ---------------------------------------------------------------------

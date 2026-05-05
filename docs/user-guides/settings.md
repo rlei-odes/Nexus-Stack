@@ -19,7 +19,7 @@ Read-only facts about the current deployment.
 | Field | Description |
 |-------|-------------|
 | **Server Type** | Hetzner server model (e.g. `cx43`) |
-| **Location** | Hetzner datacenter code (`hel1`, `fsn1`, `nbg1`) |
+| **Location** | Hetzner datacenter code — EU options: `hel1` (Helsinki), `fsn1` (Falkenstein), `nbg1` (Nuremberg); US option: `ash` (Ashburn) |
 | **Domain** | Your root domain |
 | **Last Spin Up** | Timestamp of the most recent spin-up |
 | **Last Teardown** | Timestamp of the most recent teardown |

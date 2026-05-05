@@ -44,7 +44,10 @@ The Marimo container is a thin gRPC client — the driver-JVM lives in the dedic
 
 ### Quickstart
 
-Three seed notebooks ship in every workspace under `nexus_seeds/marimo/` (auto-cloned from your Gitea workspace repo on first launch). Open from `https://marimo.<your-domain>` and hit **Run all** on whichever one matches what you're trying to learn:
+Three seed notebooks ship in every workspace under `nexus_seeds/marimo/` — they're cloned from your Gitea workspace repo into `/app/notebooks/<repo>/` on the **first** Marimo container launch. Open from `https://marimo.<your-domain>` and hit **Run all** on whichever one matches what you're trying to learn:
+
+> **Upgrade note:** Marimo's entrypoint only clones the workspace repo when `/app/notebooks/<repo>/.git` is **absent** ([`stacks/marimo/docker-compose.yml`](../../stacks/marimo/docker-compose.yml)). On an existing workspace where Marimo was already running before a new seed shipped, `gh workflow run spin-up.yml` won't pull the new file in automatically — the repo dir already exists. Either run `git pull` from inside the Marimo notebook UI's terminal, or wipe the `marimo_data` volume and let the first-launch clone re-fetch (loses any local notebook edits). The new seeds DO appear in fresh stack deployments.
+
 
 - **`Getting_Started_PySpark.py`** — minimal "spin up a SparkSession via Spark Connect, run a job, render results" walkthrough. Start here.
 - **`Getting_Started_DuckDB.py`** — DuckDB walkthrough that doesn't need the Spark stack at all: in-memory queries, `range()` synthetic data, remote parquet over `httpfs`, aggregate + window functions, Polars/Pandas/PyArrow conversion, and Marimo's native `mo.sql()` reactive cell. Useful as a single-node analytics baseline before reaching for Spark.
