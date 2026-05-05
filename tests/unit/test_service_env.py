@@ -412,7 +412,7 @@ def test_strip_gitea_block_on_clean_content_is_noop() -> None:
 def test_strip_gitea_block_removes_existing_block() -> None:
     content = (
         "FOO=bar\n"
-        "# >>> Gitea workspace repo (managed by nexus_deploy)\n"
+        "# >>> Gitea workspace repo (auto-generated, do not edit)\n"
         "GITEA_URL=http://gitea:3000\n"
         "OLD=stale\n"
         "# <<< Gitea workspace repo\n"

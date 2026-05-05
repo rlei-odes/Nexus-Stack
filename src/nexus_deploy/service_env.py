@@ -201,11 +201,14 @@ def _bcrypt_password(plaintext: str) -> str:
 
 
 def _render_infisical(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """Infisical compose substitutes ENCRYPTION_KEY / AUTH_SECRET /
+    POSTGRES_PASSWORD (no INFISICAL_ prefix). Matches legacy
+    deploy.sh:520-525."""
     return RenderedEnv(
         env_vars={
-            "INFISICAL_DB_PASSWORD": c.infisical_db_password or "",
-            "INFISICAL_ENCRYPTION_KEY": c.infisical_encryption_key or "",
-            "INFISICAL_AUTH_SECRET": c.infisical_auth_secret or "",
+            "ENCRYPTION_KEY": c.infisical_encryption_key or "",
+            "AUTH_SECRET": c.infisical_auth_secret or "",
+            "POSTGRES_PASSWORD": c.infisical_db_password or "",
         },
     )
 
@@ -1035,7 +1038,12 @@ def render_all_env_files(
 
 # Marker pair for idempotent strip+append. Same shape as legacy
 # deploy.sh sed pattern.
-_GITEA_BLOCK_BEGIN = "# >>> Gitea workspace repo (managed by nexus_deploy)"
+# Block markers MUST match the legacy deploy.sh strings byte-for-byte —
+# upgrading from a deploy.sh-only version of Nexus-Stack to this CLI
+# relies on _strip_gitea_block() finding (and removing) any block
+# previously written by deploy.sh:1384/1394 before appending the new
+# one. Diverging markers would cause re-runs to stack a second block.
+_GITEA_BLOCK_BEGIN = "# >>> Gitea workspace repo (auto-generated, do not edit)"
 _GITEA_BLOCK_END = "# <<< Gitea workspace repo"
 
 # Services that get the Gitea block appended.
