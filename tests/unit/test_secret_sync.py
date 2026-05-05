@@ -802,6 +802,47 @@ def test_render_jupyter_branch_unchanged_for_gitea_token() -> None:
     assert 'printf \'%sGITEA_TOKEN="%s"\\n\' "$KEY_PREFIX" "$ESCAPED_GTOKEN"' in script
 
 
+def test_render_kestra_skips_multiline_guard() -> None:
+    """R-multi-line-base64 (Kestra-specific): the multi-line skip
+    must NOT run in USE_B64=1 mode. Multi-line PEMs / certs / multi-
+    line tokens transit as single-line base64 to Kestra's
+    EnvVarSecretProvider, which decodes them server-side. Legacy
+    Kestra-secret-sync had no multi-line guard at all (it wrote
+    SECRET_<KEY>=<base64> directly without decoding); my migration
+    erroneously inherited Jupyter/Marimo's plain-text guard.
+    Regression caught in PR #530 R1."""
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+    )
+    # The multi-line guard must be gated on USE_B64=0
+    assert 'if [ "$USE_B64" = "0" ]; then' in script
+    # And the case statement that does the actual skip lives inside
+    # that conditional
+    multiline_idx = script.index('case "$VALUE" in')
+    use_b64_idx = script.index('if [ "$USE_B64" = "0" ]; then')
+    assert use_b64_idx < multiline_idx, (
+        "multi-line guard's case statement must come AFTER the USE_B64=0 conditional opens"
+    )
+
+
+def test_render_jupyter_marimo_keep_multiline_guard() -> None:
+    """Defence in depth: USE_B64=0 mode (Jupyter/Marimo) MUST still
+    skip multi-line values — they can't survive the dotenv KEY="value"
+    encoding without escaping."""
+    for name in ("jupyter", "marimo"):
+        script = render_remote_script(
+            target=StackTarget(name=name),
+            project_id="p",
+            infisical_token="t",
+            infisical_env="dev",
+        )
+        assert 'if [ "$USE_B64" = "0" ]; then' in script
+        assert "SKIPPED_MULTI=$((SKIPPED_MULTI+1))" in script
+
+
 # ---------------------------------------------------------------------------
 # CLI — `nexus-deploy secret-sync --stack <jupyter|marimo>`
 # ---------------------------------------------------------------------------

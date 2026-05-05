@@ -712,7 +712,7 @@ if echo "$ENABLED_SERVICES" | grep -qw "infisical"; then
     # eval-able stdout: INFISICAL_TOKEN=...; PROJECT_ID=... (both
     # always emitted, may be empty when not-ready / soft-fail).
     INFISICAL_OUT=$(mktemp)
-    RUNNER_CLEANUP_PATHS+="$INFISICAL_OUT\n"
+    echo "$INFISICAL_OUT" >> "$RUNNER_CLEANUP_PATHS"
     INFISICAL_PROVISION_RC=0
     ADMIN_EMAIL="$ADMIN_EMAIL" INFISICAL_PASS="$INFISICAL_PASS" \
         uv run --quiet --project "$PROJECT_ROOT" \

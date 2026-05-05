@@ -127,9 +127,9 @@ class SSHReadinessResult:
 
 @dataclass(frozen=True)
 class WettyAgentResult:
-    """Outcome of :func:`setup_wetty_ssh_agent`. All four steps are
-    idempotent — re-runs that find nothing to do still return
-    successfully with the relevant ``*_changed`` flag = False.
+    """Outcome of :func:`setup_wetty_ssh_agent`. Tracks 5 idempotent
+    steps — re-runs that find nothing to do still return
+    successfully with the corresponding flag set to ``False``.
 
     Only the rendered server-side script knows whether each step ran
     or was a no-op; the result line is parsed back into this
@@ -642,19 +642,27 @@ def render_wetty_agent_script(
     ed25519 key pair, ssh-agent socket, and SSH_AUTH_SOCK injection
     Wetty needs to log into the host. Mirrors deploy.sh:445-538.
 
-    Five idempotent steps, each emits a 0/1 flag in the final RESULT
-    line indicating whether the step actually changed remote state:
+    The script does six numbered steps; only five of them produce a
+    0/1 flag in the final RESULT line (step 1 is a precondition that
+    always runs and is not reflected in the result):
 
-    1. mkdir + chmod 700 ``~/.ssh`` (silent — never reflected in the
-       result; just a precondition for the rest).
-    2. ssh-keygen -t ed25519 the key pair if absent.
+    1. mkdir + chmod 700 ``~/.ssh`` (silent precondition — not in the
+       RESULT line).
+    2. ssh-keygen -t ed25519 the key pair if absent. Fail-fast on a
+       non-zero ssh-keygen exit OR missing output files (would
+       otherwise produce a misleading ``keypair_generated=1`` while
+       downstream steps fail silently). → ``keypair_generated``.
     3. Append the public key to ``authorized_keys`` if not already
-       present.
+       present. → ``pubkey_added``.
     4. Start ssh-agent if the socket isn't there or the agent is
        unresponsive (dead-socket detection — the legacy bash had this).
+       → ``agent_started``.
     5. ssh-add the key if its fingerprint isn't already loaded.
+       → ``key_added_to_agent``.
     6. Strip any prior ``SSH_AUTH_SOCK=`` line from
        ``stacks/wetty/.env`` and re-append the current socket path.
+       → ``auth_sock_written`` (always 1 on the success path; the
+       env-var line is unconditional).
     """
     key_q = shlex.quote(key_path)
     comment_q = shlex.quote(key_comment)
@@ -674,9 +682,24 @@ AUTH_SOCK_WROTE=0
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 
-# Step 1: ssh-keygen if absent
+# Step 1: ssh-keygen if absent. Fail-fast (echo RESULT_WETTY with
+# keypair_generated=0 + bail) when ssh-keygen reports non-zero OR
+# either of the expected output files ($KEY_PATH / $KEY_PATH.pub)
+# isn't on disk afterwards. Without this check, downstream steps
+# (cat $KEY_PATH.pub, ssh-keygen -lf for fingerprint) would silently
+# fail and we'd report a misleading keypair_generated=1 while Wetty
+# can't actually SSH.
 if [ ! -f "$KEY_PATH" ]; then
-    ssh-keygen -t ed25519 -f "$KEY_PATH" -N '' -C "$KEY_COMMENT" >/dev/null 2>&1
+    if ! ssh-keygen -t ed25519 -f "$KEY_PATH" -N '' -C "$KEY_COMMENT" >/dev/null 2>&1; then
+        echo "  ⚠ ssh-keygen failed — Wetty will not have a working SSH key" >&2
+        echo "RESULT_WETTY keypair_generated=0 pubkey_added=0 agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+        exit 0
+    fi
+    if [ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]; then
+        echo "  ⚠ ssh-keygen reported success but key files missing (filesystem issue?)" >&2
+        echo "RESULT_WETTY keypair_generated=0 pubkey_added=0 agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+        exit 0
+    fi
     chmod 600 "$KEY_PATH"
     chmod 644 "$KEY_PATH.pub"
     KEYPAIR_GEN=1

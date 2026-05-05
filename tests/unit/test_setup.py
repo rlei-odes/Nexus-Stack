@@ -1027,8 +1027,11 @@ def test_render_wetty_agent_script_basic_shape() -> None:
     assert "ssh-agent -a" in script
     assert "ssh-add" in script
     assert "SSH_AUTH_SOCK=" in script
-    # Single RESULT_WETTY line at the end
-    assert script.count("RESULT_WETTY ") == 1
+    # The happy-path RESULT_WETTY line is present. Multiple
+    # RESULT_WETTY lines exist in the script (each fail-fast path
+    # emits its own, all-zero, then exit 0) — we just check the
+    # all-success shape lands in there.
+    assert "RESULT_WETTY keypair_generated=$KEYPAIR_GEN" in script
 
 
 def test_render_wetty_agent_script_uses_quoted_paths() -> None:
@@ -1042,6 +1045,25 @@ def test_render_wetty_agent_script_uses_quoted_paths() -> None:
     )
     assert "'/tmp/with space/id_test'" in script
     assert "'/tmp/sock with space.sock'" in script
+
+
+def test_render_wetty_agent_script_fail_fast_on_keygen_failure() -> None:
+    """R-fail-fast: ssh-keygen non-zero OR missing output files emits
+    an all-zero RESULT_WETTY + exit 0. Without this, downstream steps
+    would silently fail and we'd produce a misleading
+    'keypair_generated=1' while Wetty can't actually SSH."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    # The fail-fast RESULT line emits all-zero flags + bails
+    assert (
+        "RESULT_WETTY keypair_generated=0 pubkey_added=0 agent_started=0 "
+        "key_added_to_agent=0 auth_sock_written=0"
+    ) in script
+    # Both check paths present: ssh-keygen exit-status check + post-keygen
+    # output-files-exist check
+    assert "if ! ssh-keygen -t ed25519" in script
+    assert '[ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]' in script
 
 
 def test_render_wetty_agent_script_dead_socket_cleanup() -> None:
