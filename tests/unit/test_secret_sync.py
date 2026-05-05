@@ -62,6 +62,56 @@ def test_stack_target_begin_marker_capitalised() -> None:
     assert "Infisical → Marimo env" in StackTarget(name="marimo").begin_marker
 
 
+def _kestra_target() -> StackTarget:
+    """Helper: the Kestra-style StackTarget. Matches the construction
+    in __main__._secret_sync (CLI dispatcher) — keep them in sync."""
+    return StackTarget(
+        name="kestra",
+        key_prefix="SECRET_",
+        use_base64_values=True,
+        env_file_basename=".env",
+        legacy_env_file_basename=None,
+        force_recreate=True,
+    )
+
+
+def test_stack_target_kestra_paths() -> None:
+    """Kestra writes to .env (the main stack file), not a separate
+    .infisical.env. No legacy_env_file (kestra never had one)."""
+    target = _kestra_target()
+    assert target.env_file == "/opt/docker-server/stacks/kestra/.env"
+    assert target.legacy_env_file is None
+    assert target.compose_dir == "/opt/docker-server/stacks/kestra"
+
+
+def test_stack_target_kestra_begin_marker_matches_legacy() -> None:
+    """Kestra marker matches legacy deploy.sh:1513 wording byte-for-byte."""
+    assert StackTarget(name="kestra").begin_marker == (
+        "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
+    )
+
+
+def test_stack_target_kestra_format_toggles() -> None:
+    """The 5 fields that parameterise the Kestra variant."""
+    target = _kestra_target()
+    assert target.key_prefix == "SECRET_"
+    assert target.use_base64_values is True
+    assert target.env_file_basename == ".env"
+    assert target.legacy_env_file_basename is None
+    assert target.force_recreate is True
+
+
+def test_stack_target_jupyter_marimo_defaults_unchanged() -> None:
+    """Defaults preserve the original Jupyter/Marimo behavior."""
+    for name in ("jupyter", "marimo"):
+        target = StackTarget(name=name)
+        assert target.key_prefix == ""
+        assert target.use_base64_values is False
+        assert target.env_file_basename == ".infisical.env"
+        assert target.legacy_env_file_basename == ".env"
+        assert target.force_recreate is False
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic helpers — direct tests
 # ---------------------------------------------------------------------------
@@ -655,6 +705,142 @@ def test_render_marimo_snapshot(snapshot: SnapshotAssertion) -> None:
         gitea_token="snapshot-gitea-token",
     )
     assert script == snapshot
+
+
+def test_render_kestra_snapshot(snapshot: SnapshotAssertion) -> None:
+    """Full rendered script for the Kestra variant — pins:
+    - KEY_PREFIX=SECRET_, USE_B64=1
+    - ENV_FILE=.../kestra/.env (NOT .infisical.env)
+    - LEGACY_ENV='' (no separate legacy file)
+    - the begin-marker matches legacy deploy.sh:1513 byte-for-byte
+    """
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="snapshot-project",
+        infisical_token="snapshot-token",
+        infisical_env="dev",
+        gitea_token="snapshot-gitea-token",
+    )
+    assert script == snapshot
+
+
+def test_render_kestra_uses_secret_prefix() -> None:
+    """Kestra appends rows like 'SECRET_<KEY>=<base64>' (NOT
+    '<KEY>=value' like Jupyter/Marimo)."""
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+    )
+    # Format toggles set (shlex.quote leaves "SECRET_" + the path
+    # unquoted because no shell-special chars are present)
+    assert "KEY_PREFIX=SECRET_" in script
+    assert "USE_B64=1" in script
+    # Base64 branch present (used at runtime when USE_B64=1)
+    assert 'printf \'%s%s=%s\\n\' "$KEY_PREFIX" "$KEY" "$VALUE_B64"' in script
+
+
+def test_render_kestra_writes_to_env_not_infisical_env() -> None:
+    """Kestra target writes to .env directly; no separate .infisical.env."""
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+    )
+    assert "ENV_FILE=/opt/docker-server/stacks/kestra/.env" in script
+    # No legacy env-file path either (empty string after shlex.quote('') = '')
+    assert "LEGACY_ENV=''" in script
+
+
+def test_render_kestra_skips_legacy_strip_when_no_legacy_file() -> None:
+    """Kestra's LEGACY_ENV is empty → the legacy-strip block is gated
+    on '[ -n \"$LEGACY_ENV\" ]' so it doesn't try to strip a nonexistent
+    file. Mirrors deploy.sh's lack of a legacy .infisical.env for kestra."""
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+    )
+    assert 'if [ -n "$LEGACY_ENV" ] && [ -f "$LEGACY_ENV" ]' in script
+
+
+def test_render_kestra_gitea_token_in_base64() -> None:
+    """When gitea_token is set, the SECRET_GITEA_TOKEN line is also
+    base64-encoded (not the plaintext-escaped form Jupyter/Marimo use)."""
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+        gitea_token="my-gitea-token",
+    )
+    # Kestra branch base64-encodes the token before appending.
+    assert "GTOKEN_B64=$(printf '%s' \"$GTOKEN\" | base64 | tr -d '\\n')" in script
+    assert 'printf \'%sGITEA_TOKEN=%s\\n\' "$KEY_PREFIX" "$GTOKEN_B64"' in script
+    # And the dedup-grep uses the prefix
+    assert 'grep -qE "^${KEY_PREFIX}GITEA_TOKEN="' in script
+
+
+def test_render_jupyter_branch_unchanged_for_gitea_token() -> None:
+    """Defence in depth: Jupyter/Marimo gitea-token path stays plain-
+    escaped (regression check that the new Kestra branch didn't break
+    the original behavior)."""
+    script = render_remote_script(
+        target=StackTarget(name="jupyter"),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+        gitea_token="my-gitea-token",
+    )
+    # No base64-encode of GTOKEN in the jupyter branch
+    assert "GTOKEN_B64=$(printf" in script  # both branches render
+    # But the actual emit uses ESCAPED_GTOKEN (plain-escaped) inside the USE_B64=0 branch
+    assert "ESCAPED_GTOKEN=" in script
+    assert 'printf \'%sGITEA_TOKEN="%s"\\n\' "$KEY_PREFIX" "$ESCAPED_GTOKEN"' in script
+
+
+def test_render_kestra_skips_multiline_guard() -> None:
+    """R-multi-line-base64 (Kestra-specific): the multi-line skip
+    must NOT run in USE_B64=1 mode. Multi-line PEMs / certs / multi-
+    line tokens transit as single-line base64 to Kestra's
+    EnvVarSecretProvider, which decodes them server-side. Legacy
+    Kestra-secret-sync had no multi-line guard at all (it wrote
+    SECRET_<KEY>=<base64> directly without decoding); my migration
+    erroneously inherited Jupyter/Marimo's plain-text guard.
+    Regression caught in PR #530 R1."""
+    script = render_remote_script(
+        target=_kestra_target(),
+        project_id="p",
+        infisical_token="t",
+        infisical_env="dev",
+    )
+    # The multi-line guard must be gated on USE_B64=0
+    assert 'if [ "$USE_B64" = "0" ]; then' in script
+    # And the case statement that does the actual skip lives inside
+    # that conditional
+    multiline_idx = script.index('case "$VALUE" in')
+    use_b64_idx = script.index('if [ "$USE_B64" = "0" ]; then')
+    assert use_b64_idx < multiline_idx, (
+        "multi-line guard's case statement must come AFTER the USE_B64=0 conditional opens"
+    )
+
+
+def test_render_jupyter_marimo_keep_multiline_guard() -> None:
+    """Defence in depth: USE_B64=0 mode (Jupyter/Marimo) MUST still
+    skip multi-line values — they can't survive the dotenv KEY="value"
+    encoding without escaping."""
+    for name in ("jupyter", "marimo"):
+        script = render_remote_script(
+            target=StackTarget(name=name),
+            project_id="p",
+            infisical_token="t",
+            infisical_env="dev",
+        )
+        assert 'if [ "$USE_B64" = "0" ]; then' in script
+        assert "SKIPPED_MULTI=$((SKIPPED_MULTI+1))" in script
 
 
 # ---------------------------------------------------------------------------

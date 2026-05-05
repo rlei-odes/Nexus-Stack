@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from nexus_deploy import _remote
 from nexus_deploy.config import NexusConfig
@@ -135,6 +137,288 @@ class BootstrapResult:
     folders_built: int
     pushed: int
     failed: int
+
+
+# ---------------------------------------------------------------------------
+# Provision-admin (Phase 3 Modul 3.4f, #505) — replaces the bash readiness-
+# probe + admin-bootstrap + project-create + cred-persist block at
+# deploy.sh:792-869. The push-secrets step (BootstrapResult above) is the
+# downstream step that consumes the (token, project_id) this returns.
+# ---------------------------------------------------------------------------
+
+
+# Server-side paths where the freshly-minted token + project_id are
+# persisted on first run, so subsequent spin-ups can load them without
+# re-bootstrapping. Mirrors deploy.sh:823-824 + 858-861.
+_REMOTE_TOKEN_PATH = "/opt/docker-server/.infisical-token"  # noqa: S105 — file path
+_REMOTE_PROJECT_ID_PATH = "/opt/docker-server/.infisical-project-id"
+
+
+ProvisionStatus = Literal[
+    "freshly-bootstrapped",  # /admin/bootstrap + /workspace + creds saved
+    "loaded-existing",  # already initialized + saved-cred files readable
+    "loaded-existing-missing-creds",  # initialized but cred files empty/missing — operator must destroy-all
+    "already-bootstrapped-no-saved-creds",  # API returned "already" but no saved file (state mismatch)
+    "bootstrap-failed",  # /admin/bootstrap returned an unparseable body
+    "project-create-failed",  # /workspace returned no project.id
+    "not-ready",  # readiness probe timed out
+]
+
+
+@dataclass(frozen=True)
+class ProvisionResult:
+    """Outcome of :func:`provision_admin`.
+
+    On the success paths (``freshly-bootstrapped`` / ``loaded-existing``)
+    ``token`` + ``project_id`` are populated and the caller can proceed
+    to push secrets via :class:`InfisicalClient`. On every other status
+    they are ``None`` and the caller should warn-and-skip the push step
+    (downstream stacks reading from Infisical will degrade gracefully —
+    same behavior as the legacy bash).
+    """
+
+    status: ProvisionStatus
+    token: str | None  # Bearer token for /api/v2/workspace + downstream pushes
+    project_id: str | None  # Workspace ("project") id for the secret push folders
+
+    @property
+    def has_credentials(self) -> bool:
+        """True iff this run produced a (token, project_id) usable for downstream pushes."""
+        return self.token is not None and self.project_id is not None
+
+
+# RESULT line emitted by the rendered bash script. token is base64-encoded
+# (matches the same argv-safe transport pattern infisical bootstrap +
+# secret_sync.py use); project_id is plain (uuid-shaped, never has shell-
+# special chars — but anchored alphanumeric + dash for defence in depth).
+_PROVISION_RESULT_RE = re.compile(
+    r"^RESULT status=(?P<status>[a-z-]+)"
+    r"(?: token=(?P<token>[A-Za-z0-9+/=]+))?"
+    r"(?: project_id=(?P<project_id>[A-Za-z0-9_-]+))?$",
+    re.MULTILINE,
+)
+
+
+def render_provision_admin_script(
+    *,
+    admin_email: str,
+    admin_password: str,
+    organization_name: str = "Nexus",
+    project_name: str = "Nexus Stack",
+    base_url: str = "http://localhost:8070",
+    saved_token_path: str = _REMOTE_TOKEN_PATH,
+    saved_project_path: str = _REMOTE_PROJECT_ID_PATH,
+    container_wait_seconds: int = 60,
+    http_wait_seconds: int = 120,
+) -> str:
+    """Render the server-side bash that probes readiness, decides
+    init-state, and either loads saved creds or bootstraps a new admin
+    + project. Mirrors deploy.sh:792-869.
+
+    Two-stage readiness: docker container Status == "running"
+    (``container_wait_seconds`` ceiling) AND HTTP body of
+    ``/api/v1/admin/config`` contains ``initialized``
+    (``http_wait_seconds`` ceiling). Without the second check, the
+    admin-bootstrap POST would race against Infisical's data-provider
+    init and 401.
+
+    Init-branch:
+    - ``"initialized":true`` body → load creds from
+      ``{saved_token_path}`` + ``{saved_project_path}`` (mode 600,
+      written on first run). Empty/missing files → ``loaded-existing-
+      missing-creds`` (operator must run destroy-all + re-init).
+    - else → POST ``/api/v1/admin/bootstrap`` with email + password +
+      organization_name → extract ``identity.credentials.token`` +
+      ``organization.id``. Then POST ``/api/v2/workspace`` with
+      project_name + organizationId → extract ``project.id`` (or
+      legacy ``workspace.id``). Save token + project_id to disk.
+
+    All API calls keep the freshly-minted token in env vars / mode-600
+    curl --config tmpfile, NEVER in argv. The token IS embedded in the
+    RESULT line (base64-encoded) so the runner can extract it; that's
+    the documented eval-handoff contract used by gitea-configure +
+    woodpecker-oauth.
+    """
+    email_q = shlex.quote(admin_email)
+    pw_q = shlex.quote(admin_password)
+    org_q = shlex.quote(organization_name)
+    project_q = shlex.quote(project_name)
+    url_q = shlex.quote(base_url)
+    tok_path_q = shlex.quote(saved_token_path)
+    proj_path_q = shlex.quote(saved_project_path)
+    return f"""set -euo pipefail
+ADMIN_EMAIL={email_q}
+ADMIN_PW={pw_q}
+ORG_NAME={org_q}
+PROJECT_NAME={project_q}
+BASE_URL={url_q}
+SAVED_TOKEN_PATH={tok_path_q}
+SAVED_PROJECT_PATH={proj_path_q}
+
+# Stage 1: wait for docker container to be running.
+SECONDS=0
+while [ "$SECONDS" -lt {container_wait_seconds} ]; do
+    STATUS=$(docker inspect --format='{{{{.State.Status}}}}' infisical 2>/dev/null || echo "")
+    [ "$STATUS" = "running" ] && break
+    sleep 2
+done
+
+# Stage 2: wait for /admin/config body to mention 'initialized'.
+READY=false
+SECONDS=0
+while [ "$SECONDS" -lt {http_wait_seconds} ]; do
+    BODY=$(curl -s --connect-timeout 3 --max-time 5 \\
+        "$BASE_URL/api/v1/admin/config" 2>/dev/null || echo "")
+    if echo "$BODY" | grep -q 'initialized'; then
+        READY=true
+        break
+    fi
+    sleep 3
+done
+if [ "$READY" != "true" ]; then
+    echo "RESULT status=not-ready"
+    exit 0
+fi
+
+# Stage 3: re-fetch /admin/config to determine init state.
+INIT_BODY=$(curl -s --max-time 10 "$BASE_URL/api/v1/admin/config" 2>/dev/null || echo "")
+if echo "$INIT_BODY" | grep -q '"initialized":true'; then
+    SAVED_TOKEN=$(cat "$SAVED_TOKEN_PATH" 2>/dev/null || echo "")
+    SAVED_PROJECT=$(cat "$SAVED_PROJECT_PATH" 2>/dev/null || echo "")
+    if [ -z "$SAVED_TOKEN" ] || [ -z "$SAVED_PROJECT" ]; then
+        echo "RESULT status=loaded-existing-missing-creds"
+        exit 0
+    fi
+    TOKEN_B64=$(printf '%s' "$SAVED_TOKEN" | base64 | tr -d '\\n')
+    echo "RESULT status=loaded-existing token=$TOKEN_B64 project_id=$SAVED_PROJECT"
+    exit 0
+fi
+
+# Stage 4: fresh bootstrap. POST /admin/bootstrap with email + password
+# + organization name. NEXUS_E / NEXUS_PW / NEXUS_ORG route the values
+# through env vars to jq — never `--arg`, which would land them in
+# jq's argv.
+BOOTSTRAP_BODY=$(NEXUS_E="$ADMIN_EMAIL" NEXUS_PW="$ADMIN_PW" NEXUS_ORG="$ORG_NAME" jq -n \\
+    '{{email: env.NEXUS_E, password: env.NEXUS_PW, organization: env.NEXUS_ORG}}')
+BOOTSTRAP_RESP=$(printf '%s' "$BOOTSTRAP_BODY" | curl -s -X POST \\
+    "$BASE_URL/api/v1/admin/bootstrap" \\
+    --max-time 30 \\
+    -H 'Content-Type: application/json' \\
+    --data-binary @- 2>/dev/null || echo "")
+
+if echo "$BOOTSTRAP_RESP" | grep -qi 'already'; then
+    echo "RESULT status=already-bootstrapped-no-saved-creds"
+    exit 0
+fi
+
+NEW_TOKEN=$(echo "$BOOTSTRAP_RESP" | jq -r '.identity.credentials.token // empty' 2>/dev/null)
+ORG_ID=$(echo "$BOOTSTRAP_RESP" | jq -r '.organization.id // empty' 2>/dev/null)
+if [ -z "$NEW_TOKEN" ] || [ -z "$ORG_ID" ]; then
+    echo "RESULT status=bootstrap-failed"
+    exit 0
+fi
+
+# Stage 5: create the workspace ("project" in v2 API). Bearer token via
+# mode-600 curl --config tmpfile, NOT -H argv.
+TOKEN_CFG=$(mktemp)
+chmod 600 "$TOKEN_CFG"
+trap 'rm -f "$TOKEN_CFG"' EXIT
+printf 'header = "Authorization: Bearer %s"\\n' "$NEW_TOKEN" > "$TOKEN_CFG"
+PROJECT_BODY=$(NEXUS_PN="$PROJECT_NAME" NEXUS_OID="$ORG_ID" jq -n \\
+    '{{projectName: env.NEXUS_PN, organizationId: env.NEXUS_OID}}')
+PROJECT_RESP=$(printf '%s' "$PROJECT_BODY" | curl -s --config "$TOKEN_CFG" \\
+    -X POST "$BASE_URL/api/v2/workspace" \\
+    --max-time 30 \\
+    -H 'Content-Type: application/json' \\
+    --data-binary @- 2>/dev/null || echo "")
+NEW_PROJECT=$(echo "$PROJECT_RESP" | jq -r '.project.id // .workspace.id // empty' 2>/dev/null)
+if [ -z "$NEW_PROJECT" ] || [ "$NEW_PROJECT" = "null" ]; then
+    echo "RESULT status=project-create-failed"
+    exit 0
+fi
+
+# Stage 6: persist for next spin-up. mode 600 — these files contain
+# the bearer token + workspace id. cat-then-chmod is the standard
+# pattern (the file is created by the redirect; chmod tightens it
+# before any further read).
+printf '%s' "$NEW_TOKEN" > "$SAVED_TOKEN_PATH"
+chmod 600 "$SAVED_TOKEN_PATH"
+printf '%s' "$NEW_PROJECT" > "$SAVED_PROJECT_PATH"
+chmod 600 "$SAVED_PROJECT_PATH"
+
+NEW_TOKEN_B64=$(printf '%s' "$NEW_TOKEN" | base64 | tr -d '\\n')
+echo "RESULT status=freshly-bootstrapped token=$NEW_TOKEN_B64 project_id=$NEW_PROJECT"
+"""
+
+
+def parse_provision_result(stdout: str) -> ProvisionResult | None:
+    """Extract the RESULT line from the rendered script's stdout. Returns
+    None if no parseable RESULT line exists.
+
+    The caller (``provision_admin``) substitutes a
+    ``ProvisionResult(status="not-ready", ...)`` for the None — and
+    the CLI dispatcher then maps that to **rc=1** (soft-fail, warn-
+    and-continue), NOT rc=2. Real transport failures (SSH connection
+    drops, timeouts) raise ``CalledProcessError`` / ``OSError`` from
+    the runner BEFORE we reach this parser, and those are what the
+    CLI's rc=2 branch catches. Without a RESULT line the script ran
+    end-to-end but didn't reach the success path — that's a soft
+    Infisical-bootstrap-not-ready signal, not a transport break."""
+    import base64
+
+    match = _PROVISION_RESULT_RE.search(stdout)
+    if match is None:
+        return None
+    g = match.groupdict()
+    status: ProvisionStatus = g["status"]  # type: ignore[assignment]
+    token_b64 = g.get("token")
+    project_id = g.get("project_id")
+    token: str | None = None
+    if token_b64:
+        try:
+            token = base64.b64decode(token_b64).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            # Malformed base64 → drop to no-token path; the status line
+            # itself is still useful for the operator-facing log.
+            token = None
+    return ProvisionResult(
+        status=status,
+        token=token,
+        project_id=project_id,
+    )
+
+
+def provision_admin(
+    *,
+    admin_email: str,
+    admin_password: str,
+    organization_name: str = "Nexus",
+    project_name: str = "Nexus Stack",
+    script_runner: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
+) -> ProvisionResult:
+    """Render + run the provision script via SSH, parse result.
+
+    ``script_runner`` is a DI seam for tests; production callers pass
+    None and get :func:`_remote.ssh_run_script` (script-via-stdin so
+    secrets never reach argv / ps).
+    """
+    if not admin_email or not admin_password:
+        return ProvisionResult(status="not-ready", token=None, project_id=None)
+    runner = script_runner or (lambda s: _remote.ssh_run_script(s))
+    script = render_provision_admin_script(
+        admin_email=admin_email,
+        admin_password=admin_password,
+        organization_name=organization_name,
+        project_name=project_name,
+    )
+    completed = runner(script)
+    parsed = parse_provision_result(completed.stdout)
+    if parsed is None:
+        # No RESULT line → treat as not-ready; CLI dispatcher maps to rc=1
+        # (warn-and-continue) so the deploy doesn't abort on a transient
+        # Infisical hiccup.
+        return ProvisionResult(status="not-ready", token=None, project_id=None)
+    return parsed
 
 
 def _filter_empty(items: Mapping[str, str | None]) -> dict[str, str]:

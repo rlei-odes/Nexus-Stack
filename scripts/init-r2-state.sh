@@ -213,6 +213,53 @@ extract_error() {
     echo "$1" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"$//'
 }
 
+# Proactive cleanup: delete ANY existing token with our target name BEFORE
+# trying to create a new one. Mirrors the bug-fix described in #530:
+# the legacy "already exists" → delete-and-retry path was unpaginated
+# (?per_page= unset → Cloudflare default of 25), so once an account
+# carried >25 tokens the matching token might not appear in the response
+# and the script would bail. Worse, if the API returned non-canonical
+# error wording the delete-existing branch wouldn't trigger at all and
+# orphans would leak. Doing this BEFORE create is idempotent and handles
+# every edge case uniformly. Uses ?per_page=100 (Cloudflare's max) to
+# tolerate accounts up to the 50-token hard cap. Treats the listing
+# as best-effort: a transient list failure leaves the create call to
+# discover the conflict on its own, falling back to the legacy path.
+echo -e "  ${CYAN}→${NC} Pre-cleanup: looking for stale '${TOKEN_NAME}' tokens..."
+STALE_TOKEN_LIST=$(curl -s "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" 2>/dev/null || echo "")
+if echo "$STALE_TOKEN_LIST" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1; then
+    # ALL tokens whose .name == $TOKEN_NAME, NOT just the first one. If the
+    # account somehow ended up with multiple tokens sharing the name (e.g.
+    # from an earlier Cloudflare API behavior change or a race during a
+    # parallel re-setup), we want to remove all of them.
+    STALE_IDS=$(echo "$STALE_TOKEN_LIST" | jq -r --arg name "$TOKEN_NAME" \
+        '.result[] | select(.name == $name) | .id')
+    if [ -n "$STALE_IDS" ]; then
+        STALE_COUNT=$(printf '%s\n' "$STALE_IDS" | wc -l | tr -d ' ')
+        echo -e "  ${YELLOW}⚠${NC}  Found ${STALE_COUNT} stale token(s) with name '${TOKEN_NAME}' — deleting before re-create..."
+        while IFS= read -r STALE_ID; do
+            [ -z "$STALE_ID" ] && continue
+            STALE_DEL=$(curl -s -X DELETE \
+                "https://api.cloudflare.com/client/v4/user/tokens/${STALE_ID}" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" 2>/dev/null || echo "")
+            if echo "$STALE_DEL" | grep -q '"success":true'; then
+                echo -e "  ${GREEN}✓${NC} Deleted stale token ${STALE_ID}"
+            else
+                STALE_ERR=$(extract_error "$STALE_DEL")
+                echo -e "  ${YELLOW}⚠${NC}  Could not delete stale token ${STALE_ID}: ${STALE_ERR:-no error message}"
+                # Non-fatal: the create call below will still try; if the
+                # token couldn't be deleted, the create will fail with
+                # "already exists" and the legacy path runs as a fallback.
+            fi
+        done <<< "$STALE_IDS"
+    else
+        echo -e "  ${GREEN}✓${NC} No stale tokens found"
+    fi
+else
+    echo -e "  ${YELLOW}⚠${NC}  Could not list tokens for pre-cleanup (non-fatal — create call will still attempt)"
+fi
+
 MAX_RETRIES=3
 RETRY=0
 TOKEN_RESPONSE=""
@@ -253,9 +300,14 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
         RETRY=$((RETRY + 1))
         echo -e "  ${YELLOW}⚠${NC}  Token '${TOKEN_NAME}' already exists — deleting and recreating..."
 
-        # Find the existing token by name (using jq for reliable JSON parsing)
+        # Find the existing token by name (using jq for reliable JSON parsing).
+        # Use ?per_page=100 (Cloudflare's max) so the matching token appears
+        # in the response even when the account is near the 50-token cap.
+        # Without this, the default per_page=25 missed tokens on later pages,
+        # producing the "Token exists but could not find its ID" hard-fail
+        # path observed in production accounts (see #530).
         EXISTING_TOKEN_ID=$(curl -s \
-            "https://api.cloudflare.com/client/v4/user/tokens" \
+            "https://api.cloudflare.com/client/v4/user/tokens?per_page=100" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             | jq -r --arg TOKEN_NAME "$TOKEN_NAME" \
                 '.result[] | select(.name == $TOKEN_NAME) | .id' | head -n 1)

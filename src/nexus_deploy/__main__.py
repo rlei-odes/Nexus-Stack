@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import requests
+
 from nexus_deploy import __version__, hello
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
@@ -40,9 +42,15 @@ from nexus_deploy.infisical import (
     BootstrapEnv,
     InfisicalClient,
     compute_folders,
+    provision_admin,
 )
 from nexus_deploy.kestra import run_register_system_flows
 from nexus_deploy.orchestrator import Orchestrator
+from nexus_deploy.r2_tokens import (
+    DEFAULT_NEXUS_R2_PREFIX,
+    build_inventory,
+    cleanup_orphan_tokens,
+)
 from nexus_deploy.secret_sync import StackTarget, run_sync_for_stack
 from nexus_deploy.seeder import _is_safe_repo_path, run_seed_for_repo
 from nexus_deploy.service_env import (
@@ -58,6 +66,7 @@ from nexus_deploy.setup import (
     configure_ssh,
     ensure_jq,
     mount_persistent_volume,
+    setup_wetty_ssh_agent,
     wait_for_service_token,
     wait_for_ssh,
 )
@@ -222,7 +231,96 @@ def _infisical_bootstrap(args: list[str]) -> int:
     return 0 if result.failed == 0 else 1
 
 
-_VALID_STACKS = ("jupyter", "marimo")
+def _infisical_provision_admin(args: list[str]) -> int:
+    """`nexus-deploy infisical provision-admin`.
+
+    Replaces the bash readiness-probe + admin-bootstrap + project-create
+    + cred-persist block at deploy.sh:792-869. Renders + runs a server-
+    side bash script via SSH that:
+
+    1. Waits for Infisical to be ready (60s container + 120s HTTP).
+    2. Detects whether Infisical is already initialized.
+    3. If yes: loads saved (token, project_id) from
+       ``/opt/docker-server/.infisical-{token,project-id}``.
+    4. If no: POST ``/api/v1/admin/bootstrap`` (admin user + org) →
+       POST ``/api/v2/workspace`` (project) → save creds to disk.
+
+    Required env: ``ADMIN_EMAIL`` + ``INFISICAL_PASS``.
+
+    Stdout (eval-able by deploy.sh):
+    - ``INFISICAL_TOKEN=<token>``
+    - ``PROJECT_ID=<workspace-id>``
+
+    Both lines are always emitted (even on the not-ready / failure
+    paths, with empty values) so deploy.sh's eval doesn't leak stale
+    values from a previous run.
+
+    Exit codes:
+    - 0: ``loaded-existing`` or ``freshly-bootstrapped`` —
+      (token, project_id) populated, downstream push can proceed.
+    - 1: ``not-ready`` / ``loaded-existing-missing-creds`` /
+      ``already-bootstrapped-no-saved-creds`` /
+      ``bootstrap-failed`` / ``project-create-failed`` — soft fail,
+      deploy.sh warns and continues without pushing secrets.
+    - 2: bad args, transport, unexpected error — deploy.sh aborts.
+    """
+    if args:
+        print(f"infisical provision-admin: unexpected arg {args[0]!r}", file=sys.stderr)
+        return 2
+
+    admin_email = os.environ.get("ADMIN_EMAIL", "").strip()
+    admin_password = os.environ.get("INFISICAL_PASS", "").strip()
+    if not admin_email or not admin_password:
+        print(
+            "infisical provision-admin: ADMIN_EMAIL and INFISICAL_PASS env vars required",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        result = provision_admin(
+            admin_email=admin_email,
+            admin_password=admin_password,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"infisical provision-admin: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"infisical provision-admin: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Always emit the two values (even empty) — deploy.sh's eval relies
+    # on the assignment to clear any stale value left over from prior
+    # runs. shlex.quote handles the empty-string + edge cases.
+    import shlex as _shlex
+
+    sys.stdout.write(f"INFISICAL_TOKEN={_shlex.quote(result.token or '')}\n")
+    sys.stdout.write(f"PROJECT_ID={_shlex.quote(result.project_id or '')}\n")
+
+    # Per-status stderr line so the workflow log carries the human-
+    # readable outcome (the eval-able stdout is for shell consumption).
+    sys.stderr.write(f"infisical provision-admin: status={result.status}\n")
+
+    # rc=0 ONLY when the provision actually produced usable credentials
+    # (token AND project_id both populated). A `loaded-existing` /
+    # `freshly-bootstrapped` status with a dropped token (e.g.
+    # malformed-base64 → parse_provision_result returned None for
+    # token) MUST be reported as soft-fail so deploy.sh doesn't print
+    # "✓ Infisical provisioned" while emitting empty
+    # INFISICAL_TOKEN= / PROJECT_ID= lines that downstream eval'd
+    # consumers would treat as legitimate. Caught in #530 R2.
+    if result.status in ("loaded-existing", "freshly-bootstrapped") and result.has_credentials:
+        return 0
+    return 1
+
+
+_VALID_STACKS = ("jupyter", "marimo", "kestra")
 
 
 def _secret_sync(args: list[str]) -> int:
@@ -289,7 +387,21 @@ def _secret_sync(args: list[str]) -> int:
     infisical_env = os.environ.get("INFISICAL_ENV") or "dev"
     gitea_token = os.environ.get("GITEA_TOKEN") or ""
 
-    target = StackTarget(name=stack)
+    # Kestra writes SECRET_<KEY>=<base64> to .env directly (no separate
+    # .infisical.env), and force-recreates so EnvVarSecretProvider
+    # loads the new values. Jupyter/Marimo use the original
+    # plaintext-to-.infisical.env shape with `up -d` (no force).
+    if stack == "kestra":
+        target = StackTarget(
+            name="kestra",
+            key_prefix="SECRET_",
+            use_base64_values=True,
+            env_file_basename=".env",
+            legacy_env_file_basename=None,
+            force_recreate=True,
+        )
+    else:
+        target = StackTarget(name=stack)
     try:
         result = run_sync_for_stack(
             target,
@@ -1707,11 +1819,108 @@ def _setup_mount_volume(args: list[str]) -> int:
     return 1
 
 
+def _setup_wetty_ssh_agent(args: list[str]) -> int:
+    """`nexus-deploy setup wetty-ssh-agent`.
+
+    Replaces deploy.sh:439-540 (the ``[5.5/7]`` block). Renders +
+    runs a server-side bash that:
+
+    1. ssh-keygen the wetty key pair (idempotent — only if absent).
+    2. Append the public key to ``authorized_keys`` (idempotent).
+    3. Start ``ssh-agent`` with a known socket path (handles
+       dead-socket cleanup if the agent crashed previously).
+    4. ssh-add the key to the agent (idempotent — fingerprint check).
+    5. Write ``SSH_AUTH_SOCK=`` to ``stacks/wetty/.env``.
+
+    Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``).
+
+    Exit codes:
+    - 0: all 5 steps completed (whether they were no-ops or made changes)
+         AND the .env file was written (i.e. ``auth_sock_written=1``).
+         A no-op idempotent run is still rc=0 because the .env append
+         is unconditional on the happy path.
+    - 1: soft failure — either (a) the script ran but emitted no
+         parseable RESULT, or (b) ``auth_sock_written=0`` (the fail-fast
+         paths in render_wetty_agent_script emit a parseable
+         all-zero RESULT line, so the absence of the .env write is a
+         real failure even though the script returned 0). Deploy
+         continues since Wetty is non-critical, but the operator sees
+         the forwarded stderr.
+    - 2: hard transport / unexpected error
+    """
+    if args:
+        print(f"setup wetty-ssh-agent: unknown args {args!r}", file=sys.stderr)
+        return 2
+    host_alias = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    try:
+        with SSHClient(host_alias) as ssh:
+            result = setup_wetty_ssh_agent(ssh)
+    except subprocess.CalledProcessError as exc:
+        # Same defence-in-depth as setup ensure-jq: forward the
+        # captured tail to local stderr but DON'T print exc.cmd.
+        print(
+            f"setup wetty-ssh-agent: remote command failed (rc={exc.returncode})",
+            file=sys.stderr,
+        )
+        if exc.output:
+            excerpt = exc.output[-2000:].rstrip()
+            for line in excerpt.splitlines():
+                sys.stderr.write(f"      {line}\n")
+        return 2
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"setup wetty-ssh-agent: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"setup wetty-ssh-agent: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    if result is None:
+        print(
+            "setup wetty-ssh-agent: script ran but produced no RESULT_WETTY line",
+            file=sys.stderr,
+        )
+        return 1
+    # Per-step summary on stdout (workflow log) — same one-line shape
+    # as the other setup CLIs.
+    parts = []
+    if result.keypair_generated:
+        parts.append("key-generated")
+    if result.pubkey_added:
+        parts.append("pubkey-added")
+    if result.agent_started:
+        parts.append("agent-started")
+    if result.key_added_to_agent:
+        parts.append("key-added")
+    if result.auth_sock_written:
+        parts.append("env-written")
+    summary = "+".join(parts) if parts else "all-noop"
+    print(f"setup wetty-ssh-agent: {summary}")
+    # auth_sock_written=0 means render_wetty_agent_script's fail-fast
+    # paths fired (ssh-agent unresponsive OR sed/printf to .env failed).
+    # Surface as rc=1 so the workflow log shows the soft-fail signal —
+    # deploy.sh continues since Wetty is non-critical but the operator
+    # sees that the agent socket isn't actually plumbed through.
+    if not result.auth_sock_written:
+        print(
+            "setup wetty-ssh-agent: soft-fail — SSH_AUTH_SOCK not written "
+            "to wetty/.env (Wetty container won't see agent socket)",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def _setup(args: list[str]) -> int:
     """Dispatch ``nexus-deploy setup <subcommand>``."""
     if not args:
         print(
-            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq | mount-volume)",
+            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq "
+            "| mount-volume | wetty-ssh-agent)",
             file=sys.stderr,
         )
         return 2
@@ -1725,6 +1934,8 @@ def _setup(args: list[str]) -> int:
         return _setup_ensure_jq(rest)
     if sub == "mount-volume":
         return _setup_mount_volume(rest)
+    if sub == "wetty-ssh-agent":
+        return _setup_wetty_ssh_agent(rest)
     print(f"setup: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
 
@@ -1881,6 +2092,168 @@ def _service_env(args: list[str]) -> int:
             return 2
         return 1
     return 0
+
+
+def _r2_tokens(args: list[str]) -> int:
+    """`nexus-deploy r2-tokens <list|cleanup>`.
+
+    Audit + reconciliation utility for Cloudflare R2 user API tokens.
+    Surfaces the 50-token-per-account hard cap and lets operators
+    proactively delete orphan ``nexus-r2-*`` tokens left behind by
+    earlier destroy/setup cycles (see #530 for the bug history).
+
+    Subcommands:
+
+    - ``list``: dry-run inventory. Prints account-wide token total +
+      remaining slots + the matched ``nexus-r2-*`` subset. Always
+      exit 0; deploy.sh / cron can scrape the output.
+    - ``cleanup --name <name>``: delete every token whose name equals
+      <name>. Used by re-setup to ensure no orphan exists before
+      ``init-r2-state.sh`` mints a fresh token.
+    - ``cleanup --prefix <prefix>``: delete every token whose name
+      starts with <prefix>. Refuses unless prefix begins with
+      ``nexus-r2-`` (defence-in-depth: prevents wiping the
+      ``Nexus-Stack`` / ``Nexus2`` / build tokens documented as
+      protected in CLAUDE.md).
+
+    Required env: ``TF_VAR_cloudflare_api_token`` (or
+    ``CLOUDFLARE_API_TOKEN``).
+
+    Exit codes:
+    - 0: ``list`` always returns 0; ``cleanup`` returns 0 only when
+         every matched token deleted successfully (or dry-run with no
+         per-token attempts). Backed by ``CleanupResult.is_success``.
+    - 1: ``cleanup`` completed but at least one per-token delete
+         failed (the loop continues — every attempt is reported in
+         stdout — but the rc reflects the partial-failure so callers
+         like deploy.sh / a follow-up cron run can re-attempt).
+    - 2: bad args / missing env / network error / API listing failed
+         / safety guard hit (e.g. ``--prefix`` doesn't start with
+         ``nexus-r2-``).
+    """
+    if not args:
+        print(
+            "r2-tokens: subcommand required (list | cleanup --name|--prefix VALUE [--apply])",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Tofu convention is lowercase TF_VAR_*; the upper-case alias is
+    # the more common dotenv style. SIM112 wants UPPERCASE only — but
+    # the lowercase form is the one Tofu / our setup-control-plane
+    # workflow already exports. Honor both with a noqa so SIM112's
+    # blanket rule doesn't conflict with the established convention.
+    api_token = (
+        os.environ.get("TF_VAR_cloudflare_api_token")  # noqa: SIM112
+        or os.environ.get("CLOUDFLARE_API_TOKEN")
+        or ""
+    ).strip()
+    if not api_token:
+        print(
+            "r2-tokens: TF_VAR_cloudflare_api_token (or CLOUDFLARE_API_TOKEN) required",
+            file=sys.stderr,
+        )
+        return 2
+
+    sub = args[0]
+    rest = args[1:]
+
+    if sub == "list":
+        list_prefix = DEFAULT_NEXUS_R2_PREFIX
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--prefix":
+                if i + 1 >= len(rest):
+                    print("r2-tokens list: --prefix requires a value", file=sys.stderr)
+                    return 2
+                list_prefix = rest[i + 1]
+                i += 2
+            else:
+                print(f"r2-tokens list: unknown arg {rest[i]!r}", file=sys.stderr)
+                return 2
+        try:
+            inventory = build_inventory(api_token=api_token, prefix=list_prefix)
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"r2-tokens list: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"r2-tokens list: total={inventory.total} / 50  "
+            f"remaining={inventory.remaining_slots}  "
+            f"prefix={list_prefix!r}  matched={len(inventory.matched)}",
+        )
+        if inventory.near_cap:
+            sys.stderr.write(
+                f"  ⚠ Approaching the 50-token cap (remaining={inventory.remaining_slots})\n",
+            )
+        for token in inventory.matched:
+            issued = token.issued_on or "?"
+            print(f"  {token.id}  {issued}  {token.name}")
+        return 0
+
+    if sub == "cleanup":
+        name: str | None = None
+        prefix: str | None = None
+        apply_changes = False
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--name":
+                if i + 1 >= len(rest):
+                    print("r2-tokens cleanup: --name requires a value", file=sys.stderr)
+                    return 2
+                name = rest[i + 1]
+                i += 2
+            elif rest[i] == "--prefix":
+                if i + 1 >= len(rest):
+                    print("r2-tokens cleanup: --prefix requires a value", file=sys.stderr)
+                    return 2
+                prefix = rest[i + 1]
+                i += 2
+            elif rest[i] == "--apply":
+                apply_changes = True
+                i += 1
+            else:
+                print(f"r2-tokens cleanup: unknown arg {rest[i]!r}", file=sys.stderr)
+                return 2
+        if (name is None) == (prefix is None):
+            print(
+                "r2-tokens cleanup: pass exactly one of --name VALUE or --prefix VALUE",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            result = cleanup_orphan_tokens(
+                api_token=api_token,
+                name=name,
+                prefix=prefix,
+                dry_run=not apply_changes,
+            )
+        except ValueError as exc:
+            # Validation error (e.g. prefix doesn't start with nexus-r2-).
+            print(f"r2-tokens cleanup: {exc}", file=sys.stderr)
+            return 2
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"r2-tokens cleanup: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"r2-tokens cleanup: total_before={result.total_tokens_before}  "
+            f"matched={len(result.matched)}  "
+            f"deleted={result.deleted_count}  failed={result.failed_count}  "
+            f"dry_run={result.dry_run}",
+        )
+        for token in result.matched:
+            issued = token.issued_on or "?"
+            print(f"  matched: {token.id}  {issued}  {token.name}")
+        for d in result.deletions:
+            status = "OK" if d.deleted else f"FAILED ({d.error})"
+            print(f"  delete: {d.id}  {d.name}  {status}")
+        if not apply_changes:
+            sys.stderr.write(
+                "  (dry-run; pass --apply to actually delete)\n",
+            )
+        return 0 if result.is_success else 1
+
+    print(f"r2-tokens: unknown subcommand {sub!r}", file=sys.stderr)
+    return 2
 
 
 def _run_all(args: list[str]) -> int:
@@ -2105,6 +2478,8 @@ def main() -> int:
         return _config_dump_shell(args[2:])
     if args[:2] == ["infisical", "bootstrap"]:
         return _infisical_bootstrap(args[2:])
+    if args[:2] == ["infisical", "provision-admin"]:
+        return _infisical_provision_admin(args[2:])
     if args[:1] == ["secret-sync"]:
         return _secret_sync(args[1:])
     if args[:1] == ["seed"]:
@@ -2129,6 +2504,8 @@ def main() -> int:
         return _service_env(args[1:])
     if args[:1] == ["run-all"]:
         return _run_all(args[1:])
+    if args[:1] == ["r2-tokens"]:
+        return _r2_tokens(args[1:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -2137,7 +2514,9 @@ def main() -> int:
         "Available: --version, hello, "
         "config dump-shell [--tofu-dir PATH (default: tofu/stack) | --stdin], "
         "infisical bootstrap (reads SECRETS_JSON from stdin + env vars), "
-        "secret-sync --stack <jupyter|marimo>, "
+        "infisical provision-admin (env: ADMIN_EMAIL + INFISICAL_PASS; emits "
+        "INFISICAL_TOKEN + PROJECT_ID), "
+        "secret-sync --stack <jupyter|marimo|kestra>, "
         "seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/], "
         "compose up --enabled <comma-list>, "
         "services configure --enabled <comma-list> (reads SECRETS_JSON from stdin), "
@@ -2146,10 +2525,12 @@ def main() -> int:
         "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned), "
         "stack-sync --enabled <comma-list> [--stacks-dir PATH], "
-        "setup ssh-config | wait-ssh | ensure-jq | mount-volume, "
+        "setup ssh-config | wait-ssh | ensure-jq | mount-volume | wetty-ssh-agent, "
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
-        "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET)",
+        "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
+        "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
+        "(env: TF_VAR_cloudflare_api_token)",
         file=sys.stderr,
     )
     return 2

@@ -436,108 +436,22 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Setup SSH-Agent for Wetty (if enabled)
+# Setup SSH-Agent for Wetty (if enabled) — Phase 3 Modul 3.4f (#505)
 # -----------------------------------------------------------------------------
+# Was a 100-line ssh heredoc; now a Python CLI that renders the same
+# idempotent bash + parses RESULT_WETTY back into a typed result.
 if echo "$ENABLED_SERVICES" | grep -qw "wetty"; then
     echo ""
     echo -e "${YELLOW}[5.5/7] Setting up SSH-Agent for Wetty...${NC}"
-    ssh nexus "
-        # Create SSH directory if it doesn't exist
-        mkdir -p /root/.ssh
-        chmod 700 /root/.ssh
-        
-        # Generate SSH key pair for Wetty if it doesn't exist
-        WETTY_KEY_PATH=\"/root/.ssh/id_ed25519_wetty\"
-        if [ ! -f \"\$WETTY_KEY_PATH\" ]; then
-            echo '  Generating SSH key pair for Wetty...'
-            ssh-keygen -t ed25519 -f \"\$WETTY_KEY_PATH\" -N '' -C 'wetty-auto-generated' >/dev/null 2>&1
-            chmod 600 \"\$WETTY_KEY_PATH\"
-            chmod 644 \"\$WETTY_KEY_PATH.pub\"
-            echo '  ✓ SSH key pair generated for Wetty'
-        else
-            echo '  ✓ SSH key pair already exists for Wetty'
-        fi
-        
-        # Add public key to authorized_keys if not already present
-        WETTY_PUBKEY=\$(cat \"\$WETTY_KEY_PATH.pub\")
-        if ! grep -q \"\$WETTY_PUBKEY\" /root/.ssh/authorized_keys 2>/dev/null; then
-            echo \"\$WETTY_PUBKEY\" >> /root/.ssh/authorized_keys
-            chmod 600 /root/.ssh/authorized_keys
-            echo '  ✓ Public key added to authorized_keys'
-        else
-            echo '  ✓ Public key already in authorized_keys'
-        fi
-        
-        # Create SSH-Agent socket directory if it doesn't exist
-        SSH_AGENT_DIR=\"/tmp/ssh-agent\"
-        mkdir -p \"\$SSH_AGENT_DIR\"
-        
-        # Helper function to check if SSH-Agent is responsive
-        check_ssh_agent() {
-            if ssh-add -l >/dev/null 2>&1; then
-                return 0
-            else
-                return 1
-            fi
-        }
-        
-        # Check if SSH-Agent is already running (check for existing socket)
-        SSH_AUTH_SOCK_FILE=\"\$SSH_AGENT_DIR/agent.sock\"
-        if [ -S \"\$SSH_AUTH_SOCK_FILE\" ]; then
-            export SSH_AUTH_SOCK=\"\$SSH_AUTH_SOCK_FILE\"
-            # Test if agent is still responsive
-            if check_ssh_agent; then
-                echo '  ✓ SSH-Agent already running'
-            else
-                # Socket exists but agent is dead, remove it
-                rm -f \"\$SSH_AUTH_SOCK_FILE\"
-                unset SSH_AUTH_SOCK
-            fi
-        fi
-        
-        # Start SSH-Agent if not running
-        if [ -z \"\${SSH_AUTH_SOCK:-}\" ] || [ ! -S \"\$SSH_AUTH_SOCK\" ]; then
-            # Start SSH-Agent with socket in known location
-            eval \$(ssh-agent -a \"\$SSH_AUTH_SOCK_FILE\" -s) >/dev/null 2>&1
-            export SSH_AUTH_SOCK=\"\$SSH_AUTH_SOCK_FILE\"
-            echo '  ✓ SSH-Agent started'
-        fi
-        
-        # Add SSH key to agent if not already added
-        if [ -f \"\$WETTY_KEY_PATH\" ]; then
-            # Get key fingerprint for comparison
-            KEY_FINGERPRINT=\$(ssh-keygen -lf \"\$WETTY_KEY_PATH\" 2>/dev/null | awk '{print \$2}' || echo \"\")
-            
-            # Check if key is already in agent by comparing fingerprints
-            KEY_IN_AGENT=false
-            if [ -n \"\$KEY_FINGERPRINT\" ] && check_ssh_agent && ssh-add -l 2>/dev/null | grep -q \"\$KEY_FINGERPRINT\"; then
-                KEY_IN_AGENT=true
-            fi
-            
-            if [ \"\$KEY_IN_AGENT\" = \"false\" ]; then
-                # Add key to agent
-                if ssh-add \"\$WETTY_KEY_PATH\" 2>&1; then
-                    echo '  ✓ SSH key added to agent'
-                else
-                    echo -e \"  ${YELLOW}⚠ Failed to add SSH key to agent${NC}\"
-                fi
-            else
-                echo '  ✓ SSH key already in agent'
-            fi
-        else
-            echo -e \"  ${YELLOW}⚠ SSH key not found at \$WETTY_KEY_PATH${NC}\"
-        fi
-        
-        # Export SSH_AUTH_SOCK path in wetty .env file for docker-compose
-        WETTY_ENV=\"/opt/docker-server/stacks/wetty/.env\"
-        if [ -f \"\$WETTY_ENV\" ]; then
-            # Remove existing SSH_AUTH_SOCK line if present
-            sed -i '/^SSH_AUTH_SOCK=/d' \"\$WETTY_ENV\"
-        fi
-        echo \"SSH_AUTH_SOCK=\$SSH_AUTH_SOCK\" >> \"\$WETTY_ENV\"
-        echo '  ✓ SSH_AUTH_SOCK exported to wetty .env'
-    "
-    echo -e "${GREEN}  ✓ SSH-Agent configured for Wetty${NC}"
+    WETTY_RC=0
+    uv run --quiet --project "$PROJECT_ROOT" \
+        python -m nexus_deploy setup wetty-ssh-agent \
+        || WETTY_RC=$?
+    case "$WETTY_RC" in
+        0) echo -e "${GREEN}  ✓ SSH-Agent configured for Wetty${NC}" ;;
+        1) echo -e "${YELLOW}  ⚠ Wetty SSH-Agent setup soft-failed — see stderr above (continuing — Wetty is non-critical)${NC}" ;;
+        *) echo -e "${RED}  ✗ Wetty SSH-Agent setup failed (rc=$WETTY_RC); aborting${NC}"; exit "$WETTY_RC" ;;
+    esac
 fi
 
 # -----------------------------------------------------------------------------
@@ -792,79 +706,28 @@ CONFIG_JOBS=()
 # Configure Infisical admin and push secrets (idempotent - runs on every spin-up)
 if echo "$ENABLED_SERVICES" | grep -qw "infisical"; then
     echo "  Configuring Infisical..."
-
-    # Wait for Infisical to be ready (optimized: check container status first)
-    echo "  Waiting for Infisical to be ready (may take up to 2min)..."
-    INFISICAL_READY=false
-    for i in $(seq 1 20); do
-        CONTAINER_STATUS=$(ssh nexus "docker inspect --format='{{.State.Status}}' infisical 2>/dev/null" || echo "")
-        if [ "$CONTAINER_STATUS" = "running" ]; then break; fi
-        sleep 2
-    done
-    for i in $(seq 1 40); do
-        if ssh nexus "curl -s --connect-timeout 3 'http://localhost:8070/api/v1/admin/config'" 2>/dev/null | grep -q 'initialized'; then
-            INFISICAL_READY=true
-            break
-        fi
-        sleep 3
-    done
-
-    if [ "$INFISICAL_READY" = "false" ]; then
-        echo -e "${YELLOW}  ⚠ Infisical not responding after 120s - skipping config${NC}"
-    else
-    INFISICAL_TOKEN=""
-    PROJECT_ID=""
-    INIT_CHECK=$(ssh nexus "curl -s 'http://localhost:8070/api/v1/admin/config'" 2>/dev/null || echo "")
-
-    if echo "$INIT_CHECK" | grep -q '"initialized":true'; then
-        # Existing instance - load saved credentials
-        echo "  Infisical already initialized - loading saved credentials..."
-        INFISICAL_TOKEN=$(ssh nexus "cat /opt/docker-server/.infisical-token 2>/dev/null" || echo "")
-        PROJECT_ID=$(ssh nexus "cat /opt/docker-server/.infisical-project-id 2>/dev/null" || echo "")
-        if [ -z "$INFISICAL_TOKEN" ] || [ -z "$PROJECT_ID" ]; then
-            echo -e "${YELLOW}  ⚠ No saved credentials - run destroy-all + initial-setup to re-bootstrap${NC}"
-        else
-            echo -e "${GREEN}  ✓ Loaded Infisical credentials${NC}"
-        fi
-    else
-        # New instance - bootstrap admin + create project
-        BOOTSTRAP_JSON=$(cat <<EOF
-{"email": "$ADMIN_EMAIL", "password": "$INFISICAL_PASS", "organization": "Nexus"}
-EOF
-)
-        BOOTSTRAP_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8070/api/v1/admin/bootstrap' \
-            -H 'Content-Type: application/json' \
-            -d '$(echo "$BOOTSTRAP_JSON" | tr -d '\n')'" 2>&1 || echo "")
-
-        if echo "$BOOTSTRAP_RESULT" | grep -q '"user"'; then
-            echo -e "${GREEN}  ✓ Infisical admin created (user: $ADMIN_EMAIL)${NC}"
-            INFISICAL_TOKEN=$(echo "$BOOTSTRAP_RESULT" | jq -r '.identity.credentials.token // empty')
-            ORG_ID=$(echo "$BOOTSTRAP_RESULT" | jq -r '.organization.id // empty')
-
-            if [ -n "$INFISICAL_TOKEN" ] && [ -n "$ORG_ID" ]; then
-                echo "  Creating Nexus secrets project..."
-                PROJECT_RESULT=$(ssh nexus "curl -s -X POST 'http://localhost:8070/api/v2/workspace' \
-                    -H 'Authorization: Bearer $INFISICAL_TOKEN' \
-                    -H 'Content-Type: application/json' \
-                    -d '{\"projectName\": \"Nexus Stack\", \"organizationId\": \"$ORG_ID\"}'" 2>&1 || echo "")
-                PROJECT_ID=$(echo "$PROJECT_RESULT" | jq -r '.project.id // .workspace.id // empty')
-
-                if [ -n "$PROJECT_ID" ] && [ "$PROJECT_ID" != "null" ]; then
-                    echo -e "${GREEN}  ✓ Project 'Nexus Stack' created${NC}"
-                    # Save credentials for subsequent spin-ups
-                    echo "$INFISICAL_TOKEN" | ssh nexus "cat > /opt/docker-server/.infisical-token && chmod 600 /opt/docker-server/.infisical-token"
-                    echo "$PROJECT_ID" | ssh nexus "cat > /opt/docker-server/.infisical-project-id && chmod 600 /opt/docker-server/.infisical-project-id"
-                    echo -e "${GREEN}  ✓ Credentials saved for subsequent deployments${NC}"
-                else
-                    echo -e "${YELLOW}  ⚠ Failed to create project${NC}"
-                fi
-            fi
-        elif echo "$BOOTSTRAP_RESULT" | grep -q 'already'; then
-            echo -e "${YELLOW}  ⚠ Infisical already configured${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ Infisical bootstrap failed${NC}"
-        fi
-    fi
+    # Provision admin + project — Phase 3 Modul 3.4f (#505).
+    # Was a 75-line bash block (readiness probe + admin-bootstrap +
+    # project-create + cred-persist); now a Python CLI that emits
+    # eval-able stdout: INFISICAL_TOKEN=...; PROJECT_ID=... (both
+    # always emitted, may be empty when not-ready / soft-fail).
+    INFISICAL_OUT=$(mktemp)
+    echo "$INFISICAL_OUT" >> "$RUNNER_CLEANUP_PATHS"
+    INFISICAL_PROVISION_RC=0
+    ADMIN_EMAIL="$ADMIN_EMAIL" INFISICAL_PASS="$INFISICAL_PASS" \
+        uv run --quiet --project "$PROJECT_ROOT" \
+        python -m nexus_deploy infisical provision-admin > "$INFISICAL_OUT" \
+        || INFISICAL_PROVISION_RC=$?
+    case "$INFISICAL_PROVISION_RC" in
+        0) eval "$(cat "$INFISICAL_OUT")"  # sets INFISICAL_TOKEN + PROJECT_ID
+           echo -e "${GREEN}  ✓ Infisical provisioned${NC}" ;;
+        1) eval "$(cat "$INFISICAL_OUT")"  # may set empty values; surface via shell vars
+           echo -e "${YELLOW}  ⚠ Infisical provision soft-fail (see Python stderr above) — continuing without secret push${NC}" ;;
+        *) echo -e "${RED}  ✗ Infisical provision hard failure (rc=$INFISICAL_PROVISION_RC); aborting${NC}"
+           rm -f "$INFISICAL_OUT"
+           exit "$INFISICAL_PROVISION_RC" ;;
+    esac
+    rm -f "$INFISICAL_OUT"
 
     # ==========================================================================
     # Push secrets to Infisical (#505 Modul 1.1: nexus_deploy.infisical)
@@ -876,7 +739,9 @@ EOF
     # rsyncs them, and runs the same server-side curl loop. The
     # remaining BootstrapEnv fields (DOMAIN, ADMIN_EMAIL, GITEA_*,
     # WOODPECKER_*, etc.) are passed as env vars to the Python side.
-    if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+    # Skipped when provision-admin reported soft-fail (empty token /
+    # project_id) — operator must investigate the Python stderr above.
+    if [ -n "${INFISICAL_TOKEN:-}" ] && [ -n "${PROJECT_ID:-}" ]; then
         echo "  Pushing secrets to Infisical (via nexus_deploy)..."
         INFISICAL_ENV="${INFISICAL_ENV:-dev}"
         # SSH_KEY_BASE64 must match the legacy `build_folder "ssh"`
@@ -932,8 +797,9 @@ EOF
             1) echo -e "${YELLOW}  ⚠ Infisical bootstrap had partial push failures (see output above)${NC}" ;;
             *) echo -e "${RED}  ✗ Infisical bootstrap transport failure (rc=$INFISICAL_RC); aborting${NC}"; exit 1 ;;
         esac
+    else
+        echo -e "${YELLOW}  ⚠ INFISICAL_TOKEN / PROJECT_ID empty — skipping secret push${NC}"
     fi
-    fi  # End of INFISICAL_READY check
 fi
 
 # Configure all admin-setup hooks via the Python services-configure CLI.
@@ -959,37 +825,12 @@ case "$SERVICES_RC" in
     *) echo -e "${RED}  ✗ services configure hard failure (rc=$SERVICES_RC) — bad args, transport, or unexpected error; check Python stderr above. Aborting.${NC}"; exit "$SERVICES_RC" ;;
 esac
 
-# Re-apply pg_ducklake bootstrap SQL (handles credential rotation)
-# /docker-entrypoint-initdb.d/ scripts only run on empty data dir, so we
-# also exec the same SQL after every spin-up to ensure rotated credentials
-# take effect on existing volumes.
-if echo "$ENABLED_SERVICES" | grep -qw "pg-ducklake" && [ -n "$PG_DUCKLAKE_PASS" ]; then
-    (
-        echo "  Configuring pg_ducklake (re-applying bootstrap SQL)..."
-        # Wait for healthcheck to be ready (~30s timeout)
-        PG_DUCKLAKE_READY=false
-        for i in $(seq 1 15); do
-            if ssh nexus "docker exec pg-ducklake pg_isready -U nexus-pgducklake -d ducklake" >/dev/null 2>&1; then
-                PG_DUCKLAKE_READY=true
-                break
-            fi
-            sleep 2
-        done
-
-        if [ "$PG_DUCKLAKE_READY" = "false" ]; then
-            echo -e "${YELLOW}  ⚠ pg_ducklake not ready after 30s - skipping re-apply${NC}"
-            exit 0
-        fi
-
-        # Re-apply bootstrap SQL via docker exec (idempotent, handles credential rotation)
-        if ssh nexus "docker exec pg-ducklake psql -U nexus-pgducklake -d ducklake -f /docker-entrypoint-initdb.d/00-ducklake-bootstrap.sql" >/dev/null 2>&1; then
-            echo -e "${GREEN}  ✓ pg_ducklake bootstrap SQL re-applied${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ pg_ducklake bootstrap re-apply failed (may already be applied)${NC}"
-        fi
-    ) &
-    CONFIG_JOBS+=($!)
-fi
+# pg-ducklake bootstrap SQL re-apply moved into the services-configure
+# hook registry (Modul 3.4f, #505). The hook runs as part of the
+# services configure CLI invocation ABOVE — `pg-ducklake` is now in
+# the same dispatch loop as the other 14 admin-setup hooks. Same
+# 30-second pg_isready probe + idempotent psql exec, just folded into
+# a typed Python rendering layer.
 
 
 # All 14 admin-setup bash blocks that used to live here (Filestash,
@@ -1219,331 +1060,31 @@ if echo "$ENABLED_SERVICES" | grep -qw "gitea" && [ -n "$GITEA_ADMIN_PASS" ]; th
                     # Worth it: this is the ONLY mechanism that actually
                     # makes `{{ secret('GITEA_TOKEN') }}` resolve in flows.
                     # ----------------------------------------------------------
-                    KESTRA_SECRETS_TMP=$(mktemp)
-                    # Register with the global RUNNER_CLEANUP_PATHS list
-                    # so the EXIT trap wipes it even when one of the
-                    # `exit 1` paths below fires (sed-cleanup failure,
-                    # Kestra restart timeout, etc.). Without this, a
-                    # mid-flight abort can leave plaintext base64-
-                    # encoded Infisical secrets on the runner FS.
-                    echo "$KESTRA_SECRETS_TMP" >> "$RUNNER_CLEANUP_PATHS"
-                    KSEC_PUSHED=0
-                    KSEC_SKIPPED=0
-                    KSEC_FETCH_FAILED=0
-                    KSEC_COLLISIONS=0
-                    # KSEC_SEEN is allocated only inside the Infisical-guard
-                    # below, so the runner doesn't leak a tmp file on stacks
-                    # where Infisical isn't reachable. The post-guard
-                    # GITEA_TOKEN-special-case at the bottom of this block
-                    # checks `[ -n "$KSEC_SEEN" ] && [ -f ... ]` before
-                    # running awk, so an unset/missing seen-file is safe.
-                    KSEC_SEEN=""
-                    if [ -n "$INFISICAL_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
-                        echo "  Building Kestra secret env from Infisical..."
-                        INFISICAL_ENV_KESTRA="${INFISICAL_ENV:-dev}"
-                        # Two-column file: "<KEY>\t<source-folder>". Used
-                        # both to skip cross-folder duplicates (first-
-                        # folder-wins, deterministic across re-runs) AND
-                        # to surface a collision warning that names BOTH
-                        # source folders so the operator can tell where
-                        # the divergence is.
-                        KSEC_SEEN=$(mktemp)
-
-                        # All Infisical fetches happen on the server
-                        # (localhost:8070 only listens there) but we need
-                        # jq on the runner to parse the responses. So:
-                        #
-                        #   - The Infisical bearer token, project ID, and
-                        #     env slug are base64-encoded on the runner
-                        #     and substituted into a `bash -s` heredoc
-                        #     body. The remote shell decodes them via
-                        #     the `printf` builtin (no fork-exec, no
-                        #     argv) and writes a mode-600 curl
-                        #     `--config` file with the auth header.
-                        #     Same argv-safe pattern PR #486 established.
-                        #   - Folder name + secretPath transit through
-                        #     `curl --get --data-urlencode ...` so
-                        #     names with whitespace or reserved chars
-                        #     produce valid URLs.
-                        #   - Folder iteration uses `while read` over
-                        #     newline-delimited input — `for X in $LIST`
-                        #     would word-split on whitespace.
-                        INF_TOKEN_B64=$(printf '%s' "$INFISICAL_TOKEN" | base64 | tr -d '\n')
-                        INF_PID_B64=$(printf '%s' "$PROJECT_ID" | base64 | tr -d '\n')
-                        INF_ENV_B64=$(printf '%s' "$INFISICAL_ENV_KESTRA" | base64 | tr -d '\n')
-
-                        # Each Infisical fetch (folders + per-path
-                        # secrets) needs to surface the HTTP status. We
-                        # use `curl -w "\n%{http_code}"` so the LAST line
-                        # of stdout is the status code; everything before
-                        # it is the response body. Runner-side splits
-                        # status from body and warns on non-200 instead
-                        # of silently feeding a 401/403/error JSON to jq.
-
-                        # 1a. Discover folders. Tempfile around the
-                        #     heredoc to avoid the awkward bash quirk where
-                        #     `$(... <<EOF body EOF)` parses the closing
-                        #     `)` of `$()` BEFORE the heredoc body, mis-
-                        #     matching parens against the `\$(printf ...)`
-                        #     escapes inside the body.
-                        FOLDERS_RAW_FILE=$(mktemp)
-                        ssh nexus "bash -s" > "$FOLDERS_RAW_FILE" 2>/dev/null <<REMOTE_INF_FOLDERS_EOF || true
-ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
-PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
-INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
-CFG=\$(mktemp)
-chmod 600 "\$CFG"
-trap 'rm -f "\$CFG"' EXIT
-printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
-curl -s -w "\n%{http_code}" --config "\$CFG" --get \\
-    --data-urlencode "workspaceId=\$PID" \\
-    --data-urlencode "environment=\$INF_ENV" \\
-    --data-urlencode "path=/" \\
-    "http://localhost:8070/api/v1/folders"
-REMOTE_INF_FOLDERS_EOF
-                        FOLDERS_RAW=$(cat "$FOLDERS_RAW_FILE")
-                        rm -f "$FOLDERS_RAW_FILE"
-                        # Last line = HTTP status; everything before = body.
-                        FOLDERS_STATUS=$(printf '%s' "$FOLDERS_RAW" | tail -n1)
-                        FOLDERS_STATUS="${FOLDERS_STATUS:-000}"
-                        FOLDERS_BODY=$(mktemp)
-                        printf '%s' "$FOLDERS_RAW" | sed '$d' > "$FOLDERS_BODY"
-                        if [ "$FOLDERS_STATUS" = "200" ]; then
-                            # Sort the folder list alphabetically so the
-                            # first-folder-wins collision policy is
-                            # deterministic across re-runs even if
-                            # Infisical's API returns folders in a
-                            # different order between calls.
-                            FOLDER_LIST=$(jq -r '.folders[]?.name' "$FOLDERS_BODY" 2>/dev/null | LC_ALL=C sort || echo "")
-                        else
-                            echo -e "${YELLOW}    ⚠ Infisical folder discovery returned HTTP $FOLDERS_STATUS — Kestra secret env will only contain root-path secrets + GITEA_TOKEN${NC}"
-                            KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
-                            FOLDER_LIST=""
-                        fi
-                        rm -f "$FOLDERS_BODY"
-
-                        # 1b. For each discovered folder + the root path,
-                        #     fetch all (key, value) pairs. Newline-safe
-                        #     iteration via while-read; secretPath URL-
-                        #     encoded via curl --data-urlencode.
-                        # Use a literal "/" as the root-path sentinel
-                        # rather than a magic name like "__root__". Infisical
-                        # folder names cannot contain a slash (it's the path
-                        # separator, not a name character), so "/" is
-                        # guaranteed not to collide with any real folder
-                        # name an operator might create.
-                        while IFS= read -r FOLDER; do
-                            [ -z "$FOLDER" ] && continue
-                            if [ "$FOLDER" = "/" ]; then
-                                SECRET_PATH="/"
-                                FOLDER_LABEL="<root>"
-                            else
-                                SECRET_PATH="/$FOLDER"
-                                FOLDER_LABEL="$FOLDER"
-                            fi
-                            INF_PATH_B64=$(printf '%s' "$SECRET_PATH" | base64 | tr -d '\n')
-                            # Same tempfile-around-heredoc pattern as the
-                            # folder-discovery call above (avoids paren
-                            # mismatch in `$(... <<EOF \$(...) EOF)`).
-                            SECRETS_RAW_FILE=$(mktemp)
-                            # Plaintext Infisical secrets land in this
-                            # file on the runner; register it with the
-                            # global RUNNER_CLEANUP_PATHS list so an
-                            # interrupted run still wipes it. The
-                            # explicit `rm -f "$SECRETS_RAW_FILE"` below
-                            # remains the happy-path cleanup.
-                            echo "$SECRETS_RAW_FILE" >> "$RUNNER_CLEANUP_PATHS"
-                            ssh nexus "bash -s" > "$SECRETS_RAW_FILE" 2>/dev/null <<REMOTE_INF_SECRETS_EOF || true
-ITOK=\$(printf '%s' '$INF_TOKEN_B64' | base64 -d)
-PID=\$(printf '%s' '$INF_PID_B64' | base64 -d)
-INF_ENV=\$(printf '%s' '$INF_ENV_B64' | base64 -d)
-SPATH=\$(printf '%s' '$INF_PATH_B64' | base64 -d)
-CFG=\$(mktemp)
-chmod 600 "\$CFG"
-trap 'rm -f "\$CFG"' EXIT
-printf 'header = "Authorization: Bearer %s"\n' "\$ITOK" > "\$CFG"
-curl -s -w "\n%{http_code}" --config "\$CFG" --get \\
-    --data-urlencode "workspaceId=\$PID" \\
-    --data-urlencode "environment=\$INF_ENV" \\
-    --data-urlencode "secretPath=\$SPATH" \\
-    "http://localhost:8070/api/v3/secrets/raw"
-REMOTE_INF_SECRETS_EOF
-                            SECRETS_RAW=$(cat "$SECRETS_RAW_FILE")
-                            rm -f "$SECRETS_RAW_FILE"
-                            SECRETS_STATUS=$(printf '%s' "$SECRETS_RAW" | tail -n1)
-                            SECRETS_STATUS="${SECRETS_STATUS:-000}"
-                            SECRETS_BODY=$(mktemp)
-                            # Plaintext Infisical secret values (after we
-                            # split off the trailing HTTP status line)
-                            # land in this tmp on the runner; register it
-                            # with RUNNER_CLEANUP_PATHS so an interrupted
-                            # run still wipes it. Both happy-path
-                            # `rm -f "$SECRETS_BODY"` calls below remain
-                            # as immediate cleanup.
-                            echo "$SECRETS_BODY" >> "$RUNNER_CLEANUP_PATHS"
-                            printf '%s' "$SECRETS_RAW" | sed '$d' > "$SECRETS_BODY"
-                            if [ "$SECRETS_STATUS" != "200" ]; then
-                                echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) returned HTTP $SECRETS_STATUS — secrets from this folder will be missing in Kestra${NC}"
-                                KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
-                                rm -f "$SECRETS_BODY"
-                                continue
-                            fi
-
-                            # jq base64-encodes the secretValue so newlines
-                            # / tabs / binary content (multi-line PEMs)
-                            # survive the TSV transit. Validate the
-                            # response shape before parsing — Infisical
-                            # occasionally returns a non-JSON error body
-                            # with HTTP 200 (e.g. mid-restart) or a JSON
-                            # blob without a `.secrets` array, and a
-                            # silently-empty TSV would skip the whole
-                            # folder without bumping KSEC_FETCH_FAILED.
-                            JQ_TSV_TMP=$(mktemp)
-                            echo "$JQ_TSV_TMP" >> "$RUNNER_CLEANUP_PATHS"
-                            if ! jq -er '.secrets | type == "array"' "$SECRETS_BODY" >/dev/null 2>&1; then
-                                echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) returned HTTP 200 but the body has no \`.secrets\` array — secrets from this folder will be missing in Kestra${NC}"
-                                KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
-                                rm -f "$SECRETS_BODY" "$JQ_TSV_TMP"
-                                continue
-                            fi
-                            jq -r '.secrets[]? | [.secretKey, (.secretValue | @base64)] | @tsv' "$SECRETS_BODY" > "$JQ_TSV_TMP" 2>/dev/null || JQ_TSV_RC=$?
-                            if [ -n "${JQ_TSV_RC:-}" ]; then
-                                echo -e "${YELLOW}    ⚠ Infisical fetch '$FOLDER_LABEL' (path=$SECRET_PATH) parsed as JSON but jq tsv-extract failed (exit $JQ_TSV_RC) — secrets from this folder will be missing in Kestra${NC}"
-                                KSEC_FETCH_FAILED=$((KSEC_FETCH_FAILED+1))
-                                rm -f "$SECRETS_BODY" "$JQ_TSV_TMP"
-                                unset JQ_TSV_RC
-                                continue
-                            fi
-                            while IFS=$'\t' read -r KEY VALUE_B64; do
-                                [ -z "$KEY" ] && continue
-                                # Kestra naming rule: ^[A-Za-z][A-Za-z0-9_]*$
-                                # Anything else (slashes, dots, hyphens) won't
-                                # produce a valid `SECRET_<NAME>` env var name.
-                                if ! [[ "$KEY" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]]; then
-                                    KSEC_SKIPPED=$((KSEC_SKIPPED+1))
-                                    continue
-                                fi
-                                # Cross-folder dedupe (first-folder-wins is
-                                # deterministic across repeat runs; last-
-                                # wins would flip env-var values based on
-                                # iteration order). On collision: log a
-                                # warning naming the kept folder and the
-                                # dropped folder so the operator can spot
-                                # divergent values across folders.
-                                EXISTING_FOLDER=$(awk -F'\t' -v k="$KEY" '$1 == k {print $2; exit}' "$KSEC_SEEN" 2>/dev/null)
-                                if [ -n "$EXISTING_FOLDER" ]; then
-                                    echo -e "${YELLOW}    ⚠ Key collision: '$KEY' in folder '$FOLDER_LABEL' shadowed by earlier value from folder '$EXISTING_FOLDER' (first-wins)${NC}"
-                                    KSEC_COLLISIONS=$((KSEC_COLLISIONS+1))
-                                    continue
-                                fi
-                                printf '%s\t%s\n' "$KEY" "$FOLDER_LABEL" >> "$KSEC_SEEN"
-                                echo "SECRET_${KEY}=${VALUE_B64}" >> "$KESTRA_SECRETS_TMP"
-                                KSEC_PUSHED=$((KSEC_PUSHED+1))
-                            done < "$JQ_TSV_TMP"
-                            rm -f "$SECRETS_BODY" "$JQ_TSV_TMP"
-                        done < <(printf '%s\n/\n' "$FOLDER_LIST")
+                    # Phase 3 Modul 3.4f (#505) — replaces the 325-LoC
+                    # build-SECRETS + dedup + chmod + force-recreate
+                    # heredoc with the Python secret-sync CLI's kestra
+                    # mode. The CLI does steps 1-4 (Infisical fetch +
+                    # SECRET_<KEY>=<base64> append + force-recreate);
+                    # the post-restart auth-aware wait below stays in
+                    # bash (it's the bridge between the secret-sync
+                    # restart and the flow-registration step).
+                    if [ -n "${INFISICAL_TOKEN:-}" ] && [ -n "${PROJECT_ID:-}" ]; then
+                        echo "  Syncing Infisical secrets into Kestra env..."
+                        KESTRA_SS_RC=0
+                        PROJECT_ID="$PROJECT_ID" INFISICAL_TOKEN="$INFISICAL_TOKEN" \
+                            INFISICAL_ENV="${INFISICAL_ENV:-dev}" \
+                            GITEA_TOKEN="${GITEA_TOKEN:-}" \
+                            uv run --quiet --project "$PROJECT_ROOT" \
+                            python -m nexus_deploy secret-sync --stack kestra \
+                            || KESTRA_SS_RC=$?
+                        case "$KESTRA_SS_RC" in
+                            0) ;;
+                            1) echo -e "${YELLOW}  ⚠ Kestra secret-sync had partial folder-fetch failures (continuing)${NC}" ;;
+                            *) echo -e "${RED}  ✗ Kestra secret-sync transport failure (rc=$KESTRA_SS_RC); aborting${NC}"; exit "$KESTRA_SS_RC" ;;
+                        esac
+                    else
+                        echo -e "${YELLOW}  ⚠ INFISICAL_TOKEN / PROJECT_ID empty — skipping Kestra secret-sync${NC}"
                     fi
-
-                    # 2. Special case: GITEA_TOKEN is generated by deploy.sh
-                    #    after Gitea boots (it's the on-the-fly admin token
-                    #    used to create the workspace repo). It is NOT in
-                    #    Infisical at the time of the `build_folder()`
-                    #    pushes earlier in this script, so we add it here
-                    #    so seeded flows can use `{{ secret('GITEA_TOKEN') }}`.
-                    # Write SECRET_GITEA_TOKEN unless it was already
-                    # pushed via Infisical (guard against duplicate). The
-                    # awk dedupe-check only runs when KSEC_SEEN was
-                    # actually populated by the Infisical loop above; on
-                    # stacks where Infisical isn't reachable, the file
-                    # doesn't exist and we just write the token directly.
-                    if [ -n "$GITEA_TOKEN" ]; then
-                        ALREADY_HAVE_GITEA_TOKEN=false
-                        if [ -n "$KSEC_SEEN" ] && [ -f "$KSEC_SEEN" ]; then
-                            if awk -F'\t' '$1 == "GITEA_TOKEN" {found=1; exit} END {exit !found}' "$KSEC_SEEN" 2>/dev/null; then
-                                ALREADY_HAVE_GITEA_TOKEN=true
-                            fi
-                        fi
-                        if [ "$ALREADY_HAVE_GITEA_TOKEN" = "false" ]; then
-                            # Encode in a separate var rather than inline `$(…)` —
-                            # nested double quotes inside `$()` are valid bash
-                            # (the inner context is independent), but Copilot
-                            # repeatedly flagged it as ambiguous; the two-line
-                            # form costs nothing and silences the false positive.
-                            GITEA_TOKEN_B64=$(printf '%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
-                            printf 'SECRET_GITEA_TOKEN=%s\n' "$GITEA_TOKEN_B64" >> "$KESTRA_SECRETS_TMP"
-                            KSEC_PUSHED=$((KSEC_PUSHED+1))
-                        fi
-                    fi
-                    [ -n "$KSEC_SEEN" ] && rm -f "$KSEC_SEEN"
-
-                    # 3. Append (or replace) the delimited block in
-                    #    Kestra's .env on the server. Fail fast if either
-                    #    the .env file is missing or the sed-based block
-                    #    removal fails — silently continuing would let
-                    #    SECRET_* entries accumulate across re-runs (or
-                    #    write to a non-existent file), and the operator
-                    #    has no way to notice unless secrets eventually
-                    #    fail at flow execution time.
-                    if [ -s "$KESTRA_SECRETS_TMP" ]; then
-                        if ! ssh nexus "
-                            set -e
-                            ENV_FILE=/opt/docker-server/stacks/kestra/.env
-                            if [ ! -f \"\$ENV_FILE\" ]; then
-                                echo \"ERROR: Kestra .env not found at \$ENV_FILE\" >&2
-                                exit 1
-                            fi
-                            sed -i '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' \"\$ENV_FILE\"
-                        "; then
-                            echo -e "${RED}Error: failed to clean previous nexus-secret-sync block from Kestra .env. Aborting deploy to avoid duplicating SECRET_* lines.${NC}"
-                            exit 1
-                        fi
-
-                        # Lock the .env to mode 0600 BEFORE appending the
-                        # SECRET_* block, then append. Doing chmod first
-                        # closes the race window where the file could be
-                        # world-readable (0644 from rsync-preserved modes
-                        # under default umask) WHILE the new secrets are
-                        # being written — a concurrent reader could grab
-                        # a partial copy of base64-encoded R2 keys / DB
-                        # passwords / GITEA_TOKEN. chmod 600 idempotent
-                        # at the start; the file definitely exists
-                        # because the preceding sed-removal step opened
-                        # and re-wrote it.
-                        if ! {
-                            echo "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
-                            cat "$KESTRA_SECRETS_TMP"
-                            echo "# === END nexus-secret-sync ==="
-                        } | ssh nexus "
-                            set -e
-                            ENV_FILE=/opt/docker-server/stacks/kestra/.env
-                            chmod 600 \"\$ENV_FILE\"
-                            cat >> \"\$ENV_FILE\"
-                        "; then
-                            echo -e "${RED}Error: failed to chmod 0600 + append nexus-secret-sync block to Kestra .env.${NC}"
-                            exit 1
-                        fi
-
-                        if [ "$KSEC_FETCH_FAILED" -gt 0 ]; then
-                            echo -e "${YELLOW}  ⚠ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped=$KSEC_SKIPPED invalid keys, collisions=$KSEC_COLLISIONS, $KSEC_FETCH_FAILED Infisical fetches failed — secret set is incomplete)${NC}"
-                        elif [ "$KSEC_COLLISIONS" -gt 0 ]; then
-                            echo -e "${YELLOW}  ⚠ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped=$KSEC_SKIPPED invalid keys, $KSEC_COLLISIONS cross-folder collisions — see warnings above; first-folder-wins applied)${NC}"
-                        else
-                            echo -e "${GREEN}  ✓ Wrote $KSEC_PUSHED Kestra SECRET_* env-vars to .env (skipped=$KSEC_SKIPPED invalid keys)${NC}"
-                        fi
-
-                        # 4. Force-recreate Kestra so the env vars get
-                        #    loaded. `up -d --force-recreate <svc>` keeps
-                        #    other containers untouched. Fail-fast: if
-                        #    the restart fails, the new SECRET_* values
-                        #    are sitting in .env but the live container
-                        #    is still running with the old set — flow-
-                        #    sync registration would proceed against a
-                        #    Kestra that can't resolve `{{ secret('GITEA_TOKEN') }}`.
-                        echo "  Restarting Kestra to load secrets..."
-                        if ! ssh nexus "cd $REMOTE_STACKS_DIR/kestra && docker compose up -d --force-recreate kestra" >/dev/null 2>&1; then
-                            echo -e "${RED}Error: docker compose up -d --force-recreate kestra failed. Aborting deploy to avoid continuing with un-reloaded secrets.${NC}"
-                            exit 1
-                        fi
 
                         # 5. Re-wait for Kestra to come back up — and
                         #    actually authenticate. The previous version
@@ -1598,10 +1139,6 @@ REMOTE_KESTRA_PROBE_EOF
                         if [ "$KESTRA_READY" != "true" ]; then
                             echo -e "${YELLOW}  ⚠ Kestra did not come back up after restart — Git sync flow registration will be skipped${NC}"
                         fi
-                    else
-                        echo -e "${YELLOW}  ⚠ No Kestra SECRET_* lines built (Infisical empty or unreachable, GITEA_TOKEN missing) — flows that reference {{ secret('NAME') }} will fail${NC}"
-                    fi
-                    rm -f "$KESTRA_SECRETS_TMP"
                 fi  # close: KESTRA_READY initial check
 
                 # ----------------------------------------------------------

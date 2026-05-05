@@ -31,6 +31,9 @@ from nexus_deploy.infisical import (
     InfisicalClient,
     _filter_empty,
     compute_folders,
+    parse_provision_result,
+    provision_admin,
+    render_provision_admin_script,
 )
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -760,3 +763,312 @@ class _StubStdin:
 
     def read(self) -> str:
         return self._content
+
+
+# ---------------------------------------------------------------------------
+# provision_admin — Phase 3 Modul 3.4f (#505)
+# ---------------------------------------------------------------------------
+
+
+def test_render_provision_admin_script_basic_shape() -> None:
+    """Rendered bash includes the readiness probe + the bootstrap path."""
+    script = render_provision_admin_script(
+        admin_email="ops@example.com",
+        admin_password="s3cret-Pw",
+    )
+    assert "set -euo pipefail" in script
+    # Two-stage readiness probe
+    assert "docker inspect --format='{{.State.Status}}' infisical" in script
+    assert "/api/v1/admin/config" in script
+    # Init-state branch
+    assert '"initialized":true' in script
+    # Bootstrap + project-create endpoints
+    assert "/api/v1/admin/bootstrap" in script
+    assert "/api/v2/workspace" in script
+    # Cred persistence paths
+    assert "/opt/docker-server/.infisical-token" in script
+    assert "/opt/docker-server/.infisical-project-id" in script
+
+
+def test_render_provision_admin_script_secrets_via_env_not_argv() -> None:
+    """R-secret: admin_email + admin_password embed via shlex-quoted
+    bash vars then route to jq via env vars (NEXUS_E / NEXUS_PW),
+    NOT via --arg argv. Bearer token uses mode-600 curl --config
+    tmpfile (not -H argv)."""
+    script = render_provision_admin_script(
+        admin_email="ops@example.com",
+        admin_password="s3cret-Pw",
+    )
+    # No --arg pass-through to jq
+    assert "--arg email" not in script
+    assert "--arg password" not in script
+    # Bearer token via curl --config tmpfile
+    assert "TOKEN_CFG=$(mktemp)" in script
+    assert 'chmod 600 "$TOKEN_CFG"' in script
+    assert "trap 'rm -f \"$TOKEN_CFG\"' EXIT" in script
+
+
+def test_render_provision_admin_script_emits_result_line() -> None:
+    """Every exit path emits exactly one 'RESULT status=...' line."""
+    script = render_provision_admin_script(
+        admin_email="a@b",
+        admin_password="x",
+    )
+    assert "RESULT status=not-ready" in script
+    assert "RESULT status=loaded-existing" in script
+    assert "RESULT status=loaded-existing-missing-creds" in script
+    assert "RESULT status=already-bootstrapped-no-saved-creds" in script
+    assert "RESULT status=bootstrap-failed" in script
+    assert "RESULT status=project-create-failed" in script
+    assert "RESULT status=freshly-bootstrapped" in script
+
+
+def test_parse_provision_result_freshly_bootstrapped() -> None:
+    import base64
+
+    raw_token = "test-token-value"
+    token_b64 = base64.b64encode(raw_token.encode()).decode()
+    line = f"RESULT status=freshly-bootstrapped token={token_b64} project_id=ws-abc-123"
+    result = parse_provision_result(line)
+    assert result is not None
+    assert result.status == "freshly-bootstrapped"
+    assert result.token == raw_token
+    assert result.project_id == "ws-abc-123"
+    assert result.has_credentials is True
+
+
+def test_parse_provision_result_loaded_existing() -> None:
+    import base64
+
+    token_b64 = base64.b64encode(b"existing-token").decode()
+    line = f"RESULT status=loaded-existing token={token_b64} project_id=ws-existing"
+    result = parse_provision_result(line)
+    assert result is not None
+    assert result.status == "loaded-existing"
+    assert result.has_credentials is True
+
+
+def test_parse_provision_result_not_ready_no_creds() -> None:
+    """The not-ready / bootstrap-failed / etc. branches emit just the
+    status, no token + project_id. has_credentials must be False."""
+    for status_line in (
+        "RESULT status=not-ready",
+        "RESULT status=loaded-existing-missing-creds",
+        "RESULT status=already-bootstrapped-no-saved-creds",
+        "RESULT status=bootstrap-failed",
+        "RESULT status=project-create-failed",
+    ):
+        result = parse_provision_result(status_line)
+        assert result is not None, f"failed to parse: {status_line!r}"
+        assert result.token is None
+        assert result.project_id is None
+        assert result.has_credentials is False
+
+
+def test_parse_provision_result_no_match_returns_none() -> None:
+    """Garbage stdout → None; CLI maps that to a not-ready ProvisionResult."""
+    assert parse_provision_result("") is None
+    assert parse_provision_result("garbage") is None
+    assert parse_provision_result("RESULT something_else") is None
+
+
+def test_parse_provision_result_invalid_utf8_drops_token() -> None:
+    """If the base64-decoded bytes are not valid UTF-8 (which a real
+    Infisical token never would be — they're all ASCII / hex chars),
+    the parser drops the token but keeps the status. Defence-in-depth
+    against a malicious / truncated RESULT line."""
+    # 'ZZZ=' decodes to a single non-ASCII byte that's not valid UTF-8
+    line = "RESULT status=freshly-bootstrapped token=ZZZ= project_id=ws-abc"
+    result = parse_provision_result(line)
+    assert result is not None
+    assert result.status == "freshly-bootstrapped"
+    assert result.token is None  # invalid utf-8 → dropped
+    assert result.project_id == "ws-abc"
+
+
+def test_provision_admin_returns_not_ready_when_email_or_password_missing() -> None:
+    """Don't even try the SSH script if we don't have credentials."""
+    runner_calls: list[str] = []
+
+    def runner(script: str) -> subprocess.CompletedProcess[str]:
+        runner_calls.append(script)
+        return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
+
+    result = provision_admin(
+        admin_email="",
+        admin_password="x",
+        script_runner=runner,
+    )
+    assert result.status == "not-ready"
+    assert result.has_credentials is False
+    assert runner_calls == []
+
+
+def test_provision_admin_freshly_bootstrapped_path() -> None:
+    """Mock the SSH runner to return a freshly-bootstrapped RESULT."""
+    import base64
+
+    token = "fresh-token"
+    token_b64 = base64.b64encode(token.encode()).decode()
+
+    def runner(_script: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout=f"RESULT status=freshly-bootstrapped token={token_b64} project_id=ws-new",
+            stderr="",
+        )
+
+    result = provision_admin(
+        admin_email="ops@example.com",
+        admin_password="pw",
+        script_runner=runner,
+    )
+    assert result.status == "freshly-bootstrapped"
+    assert result.token == token
+    assert result.project_id == "ws-new"
+
+
+def test_provision_admin_loaded_existing_path() -> None:
+    import base64
+
+    token_b64 = base64.b64encode(b"saved-token").decode()
+
+    def runner(_script: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout=f"RESULT status=loaded-existing token={token_b64} project_id=ws-saved",
+            stderr="",
+        )
+
+    result = provision_admin(
+        admin_email="ops@example.com",
+        admin_password="pw",
+        script_runner=runner,
+    )
+    assert result.status == "loaded-existing"
+    assert result.token == "saved-token"
+    assert result.project_id == "ws-saved"
+
+
+def test_provision_admin_unparseable_stdout_returns_not_ready() -> None:
+    """Garbage stdout (e.g. SSH succeeded but the script crashed before
+    emitting RESULT) → ProvisionResult.not-ready instead of None."""
+
+    def runner(_script: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="oops", stderr="")
+
+    result = provision_admin(
+        admin_email="ops@example.com",
+        admin_password="pw",
+        script_runner=runner,
+    )
+    assert result.status == "not-ready"
+    assert result.token is None
+
+
+def test_cli_infisical_provision_admin_returns_1_when_creds_dropped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R-creds-required-for-rc-0 (#530 R2 #4): a `loaded-existing` /
+    `freshly-bootstrapped` status with token=None (e.g. invalid-UTF8
+    base64 decode dropped the token) MUST be reported as rc=1, not
+    rc=0. Otherwise deploy.sh prints '✓ Infisical provisioned' while
+    eval'ing empty INFISICAL_TOKEN= / PROJECT_ID= lines that
+    downstream consumers treat as legitimate."""
+    import nexus_deploy.__main__ as main_mod
+    from nexus_deploy.infisical import ProvisionResult
+
+    class _FakeSSH:
+        def __init__(self, _alias: str) -> None:
+            del _alias
+
+        def __enter__(self) -> _FakeSSH:
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            return None
+
+        def run_script(self, _s: str, *, check: bool = False) -> subprocess.CompletedProcess[str]:
+            del check
+            return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
+
+    # Bypass the real provision_admin: simulate the dropped-token case
+    def _fake_provision(
+        *,
+        admin_email: str,
+        admin_password: str,
+        **_kwargs: object,
+    ) -> ProvisionResult:
+        del admin_email, admin_password
+        return ProvisionResult(
+            status="loaded-existing",
+            token=None,  # dropped (invalid utf-8 etc.)
+            project_id=None,
+        )
+
+    monkeypatch.setenv("ADMIN_EMAIL", "ops@example.com")
+    monkeypatch.setenv("INFISICAL_PASS", "pw")
+    monkeypatch.setattr(main_mod, "SSHClient", _FakeSSH)
+    monkeypatch.setattr(main_mod, "provision_admin", _fake_provision)
+
+    rc = main_mod._infisical_provision_admin([])
+    assert rc == 1, "loaded-existing without credentials must be soft-fail"
+    captured = capsys.readouterr()
+    # The handler still writes the eval lines (deploy.sh's eval needs to
+    # CLEAR stale values from prior runs), but the rc=1 signals the
+    # soft-fail so deploy.sh skips the "✓ Infisical provisioned" branch.
+    # Critically the values must be EMPTY-quoted, not stale or garbage.
+    assert "INFISICAL_TOKEN=''" in captured.out
+    assert "PROJECT_ID=''" in captured.out
+
+
+def test_cli_infisical_provision_admin_returns_0_with_full_creds(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Happy path: token + project_id both populated → rc=0 + eval
+    lines on stdout."""
+    import nexus_deploy.__main__ as main_mod
+    from nexus_deploy.infisical import ProvisionResult
+
+    class _FakeSSH:
+        def __init__(self, _alias: str) -> None:
+            del _alias
+
+        def __enter__(self) -> _FakeSSH:
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            return None
+
+        def run_script(self, _s: str, *, check: bool = False) -> subprocess.CompletedProcess[str]:
+            del check
+            return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
+
+    def _fake_provision(
+        *,
+        admin_email: str,
+        admin_password: str,
+        **_kwargs: object,
+    ) -> ProvisionResult:
+        del admin_email, admin_password
+        return ProvisionResult(
+            status="freshly-bootstrapped",
+            token="real-token",
+            project_id="ws-real",
+        )
+
+    monkeypatch.setenv("ADMIN_EMAIL", "ops@example.com")
+    monkeypatch.setenv("INFISICAL_PASS", "pw")
+    monkeypatch.setattr(main_mod, "SSHClient", _FakeSSH)
+    monkeypatch.setattr(main_mod, "provision_admin", _fake_provision)
+
+    rc = main_mod._infisical_provision_admin([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # shlex.quote leaves [a-zA-Z0-9_@%+=:,./-] unquoted, wraps others.
+    assert "INFISICAL_TOKEN=" in out
+    assert "real-token" in out
+    assert "PROJECT_ID=" in out
+    assert "ws-real" in out

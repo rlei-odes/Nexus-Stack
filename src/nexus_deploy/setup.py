@@ -126,6 +126,24 @@ class SSHReadinessResult:
 
 
 @dataclass(frozen=True)
+class WettyAgentResult:
+    """Outcome of :func:`setup_wetty_ssh_agent`. Tracks 5 idempotent
+    steps — re-runs that find nothing to do still return
+    successfully with the corresponding flag set to ``False``.
+
+    Only the rendered server-side script knows whether each step ran
+    or was a no-op; the result line is parsed back into this
+    dataclass for the workflow log + tests.
+    """
+
+    keypair_generated: bool  # ssh-keygen ran (False = key already existed)
+    pubkey_added: bool  # appended to authorized_keys (False = already present)
+    agent_started: bool  # ssh-agent forked (False = socket present + responsive)
+    key_added_to_agent: bool  # ssh-add ran (False = key fingerprint already loaded)
+    auth_sock_written: bool  # SSH_AUTH_SOCK= written to wetty .env (always True on success)
+
+
+@dataclass(frozen=True)
 class VolumeMountResult:
     """Outcome of the persistent-volume mount step.
 
@@ -592,3 +610,275 @@ def mount_persistent_volume(
     mounted, fstab_added = parsed
     detail: Literal["mounted", "fallback-failed"] = "mounted" if mounted else "fallback-failed"
     return VolumeMountResult(mounted=mounted, fstab_added=fstab_added, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# Wetty SSH-Agent setup (Phase 3 Modul 3.4f, #505) — replaces
+# deploy.sh:439-540, the ``[5.5/7]`` block that bootstraps the SSH key
+# pair + agent socket Wetty needs to log into the host as the same
+# user that runs the docker daemon.
+# ---------------------------------------------------------------------------
+
+
+_WETTY_RESULT_RE = re.compile(
+    r"^RESULT_WETTY"
+    r" keypair_generated=(?P<keypair_generated>[01])"
+    r" pubkey_added=(?P<pubkey_added>[01])"
+    r" agent_started=(?P<agent_started>[01])"
+    r" key_added_to_agent=(?P<key_added_to_agent>[01])"
+    r" auth_sock_written=(?P<auth_sock_written>[01])$",
+    re.MULTILINE,
+)
+
+
+def render_wetty_agent_script(
+    *,
+    key_path: str = "/root/.ssh/id_ed25519_wetty",
+    key_comment: str = "wetty-auto-generated",
+    agent_socket: str = "/tmp/ssh-agent/agent.sock",  # noqa: S108 — server-side path
+    wetty_env_file: str = "/opt/docker-server/stacks/wetty/.env",
+) -> str:
+    """Render the server-side bash that idempotently bootstraps the
+    ed25519 key pair, ssh-agent socket, and SSH_AUTH_SOCK injection
+    Wetty needs to log into the host. Mirrors deploy.sh:445-538.
+
+    The script does six numbered steps; only five of them produce a
+    0/1 flag in the final RESULT line (step 1 is a precondition that
+    always runs and is not reflected in the result):
+
+    1. mkdir + chmod 700 ``~/.ssh`` (silent precondition — not in the
+       RESULT line).
+    2. ssh-keygen -t ed25519 the key pair if absent. Fail-fast on a
+       non-zero ssh-keygen exit OR missing output files (would
+       otherwise produce a misleading ``keypair_generated=1`` while
+       downstream steps fail silently). → ``keypair_generated``.
+    3. Append the public key to ``authorized_keys`` if not already
+       present. → ``pubkey_added``.
+    4. Start ssh-agent if the socket isn't there or the agent is
+       unresponsive (dead-socket detection — the legacy bash had this).
+       → ``agent_started``.
+    5. ssh-add the key if its fingerprint isn't already loaded.
+       → ``key_added_to_agent``.
+    6. Strip any prior ``SSH_AUTH_SOCK=`` line from
+       ``stacks/wetty/.env`` and re-append the current socket path.
+       → ``auth_sock_written`` (always 1 on the success path; the
+       env-var line is unconditional).
+    """
+    key_q = shlex.quote(key_path)
+    comment_q = shlex.quote(key_comment)
+    sock_q = shlex.quote(agent_socket)
+    env_q = shlex.quote(wetty_env_file)
+    return f"""set -uo pipefail
+KEY_PATH={key_q}
+KEY_COMMENT={comment_q}
+SOCKET={sock_q}
+ENV_FILE={env_q}
+KEYPAIR_GEN=0
+PUBKEY_ADD=0
+AGENT_STARTED=0
+KEY_ADDED=0
+AUTH_SOCK_WROTE=0
+
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+# Inline-step numbering matches the docstring's "1. mkdir + chmod 700"
+# precondition above. The flags below correspond to docstring steps
+# 2-6 (steps that produce a 0/1 in RESULT_WETTY).
+#
+# Step 2: ssh-keygen if absent. Fail-fast (echo RESULT_WETTY with
+# keypair_generated=0 + bail) when ssh-keygen reports non-zero OR
+# either of the expected output files ($KEY_PATH / $KEY_PATH.pub)
+# isn't on disk afterwards. Without this check, downstream steps
+# (cat $KEY_PATH.pub, ssh-keygen -lf for fingerprint) would silently
+# fail and we'd report a misleading keypair_generated=1 while Wetty
+# can't actually SSH.
+# Regenerate if EITHER file is missing — not just $KEY_PATH. A stale
+# private key with a missing/corrupted .pub (manual cleanup, partial
+# write, fs corruption) would otherwise pass the keygen-skip check
+# but later `cat "$KEY_PATH.pub"` would yield empty PUBKEY → the
+# authorized_keys append silently no-ops (empty grep -F matches the
+# whole file → PUBKEY_ADD stays 0) and Wetty can't actually SSH.
+# Removing both files first lets ssh-keygen emit a fresh, consistent
+# pair (it would refuse to overwrite an existing $KEY_PATH).
+if [ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]; then
+    if [ -f "$KEY_PATH" ] || [ -f "$KEY_PATH.pub" ]; then
+        echo "  ⚠ Wetty keypair half-present (one of $KEY_PATH / .pub missing) — regenerating" >&2
+        rm -f "$KEY_PATH" "$KEY_PATH.pub"
+    fi
+    if ! ssh-keygen -t ed25519 -f "$KEY_PATH" -N '' -C "$KEY_COMMENT" >/dev/null 2>&1; then
+        echo "  ⚠ ssh-keygen failed — Wetty will not have a working SSH key" >&2
+        echo "RESULT_WETTY keypair_generated=0 pubkey_added=0 agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+        exit 0
+    fi
+    if [ ! -f "$KEY_PATH" ] || [ ! -f "$KEY_PATH.pub" ]; then
+        echo "  ⚠ ssh-keygen reported success but key files missing (filesystem issue?)" >&2
+        echo "RESULT_WETTY keypair_generated=0 pubkey_added=0 agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+        exit 0
+    fi
+    chmod 600 "$KEY_PATH"
+    chmod 644 "$KEY_PATH.pub"
+    KEYPAIR_GEN=1
+fi
+
+# Step 3: append pubkey to authorized_keys (idempotent — full-line
+# fixed-string match so neither a partial duplicate (existing line
+# contains $PUBKEY as substring) nor a substring of $PUBKEY (existing
+# line that happens to be a substring of the pubkey we're checking)
+# can false-positive. `-F` = fixed string (no regex), `-x` = whole-
+# line match (the actual invariant the comment claims).
+PUBKEY=$(cat "$KEY_PATH.pub")
+touch /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+if ! grep -qFx "$PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
+    printf '%s\\n' "$PUBKEY" >> /root/.ssh/authorized_keys
+    PUBKEY_ADD=1
+fi
+
+# Step 4: ssh-agent. Two probes: (a) socket file present, (b) agent
+# responsive (`ssh-add -l` exit code). A dead-socket from a previous
+# crash needs cleaning up before we can start a fresh agent. After
+# starting, validate the agent IS responsive — without the validation,
+# `ssh-agent` failing silently (`|| true` was needed for the eval +
+# subshell case) would still set AGENT_STARTED=1 and we'd report
+# success for a broken socket.
+mkdir -p "$(dirname "$SOCKET")"
+AGENT_OK=0
+if [ -S "$SOCKET" ]; then
+    SSH_AUTH_SOCK="$SOCKET" ssh-add -l >/dev/null 2>&1 && AGENT_OK=1
+    if [ "$AGENT_OK" = "0" ]; then
+        # Stale socket — clean up before forking a fresh agent.
+        rm -f "$SOCKET"
+    fi
+fi
+if [ "$AGENT_OK" = "0" ]; then
+    # `ssh-agent -a SOCKET -s` prints `SSH_AUTH_SOCK=...; SSH_AGENT_PID=...`
+    # to stdout for eval; on success the agent forks and listens on
+    # SOCKET. Capture the eval's exit AND validate the result.
+    if eval "$(ssh-agent -a "$SOCKET" -s)" >/dev/null 2>&1; then
+        # Validate: socket file must exist AND the agent must respond.
+        # ssh-add -l exit code: 0=keys loaded, 1=no keys but agent OK,
+        # 2=can't connect (the failure case we're guarding against).
+        if [ -S "$SOCKET" ] && SSH_AUTH_SOCK="$SOCKET" ssh-add -l >/dev/null 2>&1; then
+            AGENT_STARTED=1
+        else
+            ADD_RC=0
+            SSH_AUTH_SOCK="$SOCKET" ssh-add -l >/dev/null 2>&1 || ADD_RC=$?
+            # rc=1 (no keys) is OK; rc=2 (can't connect) is a real failure.
+            if [ "$ADD_RC" = "1" ]; then
+                AGENT_STARTED=1
+            else
+                echo "  ⚠ ssh-agent started but socket isn't responsive — Wetty SSH-Agent setup incomplete" >&2
+                echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+                exit 0
+            fi
+        fi
+    else
+        echo "  ⚠ ssh-agent failed to start — Wetty SSH-Agent setup incomplete" >&2
+        echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=0 key_added_to_agent=0 auth_sock_written=0"
+        exit 0
+    fi
+fi
+export SSH_AUTH_SOCK="$SOCKET"
+
+# Step 5: ssh-add the key if its fingerprint isn't already loaded.
+# Set KEY_ADDED=1 only on a successful add (legacy form unconditionally
+# set it after `|| true`, which masked an actual ssh-add failure).
+KEY_FP=$(ssh-keygen -lf "$KEY_PATH" 2>/dev/null | awk '{{print $2}}' || echo "")
+KEY_LOADED=0
+if [ -n "$KEY_FP" ]; then
+    if ssh-add -l 2>/dev/null | grep -qF "$KEY_FP"; then
+        KEY_LOADED=1
+    fi
+fi
+if [ "$KEY_LOADED" = "0" ]; then
+    if ssh-add "$KEY_PATH" >/dev/null 2>&1; then
+        KEY_ADDED=1
+    else
+        echo "  ⚠ ssh-add failed — Wetty key not loaded into agent" >&2
+        # Don't fail-fast: ssh-add can fail for a non-existent key (we
+        # already gated above) or transient agent issue. Leave
+        # KEY_ADDED=0 so the operator sees the discrepancy in the
+        # RESULT_WETTY line; the key file + agent socket still exist
+        # so the operator can ssh-add manually if needed.
+        :
+    fi
+fi
+
+# Step 6: write SSH_AUTH_SOCK= to wetty's .env (idempotent — strip
+# any prior line first). Set AUTH_SOCK_WROTE=1 only after the append
+# succeeds; an mkdir/permission failure shouldn't be reported as
+# "written".
+if [ -f "$ENV_FILE" ]; then
+    if ! sed -i '/^SSH_AUTH_SOCK=/d' "$ENV_FILE" 2>/dev/null; then
+        echo "  ⚠ failed to strip existing SSH_AUTH_SOCK= line from $ENV_FILE — Wetty .env may have stale entries" >&2
+    fi
+fi
+if printf 'SSH_AUTH_SOCK=%s\\n' "$SSH_AUTH_SOCK" >> "$ENV_FILE" 2>/dev/null; then
+    AUTH_SOCK_WROTE=1
+else
+    echo "  ⚠ failed to append SSH_AUTH_SOCK= to $ENV_FILE — Wetty container won't see the agent socket" >&2
+    echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=$AGENT_STARTED key_added_to_agent=$KEY_ADDED auth_sock_written=0"
+    exit 0
+fi
+
+echo "RESULT_WETTY keypair_generated=$KEYPAIR_GEN pubkey_added=$PUBKEY_ADD agent_started=$AGENT_STARTED key_added_to_agent=$KEY_ADDED auth_sock_written=$AUTH_SOCK_WROTE"
+"""
+
+
+def parse_wetty_agent_result(stdout: str) -> WettyAgentResult | None:
+    """Parse the RESULT_WETTY line from rendered-script stdout. Returns
+    None if no parseable line exists (caller treats as soft failure)."""
+    match = _WETTY_RESULT_RE.search(stdout)
+    if match is None:
+        return None
+    g = match.groupdict()
+    return WettyAgentResult(
+        keypair_generated=g["keypair_generated"] == "1",
+        pubkey_added=g["pubkey_added"] == "1",
+        agent_started=g["agent_started"] == "1",
+        key_added_to_agent=g["key_added_to_agent"] == "1",
+        auth_sock_written=g["auth_sock_written"] == "1",
+    )
+
+
+def setup_wetty_ssh_agent(
+    ssh: SSHClient,
+    *,
+    key_path: str = "/root/.ssh/id_ed25519_wetty",
+    key_comment: str = "wetty-auto-generated",
+    agent_socket: str = "/tmp/ssh-agent/agent.sock",  # noqa: S108
+    wetty_env_file: str = "/opt/docker-server/stacks/wetty/.env",
+) -> WettyAgentResult | None:
+    """Render + run the wetty-agent setup script. Returns None on
+    unparseable output (soft failure — operator sees the script's
+    forwarded stderr; the deploy continues without aborting since
+    Wetty is a non-critical UI service).
+
+    ``check=True``: the rendered script ALWAYS terminates with
+    ``exit 0`` (fail-fast paths emit a parseable all-zero RESULT line
+    + ``exit 0``), so a non-zero returncode here can only mean the
+    SSH transport itself broke (rc=255, connection drop, ...). Letting
+    ``CalledProcessError`` propagate so the CLI handler maps it to
+    rc=2 ("transport failure") instead of silently returning None and
+    falling through to the rc=1 "soft fail" branch — caught in
+    #530 R4.
+    """
+    script = render_wetty_agent_script(
+        key_path=key_path,
+        key_comment=key_comment,
+        agent_socket=agent_socket,
+        wetty_env_file=wetty_env_file,
+    )
+    completed = ssh.run_script(script, check=True)
+    # Forward non-RESULT diagnostic lines (the script's own ⚠ /
+    # ssh-keygen errors etc.) to the local terminal. SSHClient.run_script
+    # uses merge_stderr=True by default, so the script's stderr is
+    # already folded into completed.stdout — iterating stdout here
+    # captures both the rendered bash's `echo … >&2` warnings AND any
+    # plain stdout, while skipping the parseable RESULT_WETTY line
+    # itself (which the parser below consumes).
+    for line in completed.stdout.splitlines():
+        if not line.startswith("RESULT_WETTY"):
+            sys.stderr.write(line + "\n")
+    return parse_wetty_agent_result(completed.stdout)
