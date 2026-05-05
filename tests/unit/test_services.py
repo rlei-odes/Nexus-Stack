@@ -56,7 +56,12 @@ from nexus_deploy.services import (
 
 
 def _make_config(**overrides: Any) -> NexusConfig:
-    """Build a NexusConfig with minimal admin passwords for all 7 hooks."""
+    """Build a NexusConfig with minimal credentials for every admin-setup
+    hook that consumes them — Modul 2.2b/c/d (Portainer, n8n, Metabase,
+    LakeFS, OpenMetadata, RedPanda, Superset, Filestash) plus Modul 3.4d
+    (Wiki.js, Dify, Windmill, SFTPGo with R2 vfs). Uptime Kuma + Garage
+    don't need credentials in this fixture (Uptime Kuma is warn-only;
+    Garage's admin token comes via .env, not via the rendered hook)."""
     defaults: dict[str, Any] = {
         "admin_username": "admin",
         "portainer_admin_password": "p-pass",

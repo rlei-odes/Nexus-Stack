@@ -1162,16 +1162,17 @@ def render_sftpgo_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     6. POST ``/api/v2/users`` with the local-FS scratch home + the
        registered virtual folders attached.
 
-    Idempotency contract:
-    - Already-bootstrapped (user 201 → 400/409 via /api/v2/token
-      basic-auth → folder + user POSTs return 409) → still
-      ``configured`` because folder POSTs are independent of user
-      POST and may need to land if creds rotated.
+    Idempotency contract (status mapping is driven by the FINAL
+    user-POST HTTP code; folder POSTs run unconditionally before
+    that and only emit a stderr warning on non-{201,409} responses):
+    - User POST 201 → ``configured`` (fresh install, or wiped volume)
+    - User POST 400 / 409 → ``already-configured`` (named-volume
+      preserves the user row across in-place spin-ups)
+    - User POST any other code → ``failed``
     - Healthz/token probe times out → ``skipped-not-ready``
     - R2 missing → ``skipped-not-ready`` (operator configures
       manually in admin UI)
     - JWT mint fails (admin login 401) → ``failed``
-    - Folder/user POSTs fail with non-{201,400,409} → ``failed``
 
     Argv-safety: admin password / user password / R2-secret-key /
     Hetzner-secret-key all pass through base64 env-var → remote
