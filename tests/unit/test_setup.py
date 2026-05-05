@@ -1009,3 +1009,167 @@ def test_cli_subprocess_setup_unknown_returns_2() -> None:
     )
     assert proc.returncode == 2
     assert "subcommand required" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Wetty SSH-Agent setup (Phase 3 Modul 3.4f, #505)
+# ---------------------------------------------------------------------------
+
+
+def test_render_wetty_agent_script_basic_shape() -> None:
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    assert "set -uo pipefail" in script
+    # All 5 idempotent steps present
+    assert "ssh-keygen -t ed25519" in script
+    assert "authorized_keys" in script
+    assert "ssh-agent -a" in script
+    assert "ssh-add" in script
+    assert "SSH_AUTH_SOCK=" in script
+    # Single RESULT_WETTY line at the end
+    assert script.count("RESULT_WETTY ") == 1
+
+
+def test_render_wetty_agent_script_uses_quoted_paths() -> None:
+    """Non-default paths are shlex-quoted into the rendered script."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script(
+        key_path="/tmp/with space/id_test",  # noqa: S108 — synthetic test path
+        agent_socket="/tmp/sock with space.sock",  # noqa: S108
+        wetty_env_file="/tmp/wetty.env",  # noqa: S108
+    )
+    assert "'/tmp/with space/id_test'" in script
+    assert "'/tmp/sock with space.sock'" in script
+
+
+def test_render_wetty_agent_script_dead_socket_cleanup() -> None:
+    """R-stale-socket: a socket file that exists but isn't responsive
+    must be removed before forking a fresh agent (otherwise ssh-agent
+    fails with 'address already in use')."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    assert 'if [ -S "$SOCKET" ]' in script
+    # Probe + cleanup-on-dead-socket
+    assert "ssh-add -l >/dev/null 2>&1 && AGENT_OK=1" in script
+    assert 'rm -f "$SOCKET"' in script
+
+
+def test_render_wetty_agent_script_authorized_keys_full_line_match() -> None:
+    """R-pubkey-dedup: full-line grep -qF (NOT a substring grep) so a
+    partial / shorter prefix doesn't false-positive. The pubkey line
+    is fixed-string compared against the file."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    assert 'grep -qF "$PUBKEY" /root/.ssh/authorized_keys' in script
+
+
+def test_render_wetty_agent_script_strips_existing_auth_sock_line() -> None:
+    """R-idempotent-env: re-runs strip any prior SSH_AUTH_SOCK= line
+    before re-appending. Without this, every spin-up would leave
+    multiple SSH_AUTH_SOCK= lines in wetty/.env (last-wins for
+    docker-compose, but still messy)."""
+    from nexus_deploy.setup import render_wetty_agent_script
+
+    script = render_wetty_agent_script()
+    assert "sed -i '/^SSH_AUTH_SOCK=/d' \"$ENV_FILE\"" in script
+
+
+def test_parse_wetty_agent_result_all_changed() -> None:
+    from nexus_deploy.setup import parse_wetty_agent_result
+
+    line = (
+        "RESULT_WETTY keypair_generated=1 pubkey_added=1 "
+        "agent_started=1 key_added_to_agent=1 auth_sock_written=1"
+    )
+    result = parse_wetty_agent_result(line)
+    assert result is not None
+    assert result.keypair_generated is True
+    assert result.pubkey_added is True
+    assert result.agent_started is True
+    assert result.key_added_to_agent is True
+    assert result.auth_sock_written is True
+
+
+def test_parse_wetty_agent_result_all_noop() -> None:
+    """Idempotent re-run: every step finds nothing to do, only the
+    final auth_sock write is unconditional (always 1)."""
+    from nexus_deploy.setup import parse_wetty_agent_result
+
+    line = (
+        "RESULT_WETTY keypair_generated=0 pubkey_added=0 "
+        "agent_started=0 key_added_to_agent=0 auth_sock_written=1"
+    )
+    result = parse_wetty_agent_result(line)
+    assert result is not None
+    assert result.keypair_generated is False
+    assert result.pubkey_added is False
+    assert result.agent_started is False
+    assert result.key_added_to_agent is False
+    assert result.auth_sock_written is True
+
+
+def test_parse_wetty_agent_result_no_match_returns_none() -> None:
+    from nexus_deploy.setup import parse_wetty_agent_result
+
+    assert parse_wetty_agent_result("") is None
+    assert parse_wetty_agent_result("garbage") is None
+    # Wrong prefix
+    assert parse_wetty_agent_result("RESULT keypair_generated=1") is None
+
+
+def test_setup_wetty_ssh_agent_parses_result_via_mocked_ssh() -> None:
+    """End-to-end happy-path: mocked SSHClient returns canned stdout
+    with a RESULT_WETTY line; setup_wetty_ssh_agent parses it back."""
+    import subprocess
+
+    from nexus_deploy.setup import setup_wetty_ssh_agent
+
+    class _FakeSSH:
+        def run_script(
+            self, _script: str, *, check: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            del check
+            return subprocess.CompletedProcess(
+                args=["ssh"],
+                returncode=0,
+                stdout=(
+                    "RESULT_WETTY keypair_generated=1 pubkey_added=0 "
+                    "agent_started=1 key_added_to_agent=1 auth_sock_written=1\n"
+                ),
+                stderr="",
+            )
+
+    result = setup_wetty_ssh_agent(_FakeSSH())  # type: ignore[arg-type]
+    assert result is not None
+    assert result.keypair_generated is True
+    assert result.pubkey_added is False
+    assert result.agent_started is True
+    assert result.key_added_to_agent is True
+    assert result.auth_sock_written is True
+
+
+def test_setup_wetty_ssh_agent_returns_none_on_unparseable_stdout() -> None:
+    """If the script produces no RESULT_WETTY line, the wrapper returns
+    None — caller maps to rc=1 (soft failure)."""
+    import subprocess
+
+    from nexus_deploy.setup import setup_wetty_ssh_agent
+
+    class _FakeSSH:
+        def run_script(
+            self, _script: str, *, check: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            del check
+            return subprocess.CompletedProcess(
+                args=["ssh"],
+                returncode=0,
+                stdout="some other output, no RESULT_WETTY here\n",
+                stderr="",
+            )
+
+    result = setup_wetty_ssh_agent(_FakeSSH())  # type: ignore[arg-type]
+    assert result is None

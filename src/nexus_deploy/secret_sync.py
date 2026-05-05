@@ -75,25 +75,59 @@ _VALID_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 @dataclass(frozen=True)
 class StackTarget:
-    """Per-stack parameters that vary between Jupyter and Marimo.
+    """Per-stack parameters for the Infisical secret-sync.
 
-    The two stacks share the entire sync logic; only these fields differ.
-    Both heredocs in deploy.sh are byte-for-byte identical apart from
-    these substitutions.
+    Three stacks are supported:
+
+    - **jupyter**, **marimo**: write plaintext ``KEY=value`` lines to
+      ``.infisical.env`` (separate from ``.env``). Restart via
+      ``docker compose up -d <stack>`` on change. The original
+      legacy-bash family (#510).
+    - **kestra**: write ``SECRET_<KEY>=<base64-value>`` lines to ``.env``
+      directly (no separate ``.infisical.env``). Force-recreate the
+      container so Kestra's ``EnvVarSecretProvider`` re-reads the
+      SECRET_* env vars at process start. Migrated in this PR
+      (Modul 3.4f).
+
+    The render pipeline is shared; ``key_prefix``, ``use_base64_values``,
+    ``env_file_basename``, ``legacy_env_file_basename``, and
+    ``force_recreate`` parameterise the ~5 lines that differ between
+    the two output formats.
     """
 
-    name: str  # "jupyter" | "marimo" — used for paths + the friendly
-    # name in the BEGIN marker comment.
+    name: str  # "jupyter" | "marimo" | "kestra" — paths + marker label.
+
+    # Output-format parameters. Defaults match the original Jupyter/Marimo
+    # behavior so existing call sites stay unchanged.
+    key_prefix: str = ""  # "" for jupyter/marimo; "SECRET_" for kestra
+    use_base64_values: bool = False  # False=plain-escaped, True=raw base64
+    env_file_basename: str = ".infisical.env"  # ".env" for kestra
+    # legacy_env_file_basename: separate file the sync used to write to
+    # before #495 — stripped on each successful run so the new location
+    # is the single source of truth. Set to ``None`` for stacks that
+    # have no separate legacy file (kestra writes to ``.env`` directly,
+    # no migration step needed).
+    legacy_env_file_basename: str | None = ".env"
+    # Kestra's EnvVarSecretProvider only loads SECRET_* on container
+    # start — `compose up -d` alone won't pick them up if the .env hash
+    # didn't change in compose's view. --force-recreate guarantees
+    # the new env makes it into the JVM. Jupyter/Marimo use plain env
+    # injection that takes effect on `up -d` without --force-recreate.
+    force_recreate: bool = False
 
     @property
     def env_file(self) -> str:
         """Server-side path the sync writes to."""
-        return f"{_REMOTE_STACKS_DIR}/{self.name}/.infisical.env"
+        return f"{_REMOTE_STACKS_DIR}/{self.name}/{self.env_file_basename}"
 
     @property
-    def legacy_env_file(self) -> str:
-        """Pre-#495 location of the same block. Stripped after successful write."""
-        return f"{_REMOTE_STACKS_DIR}/{self.name}/.env"
+    def legacy_env_file(self) -> str | None:
+        """Pre-#495 location of the same block. Stripped after successful
+        write. ``None`` for stacks where no separate legacy location
+        ever existed (e.g. kestra)."""
+        if self.legacy_env_file_basename is None:
+            return None
+        return f"{_REMOTE_STACKS_DIR}/{self.name}/{self.legacy_env_file_basename}"
 
     @property
     def compose_dir(self) -> str:
@@ -105,9 +139,16 @@ class StackTarget:
         """Marker comment ABOVE the rendered block. Preserves the legacy wording.
 
         The legacy deploy.sh heredocs used `Infisical → Jupyter env` /
-        `Infisical → Marimo env` (capitalised stack name) — same here so
-        existing greps + the sed-based legacy-strip continue to match.
+        `Infisical → Marimo env` (capitalised stack name); the strip-
+        regex matches the leading `# === BEGIN nexus-secret-sync` only,
+        so the wording AFTER that prefix is just for human readers.
+        Kestra uses a shorter wording matching its legacy
+        deploy.sh:1513 marker.
         """
+        if self.name == "kestra":
+            return (
+                "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
+            )
         friendly = self.name.capitalize()
         return (
             f"# === BEGIN nexus-secret-sync (Infisical → {friendly} env, "
@@ -209,11 +250,15 @@ def render_remote_script(
     env_q = shlex.quote(infisical_env)
     gtoken_q = shlex.quote(gitea_token)
     env_file_q = shlex.quote(target.env_file)
-    legacy_q = shlex.quote(target.legacy_env_file)
+    # Legacy env-file is optional: kestra-style targets write to .env
+    # directly with no separate legacy file. We render an empty string
+    # (NOT a dummy path) so the bash branch can guard with [ -n ... ].
+    legacy_q = shlex.quote(target.legacy_env_file or "")
     begin_marker_q = shlex.quote(target.begin_marker)
     end_marker_q = shlex.quote(_END_MARKER)
     folders_url_q = shlex.quote(f"{_INFISICAL_BASE_URL}/api/v1/folders")
     secrets_url_q = shlex.quote(f"{_INFISICAL_BASE_URL}/api/v3/secrets/raw")
+    key_prefix_q = shlex.quote(target.key_prefix)
 
     # The bash below is the legacy deploy.sh secret-sync heredoc lifted
     # near-verbatim (see git history pre-#510 for the original blocks).
@@ -242,6 +287,13 @@ BEGIN_MARKER={begin_marker_q}
 END_MARKER={end_marker_q}
 FOLDERS_URL={folders_url_q}
 SECRETS_URL={secrets_url_q}
+# Kestra format toggles: KEY_PREFIX prepends to every appended key
+# (empty for jupyter/marimo, "SECRET_" for kestra). USE_B64=1 writes
+# the raw base64 value (kestra's EnvVarSecretProvider decodes); =0
+# uses the plain-escaped form (jupyter/marimo expect plaintext at
+# runtime via process env).
+KEY_PREFIX={key_prefix_q}
+USE_B64={"1" if target.use_base64_values else "0"}
 
 CFG=$(mktemp)
 SEEN=$(mktemp)
@@ -324,16 +376,31 @@ while IFS= read -r FOLDER; do
             echo "  ⚠ Key collision: '$KEY' in folder '$FOLDER_LABEL' shadowed by earlier value from '$EXISTING' (first-wins)" >&2
             continue
         fi
-        ESCAPED_VALUE=$(printf '%s' "$VALUE" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
         printf '%s\\t%s\\n' "$KEY" "$FOLDER_LABEL" >> "$SEEN"
-        printf '%s="%s"\\n' "$KEY" "$ESCAPED_VALUE" >> "$APPEND"
+        if [ "$USE_B64" = "1" ]; then
+            # Kestra: SECRET_<KEY>=<base64-value>. EnvVarSecretProvider
+            # decodes server-side. Newlines / binary content survive
+            # the env var via base64.
+            printf '%s%s=%s\\n' "$KEY_PREFIX" "$KEY" "$VALUE_B64" >> "$APPEND"
+        else
+            # Jupyter/Marimo: <KEY>="<escaped-value>". Plain text at
+            # runtime via process env; double-backslash + double-quote
+            # escapes preserve dotenv-parser semantics.
+            ESCAPED_VALUE=$(printf '%s' "$VALUE" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+            printf '%s%s="%s"\\n' "$KEY_PREFIX" "$KEY" "$ESCAPED_VALUE" >> "$APPEND"
+        fi
         PUSHED=$((PUSHED+1))
     done < "$TSV"
 done <<< "$FOLDERS"
 
-if [ -n "$GTOKEN" ] && ! grep -qE '^GITEA_TOKEN=' "$APPEND"; then
-    ESCAPED_GTOKEN=$(printf '%s' "$GTOKEN" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
-    printf 'GITEA_TOKEN="%s"\\n' "$ESCAPED_GTOKEN" >> "$APPEND"
+if [ -n "$GTOKEN" ] && ! grep -qE "^${{KEY_PREFIX}}GITEA_TOKEN=" "$APPEND"; then
+    if [ "$USE_B64" = "1" ]; then
+        GTOKEN_B64=$(printf '%s' "$GTOKEN" | base64 | tr -d '\\n')
+        printf '%sGITEA_TOKEN=%s\\n' "$KEY_PREFIX" "$GTOKEN_B64" >> "$APPEND"
+    else
+        ESCAPED_GTOKEN=$(printf '%s' "$GTOKEN" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+        printf '%sGITEA_TOKEN="%s"\\n' "$KEY_PREFIX" "$ESCAPED_GTOKEN" >> "$APPEND"
+    fi
     PUSHED=$((PUSHED+1))
 fi
 
@@ -369,7 +436,10 @@ mv "$TMP_OUT" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 WROTE=1
 
-if [ -f "$LEGACY_ENV" ]; then
+# Legacy-strip step: only runs when the target declared a legacy
+# location (jupyter/marimo). Kestra targets (LEGACY_ENV=="") skip
+# this — they write directly to .env, no migration step needed.
+if [ -n "$LEGACY_ENV" ] && [ -f "$LEGACY_ENV" ]; then
     LEGACY_TMP=$(mktemp -p "$(dirname "$LEGACY_ENV")" .env.XXXXXX)
     chmod 600 "$LEGACY_TMP"
     sed '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "$LEGACY_ENV" > "$LEGACY_TMP"
@@ -478,12 +548,18 @@ def run_sync_for_stack(
 
     if result.wrote:
         # Restart on change. Mirrors the legacy deploy.sh restart step —
-        # `docker compose up -d <stack>` recomputes the resolved-config
-        # hash and recreates only when env_file content changed. No
-        # --force-recreate.
-        # Restart failure does NOT alter result.wrote; we just emit the
-        # error to stderr so the operator sees it.
-        restart_cmd = f"cd {shlex.quote(target.compose_dir)} && docker compose up -d {shlex.quote(target.name)}"
+        # ``docker compose up -d <stack>`` recomputes the resolved-config
+        # hash and recreates only when env_file content changed. Kestra
+        # additionally needs ``--force-recreate`` because its
+        # ``EnvVarSecretProvider`` only loads SECRET_* env vars at
+        # process start, and a config-hash unchanged from compose's
+        # view (e.g. when the SECRET_* values rotated but the file
+        # length is identical) wouldn't otherwise trigger a recreate.
+        force_flag = " --force-recreate" if target.force_recreate else ""
+        restart_cmd = (
+            f"cd {shlex.quote(target.compose_dir)} && "
+            f"docker compose up -d{force_flag} {shlex.quote(target.name)}"
+        )
         try:
             run_cmd(restart_cmd)
         except subprocess.CalledProcessError as exc:

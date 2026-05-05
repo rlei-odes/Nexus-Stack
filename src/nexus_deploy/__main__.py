@@ -40,6 +40,7 @@ from nexus_deploy.infisical import (
     BootstrapEnv,
     InfisicalClient,
     compute_folders,
+    provision_admin,
 )
 from nexus_deploy.kestra import run_register_system_flows
 from nexus_deploy.orchestrator import Orchestrator
@@ -58,6 +59,7 @@ from nexus_deploy.setup import (
     configure_ssh,
     ensure_jq,
     mount_persistent_volume,
+    setup_wetty_ssh_agent,
     wait_for_service_token,
     wait_for_ssh,
 )
@@ -222,7 +224,88 @@ def _infisical_bootstrap(args: list[str]) -> int:
     return 0 if result.failed == 0 else 1
 
 
-_VALID_STACKS = ("jupyter", "marimo")
+def _infisical_provision_admin(args: list[str]) -> int:
+    """`nexus-deploy infisical provision-admin`.
+
+    Replaces the bash readiness-probe + admin-bootstrap + project-create
+    + cred-persist block at deploy.sh:792-869. Renders + runs a server-
+    side bash script via SSH that:
+
+    1. Waits for Infisical to be ready (60s container + 120s HTTP).
+    2. Detects whether Infisical is already initialized.
+    3. If yes: loads saved (token, project_id) from
+       ``/opt/docker-server/.infisical-{token,project-id}``.
+    4. If no: POST ``/api/v1/admin/bootstrap`` (admin user + org) →
+       POST ``/api/v2/workspace`` (project) → save creds to disk.
+
+    Required env: ``ADMIN_EMAIL`` + ``INFISICAL_PASS``.
+
+    Stdout (eval-able by deploy.sh):
+    - ``INFISICAL_TOKEN=<token>``
+    - ``PROJECT_ID=<workspace-id>``
+
+    Both lines are always emitted (even on the not-ready / failure
+    paths, with empty values) so deploy.sh's eval doesn't leak stale
+    values from a previous run.
+
+    Exit codes:
+    - 0: ``loaded-existing`` or ``freshly-bootstrapped`` —
+      (token, project_id) populated, downstream push can proceed.
+    - 1: ``not-ready`` / ``loaded-existing-missing-creds`` /
+      ``already-bootstrapped-no-saved-creds`` /
+      ``bootstrap-failed`` / ``project-create-failed`` — soft fail,
+      deploy.sh warns and continues without pushing secrets.
+    - 2: bad args, transport, unexpected error — deploy.sh aborts.
+    """
+    if args:
+        print(f"infisical provision-admin: unexpected arg {args[0]!r}", file=sys.stderr)
+        return 2
+
+    admin_email = os.environ.get("ADMIN_EMAIL", "").strip()
+    admin_password = os.environ.get("INFISICAL_PASS", "").strip()
+    if not admin_email or not admin_password:
+        print(
+            "infisical provision-admin: ADMIN_EMAIL and INFISICAL_PASS env vars required",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        result = provision_admin(
+            admin_email=admin_email,
+            admin_password=admin_password,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"infisical provision-admin: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"infisical provision-admin: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Always emit the two values (even empty) — deploy.sh's eval relies
+    # on the assignment to clear any stale value left over from prior
+    # runs. shlex.quote handles the empty-string + edge cases.
+    import shlex as _shlex
+
+    sys.stdout.write(f"INFISICAL_TOKEN={_shlex.quote(result.token or '')}\n")
+    sys.stdout.write(f"PROJECT_ID={_shlex.quote(result.project_id or '')}\n")
+
+    # Per-status stderr line so the workflow log carries the human-
+    # readable outcome (the eval-able stdout is for shell consumption).
+    sys.stderr.write(f"infisical provision-admin: status={result.status}\n")
+
+    if result.status in ("loaded-existing", "freshly-bootstrapped"):
+        return 0
+    return 1
+
+
+_VALID_STACKS = ("jupyter", "marimo", "kestra")
 
 
 def _secret_sync(args: list[str]) -> int:
@@ -289,7 +372,21 @@ def _secret_sync(args: list[str]) -> int:
     infisical_env = os.environ.get("INFISICAL_ENV") or "dev"
     gitea_token = os.environ.get("GITEA_TOKEN") or ""
 
-    target = StackTarget(name=stack)
+    # Kestra writes SECRET_<KEY>=<base64> to .env directly (no separate
+    # .infisical.env), and force-recreates so EnvVarSecretProvider
+    # loads the new values. Jupyter/Marimo use the original
+    # plaintext-to-.infisical.env shape with `up -d` (no force).
+    if stack == "kestra":
+        target = StackTarget(
+            name="kestra",
+            key_prefix="SECRET_",
+            use_base64_values=True,
+            env_file_basename=".env",
+            legacy_env_file_basename=None,
+            force_recreate=True,
+        )
+    else:
+        target = StackTarget(name=stack)
     try:
         result = run_sync_for_stack(
             target,
@@ -1707,11 +1804,89 @@ def _setup_mount_volume(args: list[str]) -> int:
     return 1
 
 
+def _setup_wetty_ssh_agent(args: list[str]) -> int:
+    """`nexus-deploy setup wetty-ssh-agent`.
+
+    Replaces deploy.sh:439-540 (the ``[5.5/7]`` block). Renders +
+    runs a server-side bash that:
+
+    1. ssh-keygen the wetty key pair (idempotent — only if absent).
+    2. Append the public key to ``authorized_keys`` (idempotent).
+    3. Start ``ssh-agent`` with a known socket path (handles
+       dead-socket cleanup if the agent crashed previously).
+    4. ssh-add the key to the agent (idempotent — fingerprint check).
+    5. Write ``SSH_AUTH_SOCK=`` to ``stacks/wetty/.env``.
+
+    Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``).
+
+    Exit codes:
+    - 0: all 5 steps completed (whether they were no-ops or made changes)
+    - 1: soft failure — script ran but emitted no parseable RESULT
+         (the operator sees the forwarded stderr; deploy continues
+         since Wetty is non-critical)
+    - 2: hard transport / unexpected error
+    """
+    if args:
+        print(f"setup wetty-ssh-agent: unknown args {args!r}", file=sys.stderr)
+        return 2
+    host_alias = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    try:
+        with SSHClient(host_alias) as ssh:
+            result = setup_wetty_ssh_agent(ssh)
+    except subprocess.CalledProcessError as exc:
+        # Same defence-in-depth as setup ensure-jq: forward the
+        # captured tail to local stderr but DON'T print exc.cmd.
+        print(
+            f"setup wetty-ssh-agent: remote command failed (rc={exc.returncode})",
+            file=sys.stderr,
+        )
+        if exc.output:
+            excerpt = exc.output[-2000:].rstrip()
+            for line in excerpt.splitlines():
+                sys.stderr.write(f"      {line}\n")
+        return 2
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"setup wetty-ssh-agent: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"setup wetty-ssh-agent: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    if result is None:
+        print(
+            "setup wetty-ssh-agent: script ran but produced no RESULT_WETTY line",
+            file=sys.stderr,
+        )
+        return 1
+    # Per-step summary on stdout (workflow log) — same one-line shape
+    # as the other setup CLIs.
+    parts = []
+    if result.keypair_generated:
+        parts.append("key-generated")
+    if result.pubkey_added:
+        parts.append("pubkey-added")
+    if result.agent_started:
+        parts.append("agent-started")
+    if result.key_added_to_agent:
+        parts.append("key-added")
+    if result.auth_sock_written:
+        parts.append("env-written")
+    summary = "+".join(parts) if parts else "all-noop"
+    print(f"setup wetty-ssh-agent: {summary}")
+    return 0
+
+
 def _setup(args: list[str]) -> int:
     """Dispatch ``nexus-deploy setup <subcommand>``."""
     if not args:
         print(
-            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq | mount-volume)",
+            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq "
+            "| mount-volume | wetty-ssh-agent)",
             file=sys.stderr,
         )
         return 2
@@ -1725,6 +1900,8 @@ def _setup(args: list[str]) -> int:
         return _setup_ensure_jq(rest)
     if sub == "mount-volume":
         return _setup_mount_volume(rest)
+    if sub == "wetty-ssh-agent":
+        return _setup_wetty_ssh_agent(rest)
     print(f"setup: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
 
@@ -2105,6 +2282,8 @@ def main() -> int:
         return _config_dump_shell(args[2:])
     if args[:2] == ["infisical", "bootstrap"]:
         return _infisical_bootstrap(args[2:])
+    if args[:2] == ["infisical", "provision-admin"]:
+        return _infisical_provision_admin(args[2:])
     if args[:1] == ["secret-sync"]:
         return _secret_sync(args[1:])
     if args[:1] == ["seed"]:

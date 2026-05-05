@@ -42,6 +42,7 @@ from nexus_deploy.services import (
     render_metabase_hook,
     render_n8n_hook,
     render_openmetadata_hook,
+    render_pg_ducklake_hook,
     render_portainer_hook,
     render_redpanda_hook,
     render_remote_script,
@@ -123,6 +124,8 @@ def test_supported_hooks_contains_all_specs() -> None:
         "dify",
         "windmill",
         "sftpgo",
+        # 3.4f — pg-ducklake bootstrap-SQL re-apply
+        "pg-ducklake",
     }
 
 
@@ -808,6 +811,31 @@ def test_render_sftpgo_hook_secrets_via_base64_env_not_argv() -> None:
     # No -H Authorization argv (we use mode-600 curl --config tmpfile instead)
     assert '-H "Authorization' not in script
     assert "-H 'Authorization" not in script
+
+
+def test_render_pg_ducklake_hook_basic() -> None:
+    """pg-ducklake re-apply hook: pg_isready probe + psql -f exec."""
+    script = render_pg_ducklake_hook(_make_config(), _make_env())
+    assert "pg_ducklake_hook()" in script
+    # Two-stage: readiness probe then exec
+    assert "pg_isready -U nexus-pgducklake -d ducklake" in script
+    assert "/docker-entrypoint-initdb.d/00-ducklake-bootstrap.sql" in script
+    assert "psql -U nexus-pgducklake -d ducklake" in script
+
+
+def test_render_pg_ducklake_hook_status_dispatch() -> None:
+    """Three branches: skipped-not-ready / configured / failed."""
+    script = render_pg_ducklake_hook(_make_config(), _make_env())
+    assert "RESULT hook=pg-ducklake status=skipped-not-ready" in script
+    assert "RESULT hook=pg-ducklake status=configured" in script
+    assert "RESULT hook=pg-ducklake status=failed" in script
+
+
+def test_render_pg_ducklake_hook_uses_wall_clock_bound_for_readiness() -> None:
+    """R-bounded-wait: 30s wall-clock cap (NOT iteration-counted), so a
+    stalled pg_isready can't blow the wait past the documented timeout."""
+    script = render_pg_ducklake_hook(_make_config(), _make_env())
+    assert 'while [ "$SECONDS" -lt 30 ]' in script
 
 
 # ---------------------------------------------------------------------------

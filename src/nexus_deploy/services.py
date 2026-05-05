@@ -1431,6 +1431,64 @@ sftpgo_hook
 """
 
 
+def render_pg_ducklake_hook(config: NexusConfig, env: BootstrapEnv) -> str:
+    """pg-ducklake: re-apply ``00-ducklake-bootstrap.sql`` on every
+    spin-up to handle credential rotation.
+
+    Mirrors deploy.sh:962-992. The bootstrap SQL is written to
+    ``stacks/pg-ducklake/init/`` by service-env (PR #527), and Postgres'
+    docker-entrypoint-initdb.d only executes scripts on an EMPTY data
+    dir — so on persistent-volume deploys (named volume preserved
+    across spin-ups), the freshly-rotated credentials in the SQL
+    never make it into the running Postgres without this re-apply.
+
+    Two stages:
+    1. Wait for ``pg_isready`` (15 iterations of 2s = 30s ceiling).
+    2. Exec ``psql -f /docker-entrypoint-initdb.d/00-ducklake-bootstrap.sql``
+       inside the container. Idempotent — the SQL itself uses
+       ``DO $$ ... drop_secret EXCEPTION WHEN OTHERS THEN NULL ... $$``
+       so re-runs against an already-bootstrapped DB are safe.
+
+    Idempotency contract:
+    - pg_isready times out → ``skipped-not-ready``
+    - psql exec succeeds → ``configured``
+    - psql exec fails → ``failed`` (legacy bash treated this as a
+      yellow warning ``may already be applied``; we surface as failed
+      so the operator can inspect, since a real psql failure means
+      either the SQL has a syntax error OR the credentials in the
+      SQL file don't match what Postgres expects)
+    """
+    del config, env
+    return """
+pg_ducklake_hook() {
+    READY=false
+    SECONDS=0
+    while [ "$SECONDS" -lt 30 ]; do
+        if docker exec pg-ducklake pg_isready -U nexus-pgducklake -d ducklake \\
+                >/dev/null 2>&1; then
+            READY=true
+            break
+        fi
+        sleep 2
+    done
+    if [ "$READY" != "true" ]; then
+        echo "  ⚠ pg_ducklake not ready after 30s — skipping bootstrap re-apply" >&2
+        echo "RESULT hook=pg-ducklake status=skipped-not-ready"
+        return 0
+    fi
+    if docker exec pg-ducklake psql -U nexus-pgducklake -d ducklake \\
+            -f /docker-entrypoint-initdb.d/00-ducklake-bootstrap.sql \\
+            >/dev/null 2>&1; then
+        echo "RESULT hook=pg-ducklake status=configured"
+    else
+        echo "  ⚠ pg_ducklake bootstrap SQL re-apply failed (check container logs)" >&2
+        echo "RESULT hook=pg-ducklake status=failed"
+    fi
+}
+pg_ducklake_hook
+"""
+
+
 # ---------------------------------------------------------------------------
 # Modul 2.2d — Filestash (Python-side file mutation).
 #
@@ -1865,6 +1923,10 @@ _HOOK_REGISTRY: dict[str, HookRenderer] = {
     "dify": render_dify_hook,
     "windmill": render_windmill_hook,
     "sftpgo": render_sftpgo_hook,
+    # Modul 3.4f — pg-ducklake bootstrap re-apply (handles cred rotation
+    # on persistent-volume deploys where the entrypoint-initdb scripts
+    # only ran on first init).
+    "pg-ducklake": render_pg_ducklake_hook,
 }
 
 
