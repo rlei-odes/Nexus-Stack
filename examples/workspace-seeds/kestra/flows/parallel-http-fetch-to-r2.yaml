@@ -1,0 +1,118 @@
+id: parallel-http-fetch-to-r2
+namespace: nexus-tutorials
+description: |
+  Starter pattern: fetch a list of HTTP endpoints in parallel and put
+  each response into R2.
+
+  Pattern, three tasks per iteration:
+    1. ForEach — iterate over the input URL list (`urls`).
+    2. http.Download — GET the iteration's URL.
+    3. s3.Upload — push the response body into R2, keyed by index +
+       a sanitised slug derived from the URL so each iteration
+       writes to a distinct key (no collisions even if URLs change).
+
+  Default source: Open-Meteo forecasts for Zürich, Bern, Lugano (3
+  Swiss cities, no API key — see https://open-meteo.com/en/terms).
+  Useful starting point for any "iterate-over-coordinates / iterate-
+  over-stations / iterate-over-sources" task. Replace `urls` with
+  any list — programmatic generation works too: a Pebble template
+  block or a preceding task that emits a list will feed this loop
+  the same way.
+
+  Concurrency: `concurrencyLimit` (input) caps how many fetches run
+  at once. Default 4 — plenty for tiny JSON responses, won't OOM the
+  4 GB Kestra container. Lower it for large payloads, raise it for
+  many small ones.
+
+  This file was seeded into your Gitea workspace repo from
+  `nexus-stack/examples/workspace-seeds/kestra/flows/parallel-http-fetch-to-r2.yaml`.
+  Edit the file in Gitea — Kestra picks up the change within 15 minutes
+  via `system.flow-sync`. Subsequent spin-ups leave your edits
+  untouched (seeding only adds new files, never overwrites).
+
+  Manual trigger only — no `triggers:` block, by Nexus-Stack
+  convention for seeded example flows.
+
+labels:
+  owner: data-engineering
+  source: nexus-stack-seed
+  pattern: parallel-http-to-r2
+
+# ──────────────────────────────────────────────────────────────────────
+# NO `triggers:` BLOCK — INTENTIONAL.
+# See http-fetch-to-r2.yaml for the rationale.
+# ──────────────────────────────────────────────────────────────────────
+
+inputs:
+  - id: urls
+    type: JSON
+    description: List of URLs to fetch in parallel. Default is 3 Swiss-city Open-Meteo forecasts.
+    defaults: |
+      [
+        "https://api.open-meteo.com/v1/forecast?latitude=47.37&longitude=8.55&hourly=temperature_2m&timezone=auto",
+        "https://api.open-meteo.com/v1/forecast?latitude=46.95&longitude=7.45&hourly=temperature_2m&timezone=auto",
+        "https://api.open-meteo.com/v1/forecast?latitude=46.00&longitude=8.95&hourly=temperature_2m&timezone=auto"
+      ]
+
+  - id: r2_prefix
+    type: STRING
+    description: R2 key prefix (no leading or trailing slash). Final key adds a date/hour partition + index + url-derived slug.
+    defaults: "nexus-tutorials/openmeteo-cities"
+
+  - id: concurrencyLimit
+    type: INT
+    description: How many URLs to fetch in parallel. Default 4 — fine for JSON-sized payloads.
+    defaults: 4
+
+tasks:
+  # ---------------------------------------------------------------------
+  # 1. ForEach over the URL list. Each iteration runs `download` then
+  #    `upload` on its own URL. `concurrencyLimit` caps the parallelism.
+  # ---------------------------------------------------------------------
+  - id: fetch_all
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{ inputs.urls }}"
+    concurrencyLimit: "{{ inputs.concurrencyLimit }}"
+    tasks:
+      # -----------------------------------------------------------------
+      # 2. Download this iteration's URL. taskrun.value is the current
+      #    URL string. Outputs are keyed by iteration value so we
+      #    reference them as `outputs.download[taskrun.value].uri`.
+      # -----------------------------------------------------------------
+      - id: download
+        type: io.kestra.plugin.core.http.Download
+        uri: "{{ taskrun.value }}"
+
+      # -----------------------------------------------------------------
+      # 3. Upload to R2 under a key that includes the iteration index
+      #    and a slug derived from the URL hash (8 hex chars). Two
+      #    benefits:
+      #     - keys are deterministic per-URL so re-runs go to the same
+      #       partition + filename, easy to reason about
+      #     - similar URLs (e.g. same API, different lat/lon) get
+      #       distinguishable filenames without parsing the query string
+      # -----------------------------------------------------------------
+      - id: upload
+        type: io.kestra.plugin.aws.s3.Upload
+        endpointOverride: "{{ secret('R2_ENDPOINT') }}"
+        region: auto
+        accessKeyId: "{{ secret('R2_ACCESS_KEY') }}"
+        secretKeyId: "{{ secret('R2_SECRET_KEY') }}"
+        bucket: "{{ secret('R2_BUCKET') }}"
+        # The `taskrun.value | sha256 | substring(0,8)` derivation gives
+        # a stable 8-char slug per URL. The `taskrun.iteration`
+        # variable is each iteration's 0-based index, padded for sort
+        # stability.
+        key: "{{ inputs.r2_prefix }}/dt={{ now() | date('yyyy-MM-dd') }}/hr={{ now() | date('HH') }}/idx{{ taskrun.iteration }}-{{ taskrun.value | sha256 | substring(0,8) }}.json"
+        from: "{{ outputs.download[taskrun.value].uri }}"
+
+  # ---------------------------------------------------------------------
+  # 4. Log a one-line summary so the student can verify the count.
+  # ---------------------------------------------------------------------
+  - id: log_summary
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Parallel fetch complete:
+        URLs in:  {{ inputs.urls | length }}
+        Prefix:   s3://{{ secret('R2_BUCKET') }}/{{ inputs.r2_prefix }}/
+        See R2 / DBGate / DuckDB to inspect the objects.

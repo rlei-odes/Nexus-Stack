@@ -20,12 +20,19 @@ Source tree under `examples/workspace-seeds/`:
 examples/workspace-seeds/
 ├── kestra/
 │   ├── flows/
-│   │   └── r2-taxi-pipeline.yaml
+│   │   ├── r2-taxi-pipeline.yaml          (NYC Yellow-Taxi parquet → R2 → DuckDB stats)
+│   │   ├── http-fetch-to-r2.yaml          (single HTTP endpoint → R2 with date/hour partitioning)
+│   │   └── parallel-http-fetch-to-r2.yaml (fan-out variant: multiple URLs in parallel → R2)
 │   └── workflows/                  (when added — helper files: scripts, configs, SQL templates)
 ├── marimo/
 │   ├── _nexus_spark.py             (Spark Connect helper — `from _nexus_spark import get_spark`)
 │   ├── Getting_Started_PySpark.py  (seed Marimo notebook demonstrating PySpark + Spark SQL via Ibis)
 │   └── NYC_Taxi_Pipeline.py        (seed Marimo notebook: NYC TLC bootstrap to Hetzner S3 + Spark analytics — mirror of Kestra's r2-taxi-pipeline)
+├── prefect/
+│   ├── prefect.yaml                (deployment manifest — `pull:` re-clones workspace repo per run, no schedule by convention)
+│   ├── requirements.txt            (boto3 + duckdb + httpx, installed at run-time by the worker)
+│   └── flows/
+│       └── nyc_green_taxi_pipeline.py  (NYC Green-Taxi parquet → R2 → DuckDB stats — Prefect counterpart to Kestra's r2-taxi-pipeline)
 ├── notebooks/                      (when added — Jupyter / code-server, .ipynb)
 ├── scripts/                        (when added — code-server, ad-hoc execution)
 ├── dbt/                            (when added — code-server, manual `dbt`)

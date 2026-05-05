@@ -1,0 +1,57 @@
+# Prefect deployment manifest — seeded by Nexus-Stack.
+#
+# Lives at the workspace-repo root because that's where `prefect deploy`
+# looks for it by default. The same path inside the prefect-worker
+# container is `/flows/<repo-name>/prefect.yaml`.
+#
+# `pull:` runs at flow-RUN time (not deploy time) and is what gives us
+# the "edit in Gitea, hit Run, done" loop without needing a stack
+# re-spin. Two steps:
+#   1. git_clone — re-clones the workspace repo into a fresh tmpdir on
+#      every run so the worker always has the latest code.
+#   2. pip_install_requirements — installs the Python deps the seeded
+#      flow needs (boto3 for R2 uploads, duckdb for stats, httpx for
+#      the CloudFront download). Cached by the worker after the first
+#      install so subsequent runs are fast.
+#
+# Operators add more deployments below — just append to the
+# `deployments:` list with a new {name, entrypoint, work_pool, …}
+# block. See the Nexus-Stack docs at docs/stacks/prefect.md.
+#
+# NB: NO `schedule:` block on the seeded deployment by Nexus-Stack
+# convention (see examples/README.md). A seeded schedule fires on
+# every student stack and can blow up CloudFront / R2 egress quotas
+# at cohort scale.
+
+name: nexus-tutorials
+prefect-version: 3
+
+pull:
+  - prefect.deployments.steps.git_clone:
+      repository: "{{ $GITEA_REPO_URL }}"
+      branch: main
+      access_token: "{{ $GITEA_PASSWORD }}"
+  - prefect.deployments.steps.pip_install_requirements:
+      requirements_file: prefect/requirements.txt
+
+deployments:
+  - name: nyc-green-taxi-pipeline
+    entrypoint: prefect/flows/nyc_green_taxi_pipeline.py:nyc_green_taxi_pipeline
+    work_pool:
+      name: local-pool
+    tags:
+      - nexus-stack-seed
+      - nexus-tutorials
+      - data-engineering
+    description: |
+      Bootstrap + analyse the NYC Green-Taxi 2025 dataset on R2 (Prefect
+      counterpart of the Kestra Yellow-Taxi tutorial — both stacks ship a
+      seeded flow on different TLC datasets so you can compare engines
+      side-by-side without overwriting each other's R2 output).
+
+      Edit prefect/flows/nyc_green_taxi_pipeline.py in your Gitea
+      workspace repo, push, and re-run the deployment — the worker
+      re-clones from Gitea via the `pull:` step above on every run.
+
+      Manual trigger only (no schedule). Default `months=["01","02"]`
+      keeps each Run light; pass a longer list to widen.
