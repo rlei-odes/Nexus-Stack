@@ -748,6 +748,41 @@ def test_cli_firewall_configure_zero_entry_returns_0(
     assert "zero-entry" in out
 
 
+def test_cli_firewall_configure_zero_entry_with_stale_cleanup_failure_returns_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """R-zero-entry-cleanup-failure (#531 R3 #1): zero-entry mode
+    with a stale-cleanup unlink failure must return rc=1, NOT rc=0.
+    Without this, a failed remote-cleanup leaves the host port
+    exposed and the workflow finishes green pretending it closed
+    — defeating the whole point of the cleanup pass."""
+    from nexus_deploy.__main__ import _firewall_configure
+
+    _make_synthetic_stacks(tmp_path)
+    # Pre-create a stale .firewall.yml so the cleanup pass has
+    # something to attempt to delete.
+    stale = tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME
+    stale.write_text("stale\n")
+
+    # Force the unlink to fail.
+    original_unlink = Path.unlink
+
+    def _raising_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == stale:
+            raise OSError("simulated unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _raising_unlink)
+    monkeypatch.setattr("sys.stdin", _StdinFake("{}"))
+    rc = _firewall_configure(["--project-root", str(tmp_path), "--domain", "example.com"])
+    assert rc == 1, "zero-entry + cleanup failure must return rc=1, not rc=0"
+    err = capsys.readouterr().err
+    assert "stale-cleanup" in err
+    assert "aborting" in err.lower() or "inconsistency" in err.lower()
+
+
 def test_cli_firewall_configure_happy_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

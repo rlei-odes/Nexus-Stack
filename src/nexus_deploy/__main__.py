@@ -2158,7 +2158,22 @@ def _firewall_configure(args: list[str]) -> int:
         print(f"firewall configure: {exc}", file=sys.stderr)
         return 2
 
+    # Even in zero-entry mode, the write/cleanup pass may have failed
+    # (e.g. an OSError on stale-cleanup unlink). Surfacing those as
+    # rc=1 instead of silently returning 0 is the whole point of #531
+    # R1 — without this, a failed remote-cleanup leaves the host port
+    # exposed and the workflow finishes green pretending it closed.
+    for path, err in write.failed:
+        sys.stderr.write(f"  ✗ write failed: {path}: {err}\n")
+
     if gen.zero_entry:
+        if write.failed:
+            sys.stderr.write(
+                f"firewall configure: zero-entry mode but stale-cleanup had "
+                f"{len(write.failed)} failure(s) — aborting so the workflow "
+                f"surfaces the inconsistency\n",
+            )
+            return 1
         print("firewall configure: zero-entry mode (no firewall rules) — no overrides written")
         return 0
 
@@ -2170,8 +2185,6 @@ def _firewall_configure(args: list[str]) -> int:
     )
     for service in gen.skipped:
         sys.stderr.write(f"  ⚠ skipped {service} (no parseable docker-compose.yml)\n")
-    for path, err in write.failed:
-        sys.stderr.write(f"  ✗ write failed: {path}: {err}\n")
 
     if write.failed:
         if not write.written:

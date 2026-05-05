@@ -148,6 +148,29 @@ def nyc_green_taxi_pipeline(months: list[str] | None = None) -> dict:
     months = months or ["01", "02"]
     log = get_run_logger()
 
+    # Upfront R2 precondition check. The render path
+    # (nexus_deploy.service_env._render_prefect) writes the four R2_*
+    # env vars to stacks/prefect/.env unconditionally, but with empty
+    # values when the optional R2 datalake isn't configured in
+    # OpenTofu (the r2_data_* fields on NexusConfig). Without this
+    # guard, the first `download_month` task would crash deep inside
+    # boto with a confusing 'invalid endpoint URL' / SSL error;
+    # surfacing the missing-R2 case here gives the operator an
+    # actionable next step instead.
+    missing = [
+        var
+        for var in ("R2_ENDPOINT", "R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_BUCKET")
+        if not os.environ.get(var)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"R2 datalake not configured: missing {', '.join(missing)}. "
+            "Set the r2_data_endpoint / r2_data_access_key / r2_data_secret_key / "
+            "r2_data_bucket fields in your Tofu config and re-run "
+            "`gh workflow run spin-up.yml` so the prefect-worker container "
+            "picks up the values via stacks/prefect/.env.",
+        )
+
     for m in months:
         body = download_month(m)
         upload_month(m, body)

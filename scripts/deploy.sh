@@ -479,8 +479,18 @@ echo "$FIREWALL_JSON" | DOMAIN="$DOMAIN" \
     || FW_RC=$?
 case "$FW_RC" in
     0) ;;
-    1) echo -e "${YELLOW}  ⚠ Firewall override generation had per-file failures (continuing)${NC}" ;;
-    *) echo -e "${RED}  ✗ Firewall override generation failed (rc=$FW_RC); aborting${NC}"; exit "$FW_RC" ;;
+    1)
+        # rc=1 means at least one write OR stale-cleanup failed → the
+        # local + remote firewall state is now INCONSISTENT with what
+        # OpenTofu requested. Continuing into the copy/start phases
+        # would either leave a removed port still exposed (failed
+        # cleanup) or skip a newly-requested port (failed render).
+        # Abort so the workflow surfaces the mismatch instead of
+        # finishing green with a broken firewall posture.
+        echo -e "${RED}  ✗ Firewall override generation had per-file failures — local/remote state is now inconsistent with Tofu; aborting${NC}" >&2
+        exit 1
+        ;;
+    *) echo -e "${RED}  ✗ Firewall override generation failed (rc=$FW_RC); aborting${NC}" >&2; exit "$FW_RC" ;;
 esac
 
 # Cleanup orphan firewall overrides on the server. The Python
@@ -500,12 +510,25 @@ LOCAL_FW_LIST=$(cd stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev
 REMOTE_FW_LIST=$(ssh nexus 'cd /opt/docker-server/stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort' || true)
 ORPHANS=$(comm -23 <(echo "$REMOTE_FW_LIST") <(echo "$LOCAL_FW_LIST") | grep -v '^$' || true)
 if [ -n "$ORPHANS" ]; then
+    # Track failures and abort the deploy if any rm fails. compose_runner
+    # picks up any docker-compose.firewall.yml on the remote, so a single
+    # failed orphan removal means the corresponding host port stays
+    # exposed even though Tofu was supposed to close it. Better to fail
+    # the deploy loudly than to leave a security-relevant inconsistency.
+    ORPHAN_FAIL_COUNT=0
     echo "$ORPHANS" | while IFS= read -r orphan; do
         echo "  Removing orphan: stacks/$orphan"
-        ssh nexus "rm -f /opt/docker-server/stacks/$orphan" || {
-            echo -e "${YELLOW}    Warning: failed to remove /opt/docker-server/stacks/$orphan${NC}" >&2
-        }
+        if ! ssh nexus "rm -f /opt/docker-server/stacks/$orphan"; then
+            echo -e "${RED}    ✗ Failed to remove /opt/docker-server/stacks/$orphan${NC}" >&2
+            echo "/opt/docker-server/stacks/$orphan" >> /tmp/firewall-orphan-fails.$$
+        fi
     done
+    if [ -s /tmp/firewall-orphan-fails.$$ ]; then
+        echo -e "${RED}  ✗ Orphan firewall removal failed for $(wc -l < /tmp/firewall-orphan-fails.$$ | tr -d ' ') file(s) on the server — aborting (host ports may still be exposed)${NC}" >&2
+        rm -f /tmp/firewall-orphan-fails.$$
+        exit 1
+    fi
+    rm -f /tmp/firewall-orphan-fails.$$
 else
     echo "  No orphan firewall overrides on server"
 fi

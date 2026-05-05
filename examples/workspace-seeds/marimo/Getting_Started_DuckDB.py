@@ -353,11 +353,12 @@ def _(mo):
         - **Read from Hetzner Object Storage**: the Infisical secret-sync
           writes ``HETZNER_S3_*`` env vars into ``/app/.infisical.env``
           on every spin-up. DuckDB's ``httpfs`` doesn't auto-read
-          those — pass them explicitly via DuckDB SETs (the
-          ``NYC_Taxi_Pipeline.py`` seed does this for the Spark side
-          via ``SET s3_endpoint``, ``SET s3_access_key_id``,
-          ``SET s3_secret_access_key`` from the env vars before
-          issuing the query). Same pattern works here:
+          those — pass them explicitly via DuckDB SET statements
+          before issuing the query (the same DuckDB-side pattern
+          ``NYC_Taxi_Pipeline.py`` uses for its OWN bootstrap step
+          to upload parquets to S3 — that notebook then switches to
+          ``s3a://...`` URLs for the Spark read, which uses
+          hadoop-aws / Spark-stack settings, NOT DuckDB SETs):
 
           ```python
           import os
