@@ -2094,6 +2094,92 @@ def _service_env(args: list[str]) -> int:
     return 0
 
 
+def _firewall_configure(args: list[str]) -> int:
+    """`nexus-deploy firewall configure --domain <DOMAIN>`.
+
+    Replaces the ~130-LoC bash block in deploy.sh ('Generate Docker
+    Compose override files for firewall TCP port exposure') with a
+    Python equivalent backed by :mod:`nexus_deploy.firewall`.
+
+    Reads ``firewall_rules`` JSON from stdin (the Tofu output) and
+    writes per-service ``stacks/<svc>/docker-compose.firewall.yml``
+    + (when RedPanda has ports) the dual-listener override AND the
+    template-substituted ``stacks/redpanda/config/redpanda-firewall.yaml``.
+
+    Exit codes:
+    - 0: success (every artifact written; or zero-entry mode — empty
+         firewall_rules input → no overrides needed)
+    - 1: at least one write failed but at least one succeeded
+         (deploy.sh continues; operator sees per-file diagnostic)
+    - 2: bad args / unparseable JSON / missing RedPanda template /
+         missing --domain when RedPanda has ports
+    """
+    from .firewall import configure as fw_configure
+
+    project_root: Path | None = None
+    domain: str | None = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--project-root":
+            if i + 1 >= len(args):
+                print("firewall configure: --project-root requires a value", file=sys.stderr)
+                return 2
+            project_root = Path(args[i + 1])
+            i += 2
+        elif args[i] == "--domain":
+            if i + 1 >= len(args):
+                print("firewall configure: --domain requires a value", file=sys.stderr)
+                return 2
+            domain = args[i + 1]
+            i += 2
+        else:
+            print(f"firewall configure: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+
+    if project_root is None:
+        # Default to current working directory — deploy.sh invokes from
+        # the repo root, where ``stacks/<svc>/...`` is a direct child.
+        project_root = Path.cwd()
+    if domain is None:
+        domain = os.environ.get("DOMAIN", "").strip()
+
+    firewall_json = sys.stdin.read()
+
+    try:
+        gen, write = fw_configure(
+            firewall_json=firewall_json,
+            stacks_dir=project_root,
+            domain=domain,
+        )
+    except ValueError as exc:
+        print(f"firewall configure: {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"firewall configure: {exc}", file=sys.stderr)
+        return 2
+
+    if gen.zero_entry:
+        print("firewall configure: zero-entry mode (no firewall rules) — no overrides written")
+        return 0
+
+    print(
+        f"firewall configure: rendered={len(gen.compiled)} "
+        f"redpanda={'yes' if gen.redpanda else 'no'} "
+        f"skipped={len(gen.skipped)} "
+        f"written={len(write.written)} failed={len(write.failed)}",
+    )
+    for service in gen.skipped:
+        sys.stderr.write(f"  ⚠ skipped {service} (no parseable docker-compose.yml)\n")
+    for path, err in write.failed:
+        sys.stderr.write(f"  ✗ write failed: {path}: {err}\n")
+
+    if write.failed:
+        if not write.written:
+            return 2
+        return 1
+    return 0
+
+
 def _r2_tokens(args: list[str]) -> int:
     """`nexus-deploy r2-tokens <list|cleanup>`.
 
@@ -2506,6 +2592,8 @@ def main() -> int:
         return _run_all(args[1:])
     if args[:1] == ["r2-tokens"]:
         return _r2_tokens(args[1:])
+    if args[:2] == ["firewall", "configure"]:
+        return _firewall_configure(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -2530,7 +2618,9 @@ def main() -> int:
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
-        "(env: TF_VAR_cloudflare_api_token)",
+        "(env: TF_VAR_cloudflare_api_token), "
+        "firewall configure [--project-root PATH] [--domain DOMAIN] "
+        "(reads firewall_rules JSON from stdin)",
         file=sys.stderr,
     )
     return 2

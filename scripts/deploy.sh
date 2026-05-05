@@ -457,136 +457,31 @@ fi
 # -----------------------------------------------------------------------------
 # Generate Docker Compose override files for firewall TCP port exposure
 # -----------------------------------------------------------------------------
+# Migrated from a ~130-LoC bash + embedded-python-heredoc dance to
+# nexus_deploy.firewall (Phase 3 Modul 3.4e, #505). Same idempotent
+# contract: per-service docker-compose.firewall.yml + RedPanda dual-
+# listener override + redpanda-firewall.yaml template substitution.
+# Reads firewall_rules JSON from `tofu output` on stdin.
 echo ""
 echo -e "${YELLOW}  Generating firewall port overrides...${NC}"
 
-# Read firewall rules from tofu output
 if ! FIREWALL_JSON=$(cd "$TOFU_DIR" && tofu output -json firewall_rules 2>/dev/null); then
     echo -e "${YELLOW}  Warning: Unable to load firewall_rules from OpenTofu. No firewall overrides will be generated.${NC}" >&2
     FIREWALL_JSON="{}"
 fi
 
-if [ "$FIREWALL_JSON" != "{}" ] && [ -n "$FIREWALL_JSON" ]; then
-    echo "  Firewall rules found, generating Docker Compose overrides..."
-
-    # Parse firewall rules and generate override files per service
-    while read -r service port; do
-        [ -z "$service" ] && continue
-
-        # Build override content - expose the port to the host
-        # Find the main service container name from the docker-compose.yml
-        OVERRIDE_PATH="stacks/$service/docker-compose.firewall.yml"
-
-        if [ -f "stacks/$service/docker-compose.yml" ]; then
-            # Get the first service name from the docker-compose file
-            FIRST_SERVICE=$(python3 -c "
-import yaml, sys
-try:
-    with open('stacks/$service/docker-compose.yml') as f:
-        data = yaml.safe_load(f)
-    services = list(data.get('services', {}).keys())
-    print(services[0] if services else '')
-except Exception as e:
-    print(f'Error reading stacks/$service/docker-compose.yml: {e}', file=sys.stderr)
-    print('')
-" 2>/dev/null)
-
-            if [ -n "$FIRST_SERVICE" ]; then
-                # Skip creating generic port override for redpanda - handled separately below
-                if [ "$service" != "redpanda" ]; then
-                    # Check if override file exists, if so append the port
-                    if [ -f "$OVERRIDE_PATH" ]; then
-                        # Add port to existing override (under the same service)
-                        if ! python3 -c "
-import yaml, sys
-try:
-    with open('$OVERRIDE_PATH') as f:
-        data = yaml.safe_load(f)
-    svc = data.get('services', {}).get('$FIRST_SERVICE', {})
-    ports = svc.get('ports', [])
-    port_entry = '$port:$port'
-    if port_entry not in ports:
-        ports.append(port_entry)
-        svc['ports'] = ports
-        data.setdefault('services', {})['$FIRST_SERVICE'] = svc
-        with open('$OVERRIDE_PATH', 'w') as f:
-            yaml.dump(data, f, default_flow_style=False)
-except Exception as e:
-    print(f'Warning: Failed to modify firewall override for $service: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>&1; then
-                            echo -e "${YELLOW}  Warning: Could not modify firewall override for $service; continuing without updated firewall override${NC}" >&2
-                        fi
-                    else
-                        cat > "$OVERRIDE_PATH" << FWEOF
-services:
-  $FIRST_SERVICE:
-    ports:
-      - "$port:$port"
-FWEOF
-                    fi
-                    echo "    Port $port exposed for $service ($FIRST_SERVICE)"
-                fi
-            fi
-        fi
-    done < <(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | "\(.key | sub("-[0-9]+$"; "")) \(.value.port)"' 2>/dev/null)
-
-    # Special handling for RedPanda: Generate firewall-specific config
-    # Instead of using docker-compose override with CLI flags, we generate
-    # a firewall-specific redpanda.yaml with external advertised addresses
-    REDPANDA_PORTS=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | test("^redpanda-[0-9]+$")) | .value.port' 2>/dev/null | sort -n)
-    if [ -n "$REDPANDA_PORTS" ]; then
-        echo "  Configuring RedPanda for external TCP access (with SASL)..."
-
-        if [ -n "$DOMAIN" ]; then
-            # Build ports list for RedPanda dual-listener setup:
-            # - Internal listener (port 9092): no auth, Docker network only
-            # - External listener (port 19092): SASL auth, for Databricks/external clients
-            # Host port 9092 maps to container port 19092 (external SASL listener)
-            PORTS_LIST=""
-            for p in $REDPANDA_PORTS; do
-                if [ "$p" = "9092" ]; then
-                    # Kafka: external 9092 → internal 19092 (SASL listener)
-                    PORTS_LIST="${PORTS_LIST}      - \"9092:19092\"\n"
-                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
-                    # Schema Registry: external port → internal 8081
-                    PORTS_LIST="${PORTS_LIST}      - \"$p:8081\"\n"
-                else
-                    PORTS_LIST="${PORTS_LIST}      - \"$p:$p\"\n"
-                fi
-            done
-
-            # Remove old override file before regenerating (avoid conflicts from previous runs)
-            rm -f "stacks/redpanda/docker-compose.firewall.yml"
-
-            # Create docker-compose override with port mappings only (no command flags)
-            cat > "stacks/redpanda/docker-compose.firewall.yml" << RPEOF
-services:
-  redpanda:
-    ports:
-$(echo -e "$PORTS_LIST")
-RPEOF
-
-            # Generate firewall-specific redpanda.yaml from template
-            # This replaces the standard redpanda.yaml when firewall is enabled
-            REDPANDA_FIREWALL_CONFIG="stacks/redpanda/config/redpanda-firewall.yaml"
-            sed "s/__REDPANDA_KAFKA_DOMAIN__/redpanda-kafka.$DOMAIN/g" \
-                "stacks/redpanda/config/redpanda-firewall.yaml.template" > "$REDPANDA_FIREWALL_CONFIG"
-
-            echo "    RedPanda configured for external access (SASL):"
-            for p in $REDPANDA_PORTS; do
-                if [ "$p" = "9092" ]; then
-                    echo "      Kafka: redpanda-kafka.$DOMAIN:9092 (SASL_PLAINTEXT)"
-                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
-                    echo "      Schema Registry: redpanda-schema-registry.$DOMAIN:$p"
-                fi
-            done
-        fi
-    fi
-
-else
-    echo "  No firewall rules enabled (Zero Entry mode)"
-fi
+FW_RC=0
+echo "$FIREWALL_JSON" | DOMAIN="$DOMAIN" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy firewall configure \
+    --project-root "$PROJECT_ROOT" \
+    --domain "$DOMAIN" \
+    || FW_RC=$?
+case "$FW_RC" in
+    0) ;;
+    1) echo -e "${YELLOW}  ⚠ Firewall override generation had per-file failures (continuing)${NC}" ;;
+    *) echo -e "${RED}  ✗ Firewall override generation failed (rc=$FW_RC); aborting${NC}"; exit "$FW_RC" ;;
+esac
 
 # Copy firewall override files to server (only for enabled services)
 echo ""

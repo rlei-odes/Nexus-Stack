@@ -1,0 +1,495 @@
+"""Tests for nexus_deploy.firewall — Phase 3 Modul 3.4e (#505).
+
+Covers:
+- ``parse_firewall_rules`` shape contract (suffix-strip, empty/null,
+  malformed, non-int port)
+- ``get_compose_first_service`` order-preservation + missing/empty
+  edge cases
+- per-service render byte-stable across re-runs (snapshot test on a
+  small representative input)
+- RedPanda dual-listener mapping (9092→19092, 8081/18081→8081, others
+  passthrough) + template substitution + missing-domain error
+- ``compile_overrides`` end-to-end on a synthetic stacks/ tree
+  (postgres + kestra + redpanda)
+- ``write_overrides`` atomicity + per-file failure aggregation
+- CLI dispatcher ``firewall configure`` rc=0 / rc=1 / rc=2 contract
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from nexus_deploy.firewall import (
+    OVERRIDE_FILENAME,
+    REDPANDA_DOMAIN_PREFIX,
+    REDPANDA_RENDERED_PATH,
+    REDPANDA_TEMPLATE_PATH,
+    REDPANDA_TEMPLATE_TOKEN,
+    CompiledOverride,
+    GenerateResult,
+    RedpandaArtifacts,
+    compile_overrides,
+    get_compose_first_service,
+    parse_firewall_rules,
+    render_compose_override,
+    render_redpanda_compose_override,
+    render_redpanda_config,
+    write_overrides,
+)
+
+# ---------------------------------------------------------------------------
+# parse_firewall_rules
+# ---------------------------------------------------------------------------
+
+
+def test_parse_strips_index_suffix() -> None:
+    """``redpanda-1`` → ``redpanda``, ``kestra-2`` → ``kestra``."""
+    raw = json.dumps(
+        {
+            "redpanda-1": {"port": 9092},
+            "redpanda-2": {"port": 8081},
+            "kestra-1": {"port": 8080},
+        },
+    )
+    rules = parse_firewall_rules(raw)
+    services = sorted({r.service for r in rules})
+    assert services == ["kestra", "redpanda"]
+    rp_ports = sorted(r.port for r in rules if r.service == "redpanda")
+    assert rp_ports == [8081, 9092]
+
+
+def test_parse_empty_input_is_zero_entry() -> None:
+    """Empty/empty-object/null-root all → empty list (Zero Entry mode)."""
+    assert parse_firewall_rules("") == []
+    assert parse_firewall_rules("{}") == []
+    assert parse_firewall_rules("null") == []
+
+
+def test_parse_malformed_root_raises() -> None:
+    """A non-object root (list, string, number) is a hard error."""
+    with pytest.raises(ValueError, match="expected JSON object"):
+        parse_firewall_rules('["not", "an object"]')
+    with pytest.raises(ValueError, match="parse failed"):
+        parse_firewall_rules("{not valid json")
+
+
+def test_parse_skips_non_dict_entries_and_invalid_ports() -> None:
+    """Per-key resilience: silently skip entries that don't have a
+    parseable ``port`` field — matches the legacy `jq -r` behavior
+    that emitted ``null`` for those, then bash's ``[ -z "$service" ]``
+    skipped the line."""
+    raw = json.dumps(
+        {
+            "good-1": {"port": 8080},
+            "no-port-1": {"otherfield": True},  # no port
+            "string-port-1": {"port": "not-a-number"},  # unparseable port
+            "null-1": None,  # non-dict entry
+            "kestra-1": {"port": 8081},
+        },
+    )
+    rules = parse_firewall_rules(raw)
+    services = sorted({r.service for r in rules})
+    assert services == ["good", "kestra"]
+
+
+# ---------------------------------------------------------------------------
+# get_compose_first_service
+# ---------------------------------------------------------------------------
+
+
+def test_get_compose_first_service_picks_first_in_insertion_order(
+    tmp_path: Path,
+) -> None:
+    """PyYAML preserves dict insertion order on Python 3.7+ — the
+    first key under ``services:`` IS the bash ``services[0]``."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  postgres:\n    image: postgres:16\n  postgres-init:\n    image: alpine\n",
+    )
+    assert get_compose_first_service(compose) == "postgres"
+
+
+def test_get_compose_first_service_missing_file_returns_none(
+    tmp_path: Path,
+) -> None:
+    assert get_compose_first_service(tmp_path / "nope.yml") is None
+
+
+def test_get_compose_first_service_empty_services_returns_none(
+    tmp_path: Path,
+) -> None:
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("version: '3'\nservices: {}\n")
+    assert get_compose_first_service(compose) is None
+
+
+def test_get_compose_first_service_malformed_yaml_returns_none(
+    tmp_path: Path,
+) -> None:
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  - not\n  - a\n  - dict\n")
+    assert get_compose_first_service(compose) is None
+
+
+# ---------------------------------------------------------------------------
+# render_compose_override
+# ---------------------------------------------------------------------------
+
+
+def test_render_compose_override_single_port() -> None:
+    """Single-port mapping shape: ``services.<svc>.ports = [\"p:p\"]``."""
+    out = render_compose_override("postgres", [(5432, 5432)])
+    assert "services:" in out
+    assert "postgres:" in out
+    assert "5432:5432" in out
+
+
+def test_render_compose_override_is_byte_stable() -> None:
+    """Same input → same output, twice. Snapshot-friendly invariant
+    so re-runs of the firewall step don't churn git diffs from key
+    re-ordering."""
+    a = render_compose_override("kestra", [(8080, 8080), (8443, 8443)])
+    b = render_compose_override("kestra", [(8080, 8080), (8443, 8443)])
+    assert a == b
+
+
+# ---------------------------------------------------------------------------
+# render_redpanda_compose_override
+# ---------------------------------------------------------------------------
+
+
+def test_render_redpanda_dual_listener_mapping() -> None:
+    """9092 → 19092 (SASL), 8081 → 8081 (SR), 18081 → 8081 (SR alt host),
+    everything else → ``p:p``."""
+    out = render_redpanda_compose_override([9092, 8081, 18081, 9644])
+    assert "9092:19092" in out
+    assert "8081:8081" in out
+    assert "18081:8081" in out
+    # 9644 is "everything else" — passthrough
+    assert "9644:9644" in out
+    # The internal-only 19092 must NOT appear as a host port mapping
+    # (it's only the *container* side of the 9092 mapping).
+    assert "19092:19092" not in out
+
+
+def test_render_redpanda_handles_unsorted_input_deterministically() -> None:
+    """Input order doesn't change output — the sort_keys + sorted-set
+    pass guarantees determinism for snapshot tests."""
+    a = render_redpanda_compose_override([8081, 9092, 18081])
+    b = render_redpanda_compose_override([18081, 9092, 8081])
+    assert a == b
+
+
+def test_render_redpanda_dedupes_repeat_ports() -> None:
+    """Tofu output sometimes has the same port appearing twice (a
+    config copy-paste mistake on the user's side); we dedup so the
+    rendered YAML doesn't get a ``9092:19092`` line twice."""
+    out = render_redpanda_compose_override([9092, 9092, 9092])
+    assert out.count("9092:19092") == 1
+
+
+# ---------------------------------------------------------------------------
+# render_redpanda_config
+# ---------------------------------------------------------------------------
+
+
+def test_render_redpanda_config_substitutes_token() -> None:
+    template = (
+        "kafka_api:\n"
+        "  - address: 0.0.0.0\n"
+        "    port: 9092\n"
+        "advertised_kafka_api: " + REDPANDA_TEMPLATE_TOKEN + "\n"
+    )
+    rendered = render_redpanda_config(template, "example.com")
+    assert REDPANDA_TEMPLATE_TOKEN not in rendered
+    assert f"{REDPANDA_DOMAIN_PREFIX}example.com" in rendered
+
+
+def test_render_redpanda_config_empty_domain_raises() -> None:
+    """Legacy bash silently skipped on empty $DOMAIN; Python surfaces
+    it so the caller can decide whether to skip or abort."""
+    template = "advertised_kafka_api: " + REDPANDA_TEMPLATE_TOKEN
+    with pytest.raises(ValueError, match="domain is empty"):
+        render_redpanda_config(template, "")
+
+
+# ---------------------------------------------------------------------------
+# compile_overrides — end-to-end
+# ---------------------------------------------------------------------------
+
+
+def _make_synthetic_stacks(root: Path, *, with_redpanda_template: bool = True) -> None:
+    """Build a minimal stacks/ tree the compile pass can consume."""
+    (root / "stacks" / "postgres").mkdir(parents=True)
+    (root / "stacks" / "postgres" / "docker-compose.yml").write_text(
+        "services:\n  postgres:\n    image: postgres:16\n",
+    )
+    (root / "stacks" / "kestra").mkdir(parents=True)
+    (root / "stacks" / "kestra" / "docker-compose.yml").write_text(
+        "services:\n  kestra:\n    image: kestra/kestra:latest\n",
+    )
+    (root / "stacks" / "redpanda" / "config").mkdir(parents=True)
+    (root / "stacks" / "redpanda" / "docker-compose.yml").write_text(
+        "services:\n  redpanda:\n    image: redpandadata/redpanda:v23.3.5\n",
+    )
+    if with_redpanda_template:
+        (root / "stacks" / "redpanda" / REDPANDA_TEMPLATE_PATH).write_text(
+            "advertised_kafka_api: " + REDPANDA_TEMPLATE_TOKEN + "\n",
+        )
+
+
+def test_compile_overrides_zero_entry_returns_empty_result(tmp_path: Path) -> None:
+    """No firewall rules → ``zero_entry=True``, no compiled artifacts,
+    no RedPanda. The CLI maps this to a friendly 'no overrides
+    needed' log line."""
+    _make_synthetic_stacks(tmp_path)
+    result = compile_overrides(
+        firewall_json="{}",
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert result.zero_entry is True
+    assert result.compiled == ()
+    assert result.redpanda is None
+
+
+def test_compile_overrides_simple_two_services(tmp_path: Path) -> None:
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps(
+        {
+            "postgres-1": {"port": 5432},
+            "kestra-1": {"port": 8080},
+        },
+    )
+    result = compile_overrides(
+        firewall_json=json_str,
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert result.zero_entry is False
+    assert len(result.compiled) == 2
+    services = sorted(c.service for c in result.compiled)
+    assert services == ["kestra", "postgres"]
+    assert result.redpanda is None
+
+
+def test_compile_overrides_redpanda_full_path(tmp_path: Path) -> None:
+    """RedPanda firewall ports → both override AND substituted config."""
+    _make_synthetic_stacks(tmp_path)
+    json_str = json.dumps(
+        {
+            "redpanda-1": {"port": 9092},
+            "redpanda-2": {"port": 8081},
+        },
+    )
+    result = compile_overrides(
+        firewall_json=json_str,
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert result.redpanda is not None
+    rp = result.redpanda
+    assert "9092:19092" in rp.override.yaml_content
+    assert "8081:8081" in rp.override.yaml_content
+    assert REDPANDA_DOMAIN_PREFIX + "example.com" in rp.config_yaml
+    assert REDPANDA_TEMPLATE_TOKEN not in rp.config_yaml
+
+
+def test_compile_overrides_skips_service_without_compose(tmp_path: Path) -> None:
+    """A rule for a service whose ``stacks/<svc>/docker-compose.yml``
+    doesn't exist gets recorded in ``skipped`` (matches legacy bash
+    behavior of silently dropping such rules)."""
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps(
+        {
+            "postgres-1": {"port": 5432},
+            "ghost-service-1": {"port": 9999},
+        },
+    )
+    result = compile_overrides(
+        firewall_json=json_str,
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert "ghost-service" in result.skipped
+    assert len(result.compiled) == 1
+    assert result.compiled[0].service == "postgres"
+
+
+def test_compile_overrides_redpanda_missing_template_raises(tmp_path: Path) -> None:
+    """RedPanda port present but template file missing → hard error,
+    not silent skip."""
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps({"redpanda-1": {"port": 9092}})
+    with pytest.raises(FileNotFoundError, match="RedPanda firewall template"):
+        compile_overrides(
+            firewall_json=json_str,
+            stacks_dir=tmp_path,
+            domain="example.com",
+        )
+
+
+# ---------------------------------------------------------------------------
+# write_overrides — atomic write + failure aggregation
+# ---------------------------------------------------------------------------
+
+
+def test_write_overrides_atomic(tmp_path: Path) -> None:
+    """Writes go through mktemp+replace; final files exist with
+    expected content; mode is 0o644."""
+    target = tmp_path / "stacks" / "postgres" / OVERRIDE_FILENAME
+    result = GenerateResult(
+        compiled=(
+            CompiledOverride(
+                service="postgres",
+                target_path=target,
+                yaml_content="services:\n  postgres:\n    ports:\n    - 5432:5432\n",
+            ),
+        ),
+        redpanda=None,
+        zero_entry=False,
+    )
+    write = write_overrides(result)
+    assert target in write.written
+    assert target.is_file()
+    assert target.read_text() == "services:\n  postgres:\n    ports:\n    - 5432:5432\n"
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o644
+
+
+def test_write_overrides_per_file_failure_aggregation(tmp_path: Path) -> None:
+    """A failing write on one file doesn't abort the rest. The
+    ``WriteResult`` collects per-file errors so the CLI can emit a
+    structured summary instead of crashing on the first OSError."""
+    ok_target = tmp_path / "stacks" / "postgres" / OVERRIDE_FILENAME
+    # Create a directory where the override file should go — write
+    # will fail with IsADirectoryError (an OSError subclass).
+    bad_target = tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME
+    bad_target.parent.mkdir(parents=True)
+    bad_target.mkdir()
+    result = GenerateResult(
+        compiled=(
+            CompiledOverride(
+                service="postgres",
+                target_path=ok_target,
+                yaml_content="services:\n  postgres:\n    ports: ['5432:5432']\n",
+            ),
+            CompiledOverride(
+                service="kestra",
+                target_path=bad_target,
+                yaml_content="services:\n  kestra:\n    ports: ['8080:8080']\n",
+            ),
+        ),
+        redpanda=None,
+        zero_entry=False,
+    )
+    write = write_overrides(result)
+    assert ok_target in write.written
+    assert any(p == bad_target for p, _ in write.failed)
+    assert not write.is_success
+
+
+def test_write_overrides_includes_redpanda_artifacts(tmp_path: Path) -> None:
+    """RedPanda's two artifacts (override + config) both land on disk."""
+    override_path = tmp_path / "stacks" / "redpanda" / OVERRIDE_FILENAME
+    config_path = tmp_path / "stacks" / "redpanda" / REDPANDA_RENDERED_PATH
+    result = GenerateResult(
+        compiled=(),
+        redpanda=RedpandaArtifacts(
+            override=CompiledOverride(
+                service="redpanda",
+                target_path=override_path,
+                yaml_content="services:\n  redpanda:\n    ports: ['9092:19092']\n",
+            ),
+            config_path=config_path,
+            config_yaml="advertised_kafka_api: redpanda-kafka.example.com\n",
+        ),
+        zero_entry=False,
+    )
+    write_overrides(result)
+    assert override_path.is_file()
+    assert config_path.is_file()
+    assert "redpanda-kafka.example.com" in config_path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# CLI dispatcher (rc contract)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_firewall_configure_zero_entry_returns_0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Empty firewall_rules JSON on stdin → rc=0, no overrides
+    written, friendly stderr/stdout message."""
+    from nexus_deploy.__main__ import _firewall_configure
+
+    _make_synthetic_stacks(tmp_path)
+    monkeypatch.setattr("sys.stdin", _StdinFake("{}"))
+    rc = _firewall_configure(["--project-root", str(tmp_path), "--domain", "example.com"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "zero-entry" in out
+
+
+def test_cli_firewall_configure_happy_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Two-service input → both overrides written, rc=0."""
+    from nexus_deploy.__main__ import _firewall_configure
+
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps(
+        {
+            "postgres-1": {"port": 5432},
+            "kestra-1": {"port": 8080},
+        },
+    )
+    monkeypatch.setattr("sys.stdin", _StdinFake(json_str))
+    rc = _firewall_configure(["--project-root", str(tmp_path), "--domain", "example.com"])
+    assert rc == 0
+    assert (tmp_path / "stacks" / "postgres" / OVERRIDE_FILENAME).is_file()
+    assert (tmp_path / "stacks" / "kestra" / OVERRIDE_FILENAME).is_file()
+
+
+def test_cli_firewall_configure_unknown_arg_returns_2(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from nexus_deploy.__main__ import _firewall_configure
+
+    monkeypatch.setattr("sys.stdin", _StdinFake("{}"))
+    rc = _firewall_configure(["--bogus"])
+    assert rc == 2
+    assert "unknown arg" in capsys.readouterr().err
+
+
+def test_cli_firewall_configure_malformed_json_returns_2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from nexus_deploy.__main__ import _firewall_configure
+
+    _make_synthetic_stacks(tmp_path)
+    monkeypatch.setattr("sys.stdin", _StdinFake("{not json"))
+    rc = _firewall_configure(["--project-root", str(tmp_path), "--domain", "example.com"])
+    assert rc == 2
+    assert "parse failed" in capsys.readouterr().err
+
+
+class _StdinFake:
+    """Minimal stdin replacement for tests — only ``read()`` is exercised."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    def read(self) -> str:
+        return self._content
