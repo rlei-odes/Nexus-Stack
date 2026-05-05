@@ -524,6 +524,47 @@ def test_render_all_writes_only_enabled_services(
     assert "gitea" in skipped_not_enabled
 
 
+def test_render_all_marimo_creates_env_file_for_gitea_append(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-marimo-gitea (#XXX): Marimo MUST get a (possibly empty) ``.env``
+    file from its EnvSpec render — without it,
+    ``append_gitea_workspace_block`` sees ``not env_path.exists()``
+    and silently skips, leaving Marimo with no GITEA_REPO_URL /
+    GITEA_USERNAME / GITEA_PASSWORD / REPO_NAME plumbed through to
+    the container, so the workspace repo never becomes visible in
+    the Marimo UI. This was the bug observed during initial-setup
+    testing.
+    """
+    result = render_all_env_files(full_config, full_env, ["marimo"], stacks_dir=tmp_path)
+    marimo_env = tmp_path / "marimo" / ".env"
+    assert marimo_env.exists(), "Marimo spec must produce stacks/marimo/.env"
+    marimo_result = next(s for s in result.services if s.service == "marimo")
+    assert marimo_result.status == "rendered"
+
+
+def test_render_all_marimo_then_append_gitea_block_succeeds(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """End-to-end: render_all_env_files creates Marimo's .env, then
+    append_gitea_workspace_block writes the Gitea coords into it."""
+    render_all_env_files(full_config, full_env, ["marimo"], stacks_dir=tmp_path)
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="http://gitea:3000/owner/workspace.git",
+        gitea_username="ops",
+        gitea_password="pw",
+        git_author_name="Operator",
+        git_author_email="ops@example.com",
+        repo_name="workspace",
+    )
+    appended = append_gitea_workspace_block(cfg, ["marimo"], stacks_dir=tmp_path)
+    assert appended == ("marimo",)
+    content = (tmp_path / "marimo" / ".env").read_text()
+    assert "GITEA_REPO_URL=http://gitea:3000/owner/workspace.git" in content
+    assert "GITEA_USERNAME=ops" in content
+    assert "REPO_NAME=workspace" in content
+
+
 def test_render_all_skipped_guard_does_not_write_file(
     full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
 ) -> None:

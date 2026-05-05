@@ -789,6 +789,31 @@ def _render_jupyter(c: NexusConfig, e: BootstrapEnv, *, spark_enabled: bool) -> 
     )
 
 
+def _render_marimo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """Marimo: HETZNER_S3_* land in ``.infisical.env`` via the
+    secret-sync block (same pattern as Jupyter), and the Gitea
+    workspace coordinates land in ``.env`` via
+    :func:`append_gitea_workspace_block` AFTER this render runs.
+
+    This render itself emits no env vars — but it MUST exist so
+    that ``stacks/marimo/.env`` is created (even if empty); without
+    a base file, the Gitea-append helper sees ``not env_path.exists()``
+    and silently skips, leaving Marimo with no ``GITEA_REPO_URL`` /
+    ``GITEA_USERNAME`` / ``GITEA_PASSWORD`` / ``REPO_NAME`` plumbed
+    through to the container — the bug the user observed in
+    initial-setup where 'Marimo kein Gitea angebunden, Repo muss in
+    Marimo sichtbar sein'.
+
+    SPARK_CONNECT_URL is hardcoded in the docker-compose env block
+    (sc://spark-connect:15002) so we deliberately don't shadow it
+    here from a per-deploy override; if a future caller needs to
+    swap clusters they can set it as a real Infisical secret which
+    lands in .infisical.env via the secret-sync path.
+    """
+    del c, e  # no derived vars at the moment; the file is intentionally minimal
+    return RenderedEnv(env_vars={})
+
+
 def _render_s3manager(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """s3manager consumes generic ACCESS_KEY_ID/SECRET_ACCESS_KEY/REGION/
     ENDPOINT (not Hetzner-prefixed). Mirrors deploy.sh:1170-1178."""
@@ -913,6 +938,7 @@ _SPECS: tuple[EnvSpec, ...] = (
     EnvSpec("flink", _is_enabled("flink"), _render_flink),
     EnvSpec("dinky", _is_enabled("dinky"), _render_dinky),
     EnvSpec("jupyter", _is_enabled("jupyter"), _placeholder_jupyter),  # closure-replaced
+    EnvSpec("marimo", _is_enabled("marimo"), _render_marimo),
     EnvSpec("s3manager", _is_enabled("s3manager"), _render_s3manager),
     EnvSpec("wikijs", _is_enabled("wikijs"), _render_wikijs),
     EnvSpec("appsmith", _is_enabled("appsmith"), _render_appsmith),
