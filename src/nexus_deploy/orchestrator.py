@@ -742,12 +742,15 @@ class Orchestrator:
             )
 
         # Optionally append the Gitea workspace block. Mirrors the CLI
-        # handler's `workspace_coords_complete` check exactly — ALL six
-        # coords (repo_url, username, password, author_name, author_email,
-        # repo_name) must be non-empty, otherwise we'd write a
-        # broken Gitea block (empty PASSWORD/AUTHOR fields) that's
-        # harder to diagnose than a missing block. Caught in PR #532
-        # R1 #3.
+        # handler's `workspace_coords_complete` check exactly — the 5
+        # input coords (repo_owner, repo_name, gitea_user_username,
+        # gitea_user_password, gitea_user_email) must all be non-empty.
+        # The remaining GiteaWorkspaceConfig fields (gitea_repo_url,
+        # git_author_name) are derived from these inputs, so they don't
+        # need a separate guard. Otherwise we'd write a broken Gitea
+        # block (empty PASSWORD/AUTHOR fields) that's harder to diagnose
+        # than a missing block. Caught in PR #532 R1 #3, comment
+        # corrected in R4 #2.
         gitea_appended_count = 0
         gitea_user_email_value = self.gitea_user_email or self.bootstrap_env.gitea_user_email
         # Single source of truth: self.gitea_repo_owner (required

@@ -370,6 +370,7 @@ def rsync_enabled_stacks(
 def cleanup_disabled_stacks(
     enabled: list[str],
     *,
+    host: str = "nexus",
     script_runner: ScriptRunner | None = None,
     remote_stacks_dir: str = _REMOTE_STACKS_DIR,
 ) -> CleanupResult | None:
@@ -382,11 +383,16 @@ def cleanup_disabled_stacks(
     enabled list is itself a configuration error, not a hint to
     preserve folders that match it).
 
+    ``host`` selects which ssh-config alias the cleanup script runs
+    against; defaults to ``"nexus"`` for back-compat. ``run_stack_sync``
+    passes its own ``host`` so rsync + cleanup target the same alias
+    (PR #532 R4 #1).
+
     Returns None on transport failure or unparseable RESULT line.
     """
     safe_enabled = [s for s in enabled if _is_safe_name(s)]
     script = render_cleanup_script(safe_enabled, stacks_dir=remote_stacks_dir)
-    runner = script_runner or (lambda s: _remote.ssh_run_script(s))
+    runner = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
     completed = runner(script)
 
     # Forward per-stack diagnostics ("Stopping foo...", "Removing
@@ -426,6 +432,7 @@ def run_stack_sync(
     )
     cleanup = cleanup_disabled_stacks(
         enabled,
+        host=host,
         script_runner=script_runner,
         remote_stacks_dir=remote_stacks_dir,
     )
