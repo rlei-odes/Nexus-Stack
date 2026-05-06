@@ -410,10 +410,23 @@ def _render_pgadmin(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_prefect(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """Prefect: DB + UI vars + R2 credentials.
+
+    R2_* are exposed in stacks/prefect/.env (the same pattern Jupyter
+    uses for HETZNER_S3_*) so seeded flows can read them via
+    ``os.environ["R2_ENDPOINT"]`` etc. without a separate Infisical
+    secret-sync setup. Empty values are kept as empty strings — the
+    flow can detect that and raise a clear 'configure R2 first'
+    error instead of crashing with KeyError at runtime.
+    """
     return RenderedEnv(
         env_vars={
             "PREFECT_DB_PASSWORD": c.prefect_db_password or "",
             "PREFECT_UI_API_URL": f"https://prefect.{e.domain or ''}/api",
+            "R2_ENDPOINT": c.r2_data_endpoint or "",
+            "R2_ACCESS_KEY": c.r2_data_access_key or "",
+            "R2_SECRET_KEY": c.r2_data_secret_key or "",
+            "R2_BUCKET": c.r2_data_bucket or "",
         },
     )
 
@@ -789,6 +802,39 @@ def _render_jupyter(c: NexusConfig, e: BootstrapEnv, *, spark_enabled: bool) -> 
     )
 
 
+def _render_marimo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """Marimo: HETZNER_S3_* land in ``.infisical.env`` via the
+    secret-sync block (same pattern as Jupyter), and the Gitea
+    workspace coordinates land in ``.env`` via
+    :func:`append_gitea_workspace_block` AFTER this render runs.
+
+    This render itself emits no env vars — but it MUST exist so
+    that ``stacks/marimo/.env`` is created (even if empty); without
+    a base file, the Gitea-append helper sees ``not env_path.exists()``
+    and silently skips, leaving Marimo with no ``GITEA_REPO_URL`` /
+    ``GITEA_USERNAME`` / ``GITEA_PASSWORD`` / ``REPO_NAME`` plumbed
+    through to the container — the bug the user observed in
+    initial-setup test surfaced — Marimo wasn't connected to Gitea
+    and the workspace repo wasn't visible in the Marimo UI.
+
+    SPARK_CONNECT_URL is hardcoded in stacks/marimo/docker-compose.yml's
+    ``environment:`` block at ``sc://spark-connect:15002``. Compose
+    gives ``environment:`` precedence over values coming from
+    ``env_file:`` (.env / .infisical.env), so:
+      - We deliberately don't write SPARK_CONNECT_URL to .env here.
+      - Setting it as an Infisical secret would land in
+        ``.infisical.env`` but be SHADOWED by the compose
+        ``environment:`` value — Infisical override won't actually
+        take effect.
+    To swap clusters, edit the ``SPARK_CONNECT_URL`` line in
+    stacks/marimo/docker-compose.yml directly (or override it with
+    a docker-compose.override.yml) — there is no env-file path that
+    can replace the value.
+    """
+    del c, e  # no derived vars at the moment; the file is intentionally minimal
+    return RenderedEnv(env_vars={})
+
+
 def _render_s3manager(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """s3manager consumes generic ACCESS_KEY_ID/SECRET_ACCESS_KEY/REGION/
     ENDPOINT (not Hetzner-prefixed). Mirrors deploy.sh:1170-1178."""
@@ -913,6 +959,7 @@ _SPECS: tuple[EnvSpec, ...] = (
     EnvSpec("flink", _is_enabled("flink"), _render_flink),
     EnvSpec("dinky", _is_enabled("dinky"), _render_dinky),
     EnvSpec("jupyter", _is_enabled("jupyter"), _placeholder_jupyter),  # closure-replaced
+    EnvSpec("marimo", _is_enabled("marimo"), _render_marimo),
     EnvSpec("s3manager", _is_enabled("s3manager"), _render_s3manager),
     EnvSpec("wikijs", _is_enabled("wikijs"), _render_wikijs),
     EnvSpec("appsmith", _is_enabled("appsmith"), _render_appsmith),
@@ -1080,6 +1127,15 @@ class GiteaWorkspaceConfig:
     git_author_name: str
     git_author_email: str
     repo_name: str
+    # Default branch of the workspace repo, derived by deploy.sh from
+    # the mirrored upstream's default-branch detection
+    # (scripts/deploy.sh:326-357). Stays "main" for non-mirrored
+    # workspaces. Used by stacks whose runtime needs to know the
+    # explicit branch — e.g. the Prefect manifest's `pull:` step
+    # which calls `git_clone(repository=..., branch=$WORKSPACE_BRANCH)`.
+    # Fresh installs still get a working clone via the env-var
+    # default in the seed manifest if this field were ever empty.
+    workspace_branch: str = "main"
 
 
 def _strip_gitea_block(content: str) -> str:
@@ -1105,6 +1161,7 @@ GIT_AUTHOR_EMAIL={cfg.git_author_email}
 GIT_COMMITTER_NAME={cfg.git_author_name}
 GIT_COMMITTER_EMAIL={cfg.git_author_email}
 REPO_NAME={cfg.repo_name}
+WORKSPACE_BRANCH={cfg.workspace_branch}
 {_GITEA_BLOCK_END}
 """
 

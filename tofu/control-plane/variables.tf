@@ -63,16 +63,19 @@ variable "user_email" {
 variable "server_type" {
   description = "Hetzner server type (passed to Control Plane for display)"
   type        = string
-  # x86 (cpx32) default — switched permanently from ARM (cax31) in
-  # 2026-05 for capacity + pricing-inversion reasons. Full rationale
-  # documented in tofu/stack/variables.tf:server_type.
-  default = "cpx32"
+  # x86 (cx43) default — switched permanently from ARM (cax31) in
+  # 2026-05 for capacity + pricing-inversion reasons. Bumped from
+  # cpx32 (4 vCPU / 8 GB) to cx43 (Intel-shared, 8 vCPU / 16 GB) at
+  # 2026-05 for sustained workload headroom — also cost-optimized
+  # for the 40+ Docker-stack scenario. Full rationale documented
+  # in tofu/stack/variables.tf:server_type.
+  default = "cx43"
 }
 
 variable "server_location" {
   description = "Hetzner datacenter location (passed to Control Plane for display)"
   type        = string
-  default     = "fsn1"
+  default     = "hel1"
 }
 
 variable "github_owner" {

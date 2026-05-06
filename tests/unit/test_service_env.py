@@ -504,6 +504,58 @@ def test_append_gitea_skips_when_env_missing(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_render_prefect_emits_r2_credentials(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-prefect-r2-explicit (#531 R4 #9): the four R2_* keys MUST
+    appear in stacks/prefect/.env. The seeded NYC Green-Taxi flow
+    reads them at task entry; an accidentally-dropped key would crash
+    the flow with a confusing boto/DuckDB error instead of a clear
+    'configure R2 first' hint, so this test pins the contract
+    explicitly rather than relying on the catch-all generic-render
+    smoke test."""
+    config = full_config.model_copy(
+        update={
+            "r2_data_endpoint": "https://r2.example.com",
+            "r2_data_access_key": "ak-prefect",
+            "r2_data_secret_key": "sk-prefect",
+            "r2_data_bucket": "prefect-bucket",
+        },
+    )
+    render_all_env_files(config, full_env, ["prefect"], stacks_dir=tmp_path)
+    prefect_env = (tmp_path / "prefect" / ".env").read_text()
+    assert "R2_ENDPOINT=https://r2.example.com" in prefect_env
+    assert "R2_ACCESS_KEY=ak-prefect" in prefect_env
+    assert "R2_SECRET_KEY=sk-prefect" in prefect_env
+    assert "R2_BUCKET=prefect-bucket" in prefect_env
+
+
+def test_render_prefect_emits_empty_r2_when_unconfigured(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """When the optional R2 datalake isn't configured (r2_data_*
+    fields blank), the R2_* keys are still written but with empty
+    values. The Prefect flow's upfront precondition check catches
+    those and raises a clear error rather than letting boto crash
+    at runtime."""
+    config = full_config.model_copy(
+        update={
+            "r2_data_endpoint": "",
+            "r2_data_access_key": "",
+            "r2_data_secret_key": "",
+            "r2_data_bucket": "",
+        },
+    )
+    render_all_env_files(config, full_env, ["prefect"], stacks_dir=tmp_path)
+    prefect_env = (tmp_path / "prefect" / ".env").read_text()
+    # Keys present, values empty — the seed flow reads via os.environ.get
+    # which returns "" (falsy) in the precondition check.
+    assert "R2_ENDPOINT=\n" in prefect_env
+    assert "R2_ACCESS_KEY=\n" in prefect_env
+    assert "R2_SECRET_KEY=\n" in prefect_env
+    assert "R2_BUCKET=\n" in prefect_env
+
+
 def test_render_all_writes_only_enabled_services(
     full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
 ) -> None:
@@ -522,6 +574,84 @@ def test_render_all_writes_only_enabled_services(
     assert "kestra" in rendered
     skipped_not_enabled = {s.service for s in result.services if s.status == "skipped-not-enabled"}
     assert "gitea" in skipped_not_enabled
+
+
+def test_render_all_marimo_creates_env_file_for_gitea_append(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-marimo-gitea (#531): Marimo MUST get a (possibly empty) ``.env``
+    file from its EnvSpec render — without it,
+    ``append_gitea_workspace_block`` sees ``not env_path.exists()``
+    and silently skips, leaving Marimo with no GITEA_REPO_URL /
+    GITEA_USERNAME / GITEA_PASSWORD / REPO_NAME plumbed through to
+    the container, so the workspace repo never becomes visible in
+    the Marimo UI. This was the bug observed during initial-setup
+    testing.
+    """
+    result = render_all_env_files(full_config, full_env, ["marimo"], stacks_dir=tmp_path)
+    marimo_env = tmp_path / "marimo" / ".env"
+    assert marimo_env.exists(), "Marimo spec must produce stacks/marimo/.env"
+    marimo_result = next(s for s in result.services if s.service == "marimo")
+    assert marimo_result.status == "rendered"
+
+
+def test_render_all_marimo_then_append_gitea_block_succeeds(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """End-to-end: render_all_env_files creates Marimo's .env, then
+    append_gitea_workspace_block writes the Gitea coords into it."""
+    render_all_env_files(full_config, full_env, ["marimo"], stacks_dir=tmp_path)
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="http://gitea:3000/owner/workspace.git",
+        gitea_username="ops",
+        gitea_password="pw",
+        git_author_name="Operator",
+        git_author_email="ops@example.com",
+        repo_name="workspace",
+    )
+    appended = append_gitea_workspace_block(cfg, ["marimo"], stacks_dir=tmp_path)
+    assert appended == ("marimo",)
+    content = (tmp_path / "marimo" / ".env").read_text()
+    # Assert ALL env-vars the Gitea-integrated stacks depend on. The
+    # original bug was that ZERO of them landed in .env (file didn't
+    # exist for the appender), but a future regression that drops
+    # only one (e.g. GITEA_PASSWORD or WORKSPACE_BRANCH) would still
+    # let the clone fail in production — Prefect's `pull:` step
+    # explicitly references WORKSPACE_BRANCH in the seeded manifest,
+    # and Marimo's clone step needs the four GITEA_* + REPO_NAME.
+    # Each line is asserted explicitly.
+    assert "GITEA_REPO_URL=http://gitea:3000/owner/workspace.git" in content
+    assert "GITEA_USERNAME=ops" in content
+    assert "GITEA_PASSWORD=pw" in content
+    assert "REPO_NAME=workspace" in content
+    # WORKSPACE_BRANCH defaults to "main" when not explicitly set on
+    # the GiteaWorkspaceConfig — locks the back-compat default in.
+    assert "WORKSPACE_BRANCH=main" in content
+
+
+def test_render_all_prefect_then_append_gitea_block_writes_custom_branch(
+    full_config: NexusConfig, full_env: BootstrapEnv, tmp_path: Path
+) -> None:
+    """R-workspace-branch (#531 R8 #4): a non-default branch (e.g.
+    'master' on a mirrored upstream) must propagate to .env so
+    Prefect's `pull:` step and any Kestra/Meltano clone step uses
+    the right ref. Without explicit coverage, a future regression
+    that ignores the cfg.workspace_branch field would silently keep
+    'main' and break mirrored Prefect workspaces."""
+    render_all_env_files(full_config, full_env, ["prefect"], stacks_dir=tmp_path)
+    cfg = GiteaWorkspaceConfig(
+        gitea_repo_url="http://gitea:3000/owner/workspace.git",
+        gitea_username="ops",
+        gitea_password="pw",
+        git_author_name="Operator",
+        git_author_email="ops@example.com",
+        repo_name="workspace",
+        workspace_branch="master",
+    )
+    append_gitea_workspace_block(cfg, ["prefect"], stacks_dir=tmp_path)
+    content = (tmp_path / "prefect" / ".env").read_text()
+    assert "WORKSPACE_BRANCH=master" in content
+    assert "WORKSPACE_BRANCH=main" not in content
 
 
 def test_render_all_skipped_guard_does_not_write_file(

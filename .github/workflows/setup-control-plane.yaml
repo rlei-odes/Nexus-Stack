@@ -164,8 +164,8 @@ jobs:
         run: |
           # Control Plane config (emails from secrets)
           cat > tofu/control-plane/config.tfvars << EOF
-          server_type         = "${{ vars.SERVER_TYPE || 'cpx32' }}"
-          server_location     = "${{ vars.SERVER_LOCATION || 'fsn1' }}"
+          server_type         = "${{ vars.SERVER_TYPE || 'cx43' }}"
+          server_location     = "${{ vars.SERVER_LOCATION || 'hel1' }}"
           domain              = "${{ secrets.DOMAIN }}"
           subdomain_separator = "${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}"
           admin_email         = "${{ secrets.TF_VAR_admin_email }}"
@@ -1153,13 +1153,13 @@ jobs:
           fi
 
           echo "  Setting SERVER_TYPE secret..."
-          if ! echo "${{ vars.SERVER_TYPE || 'cpx32' }}" | npx wrangler@4 pages secret put SERVER_TYPE \
+          if ! echo "${{ vars.SERVER_TYPE || 'cx43' }}" | npx wrangler@4 pages secret put SERVER_TYPE \
             --project-name="$PROJECT_NAME" 2>&1; then
             echo "⚠️  Failed to set SERVER_TYPE"
           fi
 
           echo "  Setting SERVER_LOCATION secret..."
-          if ! echo "${{ vars.SERVER_LOCATION || 'fsn1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
+          if ! echo "${{ vars.SERVER_LOCATION || 'hel1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
             --project-name="$PROJECT_NAME" 2>&1; then
             echo "⚠️  Failed to set SERVER_LOCATION"
           fi
@@ -1203,6 +1203,23 @@ jobs:
           # Store domain in D1 config (escape single quotes)
           ESCAPED_DOMAIN=${DOMAIN//\'/\'\'}
           npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('domain', '$ESCAPED_DOMAIN', datetime('now'))"
+
+          # Store SERVER_TYPE and SERVER_LOCATION in D1 config too. The
+          # schema.sql seeds these via INSERT OR IGNORE, so a fresh
+          # database picks up the schema defaults (cx43/hel1) — but a
+          # repo with non-default SERVER_TYPE / SERVER_LOCATION
+          # variables would NOT have those values land in D1, since
+          # /api/info reads from D1 first (control-plane/functions/api/
+          # info.js:92-103) the dashboard would display the wrong
+          # value until the next spin-up overwrote the row. INSERT OR
+          # REPLACE here ensures the repo-var value is the source of
+          # truth from the very first control-plane deployment.
+          ESCAPED_SERVER_TYPE="${{ vars.SERVER_TYPE || 'cx43' }}"
+          ESCAPED_SERVER_TYPE=${ESCAPED_SERVER_TYPE//\'/\'\'}
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_type', '$ESCAPED_SERVER_TYPE', datetime('now'))"
+          ESCAPED_SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'hel1' }}"
+          ESCAPED_SERVER_LOCATION=${ESCAPED_SERVER_LOCATION//\'/\'\'}
+          npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_location', '$ESCAPED_SERVER_LOCATION', datetime('now'))"
           
           # Add initial log entry (sanitize run_id as numeric)
           RUN_ID=$(printf '%d' "${{ github.run_id }}" 2>/dev/null || echo "0")

@@ -2055,6 +2055,11 @@ def _service_env(args: list[str]) -> int:
     git_author_name = os.environ.get("GIT_AUTHOR_NAME") or ""
     git_author_email = os.environ.get("GIT_AUTHOR_EMAIL") or ""
     repo_name = os.environ.get("REPO_NAME") or ""
+    # WORKSPACE_BRANCH is OPTIONAL — defaults to 'main' when unset
+    # (deploy.sh-only path: the bash detects the upstream's default
+    # branch and exports this var; non-mirrored stacks just stay on
+    # 'main'). Direct-CLI invocation without it gets the same default.
+    workspace_branch = os.environ.get("WORKSPACE_BRANCH") or "main"
     # Require the full set of workspace coords before appending the
     # block — a partial set would write a broken .env (empty
     # PASSWORD or author fields) that's harder to diagnose than a
@@ -2079,6 +2084,7 @@ def _service_env(args: list[str]) -> int:
             git_author_name=git_author_name,
             git_author_email=git_author_email,
             repo_name=repo_name,
+            workspace_branch=workspace_branch,
         )
         appended = append_gitea_workspace_block(cfg, enabled, stacks_dir=stacks_dir)
         for svc in appended:
@@ -2090,6 +2096,142 @@ def _service_env(args: list[str]) -> int:
     if result.failed > 0:
         if result.rendered == 0:
             return 2
+        return 1
+    return 0
+
+
+def _firewall_configure(args: list[str]) -> int:
+    """`nexus-deploy firewall configure --domain <DOMAIN>`.
+
+    Replaces the ~130-LoC bash block in deploy.sh ('Generate Docker
+    Compose override files for firewall TCP port exposure') with a
+    Python equivalent backed by :mod:`nexus_deploy.firewall`.
+
+    Reads ``firewall_rules`` JSON from stdin (the Tofu output) and
+    writes per-service ``stacks/<svc>/docker-compose.firewall.yml``
+    + (when RedPanda has ports) the dual-listener override AND the
+    template-substituted ``stacks/redpanda/config/redpanda-firewall.yaml``.
+
+    Exit codes:
+    - 0: full success — every artifact written cleanly AND nothing
+         was skipped, OR zero-entry mode with no stale-cleanup
+         failures.
+    - 1: state is inconsistent with what Tofu requested. Several
+         distinct conditions all surface as rc=1 because deploy.sh
+         treats this exit code as a single 'abort, state is
+         inconsistent' branch:
+         - At least one per-file write failed but at least one
+           succeeded (partial failure).
+         - Zero-entry mode but the stale-cleanup pass had per-file
+           failures — silent rc=0 here would let stale overrides
+           keep host ports exposed contrary to Tofu.
+         - At least one service was SKIPPED because its
+           ``docker-compose.yml`` was missing or unparseable. The
+           service's existing override stays on disk per the safety
+           invariant (never delete a still-Tofu-requested override
+           on a transient compose error), but the deployed firewall
+           may not match Tofu if the operator changed that stack's
+           port THIS run.
+    - 2: hard error — bad args / unparseable JSON / missing RedPanda
+         template file / missing --domain when RedPanda has ports.
+         deploy.sh aborts.
+    """
+    from .firewall import configure as fw_configure
+
+    project_root: Path | None = None
+    domain: str | None = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--project-root":
+            if i + 1 >= len(args):
+                print("firewall configure: --project-root requires a value", file=sys.stderr)
+                return 2
+            project_root = Path(args[i + 1])
+            i += 2
+        elif args[i] == "--domain":
+            if i + 1 >= len(args):
+                print("firewall configure: --domain requires a value", file=sys.stderr)
+                return 2
+            domain = args[i + 1]
+            i += 2
+        else:
+            print(f"firewall configure: unknown arg {args[i]!r}", file=sys.stderr)
+            return 2
+
+    if project_root is None:
+        # Default to current working directory — deploy.sh invokes from
+        # the repo root, where ``stacks/<svc>/...`` is a direct child.
+        project_root = Path.cwd()
+    if domain is None:
+        domain = os.environ.get("DOMAIN", "").strip()
+
+    firewall_json = sys.stdin.read()
+
+    try:
+        gen, write = fw_configure(
+            firewall_json=firewall_json,
+            stacks_dir=project_root,
+            domain=domain,
+        )
+    except ValueError as exc:
+        print(f"firewall configure: {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"firewall configure: {exc}", file=sys.stderr)
+        return 2
+
+    # Even in zero-entry mode, the write/cleanup pass may have failed
+    # (e.g. an OSError on stale-cleanup unlink). Surfacing those as
+    # rc=1 instead of silently returning 0 is the whole point of #531
+    # R1 — without this, a failed remote-cleanup leaves the host port
+    # exposed and the workflow finishes green pretending it closed.
+    for path, err in write.failed:
+        sys.stderr.write(f"  ✗ write failed: {path}: {err}\n")
+
+    if gen.zero_entry:
+        if write.failed:
+            sys.stderr.write(
+                f"firewall configure: zero-entry mode but stale-cleanup had "
+                f"{len(write.failed)} failure(s) — aborting so the workflow "
+                f"surfaces the inconsistency\n",
+            )
+            return 1
+        print("firewall configure: zero-entry mode (no firewall rules) — no overrides written")
+        return 0
+
+    print(
+        f"firewall configure: rendered={len(gen.compiled)} "
+        f"redpanda={'yes' if gen.redpanda else 'no'} "
+        f"skipped={len(gen.skipped)} "
+        f"written={len(write.written)} failed={len(write.failed)}",
+    )
+    for service in gen.skipped:
+        sys.stderr.write(
+            f"  ✗ skipped {service} (no parseable docker-compose.yml — "
+            f"existing override kept on disk per the safety invariant, "
+            f"but Tofu's firewall_rules for this stack went unrendered "
+            f"this run)\n",
+        )
+
+    if write.failed:
+        if not write.written:
+            return 2
+        return 1
+    if gen.skipped:
+        # rc=1 when ANY service was skipped — the existing
+        # docker-compose.firewall.yml stays in place (per the safety
+        # invariant from R5 #1: don't delete a still-Tofu-requested
+        # override when its compose.yml is transiently unparseable),
+        # but the deployed firewall state may not match what Tofu
+        # CURRENTLY requests if the operator changed the port for
+        # this stack. Surfacing as soft-fail (not rc=2 hard abort)
+        # so deploy.sh can decide; deploy.sh treats rc=1 as 'state
+        # inconsistent with Tofu, abort'.
+        sys.stderr.write(
+            f"firewall configure: {len(gen.skipped)} service(s) skipped — "
+            f"deployed firewall state may not match Tofu; surface as rc=1 "
+            f"so the workflow doesn't finish green on a stale override\n",
+        )
         return 1
     return 0
 
@@ -2506,6 +2648,8 @@ def main() -> int:
         return _run_all(args[1:])
     if args[:1] == ["r2-tokens"]:
         return _r2_tokens(args[1:])
+    if args[:2] == ["firewall", "configure"]:
+        return _firewall_configure(args[2:])
     print(
         f"nexus_deploy {__version__}: unknown command {' '.join(args)!r}",
         file=sys.stderr,
@@ -2530,7 +2674,9 @@ def main() -> int:
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
-        "(env: TF_VAR_cloudflare_api_token)",
+        "(env: TF_VAR_cloudflare_api_token), "
+        "firewall configure [--project-root PATH] [--domain DOMAIN] "
+        "(reads firewall_rules JSON from stdin)",
         file=sys.stderr,
     )
     return 2

@@ -1,0 +1,117 @@
+# Prefect deployment manifest — seeded by Nexus-Stack.
+#
+# After seeding this file lands at `nexus_seeds/prefect/prefect.yaml`
+# in the user's Gitea workspace repo (the `nexus_seeds/` prefix
+# segregates Nexus-managed files from user-authored content; see
+# examples/README.md). To deploy this manifest:
+#   - From a local checkout of the workspace repo (recommended):
+#     `cd nexus_seeds/prefect && prefect deploy` (path is relative
+#     to the repo root).
+#   - From inside the prefect-worker container: the workspace repo
+#     is cloned at `/flows/$REPO_NAME/` by the WORKER STARTUP
+#     `git clone` (stacks/prefect/docker-compose.yml:88-89), NOT by
+#     this manifest's `pull:` step (which only reclones at flow-RUN
+#     time, into a fresh tmpdir, for already-registered deployments).
+#     So the equivalent invocation is
+#     `cd /flows/$REPO_NAME/nexus_seeds/prefect && prefect deploy`.
+# Either way the cwd at `prefect deploy` time is this manifest's
+# parent directory, and the `requirements_file` / `entrypoint`
+# paths below resolve relative to the cloned repo root that the
+# WORKER STARTUP `git clone` produces — the `pull:` step's runtime
+# `git_clone` is a separate, later mechanism that operates on the
+# already-registered deployment.
+#
+# `pull:` runs at flow-RUN time (not deploy time) and is what gives us
+# the "edit in Gitea, hit Run, done" loop without needing a stack
+# re-spin. Two steps:
+#   1. git_clone — re-clones the workspace repo into a fresh tmpdir on
+#      every run so the worker always has the latest code. After the
+#      clone, the cwd IS the repo root, so the seeded files live at
+#      `<tmpdir>/nexus_seeds/prefect/...`. All paths below are
+#      relative to that repo root.
+#   2. pip_install_requirements — installs the Python deps the seeded
+#      flow needs (boto3 for R2 uploads, duckdb for stats, httpx for
+#      the CloudFront download). Cached by the worker after the first
+#      install so subsequent runs are fast.
+#
+# Operators add more deployments below — just append to the
+# `deployments:` list with a new {name, entrypoint, work_pool, …}
+# block. See the Nexus-Stack docs at docs/stacks/prefect.md.
+#
+# NB: NO `schedule:` block on the seeded deployment by Nexus-Stack
+# convention (see examples/README.md). A seeded schedule fires on
+# every student stack and can blow up CloudFront / R2 egress quotas
+# at cohort scale.
+
+name: nexus-tutorials
+prefect-version: "3"
+
+pull:
+  - prefect.deployments.steps.git_clone:
+      repository: "{{ $GITEA_REPO_URL }}"
+      # Branch name comes from the WORKSPACE_BRANCH env var that
+      # deploy.sh injects into stacks/prefect/.env (resolved from the
+      # mirrored upstream's default branch — see scripts/deploy.sh's
+      # WORKSPACE_BRANCH derivation around line 326-357). Hardcoding
+      # `main` would break mirrored workspaces whose default is
+      # `master` or anything else: every flow run would try to clone
+      # a non-existent ref. The Pebble `default('main')` keeps the
+      # legacy behavior on stacks where the var isn't yet set.
+      branch: "{{ $WORKSPACE_BRANCH | default('main') }}"
+      access_token: "{{ $GITEA_PASSWORD }}"
+  - prefect.deployments.steps.pip_install_requirements:
+      # Path is relative to the cloned repo root, NOT to this
+      # prefect.yaml's location. Seeds land under nexus_seeds/.
+      requirements_file: nexus_seeds/prefect/requirements.txt
+
+deployments:
+  - name: nyc-green-taxi-pipeline
+    entrypoint: nexus_seeds/prefect/flows/nyc_green_taxi_pipeline.py:nyc_green_taxi_pipeline
+    work_pool:
+      name: local-pool
+    tags:
+      - nexus-stack-seed
+      - nexus-tutorials
+      - data-engineering
+    description: |
+      Bootstrap + analyse the NYC Green-Taxi 2025 dataset on R2 (Prefect
+      counterpart of the Kestra Yellow-Taxi tutorial — both stacks ship a
+      seeded flow on different TLC datasets so you can compare engines
+      side-by-side without overwriting each other's R2 output).
+
+      Edit nexus_seeds/prefect/flows/nyc_green_taxi_pipeline.py in
+      your Gitea workspace repo (it's seeded under the nexus_seeds/
+      prefix, not at the repo root), push, and re-run the deployment
+      — the worker re-clones from Gitea via the `pull:` step above
+      on every run.
+
+      UPGRADE NOTE for existing workspaces (two distinct clones to
+      keep straight):
+
+      1. The prefect-worker container has a STARTUP `git clone` of
+         the workspace repo at `/flows/$REPO_NAME/` (see
+         stacks/prefect/docker-compose.yml). It only runs when
+         `/flows/$REPO_NAME/.git` is ABSENT — so on an existing
+         stack the worker won't pick up newly-seeded files via
+         `gh workflow run spin-up.yml` alone. Operator paths:
+         `git pull` from inside the worker container, OR wipe the
+         worker volume to retrigger the startup clone.
+
+      2. The `pull:` step in this manifest runs at flow-RUN time
+         and reclones into a fresh tmpdir on every Run. It applies
+         only to deployments that have ALREADY been registered with
+         the Prefect API. A brand-new seeded deployment (this one)
+         needs `prefect deploy` to register it FIRST — running
+         `pull:` on a deployment that doesn't exist yet doesn't
+         make it appear in the UI. So the upgrade flow is:
+         (a) get the new prefect.yaml into `/flows/$REPO_NAME/` via
+         option 1 above, then (b) run `prefect deploy` from that
+         directory to register the new deployment, then (c) the
+         `pull:` step takes over for subsequent flow-runs.
+
+      Fresh stacks get all of this automatically because the
+      first-launch startup clone IS the seeded prefect.yaml and the
+      operator's first `prefect deploy` registers it.
+
+      Manual trigger only (no schedule). Default `months=["01","02"]`
+      keeps each Run light; pass a longer list to widen.

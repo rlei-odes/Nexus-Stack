@@ -1,0 +1,19 @@
+# Python deps for the seeded `nyc-green-taxi-pipeline` flow.
+# Installed at run-time by `prefect.deployments.steps.pip_install_requirements`
+# (see prefect.yaml) — the worker caches the install after the first run
+# so subsequent runs don't pay the pip-install latency.
+#
+# Pinned versions:
+#   boto3       — R2 upload / S3-compatible client. 1.40.x is the
+#                 first series with the AWS-SDK CRT default for big
+#                 multipart PUTs; matches our other Python services.
+#   duckdb      — DuckDB Python bindings + httpfs auto-extension for
+#                 the stats query that reads R2 parquets directly.
+#   httpx       — Stable async/sync HTTP client; in tasks we use the
+#                 sync API for clarity.
+#
+# When you add new deps, list them here so they survive `pip install`
+# in the worker's flow-run sandbox.
+boto3==1.40.69
+duckdb==1.5.1
+httpx==0.28.1

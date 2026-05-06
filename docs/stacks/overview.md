@@ -219,14 +219,14 @@ Source-of-truth in PostgreSQL, change data capture into Redpanda via Debezium, m
 A full Git + CI + remote-IDE setup with email testing. Around 3 GB RAM.
 
 **LLM playground** — `ollama` · `dify` · `postgres` · `portainer`
-Local LLMs via Ollama, a workflow builder for RAG / agents via Dify. Heavy — needs at least a `cpx32` server (4 vCPU, 8 GB RAM) and probably more.
+Local LLMs via Ollama, a workflow builder for RAG / agents via Dify. Heavy — comfortably runs on the default `cx43` (8 vCPU, 16 GB RAM); a smaller `cpx32` (4 vCPU, 8 GB) works only with a slim model selection.
 
 **Data engineer's Swiss Army knife** — `redpanda` · `flink` · `dinky` · `postgres` · `clickhouse` · `grafana` · `kestra` · `jupyter`
 Stream + batch processing, two databases, an orchestrator, a notebook, full observability. Around 6 GB RAM.
 
 ## Resource considerations
 
-The default Hetzner server is **`cpx32` (4 vCPU, 8 GB RAM, x86)** which handles ~10–15 typical services comfortably. For lighter setups, switch to **`cpx22` (2 vCPU, 4 GB RAM)** to save cost; for heavier workloads, `cpx41` (8 vCPU, 16 GB) or larger in the Control Plane configuration. ARM (`cax`) variants are still supported via the `SERVER_TYPE` repo variable but no longer the default — see the project README for the rationale.
+The default Hetzner server is **`cx43` (Intel-shared, 8 vCPU, 16 GB RAM, 160 GB SSD, x86) in `hel1` (Helsinki)** which handles 25–30 typical services comfortably. For lighter setups, switch to **`cpx32` (AMD, 4 vCPU, 8 GB)** or **`cx32` (Intel, 4 vCPU, 8 GB)** — the same fallbacks listed in [setup-guide.md](../admin-guides/setup-guide.md#optional-repository-variables) — to save cost; for heavier workloads, larger sizes are available via the **`SERVER_TYPE` GitHub repository variable** (Settings → Secrets and variables → Actions → Variables — see the setup-guide link for the full list of supported overrides). The Control Plane web UI displays the current value but doesn't let you edit it; changes go through the repo-variable + spin-up workflow. ARM (`cax`) variants are still supported via `SERVER_TYPE` but no longer the default — see the project README for the rationale.
 
 Memory-hungry stacks to watch out for:
 

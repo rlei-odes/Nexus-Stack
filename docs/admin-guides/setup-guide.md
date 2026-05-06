@@ -37,7 +37,7 @@ This guide walks you through the complete setup of Nexus Stack.
 3. Name it `Nexus` (or whatever you prefer)
 4. Open the project
 
-> 💡 **Tip — check Hetzner stock before you deploy.** Hetzner periodically runs out of specific instance types (`cpx32`, `cax31`) in specific datacenters. The third-party tracker at [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) shows live availability per region and instance type. Worth a 10-second glance before your first `gh workflow run initial-setup.yaml` — if your default region (`fsn1`) is empty, switch `SERVER_LOCATION` to one that's green (see [Optional Repository Variables](#optional-repository-variables) below).
+> 💡 **Tip — check Hetzner stock before you deploy.** Hetzner periodically runs out of specific instance types (`cx43`, `cpx32`, `cax31`) in specific datacenters. The third-party tracker at [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) shows live availability per region and instance type. Worth a 10-second glance before your first `gh workflow run initial-setup.yaml` — if your default region (`hel1`) is empty, switch `SERVER_LOCATION` to one that's green (see [Optional Repository Variables](#optional-repository-variables) below).
 
 ### Generate API Token
 
@@ -157,10 +157,11 @@ This token allows the initial setup workflow to automatically save R2 credential
 
 | Variable Name | Default | Description |
 |---------------|---------|-------------|
-| `SERVER_LOCATION` | `fsn1` | Hetzner datacenter region for the VM. EU options: `fsn1` (Falkenstein), `nbg1` (Nuremberg), `hel1` (Helsinki). US option: `ash` (Ashburn). Change if your preferred region has availability issues — see the troubleshooting note below. |
+| `SERVER_TYPE` | `cx43` | Hetzner server type. Default `cx43` (Intel-shared, 8 vCPU / 16 GB RAM / 160 GB) is sized for the 40+ Docker stacks scenario. Smaller alternatives: `cpx32` (AMD, 4 vCPU / 8 GB), `cx32` (Intel, 4 vCPU / 8 GB). ARM variants (`cax*`) supported but currently more expensive — see [Optional Repository Variables](#optional-repository-variables) below. |
+| `SERVER_LOCATION` | `hel1` | Hetzner datacenter region for the VM. EU options: `hel1` (Helsinki), `fsn1` (Falkenstein), `nbg1` (Nuremberg). US option: `ash` (Ashburn). Change if your preferred region has availability issues — see the troubleshooting note below. |
 | `HETZNER_S3_LOCATION` | `fsn1` | Hetzner Object Storage region (independent from server location). Propagated to OpenTofu and all S3 operations automatically. Only change if your buckets are in a different region. |
 
-> **Note:** Hetzner server availability fluctuates per region and instance type — both ARM (`cax*`) and x86 (`cpx*`) can hit `resource_unavailable` during capacity crunches. Check current stock before deploying via the third-party tracker [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status). If your preferred region is empty, switch `SERVER_LOCATION` to one that shows green for your instance type. Common availability: `fsn1` (Falkenstein) and `nbg1` (Nuremberg) usually have the best stock, `hel1` (Helsinki) and `ash` (US-East) can be alternatives.
+> **Note:** Hetzner server availability fluctuates per region and instance type — both ARM (`cax*`) and x86 (`cx*` / `cpx*`) can hit `resource_unavailable` during capacity crunches. Check current stock before deploying via the third-party tracker [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status). If your preferred region is empty, switch `SERVER_LOCATION` to one that shows green for your instance type. Common availability: `hel1` (Helsinki) and `fsn1` (Falkenstein) usually have the best stock for `cx43`; `nbg1` (Nuremberg) and `ash` (US-East) can be alternatives.
 
 ---
 

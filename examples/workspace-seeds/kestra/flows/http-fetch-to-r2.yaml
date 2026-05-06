@@ -1,0 +1,109 @@
+id: http-fetch-to-r2
+namespace: nexus-tutorials
+description: |
+  Starter pattern: fetch a single HTTP endpoint and put the response
+  into R2 under a date/hour-partitioned key.
+
+  This is the simplest "external API → datalake" Kestra pattern.
+  Two tasks:
+    1. http.Download — GET the URL, store the response body as a
+       Kestra-managed temp file.
+    2. s3.Upload — push that temp file into R2 under
+       `<r2_prefix>/dt=YYYY-MM-DD/hr=HH/<filename>`. The hour-stamp
+       in the path means runs in DIFFERENT hours land in different
+       keys; runs in the SAME hour overwrite each other (idempotent
+       within an hour, sliced into separate folders across hours).
+       For a true append-style log of every run, add the execution-id
+       to the key (see the parallel-http-fetch-to-r2.yaml seed for an
+       index-suffix pattern that solves the same problem).
+
+  Default source: Open-Meteo current-day forecast for Lucerne (no
+  API key, generous free quota — see https://open-meteo.com/en/terms).
+  Replace `source_url` and `r2_prefix` with whatever you want — any
+  HTTP(S) endpoint that returns text or binary will work.
+
+  This file was seeded into your Gitea workspace repo from
+  `nexus-stack/examples/workspace-seeds/kestra/flows/http-fetch-to-r2.yaml`.
+  Edit the file in Gitea — Kestra picks up the change within 15 minutes
+  via `system.flow-sync`. Subsequent spin-ups leave your edits
+  untouched (seeding only adds new files, never overwrites).
+
+  Manual trigger only — no `triggers:` block, by Nexus-Stack
+  convention for seeded example flows.
+
+labels:
+  owner: data-engineering
+  source: nexus-stack-seed
+  pattern: http-to-r2
+
+# ──────────────────────────────────────────────────────────────────────
+# NO `triggers:` BLOCK — INTENTIONAL.
+#
+# Per Nexus-Stack convention (see `examples/README.md`), seeded example
+# flows MUST NEVER ship with schedule / cron triggers. Reason: a seeded
+# flow lands on EVERY student stack via the deploy.sh seed loop. A cron
+# trigger would then fire on N stacks, multiplying load on external APIs
+# and R2 egress costs by the cohort size.
+#
+# Examples demonstrate *how* something works. Students execute manually
+# via the Kestra UI ("Execute" button on the flow page) to learn.
+# ──────────────────────────────────────────────────────────────────────
+
+inputs:
+  - id: source_url
+    type: STRING
+    description: HTTP(S) URL to fetch. Default is Open-Meteo Lucerne forecast (no auth).
+    defaults: "https://api.open-meteo.com/v1/forecast?latitude=47.05&longitude=8.31&hourly=temperature_2m,wind_speed_10m&timezone=auto"
+
+  - id: r2_prefix
+    type: STRING
+    description: R2 key prefix (no leading or trailing slash). Final key adds a date/hour partition + filename.
+    defaults: "nexus-tutorials/openmeteo-demo"
+
+  - id: filename
+    type: STRING
+    description: Filename to store the response under inside the partition.
+    defaults: "lucerne-hourly.json"
+
+tasks:
+  # ---------------------------------------------------------------------
+  # 1. Download the URL. http.Download streams the response into a
+  #    Kestra-managed temp file and returns the URI; the next task picks
+  #    that up via `outputs.download.uri`.
+  # ---------------------------------------------------------------------
+  - id: download
+    type: io.kestra.plugin.core.http.Download
+    uri: "{{ inputs.source_url }}"
+
+  # ---------------------------------------------------------------------
+  # 2. Upload the temp file into R2 with a date/hour-partitioned key.
+  #    Re-running in a DIFFERENT hour drops a new file alongside the old
+  #    one (poor-man's hourly archiver). Re-running in the SAME hour
+  #    overwrites — that's intentional idempotency at the hour granularity.
+  # ---------------------------------------------------------------------
+  - id: upload
+    type: io.kestra.plugin.aws.s3.Upload
+    endpointOverride: "{{ secret('R2_ENDPOINT') }}"
+    region: auto
+    accessKeyId: "{{ secret('R2_ACCESS_KEY') }}"
+    secretKeyId: "{{ secret('R2_SECRET_KEY') }}"
+    bucket: "{{ secret('R2_BUCKET') }}"
+    # Use `execution.startDate` (the single, stable per-execution
+    # timestamp Kestra computes at flow start) instead of `now()`,
+    # which would be evaluated TWICE here — once for `dt=` and once
+    # for `hr=`. Around an hour or day rollover those two evaluations
+    # could disagree and produce a path like `dt=2026-05-05/hr=00`
+    # for an object whose hour-stamp belongs to the next date.
+    key: "{{ inputs.r2_prefix }}/dt={{ execution.startDate | date('yyyy-MM-dd') }}/hr={{ execution.startDate | date('HH') }}/{{ inputs.filename }}"
+    from: "{{ outputs.download.uri }}"
+
+  # ---------------------------------------------------------------------
+  # 3. Log the final R2 key so the student can find their object in
+  #    Cloudflare R2 / DBGate / DuckDB without diving into the UI.
+  # ---------------------------------------------------------------------
+  - id: log_result
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Fetched {{ inputs.source_url }}
+      → s3://{{ secret('R2_BUCKET') }}/{{ outputs.upload.key }}
+      ({{ outputs.upload.eTag }})

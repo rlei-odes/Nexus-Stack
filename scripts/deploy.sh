@@ -390,6 +390,7 @@ printf '%s' "$SECRETS_JSON" | \
     GITEA_PASSWORD="${GITEA_GIT_PASS:-}" \
     GIT_AUTHOR_NAME="${GIT_AUTHOR:-}" \
     GIT_AUTHOR_EMAIL="${GIT_EMAIL:-}" \
+    WORKSPACE_BRANCH="${WORKSPACE_BRANCH:-main}" \
     OM_PRINCIPAL_DOMAIN="${OM_PRINCIPAL_DOMAIN:-}" \
     uv run --quiet --project "$PROJECT_ROOT" \
     python -m nexus_deploy service-env \
@@ -457,135 +458,143 @@ fi
 # -----------------------------------------------------------------------------
 # Generate Docker Compose override files for firewall TCP port exposure
 # -----------------------------------------------------------------------------
+# Migrated from a ~130-LoC bash + embedded-python-heredoc dance to
+# nexus_deploy.firewall (Phase 3 Modul 3.4e, #505). Same idempotent
+# contract: per-service docker-compose.firewall.yml + RedPanda dual-
+# listener override + redpanda-firewall.yaml template substitution.
+# Reads firewall_rules JSON from `tofu output` on stdin.
 echo ""
 echo -e "${YELLOW}  Generating firewall port overrides...${NC}"
 
-# Read firewall rules from tofu output
 if ! FIREWALL_JSON=$(cd "$TOFU_DIR" && tofu output -json firewall_rules 2>/dev/null); then
-    echo -e "${YELLOW}  Warning: Unable to load firewall_rules from OpenTofu. No firewall overrides will be generated.${NC}" >&2
-    FIREWALL_JSON="{}"
+    # Tofu read failed (state corruption, network blip, missing
+    # firewall_rules output, …). MUST NOT fall through to '{}' here:
+    # the Python firewall configure treats {} as intentional zero-
+    # entry mode and DELETES every existing docker-compose.firewall.yml
+    # locally + remotely. A transient Tofu read failure would then
+    # silently nuke the production firewall overrides — the exact
+    # security-relevant inconsistency the rest of the rc=1 plumbing
+    # was designed to prevent. Abort instead so the operator
+    # investigates Tofu state before any cleanup runs.
+    echo -e "${RED}  ✗ Failed to load firewall_rules from OpenTofu — refusing to fall through to zero-entry mode (would delete every existing firewall override). Aborting; investigate Tofu state.${NC}" >&2
+    exit 1
 fi
 
-if [ "$FIREWALL_JSON" != "{}" ] && [ -n "$FIREWALL_JSON" ]; then
-    echo "  Firewall rules found, generating Docker Compose overrides..."
+FW_RC=0
+echo "$FIREWALL_JSON" | DOMAIN="$DOMAIN" \
+    uv run --quiet --project "$PROJECT_ROOT" \
+    python -m nexus_deploy firewall configure \
+    --project-root "$PROJECT_ROOT" \
+    --domain "$DOMAIN" \
+    || FW_RC=$?
+case "$FW_RC" in
+    0) ;;
+    1)
+        # rc=1 covers THREE distinct conditions (see firewall configure
+        # CLI docstring in __main__.py): partial write failure, zero-
+        # entry stale-cleanup failure, OR a service was skipped because
+        # its docker-compose.yml was unparseable. All three mean the
+        # local+remote firewall state is now INCONSISTENT with what
+        # Tofu requested — continuing into the copy/start phases would
+        # either leave a removed port still exposed (failed cleanup),
+        # skip a newly-requested port (failed render), or carry a
+        # stale override for a service whose port-rule changed but
+        # couldn't be re-rendered (skipped). Abort so the workflow
+        # surfaces the mismatch; check the inner Python stderr above
+        # for the specific cause.
+        echo -e "${RED}  ✗ Firewall override generation reports state inconsistent with Tofu (write/cleanup failure or unparseable compose.yml on a Tofu-requested service) — aborting; see Python stderr above for the specific cause${NC}" >&2
+        exit 1
+        ;;
+    *) echo -e "${RED}  ✗ Firewall override generation failed (rc=$FW_RC); aborting${NC}" >&2; exit "$FW_RC" ;;
+esac
 
-    # Parse firewall rules and generate override files per service
-    while read -r service port; do
-        [ -z "$service" ] && continue
-
-        # Build override content - expose the port to the host
-        # Find the main service container name from the docker-compose.yml
-        OVERRIDE_PATH="stacks/$service/docker-compose.firewall.yml"
-
-        if [ -f "stacks/$service/docker-compose.yml" ]; then
-            # Get the first service name from the docker-compose file
-            FIRST_SERVICE=$(python3 -c "
-import yaml, sys
-try:
-    with open('stacks/$service/docker-compose.yml') as f:
-        data = yaml.safe_load(f)
-    services = list(data.get('services', {}).keys())
-    print(services[0] if services else '')
-except Exception as e:
-    print(f'Error reading stacks/$service/docker-compose.yml: {e}', file=sys.stderr)
-    print('')
-" 2>/dev/null)
-
-            if [ -n "$FIRST_SERVICE" ]; then
-                # Skip creating generic port override for redpanda - handled separately below
-                if [ "$service" != "redpanda" ]; then
-                    # Check if override file exists, if so append the port
-                    if [ -f "$OVERRIDE_PATH" ]; then
-                        # Add port to existing override (under the same service)
-                        if ! python3 -c "
-import yaml, sys
-try:
-    with open('$OVERRIDE_PATH') as f:
-        data = yaml.safe_load(f)
-    svc = data.get('services', {}).get('$FIRST_SERVICE', {})
-    ports = svc.get('ports', [])
-    port_entry = '$port:$port'
-    if port_entry not in ports:
-        ports.append(port_entry)
-        svc['ports'] = ports
-        data.setdefault('services', {})['$FIRST_SERVICE'] = svc
-        with open('$OVERRIDE_PATH', 'w') as f:
-            yaml.dump(data, f, default_flow_style=False)
-except Exception as e:
-    print(f'Warning: Failed to modify firewall override for $service: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>&1; then
-                            echo -e "${YELLOW}  Warning: Could not modify firewall override for $service; continuing without updated firewall override${NC}" >&2
-                        fi
-                    else
-                        cat > "$OVERRIDE_PATH" << FWEOF
-services:
-  $FIRST_SERVICE:
-    ports:
-      - "$port:$port"
-FWEOF
-                    fi
-                    echo "    Port $port exposed for $service ($FIRST_SERVICE)"
-                fi
-            fi
+# Cleanup orphan firewall overrides on the server. The Python
+# nexus_deploy.firewall step above already removed stale local files
+# (when an operator removed a firewall rule from Tofu, or in zero-
+# entry mode), but stack-sync earlier in this script does NOT use
+# `rsync --delete`, so the equivalent stale files on the SERVER
+# persist. Without this cleanup, `compose_runner` keeps `-f`-layering
+# them into every `docker compose up`, leaving the host port mapping
+# exposed even though Tofu was supposed to close it. Build a
+# newline-separated list of expected `<svc>/docker-compose.firewall.yml`
+# rel-paths locally, list the same paths on the server, and ssh-rm
+# any that exist remotely but not locally.
+echo ""
+echo -e "${YELLOW}Cleaning up orphan firewall overrides on server...${NC}"
+# Local listing — `|| true` is OK here because an empty local list
+# is a legitimate state (zero-entry mode: every remote file is an
+# orphan that needs removing).
+LOCAL_FW_LIST=$(cd stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort || true)
+# Remote listing — must fail-fast: if SSH itself fails (network
+# blip, expired Cloudflare-Access token, host unavailable), an empty
+# REMOTE_FW_LIST would make `comm -23` produce an empty ORPHANS set
+# and the cleanup would silently skip stale files. Capture the
+# subprocess rc separately so we can distinguish 'connected, no
+# files found' (rc=0, empty stdout) from 'SSH failed' (rc != 0).
+REMOTE_FW_RC=0
+REMOTE_FW_LIST=$(ssh nexus 'cd /opt/docker-server/stacks 2>/dev/null && ls */docker-compose.firewall.yml 2>/dev/null | sort') || REMOTE_FW_RC=$?
+if [ "$REMOTE_FW_RC" -ne 0 ]; then
+    echo -e "${RED}  ✗ Failed to list firewall overrides on server (ssh rc=$REMOTE_FW_RC) — cannot determine orphans; aborting${NC}" >&2
+    echo -e "${RED}    Continuing with stale-cleanup skipped would risk leaving previously-removed firewall ports exposed${NC}" >&2
+    exit 1
+fi
+ORPHANS=$(comm -23 <(echo "$REMOTE_FW_LIST") <(echo "$LOCAL_FW_LIST") | grep -v '^$' || true)
+if [ -n "$ORPHANS" ]; then
+    # Track failures and abort the deploy if any rm fails. compose_runner
+    # picks up any docker-compose.firewall.yml on the remote, so a single
+    # failed orphan removal means the corresponding host port stays
+    # exposed even though Tofu was supposed to close it. Better to fail
+    # the deploy loudly than to leave a security-relevant inconsistency.
+    # The subshell-pipe loop can't increment a parent variable, so
+    # failures are accumulated by appending to a tempfile that the
+    # parent shell reads back via wc -l after the loop finishes.
+    # Use mktemp (not /tmp/...$$) so a previous interrupted deploy that
+    # crashed before its rm -f doesn't leave stale entries that a later
+    # PID-reused shell reads back as 'this run failed'.
+    FW_ORPHAN_FAILS=$(mktemp -t firewall-orphan-fails.XXXXXX)
+    # Append to the existing RUNNER_CLEANUP_PATHS list so the global
+    # EXIT trap (installed at the top of this script around line 207)
+    # cleans this tempfile up alongside the others. DO NOT install a
+    # second `trap ... EXIT` — bash trap is REPLACE-not-ADD, and a
+    # second trap would clobber the global one, leaving every other
+    # tempfile listed in REMOTE_CLEANUP_PATHS / RUNNER_CLEANUP_PATHS
+    # uncleaned for the rest of the script.
+    echo "$FW_ORPHAN_FAILS" >> "$RUNNER_CLEANUP_PATHS"
+    echo "$ORPHANS" | while IFS= read -r orphan; do
+        echo "  Removing orphan: stacks/$orphan"
+        if ! ssh nexus "rm -f /opt/docker-server/stacks/$orphan"; then
+            echo -e "${RED}    ✗ Failed to remove /opt/docker-server/stacks/$orphan${NC}" >&2
+            echo "/opt/docker-server/stacks/$orphan" >> "$FW_ORPHAN_FAILS"
         fi
-    done < <(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | "\(.key | sub("-[0-9]+$"; "")) \(.value.port)"' 2>/dev/null)
-
-    # Special handling for RedPanda: Generate firewall-specific config
-    # Instead of using docker-compose override with CLI flags, we generate
-    # a firewall-specific redpanda.yaml with external advertised addresses
-    REDPANDA_PORTS=$(echo "$FIREWALL_JSON" | jq -r 'to_entries[] | select(.key | test("^redpanda-[0-9]+$")) | .value.port' 2>/dev/null | sort -n)
-    if [ -n "$REDPANDA_PORTS" ]; then
-        echo "  Configuring RedPanda for external TCP access (with SASL)..."
-
-        if [ -n "$DOMAIN" ]; then
-            # Build ports list for RedPanda dual-listener setup:
-            # - Internal listener (port 9092): no auth, Docker network only
-            # - External listener (port 19092): SASL auth, for Databricks/external clients
-            # Host port 9092 maps to container port 19092 (external SASL listener)
-            PORTS_LIST=""
-            for p in $REDPANDA_PORTS; do
-                if [ "$p" = "9092" ]; then
-                    # Kafka: external 9092 → internal 19092 (SASL listener)
-                    PORTS_LIST="${PORTS_LIST}      - \"9092:19092\"\n"
-                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
-                    # Schema Registry: external port → internal 8081
-                    PORTS_LIST="${PORTS_LIST}      - \"$p:8081\"\n"
-                else
-                    PORTS_LIST="${PORTS_LIST}      - \"$p:$p\"\n"
-                fi
-            done
-
-            # Remove old override file before regenerating (avoid conflicts from previous runs)
-            rm -f "stacks/redpanda/docker-compose.firewall.yml"
-
-            # Create docker-compose override with port mappings only (no command flags)
-            cat > "stacks/redpanda/docker-compose.firewall.yml" << RPEOF
-services:
-  redpanda:
-    ports:
-$(echo -e "$PORTS_LIST")
-RPEOF
-
-            # Generate firewall-specific redpanda.yaml from template
-            # This replaces the standard redpanda.yaml when firewall is enabled
-            REDPANDA_FIREWALL_CONFIG="stacks/redpanda/config/redpanda-firewall.yaml"
-            sed "s/__REDPANDA_KAFKA_DOMAIN__/redpanda-kafka.$DOMAIN/g" \
-                "stacks/redpanda/config/redpanda-firewall.yaml.template" > "$REDPANDA_FIREWALL_CONFIG"
-
-            echo "    RedPanda configured for external access (SASL):"
-            for p in $REDPANDA_PORTS; do
-                if [ "$p" = "9092" ]; then
-                    echo "      Kafka: redpanda-kafka.$DOMAIN:9092 (SASL_PLAINTEXT)"
-                elif [ "$p" = "8081" ] || [ "$p" = "18081" ]; then
-                    echo "      Schema Registry: redpanda-schema-registry.$DOMAIN:$p"
-                fi
-            done
-        fi
+    done
+    if [ -s "$FW_ORPHAN_FAILS" ]; then
+        echo -e "${RED}  ✗ Orphan firewall removal failed for $(wc -l < "$FW_ORPHAN_FAILS" | tr -d ' ') file(s) on the server — aborting (host ports may still be exposed)${NC}" >&2
+        exit 1
     fi
-
 else
-    echo "  No firewall rules enabled (Zero Entry mode)"
+    echo "  No orphan firewall overrides on server"
+fi
+# RedPanda's rendered firewall config is the same idea — if it's
+# absent locally (Python step removed it), make sure it's absent on
+# the server too. `rm -f` returns 0 on missing files (idempotent),
+# so a non-zero rc here actually means the SSH transport failed —
+# which has the same fail-fast obligation as the orphan-cleanup
+# above: silently leaving the file in place would let
+# `setup_redpanda_hook` keep using the external-listener config and
+# advertise `redpanda-kafka.<domain>` even though the firewall is
+# closed.
+if [ ! -f "stacks/redpanda/config/redpanda-firewall.yaml" ]; then
+    # Use sudo: an earlier firewall-enabled deploy chowns the redpanda
+    # config dir to 101:101 (see this script's RedPanda config copy
+    # block below). The plain `nexus` SSH user can't unlink files
+    # owned by 101:101 — without sudo, the next 'disable RedPanda
+    # firewall mode' deploy would silently leave the stale yaml in
+    # place and abort on the SSH-rc=1 check above (Permission denied).
+    if ! ssh nexus 'sudo rm -f /opt/docker-server/stacks/redpanda/config/redpanda-firewall.yaml'; then
+        echo -e "${RED}  ✗ Failed to remove stale redpanda-firewall.yaml on server (SSH transport error or sudo denied)${NC}" >&2
+        echo -e "${RED}    Aborting — leaving the file would cause setup_redpanda_hook to advertise external listeners while the firewall is closed${NC}" >&2
+        exit 1
+    fi
 fi
 
 # Copy firewall override files to server (only for enabled services)

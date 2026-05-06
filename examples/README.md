@@ -20,12 +20,20 @@ Source tree under `examples/workspace-seeds/`:
 examples/workspace-seeds/
 ├── kestra/
 │   ├── flows/
-│   │   └── r2-taxi-pipeline.yaml
+│   │   ├── r2-taxi-pipeline.yaml          (NYC Yellow-Taxi parquet → R2 → DuckDB stats)
+│   │   ├── http-fetch-to-r2.yaml          (single HTTP endpoint → R2 with date/hour partitioning)
+│   │   └── parallel-http-fetch-to-r2.yaml (fan-out variant: multiple URLs in parallel → R2)
 │   └── workflows/                  (when added — helper files: scripts, configs, SQL templates)
 ├── marimo/
 │   ├── _nexus_spark.py             (Spark Connect helper — `from _nexus_spark import get_spark`)
 │   ├── Getting_Started_PySpark.py  (seed Marimo notebook demonstrating PySpark + Spark SQL via Ibis)
+│   ├── Getting_Started_DuckDB.py   (seed Marimo notebook walking through DuckDB: in-memory queries, remote parquet over httpfs, mo.sql native cells)
 │   └── NYC_Taxi_Pipeline.py        (seed Marimo notebook: NYC TLC bootstrap to Hetzner S3 + Spark analytics — mirror of Kestra's r2-taxi-pipeline)
+├── prefect/
+│   ├── prefect.yaml                (deployment manifest — `pull:` re-clones workspace repo per run, no schedule by convention)
+│   ├── requirements.txt            (boto3 + duckdb + httpx, installed at run-time by the worker)
+│   └── flows/
+│       └── nyc_green_taxi_pipeline.py  (NYC Green-Taxi parquet → R2 → DuckDB stats — Prefect counterpart to Kestra's r2-taxi-pipeline)
 ├── notebooks/                      (when added — Jupyter / code-server, .ipynb)
 ├── scripts/                        (when added — code-server, ad-hoc execution)
 ├── dbt/                            (when added — code-server, manual `dbt`)
@@ -65,6 +73,7 @@ Stick to these names so the various services pick the files up correctly:
 | `kestra/flows/` | Kestra (via `system.flow-sync`, registered by `deploy.sh`) | Flow definitions in YAML. Files at `nexus_seeds/kestra/flows/<id>.yaml` register under namespace `nexus-tutorials`; subdirectories extend the namespace (`nexus_seeds/kestra/flows/sub1/<id>.yaml` → `nexus-tutorials.sub1`). |
 | `kestra/workflows/` | Kestra (via `system.git-sync`, registered by `deploy.sh`) | Helper files referenced by flows: Python scripts, SQL templates, configs. **Not** flow definitions. |
 | `marimo/` | Marimo (cloned from the workspace repo into `/app/notebooks/<repo>/nexus_seeds/marimo/`) | Marimo notebooks (plain `.py` files using `marimo.App` + `@app.cell`) plus the `_nexus_spark.py` helper that wires `SparkSession.builder.remote("sc://spark-connect:15002")`. Per-stack folder because Marimo's `.py` notebook format is incompatible with Jupyter `.ipynb` and the helper module is Marimo-specific. |
+| `prefect/` | Prefect worker — TWO distinct clones: (a) the worker container's STARTUP `git clone` in `stacks/prefect/docker-compose.yml:88-89` populates `/flows/$REPO_NAME/` (only on first launch when the dir is absent — this is what the operator's `prefect deploy` reads); (b) the `pull:` step inside the seeded `prefect.yaml` reclones into a fresh tmpdir at flow-RUN time, but only for ALREADY-REGISTERED deployments. | Per-stack folder with the deployment manifest at `nexus_seeds/prefect/prefect.yaml` (operator runs `cd nexus_seeds/prefect && prefect deploy` to register the seeded deployments), `requirements.txt` (installed at run-time by `pip_install_requirements`), and `flows/<flow_name>.py` (the entrypoint files referenced from `prefect.yaml`'s `deployments:` block). |
 | `notebooks/` | Jupyter, code-server (cloned from the workspace repo) | `.ipynb` notebooks (Jupyter) or `.py` scripts (code-server). NOT for Marimo notebooks — those go in `marimo/`. |
 | `scripts/` | code-server, ad-hoc execution | Shell or Python helpers reused across notebooks. |
 | `dbt/` | code-server, manual `dbt` invocation | A normal dbt project tree (`dbt_project.yml`, `models/`, etc.). |
