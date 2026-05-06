@@ -23,8 +23,17 @@ syntax we don't actually support).
 
 The regex is deliberately strict: it requires double-quoted values
 and rejects multi-line / heredoc / unquoted-int forms. If a future
-contributor introduces those, parsing fails fast with a clear error
-instead of silently misreading.
+contributor introduces those forms, ``parse()`` silently does NOT
+match the line — the corresponding key returns the dataclass default
+(empty string). Downstream pipeline gates (e.g. the
+"domain must be non-empty" check in ``run_pipeline``) catch the
+empty-after-parse case with a clear error. Tests pin this
+soft-skip behavior; if you need fail-fast on malformed forms,
+add a post-parse validation in ``run_pipeline`` rather than
+tightening the regex (a contributor swap to e.g. heredoc syntax
+shouldn't break tfvars consumption everywhere). PR #535 R1 #3
+corrected the docstring; the historical "fails fast" wording was
+aspirational, not what the code actually does.
 """
 
 from __future__ import annotations

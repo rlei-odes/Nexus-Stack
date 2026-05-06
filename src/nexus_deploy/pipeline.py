@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -126,10 +127,17 @@ def _docker_hub_login(host: str, dockerhub_user: str, dockerhub_token: str) -> N
     redirects with potentially-untrusted values, but the docker CLI
     itself reads ``--password-stdin`` for exactly this case (token
     via stdin, never argv → never visible in ``ps``). Username goes
-    through argv (it's not a secret per Docker Hub's threat model).
+    through argv (it's not a secret per Docker Hub's threat model)
+    BUT must be shell-quoted: ssh receives the third argv element as
+    a single shell command string, and an unquoted username with a
+    space / metachar would be parsed by the remote shell. PR #535 R1
+    #1: shlex.quote prevents an attacker who controls DOCKERHUB_USER
+    (e.g. via a compromised CI secret) from injecting arbitrary
+    commands into the remote ``docker login`` line.
     """
+    quoted_user = shlex.quote(dockerhub_user)
     subprocess.run(
-        ["ssh", host, f"docker login -u {dockerhub_user} --password-stdin"],
+        ["ssh", host, f"docker login -u {quoted_user} --password-stdin"],
         input=dockerhub_token,
         check=True,
         capture_output=True,
@@ -174,13 +182,19 @@ def run_pipeline(
 ) -> PipelineResult:
     """Run the full deploy pipeline.
 
-    Same exit-code semantics as the legacy bash:
-    - Hard failure (PipelineError raised) → CLI maps to rc=2.
+    Exit-code semantics as the CLI handler maps them:
+    - Hard failure (PipelineError raised) → CLI returns rc=2 (abort).
     - Orchestrator hard failure (any phase status='failed') →
       PipelineError raised, rc=2.
-    - Orchestrator partial (any phase status='partial') → success
-      with the partial-flag set in the result; CLI maps to rc=1.
-    - Clean run → rc=0.
+    - Orchestrator partial (any phase status='partial') OR clean run
+      → CLI returns rc=0 (deploy succeeded; partial surfaces as
+      stderr warning, NOT non-zero exit).
+
+    The rc=0-on-partial contract was tightened in PR #535 R0/R1 — a
+    non-zero exit in spin-up.yml's ``shell: bash -e`` step would
+    fail the workflow even when the deploy completed successfully.
+    Partial is operator-visible via the orchestrator's per-phase
+    log emitted to stderr.
 
     ``tofu_runner`` and ``docker_hub_login`` are DI seams for tests;
     production callers pass None.

@@ -45,8 +45,8 @@ gh workflow run spin-up.yml
 
 This triggers `python -m nexus_deploy run-pipeline` which:
 1. Fetches active firewall rules from OpenTofu state
-2. Generates `docker-compose.firewall.yml` override files for each service (orchestrator's `_phase_firewall_configure`)
-3. Restarts services with port mappings (e.g., `9092:19092` for RedPanda, `5432:5432` for PostgreSQL) via the `compose-up` phase
+2. Generates `docker-compose.firewall.yml` override files for each service (the firewall-configure phase)
+3. Restarts services with port mappings (e.g., `9092:19092` for RedPanda, `5432:5432` for PostgreSQL) via the compose-up phase
 4. Configures SASL authentication for RedPanda external listener
 
 **Verification:**

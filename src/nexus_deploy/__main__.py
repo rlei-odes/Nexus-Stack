@@ -2589,8 +2589,11 @@ def _run_pipeline(args: list[str]) -> int:
     - ``PROJECT_ROOT`` — defaults to ``$PWD``; the repo checkout root
 
     Exit codes:
-    - 0: clean run.
-    - 1: orchestrator phases produced any 'partial' status.
+    - 0: deploy succeeded — covers both clean runs AND runs where
+         one or more phases reported ``status='partial'``. Partial
+         is surfaced as a stderr warning, NOT a non-zero exit, so
+         spin-up.yml's ``shell: bash -e`` step doesn't fail the
+         workflow on a soft warning. (Tightened in PR #535 R0/R1.)
     - 2: hard failure (PipelineError; tofu state missing, secrets
          empty, ssh wait timeout, orchestrator phase status='failed').
     """
@@ -2615,15 +2618,40 @@ def _run_pipeline(args: list[str]) -> int:
     except _pipeline.PipelineError as exc:
         print(f"run-pipeline: {exc}", file=sys.stderr)
         return 2
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+    except subprocess.CalledProcessError as exc:
+        # PR #535 R1 #6: include rc + stderr/stdout tail so CI failures
+        # are diagnosable without re-running with --debug. Don't print
+        # ``exc.cmd`` — it can carry secrets via env-var-prefixed forms.
+        tail = (exc.stderr or exc.stdout or "")[-500:].rstrip()
         print(
-            f"run-pipeline: transport failure ({type(exc).__name__})",
+            f"run-pipeline: subprocess failed (rc={exc.returncode})"
+            + (f": {tail}" if tail else ""),
+            file=sys.stderr,
+        )
+        return 2
+    except subprocess.TimeoutExpired as exc:
+        # No rc on timeout (the process didn't exit), but ``timeout``
+        # tells the operator how long we waited.
+        print(
+            f"run-pipeline: subprocess timed out after {exc.timeout}s ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except SetupError as exc:
+        # Setup-helper-specific errors (configure_ssh / wait_for_ssh /
+        # ensure_jq / mount_persistent_volume / setup_wetty_ssh_agent)
+        # carry a clear message — surface it directly.
+        print(f"run-pipeline: setup step failed: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(
+            f"run-pipeline: OS error ({type(exc).__name__}): {exc}",
             file=sys.stderr,
         )
         return 2
     except Exception as exc:
         print(
-            f"run-pipeline: unexpected error ({type(exc).__name__})",
+            f"run-pipeline: unexpected error ({type(exc).__name__}): {exc}",
             file=sys.stderr,
         )
         return 2
