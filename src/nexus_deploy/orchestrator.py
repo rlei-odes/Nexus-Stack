@@ -1056,8 +1056,11 @@ class Orchestrator:
         )
 
     def run_pre_bootstrap(self) -> OrchestratorResult:
-        """Run the pre-bootstrap pipeline: service-env → stack-sync →
-        firewall-configure → compose-up → infisical-provision.
+        """Run the pre-bootstrap pipeline: service-env →
+        firewall-configure → stack-sync → compose-up →
+        infisical-provision. (Order corrected in PR #532 R5 #1 so
+        firewall overrides are part of what stack-sync rsyncs to the
+        server.)
 
         Resets ``self.results`` AND the credentials on BOTH
         ``self.state`` (``infisical_token`` + ``project_id``) and the

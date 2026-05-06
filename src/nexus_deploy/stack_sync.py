@@ -388,7 +388,17 @@ def cleanup_disabled_stacks(
     passes its own ``host`` so rsync + cleanup target the same alias
     (PR #532 R4 #1).
 
-    Returns None on transport failure or unparseable RESULT line.
+    Returns None only when the script produced no parseable RESULT
+    line (unparseable / missing). Transport-level failures
+    (``subprocess.CalledProcessError`` from a non-zero ssh exit,
+    ``subprocess.TimeoutExpired`` from a hung connection) propagate
+    to the caller — the default runner uses
+    :func:`_remote.ssh_run_script` with ``check=True``. The orchestrator
+    wraps the call in a try/except and converts those into a
+    ``status='failed'`` PhaseResult; direct callers should do the same.
+    Docstring corrected in PR #532 R6 #4 (was: "Returns None on
+    transport failure or unparseable RESULT line", which falsely
+    promised exception-to-None coercion).
     """
     safe_enabled = [s for s in enabled if _is_safe_name(s)]
     script = render_cleanup_script(safe_enabled, stacks_dir=remote_stacks_dir)

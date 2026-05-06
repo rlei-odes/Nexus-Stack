@@ -2552,9 +2552,11 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     """`nexus-deploy run-pre-bootstrap`.
 
     Phase 4a (#505) — runs the pre-bootstrap pipeline (service-env →
-    stack-sync → firewall-configure → compose-up → infisical-provision)
+    firewall-configure → stack-sync → compose-up → infisical-provision)
     in a single Python invocation, replacing the per-CLI calls in
-    deploy.sh's [3/7]-[7/7-start] section.
+    deploy.sh's [3/7]-[7/7-start] section. (Phase order corrected in
+    PR #532 R5 #1 so firewall overrides are part of what stack-sync
+    rsyncs to the server.)
 
     Reads ``SECRETS_JSON`` from stdin (Tofu output). Reads workspace
     coords + firewall_rules + admin password from env vars (deploy.sh
@@ -2851,7 +2853,7 @@ def main() -> int:
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
-        "run-pre-bootstrap (Phase 4a: service-env → stack-sync → firewall-configure → "
+        "run-pre-bootstrap (Phase 4a: service-env → firewall-configure → stack-sync → "
         "compose-up → infisical-provision; reads SECRETS_JSON from stdin + env vars "
         "incl. INFISICAL_PASS; emits eval-able stdout: INFISICAL_TOKEN + PROJECT_ID), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
