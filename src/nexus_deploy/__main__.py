@@ -2464,6 +2464,9 @@ def _run_all(args: list[str]) -> int:
     ssh_host = os.environ.get("SSH_HOST_ALIAS") or "nexus"
     infisical_env = os.environ.get("INFISICAL_ENV") or "dev"
     gh_mirror_repos = [s.strip() for s in gh_mirror_repos_csv.split(",") if s.strip()]
+    # Phase 4b2 (#505) — additions for new post-bootstrap phases:
+    admin_username = os.environ.get("ADMIN_USERNAME") or ""
+    woodpecker_agent_secret = os.environ.get("WOODPECKER_AGENT_SECRET") or None
 
     try:
         config = NexusConfig.from_secrets_json(sys.stdin.read())
@@ -2499,6 +2502,9 @@ def _run_all(args: list[str]) -> int:
         project_id=project_id,
         infisical_token=infisical_token,
         infisical_env=infisical_env,
+        domain=domain,
+        admin_username=admin_username,
+        woodpecker_agent_secret=woodpecker_agent_secret,
     )
 
     try:
@@ -2581,21 +2587,26 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     Same eval-pattern + redirection conventions as the legacy
     ``infisical provision-admin`` CLI (#530).
 
-    Required env: ``ADMIN_EMAIL``, ``REPO_NAME``, ``GITEA_REPO_OWNER``,
-    ``ENABLED_SERVICES``, ``DOMAIN``, ``INFISICAL_PASS``,
-    ``FIREWALL_RULES_JSON`` — explicit, NOT defaulted (PR #532 R5 #2):
-    a missing/empty value would otherwise be silently treated as
-    zero-entry mode by the firewall module and trigger destructive
-    cleanup of existing override files. Operators MUST pass an
-    explicit ``"{}"`` to opt into zero-entry mode.
-    Optional env: ``WORKSPACE_BRANCH`` (default ``main``),
+    Required env: ``ADMIN_EMAIL``, ``ENABLED_SERVICES``, ``DOMAIN``,
+    ``ADMIN_USERNAME``, ``INFISICAL_PASS``, ``FIREWALL_RULES_JSON`` —
+    explicit, NOT defaulted (PR #532 R5 #2): a missing/empty value
+    would otherwise be silently treated as zero-entry mode by the
+    firewall module and trigger destructive cleanup of existing
+    override files. Operators MUST pass an explicit ``"{}"`` to opt
+    into zero-entry mode.
+
+    Optional env: ``REPO_NAME``, ``GITEA_REPO_OWNER`` (Phase 4b1: now
+    derived by ``_phase_workspace_coords``; can be pre-seeded for
+    tests), ``WORKSPACE_BRANCH`` (default ``main``),
     ``GITEA_USER_USERNAME``, ``GITEA_USER_EMAIL``, ``GITEA_USER_PASS``,
+    ``GITEA_ADMIN_PASS``, ``USER_EMAIL`` (passed into global-env's
+    stacks/.env), ``GH_MIRROR_REPOS`` (csv), ``GH_MIRROR_TOKEN``
+    (gates default-branch detection), ``IMAGE_VERSIONS_JSON`` (default
+    ``"{}"``; consumed by the global-env phase),
     ``OM_PRINCIPAL_DOMAIN``, ``SSH_HOST_ALIAS`` (default ``nexus``),
     ``PROJECT_ROOT`` (default ``$PWD``) — the repo checkout root;
     phases derive ``$PROJECT_ROOT/stacks`` for per-service compose paths.
-    (Renamed from ``STACKS_DIR`` in PR #532 R2 #1: deploy.sh's
-    ``STACKS_DIR`` is the actual stacks dir, so reusing the name
-    produced ``.../stacks/stacks/...``.)
+    (Renamed from ``STACKS_DIR`` in PR #532 R2 #1.)
 
     Exit codes:
     - 0: every phase ok or skipped.
@@ -2620,6 +2631,13 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     # existing override files on disk. Operators must pass "{}" explicitly
     # to opt into zero-entry mode.
     firewall_json = os.environ.get("FIREWALL_RULES_JSON") or ""
+    # Phase 4b1 (#505) — additions for new pre-bootstrap phases:
+    admin_username = os.environ.get("ADMIN_USERNAME") or ""
+    user_email = os.environ.get("USER_EMAIL") or ""
+    gitea_admin_pass = os.environ.get("GITEA_ADMIN_PASS") or None
+    image_versions_json = os.environ.get("IMAGE_VERSIONS_JSON") or "{}"
+    gh_mirror_repos_csv = os.environ.get("GH_MIRROR_REPOS") or ""
+    gh_mirror_token = os.environ.get("GH_MIRROR_TOKEN") or None
 
     # Build a list of variable NAMES that are missing/empty. CodeQL's
     # 'clear-text logging of sensitive information' rule scans for
@@ -2627,12 +2645,15 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     # `missing_names` so the comprehension makes it obvious that only
     # the (name) projection — not the (val) — gets emitted to stderr.
     # Caught in PR #532 R1 #1 (CodeQL false positive).
+    #
+    # REPO_NAME + GITEA_REPO_OWNER are NO LONGER required (Phase 4b1):
+    # _phase_workspace_coords derives them from raw inputs. They can
+    # still be passed for back-compat / pre-seeding (e.g. tests).
     required_env = (
         ("ADMIN_EMAIL", admin_email),
-        ("REPO_NAME", repo_name),
-        ("GITEA_REPO_OWNER", gitea_repo_owner),
         ("ENABLED_SERVICES", enabled_str),
         ("DOMAIN", domain),
+        ("ADMIN_USERNAME", admin_username),
         ("INFISICAL_PASS", admin_password_infisical),
         ("FIREWALL_RULES_JSON", firewall_json),
     )
@@ -2669,6 +2690,7 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         om_principal_domain=os.environ.get("OM_PRINCIPAL_DOMAIN") or None,
     )
 
+    gh_mirror_repos = [s.strip() for s in gh_mirror_repos_csv.split(",") if s.strip()]
     orchestrator = Orchestrator(
         config=config,
         bootstrap_env=bootstrap_env,
@@ -2676,6 +2698,8 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         repo_name=repo_name,
         gitea_repo_owner=gitea_repo_owner,
         workspace_branch=workspace_branch,
+        gh_mirror_repos=gh_mirror_repos,
+        gh_mirror_token=gh_mirror_token,
         gitea_user_username=gitea_user_username,
         gitea_user_email=gitea_user_email,
         gitea_user_password=gitea_user_password,
@@ -2684,6 +2708,11 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         firewall_json=firewall_json,
         project_root=project_root,
         admin_password_infisical=admin_password_infisical,
+        # Phase 4b1 additions:
+        admin_username=admin_username,
+        user_email=user_email,
+        gitea_admin_pass=gitea_admin_pass,
+        image_versions_json=image_versions_json,
     )
 
     try:
@@ -2707,9 +2736,14 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         detail = f" — {phase.detail}" if phase.detail else ""
         sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
 
-    # Eval-able stdout: 2 values for deploy.sh's surviving glue. Always
+    # Eval-able stdout: 5 values for deploy.sh's surviving glue. Always
     # emit (with empty values when not populated) so eval clears stale
     # shell vars from prior runs.
+    #
+    # Phase 4b1 (#505) — added 3 workspace-coords emissions
+    # (REPO_NAME, GITEA_REPO_OWNER, WORKSPACE_BRANCH) since the
+    # workspace-coords phase now derives them in Python, replacing the
+    # bash-side derivation that previously fed run-all directly.
     import shlex as _shlex
 
     sys.stdout.write(
@@ -2717,6 +2751,15 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     )
     sys.stdout.write(
         f"PROJECT_ID={_shlex.quote(result.state.project_id or '')}\n",
+    )
+    sys.stdout.write(
+        f"REPO_NAME={_shlex.quote(result.state.repo_name or '')}\n",
+    )
+    sys.stdout.write(
+        f"GITEA_REPO_OWNER={_shlex.quote(result.state.gitea_repo_owner or '')}\n",
+    )
+    sys.stdout.write(
+        f"WORKSPACE_BRANCH={_shlex.quote(result.state.workspace_branch or 'main')}\n",
     )
 
     if result.has_hard_failure:
@@ -2853,9 +2896,11 @@ def main() -> int:
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
-        "run-pre-bootstrap (Phase 4a: service-env → firewall-configure → stack-sync → "
-        "compose-up → infisical-provision; reads SECRETS_JSON from stdin + env vars "
-        "incl. INFISICAL_PASS; emits eval-able stdout: INFISICAL_TOKEN + PROJECT_ID), "
+        "run-pre-bootstrap (Phase 4b1: workspace-coords → service-env → firewall-configure → "
+        "stack-sync → firewall-sync → global-env → compose-up → infisical-provision; reads "
+        "SECRETS_JSON from stdin + env vars incl. INFISICAL_PASS, FIREWALL_RULES_JSON, "
+        "ADMIN_USERNAME, IMAGE_VERSIONS_JSON; emits eval-able stdout: INFISICAL_TOKEN + "
+        "PROJECT_ID + REPO_NAME + GITEA_REPO_OWNER + WORKSPACE_BRANCH), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
         "(env: TF_VAR_cloudflare_api_token), "
         "firewall configure [--project-root PATH] [--domain DOMAIN] "

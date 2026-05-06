@@ -507,6 +507,7 @@ def run_sync_for_stack(
     infisical_token: str,
     infisical_env: str = "dev",
     gitea_token: str = "",
+    host: str = "nexus",
     script_runner: ScriptRunner | None = None,
     command_runner: CommandRunner | None = None,
 ) -> SyncResult:
@@ -518,14 +519,20 @@ def run_sync_for_stack(
     change the returned :class:`SyncResult` — restart failures surface
     via stderr but the secret-sync itself was successful.
 
+    ``host`` selects which ssh-config alias the remote calls run
+    against; defaults to ``"nexus"`` for back-compat. Orchestrator
+    passes its ``self.ssh_host`` so a non-default ``SSH_HOST_ALIAS``
+    reaches the secret-sync + post-sync compose-up uniformly
+    (PR #533 R7 #1; same plumbing pattern as PR #532 R2 #2 + R4 #1).
+
     ``script_runner`` and ``command_runner`` are dependency-injection
     seams for tests; production callers leave them None.
 
     Returns a :class:`SyncResult` with all counters zero + ``wrote=False``
     if the remote script produced no parseable RESULT line.
     """
-    run_script = script_runner or (lambda s: _remote.ssh_run_script(s))
-    run_cmd = command_runner or (lambda c: _remote.ssh_run(c))
+    run_script = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
+    run_cmd = command_runner or (lambda c: _remote.ssh_run(c, host=host))
 
     script = render_remote_script(
         target=target,

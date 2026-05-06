@@ -1,0 +1,65 @@
+# serializer version: 1
+# name: test_render_remote_script_multi_service
+  '''
+  set -u
+  STACKS_DIR=/opt/docker-server/stacks
+  RESTARTED=0
+  FAILED=0
+  COMPOSE_ERR=$(mktemp)
+  trap 'rm -f "$COMPOSE_ERR"' EXIT HUP INT TERM
+  for SVC in 'jupyter' 'marimo' 'code-server'; do
+      if [ ! -d "$STACKS_DIR/$SVC" ]; then
+          echo "  ✗ Restart $SVC: stack directory missing on server" >&2
+          FAILED=$((FAILED + 1))
+          continue
+      fi
+      if (cd "$STACKS_DIR/$SVC" && docker compose restart) >/dev/null 2>"$COMPOSE_ERR"; then
+          echo "  ✓ Restarted $SVC"
+          RESTARTED=$((RESTARTED + 1))
+      else
+          echo "  ✗ Restart $SVC: docker compose restart returned non-zero" >&2
+          # Only print compose stderr on failure so operators can
+          # diagnose; the success path stays quiet.
+          if [ -s "$COMPOSE_ERR" ]; then
+              sed 's/^/      /' "$COMPOSE_ERR" >&2
+          fi
+          FAILED=$((FAILED + 1))
+      fi
+      : > "$COMPOSE_ERR"
+  done
+  echo "RESULT restarted=$RESTARTED failed=$FAILED"
+  
+  '''
+# ---
+# name: test_render_remote_script_single_service
+  '''
+  set -u
+  STACKS_DIR=/opt/docker-server/stacks
+  RESTARTED=0
+  FAILED=0
+  COMPOSE_ERR=$(mktemp)
+  trap 'rm -f "$COMPOSE_ERR"' EXIT HUP INT TERM
+  for SVC in 'jupyter'; do
+      if [ ! -d "$STACKS_DIR/$SVC" ]; then
+          echo "  ✗ Restart $SVC: stack directory missing on server" >&2
+          FAILED=$((FAILED + 1))
+          continue
+      fi
+      if (cd "$STACKS_DIR/$SVC" && docker compose restart) >/dev/null 2>"$COMPOSE_ERR"; then
+          echo "  ✓ Restarted $SVC"
+          RESTARTED=$((RESTARTED + 1))
+      else
+          echo "  ✗ Restart $SVC: docker compose restart returned non-zero" >&2
+          # Only print compose stderr on failure so operators can
+          # diagnose; the success path stays quiet.
+          if [ -s "$COMPOSE_ERR" ]; then
+              sed 's/^/      /' "$COMPOSE_ERR" >&2
+          fi
+          FAILED=$((FAILED + 1))
+      fi
+      : > "$COMPOSE_ERR"
+  done
+  echo "RESULT restarted=$RESTARTED failed=$FAILED"
+  
+  '''
+# ---

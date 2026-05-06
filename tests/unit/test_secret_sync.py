@@ -918,10 +918,10 @@ def test_cli_secret_sync_happy_path_returns_0(
 
     out = "RESULT pushed=7 skipped_name=0 skipped_multi=0 failed=0 collisions=0 succeeded=2 wrote=1"
 
-    def fake_script(_s: str) -> subprocess.CompletedProcess[str]:
+    def fake_script(_s: str, **_kw: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=out, stderr="")
 
-    def fake_cmd(_c: str) -> subprocess.CompletedProcess[str]:
+    def fake_cmd(_c: str, **_kw: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("nexus_deploy._remote.ssh_run_script", fake_script)
@@ -943,13 +943,15 @@ def test_cli_secret_sync_partial_returns_1(
 
     out = "RESULT pushed=5 skipped_name=0 skipped_multi=0 failed=2 collisions=0 succeeded=3 wrote=1"
 
-    def fake_script(_s: str) -> subprocess.CompletedProcess[str]:
+    def fake_script(_s: str, **_kw: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=out, stderr="")
 
     monkeypatch.setattr("nexus_deploy._remote.ssh_run_script", fake_script)
     monkeypatch.setattr(
         "nexus_deploy._remote.ssh_run",
-        lambda _c: subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr=""),
+        lambda _c, **_kw: subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="", stderr=""
+        ),
     )
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "secret-sync", "--stack", "marimo"])
     monkeypatch.setenv("PROJECT_ID", "p")
@@ -968,7 +970,7 @@ def test_cli_secret_sync_outage_gate_returns_0(
 
     out = "RESULT pushed=0 skipped_name=0 skipped_multi=0 failed=3 collisions=0 succeeded=0 wrote=0"
 
-    def fake_script(_s: str) -> subprocess.CompletedProcess[str]:
+    def fake_script(_s: str, **_kw: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=out, stderr="")
 
     monkeypatch.setattr("nexus_deploy._remote.ssh_run_script", fake_script)
@@ -987,7 +989,7 @@ def test_cli_secret_sync_transport_failure_returns_2(
     """ssh/rsync transport error → rc=2 (deploy.sh aborts)."""
     from nexus_deploy.__main__ import main
 
-    def failing_script(_s: str) -> subprocess.CompletedProcess[str]:
+    def failing_script(_s: str, **_kw: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.CalledProcessError(255, ["ssh", "secret-token-leak-attempt"])
 
     monkeypatch.setattr("nexus_deploy._remote.ssh_run_script", failing_script)
@@ -1040,7 +1042,7 @@ def test_cli_secret_sync_no_result_line_returns_0(
 
     monkeypatch.setattr(
         "nexus_deploy._remote.ssh_run_script",
-        lambda _s: subprocess.CompletedProcess(
+        lambda _s, **_kw: subprocess.CompletedProcess(
             args=["ssh"], returncode=0, stdout="garbage", stderr=""
         ),
     )

@@ -159,14 +159,20 @@ def test_state_handoff_gitea_token_reaches_seed(
         "nexus_deploy.orchestrator._gitea.run_configure_gitea", fake_gitea_configure
     )
     monkeypatch.setattr("nexus_deploy.orchestrator._seeder.run_seed_for_repo", fake_seed)
-    # Mock other phases to avoid running them
+    # Mock other phases to avoid running them. Phase 4b2 (#505) added
+    # 5 new phases to run_all — they're all stubbed here too.
     monkeypatch.setattr("nexus_deploy.orchestrator.SSHClient", MagicMock())
     for phase_name in (
         "_phase_infisical_bootstrap",
         "_phase_services_configure",
+        "_phase_compose_restart",
+        "_phase_kestra_secret_sync",
         "_phase_kestra_register",
         "_phase_woodpecker_oauth",
+        "_phase_woodpecker_apply",
         "_phase_mirror_setup",
+        "_phase_mirror_seed_rerun",
+        "_phase_mirror_finalize",
         "_phase_secret_sync_jupyter",
         "_phase_secret_sync_marimo",
     ):
@@ -193,10 +199,15 @@ def test_state_handoff_restart_services_populated_from_gitea(
     for phase_name in (
         "_phase_infisical_bootstrap",
         "_phase_services_configure",
+        "_phase_compose_restart",
+        "_phase_kestra_secret_sync",
         "_phase_seed",
         "_phase_kestra_register",
         "_phase_woodpecker_oauth",
+        "_phase_woodpecker_apply",
         "_phase_mirror_setup",
+        "_phase_mirror_seed_rerun",
+        "_phase_mirror_finalize",
         "_phase_secret_sync_jupyter",
         "_phase_secret_sync_marimo",
     ):
@@ -227,9 +238,14 @@ def test_state_handoff_woodpecker_creds_populated(
         "_phase_infisical_bootstrap",
         "_phase_services_configure",
         "_phase_gitea_configure",
+        "_phase_compose_restart",
+        "_phase_kestra_secret_sync",
         "_phase_seed",
         "_phase_kestra_register",
+        "_phase_woodpecker_apply",
         "_phase_mirror_setup",
+        "_phase_mirror_seed_rerun",
+        "_phase_mirror_finalize",
         "_phase_secret_sync_jupyter",
         "_phase_secret_sync_marimo",
     ):
@@ -266,9 +282,14 @@ def test_state_handoff_fork_populated_from_mirror(
         "_phase_infisical_bootstrap",
         "_phase_services_configure",
         "_phase_gitea_configure",
+        "_phase_compose_restart",
+        "_phase_kestra_secret_sync",
         "_phase_seed",
         "_phase_kestra_register",
         "_phase_woodpecker_oauth",
+        "_phase_woodpecker_apply",
+        "_phase_mirror_seed_rerun",
+        "_phase_mirror_finalize",
         "_phase_secret_sync_jupyter",
         "_phase_secret_sync_marimo",
     ):
@@ -428,16 +449,22 @@ def test_partial_phase_continues_to_downstream(
         orchestrator, "_phase_services_configure", make_phase("services", "partial")
     )
     monkeypatch.setattr(orchestrator, "_phase_gitea_configure", make_phase("gitea"))
+    monkeypatch.setattr(orchestrator, "_phase_compose_restart", make_phase("compose-restart"))
+    monkeypatch.setattr(orchestrator, "_phase_kestra_secret_sync", make_phase("kestra-ss"))
     monkeypatch.setattr(orchestrator, "_phase_seed", make_phase("seed"))
-    monkeypatch.setattr(orchestrator, "_phase_kestra_register", make_phase("kestra"))
+    monkeypatch.setattr(orchestrator, "_phase_kestra_register", make_phase("kestra-reg"))
     monkeypatch.setattr(orchestrator, "_phase_woodpecker_oauth", make_phase("woodpecker"))
+    monkeypatch.setattr(orchestrator, "_phase_woodpecker_apply", make_phase("wp-apply"))
     monkeypatch.setattr(orchestrator, "_phase_mirror_setup", make_phase("mirror"))
+    monkeypatch.setattr(orchestrator, "_phase_mirror_seed_rerun", make_phase("mirror-seed"))
+    monkeypatch.setattr(orchestrator, "_phase_mirror_finalize", make_phase("mirror-fin"))
     monkeypatch.setattr(orchestrator, "_phase_secret_sync_jupyter", make_phase("ss-j"))
     monkeypatch.setattr(orchestrator, "_phase_secret_sync_marimo", make_phase("ss-m"))
 
     result = orchestrator.run_all()
-    # All 9 phases ran despite the partial in services-configure
-    assert len(invoked) == 9
+    # All 14 phases ran despite the partial in services-configure
+    # (Phase 4b2 #505: was 9).
+    assert len(invoked) == 14
     assert result.has_partial
     assert not result.has_hard_failure
 
@@ -450,7 +477,12 @@ def test_partial_phase_continues_to_downstream(
 def test_phases_run_in_deterministic_order(
     orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R-order: phases run in the documented order."""
+    """R-order: phases run in the documented order. Updated for Phase
+    4b2 (#505) — 14 phases instead of 9. New phases interleave per the
+    state-handoff dependency graph (compose-restart after gitea;
+    kestra-secret-sync before kestra-register; woodpecker-apply after
+    woodpecker-oauth; mirror-seed-rerun + mirror-finalize after
+    mirror-setup)."""
     invoked: list[str] = []
 
     def make_phase(name: str) -> Any:
@@ -464,24 +496,34 @@ def test_phases_run_in_deterministic_order(
     monkeypatch.setattr(orchestrator, "_phase_infisical_bootstrap", make_phase("1-infisical"))
     monkeypatch.setattr(orchestrator, "_phase_services_configure", make_phase("2-services"))
     monkeypatch.setattr(orchestrator, "_phase_gitea_configure", make_phase("3-gitea"))
-    monkeypatch.setattr(orchestrator, "_phase_seed", make_phase("4-seed"))
-    monkeypatch.setattr(orchestrator, "_phase_kestra_register", make_phase("5-kestra"))
-    monkeypatch.setattr(orchestrator, "_phase_woodpecker_oauth", make_phase("6-woodpecker"))
-    monkeypatch.setattr(orchestrator, "_phase_mirror_setup", make_phase("7-mirror"))
-    monkeypatch.setattr(orchestrator, "_phase_secret_sync_jupyter", make_phase("8-ss-jupyter"))
-    monkeypatch.setattr(orchestrator, "_phase_secret_sync_marimo", make_phase("9-ss-marimo"))
+    monkeypatch.setattr(orchestrator, "_phase_compose_restart", make_phase("4-compose-restart"))
+    monkeypatch.setattr(orchestrator, "_phase_kestra_secret_sync", make_phase("5-kestra-ss"))
+    monkeypatch.setattr(orchestrator, "_phase_kestra_register", make_phase("6-kestra-reg"))
+    monkeypatch.setattr(orchestrator, "_phase_seed", make_phase("7-seed"))
+    monkeypatch.setattr(orchestrator, "_phase_woodpecker_oauth", make_phase("8-wp-oauth"))
+    monkeypatch.setattr(orchestrator, "_phase_woodpecker_apply", make_phase("9-wp-apply"))
+    monkeypatch.setattr(orchestrator, "_phase_mirror_setup", make_phase("10-mirror"))
+    monkeypatch.setattr(orchestrator, "_phase_mirror_seed_rerun", make_phase("11-mirror-seed"))
+    monkeypatch.setattr(orchestrator, "_phase_mirror_finalize", make_phase("12-mirror-fin"))
+    monkeypatch.setattr(orchestrator, "_phase_secret_sync_jupyter", make_phase("13-ss-jupyter"))
+    monkeypatch.setattr(orchestrator, "_phase_secret_sync_marimo", make_phase("14-ss-marimo"))
 
     orchestrator.run_all()
     assert invoked == [
         "1-infisical",
         "2-services",
         "3-gitea",
-        "4-seed",
-        "5-kestra",
-        "6-woodpecker",
-        "7-mirror",
-        "8-ss-jupyter",
-        "9-ss-marimo",
+        "4-compose-restart",
+        "5-kestra-ss",
+        "6-kestra-reg",
+        "7-seed",
+        "8-wp-oauth",
+        "9-wp-apply",
+        "10-mirror",
+        "11-mirror-seed",
+        "12-mirror-fin",
+        "13-ss-jupyter",
+        "14-ss-marimo",
     ]
 
 
@@ -1304,18 +1346,24 @@ def test_run_all_resets_results_between_runs(
         "_phase_infisical_bootstrap",
         "_phase_services_configure",
         "_phase_gitea_configure",
+        "_phase_compose_restart",
+        "_phase_kestra_secret_sync",
         "_phase_seed",
         "_phase_kestra_register",
         "_phase_woodpecker_oauth",
+        "_phase_woodpecker_apply",
         "_phase_mirror_setup",
+        "_phase_mirror_seed_rerun",
+        "_phase_mirror_finalize",
         "_phase_secret_sync_jupyter",
         "_phase_secret_sync_marimo",
     ):
         monkeypatch.setattr(orchestrator, phase_name, lambda _ssh, n=phase_name: _ok_phase(n))
     r1 = orchestrator.run_all()
     r2 = orchestrator.run_all()
-    assert len(r1.phases) == 9
-    assert len(r2.phases) == 9
+    # Phase 4b2 (#505): 14 phases (was 9).
+    assert len(r1.phases) == 14
+    assert len(r2.phases) == 14
 
 
 # ---------------------------------------------------------------------------
@@ -1885,7 +1933,9 @@ def test_run_pre_bootstrap_runs_phases_in_order(
     orchestrator: Orchestrator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """All 5 pre-bootstrap phases run in deterministic order."""
+    """All 8 pre-bootstrap phases run in deterministic order. Updated
+    for Phase 4b1 (#505): adds workspace-coords (first), firewall-sync
+    (after stack-sync), global-env (after firewall-sync)."""
     invocation_order: list[str] = []
 
     def _make_phase(name: str) -> Any:
@@ -1895,13 +1945,16 @@ def test_run_pre_bootstrap_runs_phases_in_order(
 
         return _phase
 
+    monkeypatch.setattr(Orchestrator, "_phase_workspace_coords", _make_phase("workspace-coords"))
     monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env"))
-    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _make_phase("stack-sync"))
     monkeypatch.setattr(
         Orchestrator,
         "_phase_firewall_configure",
         _make_phase("firewall-configure"),
     )
+    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _make_phase("stack-sync"))
+    monkeypatch.setattr(Orchestrator, "_phase_firewall_sync", _make_phase("firewall-sync"))
+    monkeypatch.setattr(Orchestrator, "_phase_global_env", _make_phase("global-env"))
     monkeypatch.setattr(Orchestrator, "_phase_compose_up", _make_phase("compose-up"))
     monkeypatch.setattr(
         Orchestrator,
@@ -1909,14 +1962,16 @@ def test_run_pre_bootstrap_runs_phases_in_order(
         _make_phase("infisical-provision"),
     )
     result = orchestrator.run_pre_bootstrap()
-    # PR #532 R5 #1: firewall-configure must run BEFORE stack-sync so
-    # the per-stack docker-compose.firewall.yml overrides are part of
-    # what rsync pushes to the server, before compose-up brings the
-    # containers up.
+    # workspace-coords first (downstream phases gate on REPO_NAME etc.);
+    # firewall-configure before stack-sync (rsync picks up overrides);
+    # firewall-sync + global-env after stack-sync (use the synced state).
     assert invocation_order == [
+        "workspace-coords",
         "service-env",
         "firewall-configure",
         "stack-sync",
+        "firewall-sync",
+        "global-env",
         "compose-up",
         "infisical-provision",
     ]
@@ -1938,6 +1993,9 @@ def test_run_pre_bootstrap_aborts_on_failure(
 
         return _phase
 
+    monkeypatch.setattr(
+        Orchestrator, "_phase_workspace_coords", _make_phase("workspace-coords", "ok")
+    )
     monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env", "ok"))
     monkeypatch.setattr(
         Orchestrator,
@@ -1950,9 +2008,15 @@ def test_run_pre_bootstrap_aborts_on_failure(
         _make_phase("firewall-configure", "ok"),
     )
     result = orchestrator.run_pre_bootstrap()
-    # service-env (ok) → firewall-configure (ok) → stack-sync (failed)
-    # → abort. compose-up + infisical-provision must NOT run.
-    assert invocation_order == ["service-env", "firewall-configure", "stack-sync"]
+    # workspace-coords (ok) → service-env (ok) → firewall-configure (ok)
+    # → stack-sync (failed) → abort. firewall-sync / global-env /
+    # compose-up / infisical-provision must NOT run.
+    assert invocation_order == [
+        "workspace-coords",
+        "service-env",
+        "firewall-configure",
+        "stack-sync",
+    ]
     assert result.has_hard_failure
 
 
@@ -1960,7 +2024,8 @@ def test_run_pre_bootstrap_partial_continues_to_downstream(
     orchestrator: Orchestrator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Partial-success phase doesn't abort — all 5 phases still run."""
+    """Partial-success phase doesn't abort — all 8 phases still run
+    (Phase 4b1: was 5)."""
     invocation_order: list[str] = []
 
     def _make_phase(name: str, status: Literal["ok", "partial"]) -> Any:
@@ -1970,17 +2035,22 @@ def test_run_pre_bootstrap_partial_continues_to_downstream(
 
         return _phase
 
-    monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env", "ok"))
     monkeypatch.setattr(
-        Orchestrator,
-        "_phase_stack_sync",
-        _make_phase("stack-sync", "partial"),
+        Orchestrator, "_phase_workspace_coords", _make_phase("workspace-coords", "ok")
     )
+    monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env", "ok"))
     monkeypatch.setattr(
         Orchestrator,
         "_phase_firewall_configure",
         _make_phase("firewall-configure", "ok"),
     )
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_stack_sync",
+        _make_phase("stack-sync", "partial"),
+    )
+    monkeypatch.setattr(Orchestrator, "_phase_firewall_sync", _make_phase("firewall-sync", "ok"))
+    monkeypatch.setattr(Orchestrator, "_phase_global_env", _make_phase("global-env", "ok"))
     monkeypatch.setattr(Orchestrator, "_phase_compose_up", _make_phase("compose-up", "ok"))
     monkeypatch.setattr(
         Orchestrator,
@@ -1988,7 +2058,7 @@ def test_run_pre_bootstrap_partial_continues_to_downstream(
         _make_phase("infisical-provision", "ok"),
     )
     result = orchestrator.run_pre_bootstrap()
-    assert len(invocation_order) == 5
+    assert len(invocation_order) == 8
     assert result.has_partial
     assert not result.has_hard_failure
 
@@ -2022,9 +2092,12 @@ def test_run_pre_bootstrap_resets_stale_credentials(
     def _partial_no_creds(_self: Any) -> PhaseResult:
         return PhaseResult(name="infisical-provision", status="partial", detail="dropped")
 
+    monkeypatch.setattr(Orchestrator, "_phase_workspace_coords", _ok_phase)
     monkeypatch.setattr(Orchestrator, "_phase_service_env", _ok_phase)
-    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _ok_phase)
     monkeypatch.setattr(Orchestrator, "_phase_firewall_configure", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_firewall_sync", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_global_env", _ok_phase)
     monkeypatch.setattr(Orchestrator, "_phase_compose_up", _ok_phase)
     monkeypatch.setattr(Orchestrator, "_phase_infisical_provision", _partial_no_creds)
 
@@ -2105,13 +2178,16 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
 
 
 def _setup_pre_bootstrap_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set the 7 required env vars for run-pre-bootstrap."""
+    """Set the 6 required env vars for run-pre-bootstrap.
+
+    Phase 4b1 (#505): REPO_NAME + GITEA_REPO_OWNER are no longer required
+    (workspace-coords derives them); ADMIN_USERNAME IS now required.
+    """
     for var, val in (
         ("ADMIN_EMAIL", "admin@example.com"),
-        ("REPO_NAME", "nexus-example-com-gitea"),
-        ("GITEA_REPO_OWNER", "admin"),
         ("ENABLED_SERVICES", "gitea,kestra"),
         ("DOMAIN", "example.com"),
+        ("ADMIN_USERNAME", "admin"),
         ("INFISICAL_PASS", "pw"),
         ("FIREWALL_RULES_JSON", "{}"),  # explicit zero-entry mode
     ):
@@ -2136,10 +2212,9 @@ def test_cli_run_pre_bootstrap_missing_env_returns_2(
 
     # ADMIN_EMAIL deliberately missing; set the rest.
     for var, val in (
-        ("REPO_NAME", "r"),
-        ("GITEA_REPO_OWNER", "o"),
         ("ENABLED_SERVICES", "gitea"),
         ("DOMAIN", "example.com"),
+        ("ADMIN_USERNAME", "admin"),
         ("INFISICAL_PASS", "pw"),
         ("FIREWALL_RULES_JSON", "{}"),
     ):
@@ -2166,10 +2241,9 @@ def test_cli_run_pre_bootstrap_missing_firewall_rules_returns_2(
     # All other required vars set; FIREWALL_RULES_JSON deliberately missing.
     for var, val in (
         ("ADMIN_EMAIL", "admin@example.com"),
-        ("REPO_NAME", "r"),
-        ("GITEA_REPO_OWNER", "o"),
         ("ENABLED_SERVICES", "gitea"),
         ("DOMAIN", "example.com"),
+        ("ADMIN_USERNAME", "admin"),
         ("INFISICAL_PASS", "pw"),
     ):
         monkeypatch.setenv(var, val)
@@ -2258,3 +2332,551 @@ def test_cli_run_pre_bootstrap_transport_failure_returns_2(
         rc = _run_pre_bootstrap([])
     assert rc == 2
     assert "transport failure" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Phase 4b1+4b2 (#505) — new phase methods + critical regressions.
+# ---------------------------------------------------------------------------
+
+
+def test_phase_seed_skips_in_mirror_mode(orchestrator: Orchestrator) -> None:
+    """R-mirror-seed-skip (Plan-agent catch): _phase_seed must early-skip
+    when gh_mirror_repos is set, even if gitea_token is populated. Otherwise
+    seeding the read-only mirror-readonly-* repo returns HTTP 423.
+    Re-seeding against the user's fork happens in _phase_mirror_seed_rerun."""
+    orchestrator.gh_mirror_repos = ["https://github.com/owner/repo.git"]
+    orchestrator.state.gitea_token = "valid-token"
+    result = orchestrator._phase_seed(MagicMock())
+    assert result.status == "skipped"
+    assert "mirror mode" in result.detail
+    assert "mirror-seed-rerun" in result.detail
+
+
+# --- _phase_workspace_coords ---
+
+
+def test_phase_workspace_coords_dual_writes_user_identity_for_admin_fallback(
+    minimal_env: BootstrapEnv,
+) -> None:
+    """R-admin-fallback (PR #533 R1 #3): in admin-fallback mode (no
+    GITEA_USER_EMAIL / _PASS env), workspace-coords must populate
+    self.gitea_user_username / _password / _email from admin coords
+    so _phase_service_env's workspace-block-append guard passes.
+    Otherwise the workspace block is silently skipped — breaking
+    git-integrated stacks (jupyter/marimo/code-server etc.)."""
+    orchestrator = Orchestrator(
+        config=NexusConfig(
+            admin_username="admin",
+            gitea_admin_password="admin-pw",
+        ),
+        bootstrap_env=minimal_env,
+        enabled_services=["gitea"],
+        repo_name="",
+        gitea_repo_owner="",
+        domain="example.com",
+        admin_username="admin",
+        gitea_admin_pass="admin-pw",
+        # No gitea_user_* — admin-fallback mode
+        gitea_user_email=None,
+        gitea_user_password=None,
+        gitea_user_username=None,
+    )
+    result = orchestrator._phase_workspace_coords()
+    assert result.status == "ok"
+    # Critical: self.gitea_user_* must be populated for the workspace
+    # block to be appended in admin-fallback mode.
+    assert orchestrator.gitea_user_username == "admin"
+    assert orchestrator.gitea_user_password == "admin-pw"
+    assert orchestrator.gitea_user_email == "admin@example.com"
+
+
+def test_phase_workspace_coords_dual_writes_state_and_self_field(
+    orchestrator: Orchestrator,
+) -> None:
+    """R-dual-write: workspace-coords must populate state.* AND self.*
+    AND bootstrap_env (where empty)."""
+    orchestrator.domain = "nexus.example.com"
+    orchestrator.admin_username = "admin"
+    orchestrator.gitea_admin_pass = "admin-pw"
+    orchestrator.bootstrap_env = BootstrapEnv(
+        domain="nexus.example.com",
+        admin_email="admin@example.com",
+    )
+
+    result = orchestrator._phase_workspace_coords()
+    assert result.status == "ok"
+
+    # state mirrors populated
+    assert orchestrator.state.repo_name == "nexus-nexus-example-com-gitea"
+    assert orchestrator.state.gitea_repo_owner == "admin"
+    assert orchestrator.state.workspace_branch == "main"
+    assert orchestrator.state.gitea_git_user == "admin"
+    assert orchestrator.state.git_email == "admin@example.com"
+
+    # self.* fields populated (the post-bootstrap phases gate on these)
+    assert orchestrator.repo_name == "nexus-nexus-example-com-gitea"
+    assert orchestrator.gitea_repo_owner == "admin"
+    assert orchestrator.workspace_branch == "main"
+
+    # bootstrap_env populated where empty
+    assert orchestrator.bootstrap_env.gitea_repo_owner == "admin"
+    assert orchestrator.bootstrap_env.repo_name == "nexus-nexus-example-com-gitea"
+
+
+def test_phase_workspace_coords_mirror_mode_with_user(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirror + user → fork name + user as owner. GitHub API mocked."""
+    orchestrator.domain = "example.com"
+    orchestrator.admin_username = "admin"
+    orchestrator.gitea_admin_pass = "admin-pw"
+    orchestrator.gh_mirror_repos = ["https://github.com/upstream/MyRepo.git"]
+    orchestrator.gh_mirror_token = "ghp_xxx"
+    orchestrator.gitea_user_email = "alice.bob@example.com"
+    orchestrator.gitea_user_password = "user-pw"
+    orchestrator.bootstrap_env = BootstrapEnv(
+        domain="example.com",
+        admin_email="admin@example.com",
+    )
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._workspace_coords._default_http_runner",
+        lambda _t, _r: "develop",
+    )
+    result = orchestrator._phase_workspace_coords()
+    assert result.status == "ok"
+    assert orchestrator.state.repo_name == "MyRepo_alice_bob"
+    assert orchestrator.state.gitea_repo_owner == "alice.bob"
+    assert orchestrator.state.workspace_branch == "develop"
+
+
+def test_phase_workspace_coords_unexpected_exception_returns_failed(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("synthetic boom")
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._workspace_coords.derive", boom)
+    result = orchestrator._phase_workspace_coords()
+    assert result.status == "failed"
+    assert "RuntimeError" in result.detail
+
+
+# --- _phase_compose_restart ---
+
+
+def test_phase_compose_restart_skips_on_empty(orchestrator: Orchestrator) -> None:
+    orchestrator.state.restart_services = ()
+    result = orchestrator._phase_compose_restart(MagicMock())
+    assert result.status == "skipped"
+    assert "no services" in result.detail
+
+
+def test_phase_compose_restart_happy_path(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.compose_restart import RestartResult
+
+    orchestrator.state.restart_services = ("kestra", "jupyter")
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        lambda *_a, **_kw: RestartResult(restarted=2, failed=0),
+    )
+    result = orchestrator._phase_compose_restart(MagicMock())
+    assert result.status == "ok"
+    assert "restarted=2" in result.detail
+
+
+def test_phase_compose_restart_partial_when_some_fail(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_deploy.compose_restart import RestartResult
+
+    orchestrator.state.restart_services = ("a", "b", "c")
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        lambda *_a, **_kw: RestartResult(restarted=1, failed=2),
+    )
+    result = orchestrator._phase_compose_restart(MagicMock())
+    assert result.status == "partial"
+    assert "restarted=1" in result.detail
+    assert "failed=2" in result.detail
+
+
+def test_phase_compose_restart_passes_self_ssh_host(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: must forward self.ssh_host to compose_restart so a
+    non-default SSH_HOST_ALIAS reaches the restart loop."""
+    from nexus_deploy.compose_restart import RestartResult
+
+    captured: list[str] = []
+
+    def _fake(_services: list[str], **kwargs: Any) -> RestartResult:
+        captured.append(kwargs.get("host", ""))
+        return RestartResult(restarted=1, failed=0)
+
+    orchestrator.ssh_host = "custom-host"
+    orchestrator.state.restart_services = ("kestra",)
+    monkeypatch.setattr("nexus_deploy.orchestrator._compose_restart.run_restart", _fake)
+    orchestrator._phase_compose_restart(MagicMock())
+    assert captured == ["custom-host"]
+
+
+# --- _phase_woodpecker_apply ---
+
+
+def test_phase_woodpecker_apply_skipped_when_not_enabled(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.enabled_services = ["kestra"]  # no woodpecker
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "skipped"
+    assert "not enabled" in result.detail
+
+
+def test_phase_woodpecker_apply_skipped_when_no_oauth_creds(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.enabled_services = ["woodpecker"]
+    orchestrator.state.woodpecker_client_id = None
+    orchestrator.state.woodpecker_client_secret = None
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "skipped"
+    assert "not populated" in result.detail
+
+
+def test_phase_woodpecker_apply_partial_when_no_agent_secret(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.enabled_services = ["woodpecker"]
+    orchestrator.state.woodpecker_client_id = "wp-id"
+    orchestrator.state.woodpecker_client_secret = "wp-secret"
+    orchestrator.woodpecker_agent_secret = None
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "partial"
+    assert "WOODPECKER_AGENT_SECRET" in result.detail
+
+
+# --- _phase_mirror_seed_rerun ---
+
+
+def test_phase_mirror_seed_rerun_skipped_when_not_mirror(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.gh_mirror_repos = []
+    result = orchestrator._phase_mirror_seed_rerun(MagicMock())
+    assert result.status == "skipped"
+    assert "not mirror mode" in result.detail
+
+
+def test_phase_mirror_seed_rerun_skipped_when_no_fork(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.gh_mirror_repos = ["https://github.com/o/r.git"]
+    orchestrator.state.fork_name = None
+    orchestrator.state.gitea_token = "tok"
+    result = orchestrator._phase_mirror_seed_rerun(MagicMock())
+    assert result.status == "skipped"
+    assert "no fork" in result.detail
+
+
+def test_phase_mirror_seed_rerun_mutates_state_to_fork_target(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """After re-seeding, state.repo_name + state.gitea_repo_owner must
+    point at the fork (so mirror-finalize hits the right repo)."""
+    from nexus_deploy.seeder import SeedResult
+
+    orchestrator.gh_mirror_repos = ["https://github.com/o/r.git"]
+    orchestrator.state.fork_name = "user-fork"
+    orchestrator.state.fork_owner = "user"
+    orchestrator.state.gitea_token = "tok"
+    orchestrator.state.repo_name = "mirror-readonly-r"  # was mirror name
+    orchestrator.state.gitea_repo_owner = "admin"
+
+    seeds_dir = tmp_path / "examples" / "workspace-seeds"
+    seeds_dir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._seeder.run_seed_for_repo",
+        lambda **_kw: SeedResult(created=3, skipped=10, failed=0),
+    )
+    result = orchestrator._phase_mirror_seed_rerun(MagicMock())
+    assert result.status == "ok"
+    assert orchestrator.state.repo_name == "user-fork"
+    assert orchestrator.state.gitea_repo_owner == "user"
+    assert "user/user-fork" in result.detail
+
+
+# --- _phase_mirror_finalize ---
+
+
+def test_phase_mirror_finalize_skipped_when_not_mirror(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.gh_mirror_repos = []
+    result = orchestrator._phase_mirror_finalize(MagicMock())
+    assert result.status == "skipped"
+
+
+def test_phase_mirror_finalize_skipped_when_no_fork(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.gh_mirror_repos = ["https://github.com/o/r.git"]
+    orchestrator.state.fork_name = None
+    result = orchestrator._phase_mirror_finalize(MagicMock())
+    assert result.status == "skipped"
+
+
+# --- _phase_kestra_secret_sync ---
+
+
+def test_phase_kestra_secret_sync_skipped_when_not_enabled(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.enabled_services = ["jupyter"]  # no kestra
+    result = orchestrator._phase_kestra_secret_sync(MagicMock())
+    assert result.status == "skipped"
+    assert "kestra not enabled" in result.detail
+
+
+def test_phase_kestra_secret_sync_skipped_when_no_infisical_creds(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.enabled_services = ["kestra"]
+    orchestrator.project_id = None
+    orchestrator.infisical_token = None
+    result = orchestrator._phase_kestra_secret_sync(MagicMock())
+    assert result.status == "skipped"
+    assert "PROJECT_ID" in result.detail or "INFISICAL_TOKEN" in result.detail
+
+
+def test_phase_kestra_secret_sync_partial_when_kestra_pass_missing(
+    minimal_env: BootstrapEnv,
+) -> None:
+    """NexusConfig is frozen — fresh Orchestrator with no kestra pw."""
+    config_no_kestra = NexusConfig(
+        admin_username="admin",
+        gitea_admin_password="gitea-admin",
+        kestra_admin_password=None,
+    )
+    orchestrator = Orchestrator(
+        config=config_no_kestra,
+        bootstrap_env=minimal_env,
+        enabled_services=["kestra"],
+        repo_name="r",
+        gitea_repo_owner="o",
+        project_id="p",
+        infisical_token="t",
+    )
+    result = orchestrator._phase_kestra_secret_sync(MagicMock())
+    assert result.status == "partial"
+    assert "KESTRA_PASS" in result.detail
+
+
+# --- _phase_global_env ---
+
+
+def test_phase_global_env_failed_on_malformed_json(
+    orchestrator: Orchestrator,
+) -> None:
+    orchestrator.image_versions_json = "not valid json {"
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "image_versions_json" in result.detail
+
+
+def test_phase_global_env_renders_image_versions(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """global-env writes via ssh-stdin streaming (PR #533 R2 #2 — fixed
+    heredoc injection risk). Verify the env_content reaches subprocess
+    stdin, the cat command is the right shape, and the file path is
+    /opt/docker-server/stacks/.env."""
+    captured: dict[str, Any] = {}
+
+    def _fake_run(args: list[str], **kwargs: Any) -> Any:
+        captured["args"] = args
+        captured["input"] = kwargs.get("input", "")
+        cp = MagicMock()
+        cp.returncode = 0
+        cp.stdout = ""
+        return cp
+
+    orchestrator.image_versions_json = '{"node-exporter": "v1.2.3", "kestra": "v0.51"}'
+    orchestrator.domain = "example.com"
+    orchestrator.user_email = "user@example.com"
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
+    result = orchestrator._phase_global_env()
+    assert result.status == "ok"
+    assert "images=2" in result.detail
+    # ssh args: subprocess.run(["ssh", host, "cat > <path>"], input=...)
+    assert captured["args"][0] == "ssh"
+    assert captured["args"][1] == orchestrator.ssh_host
+    assert "cat > /opt/docker-server/stacks/.env" in captured["args"][2]
+    # env_content reaches stdin (NOT argv → no heredoc, no injection risk)
+    env_content = captured["input"]
+    assert "DOMAIN=example.com" in env_content
+    assert "IMAGE_NODE_EXPORTER=v1.2.3" in env_content
+    assert "IMAGE_KESTRA=v0.51" in env_content
+    assert "USER_EMAIL=user@example.com" in env_content
+    # No heredoc delimiter in the env_content (the source-of-bug)
+    assert "NEXUS_GLOBAL_ENV_EOF" not in env_content
+
+
+def test_phase_global_env_rejects_shell_unsafe_image_value(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-shell-unsafe-reject (PR #533 R3 #2): a malicious image-version
+    value containing shell metacharacters must REJECT before write.
+
+    The previous test (R2 #2) only asserted no heredoc-injection —
+    but the global .env is later sourced (compose_runner.py legacy
+    pattern), so an unescaped value with `$()` / backticks / `;` /
+    `\\n` would still trigger remote command execution at source
+    time. This test asserts the validation gate now rejects such
+    values up-front with status='failed', refusing to write."""
+    write_called = False
+
+    def _fake_run(args: list[str], **kwargs: Any) -> Any:
+        nonlocal write_called
+        write_called = True
+        cp = MagicMock()
+        cp.returncode = 0
+        return cp
+
+    # Synthetic adversarial image value: contains newline + 'rm -rf /'.
+    # If sourced unescaped, the rm command would execute on the server.
+    orchestrator.image_versions_json = '{"adversarial": "v1.0\\nrm -rf /"}'
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "shell-unsafe" in result.detail
+    # Critically: the write subprocess MUST NOT have been called.
+    assert not write_called, "validation must reject BEFORE writing the .env"
+
+
+def test_phase_global_env_rejects_dollar_in_value(
+    orchestrator: Orchestrator,
+) -> None:
+    """Same gate, different metacharacter — `$(cmd)` in a value would
+    execute at source time."""
+    orchestrator.image_versions_json = '{"foo": "v1.$(rm -rf /)"}'
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "shell-unsafe" in result.detail
+
+
+def test_phase_global_env_rejects_unsafe_image_versions_key(
+    orchestrator: Orchestrator,
+) -> None:
+    """R-shell-unsafe-key-reject (PR #533 R5 #1): an image-versions
+    key with shell metacharacters or whitespace would survive the
+    existing dash→underscore normalization and produce an env-file
+    line whose left-hand side breaks shell parsing OR injects
+    commands when sourced. Reject keys that don't normalize to a
+    valid POSIX shell variable name (^[A-Z_][A-Z0-9_]*$)."""
+    orchestrator.image_versions_json = '{"foo;rm-rf": "v1.0"}'
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "not a valid POSIX shell variable name" in result.detail
+    assert "foo;rm-rf" in result.detail
+
+
+def test_phase_global_env_rejects_image_versions_key_with_space(
+    orchestrator: Orchestrator,
+) -> None:
+    """Keys with whitespace also fail the gate."""
+    orchestrator.image_versions_json = '{"foo bar": "v1.0"}'
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "not a valid POSIX shell variable name" in result.detail
+
+
+def test_phase_global_env_rejects_unsafe_admin_email(
+    orchestrator: Orchestrator,
+) -> None:
+    """ADMIN_EMAIL also goes through validation."""
+    orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
+        domain="example.com",
+        admin_email="admin@example.com; rm -rf /",
+    )
+    orchestrator.image_versions_json = "{}"
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "shell-unsafe" in result.detail
+
+
+def test_phase_global_env_accepts_normal_image_versions(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sanity: real image versions like ``treeverse/lakefs:1.73.0``,
+    ``v1.2.3``, ``latest`` pass the validation gate."""
+    captured: dict[str, Any] = {}
+
+    def _fake_run(args: list[str], **kwargs: Any) -> Any:
+        captured["input"] = kwargs.get("input", "")
+        cp = MagicMock()
+        cp.returncode = 0
+        return cp
+
+    orchestrator.image_versions_json = '{"lakefs": "treeverse/lakefs:1.73.0", "kestra": "v0.51.9"}'
+    orchestrator.user_email = "user+admin@example.com"
+    orchestrator.domain = "example.com"
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
+    result = orchestrator._phase_global_env()
+    assert result.status == "ok"
+    assert "IMAGE_LAKEFS=treeverse/lakefs:1.73.0" in captured["input"]
+    assert "IMAGE_KESTRA=v0.51.9" in captured["input"]
+
+
+# --- _phase_firewall_sync ---
+
+
+def test_phase_firewall_sync_failed_when_project_root_missing(
+    orchestrator: Orchestrator, tmp_path: Any
+) -> None:
+    orchestrator.project_root = tmp_path / "does-not-exist"
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "failed"
+    assert "is not a directory" in result.detail
+
+
+def test_phase_firewall_sync_failed_when_local_stacks_dir_missing(
+    orchestrator: Orchestrator, tmp_path: Any
+) -> None:
+    """R-destructive-footgun (PR #533 R1 #4): when project_root exists
+    but the inner stacks/ dir is missing (e.g. checkout incomplete),
+    Path.glob silently returns nothing — without an explicit guard
+    we'd treat every remote firewall override as orphan and rm them.
+    Must fail fast instead."""
+    # project_root exists but stacks/ subdir does not
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "failed"
+    assert "local stacks dir" in result.detail
+    assert "is missing" in result.detail
+    assert "would rm every remote" in result.detail
+
+
+def test_phase_firewall_sync_no_orphans_no_redpanda(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Empty local + empty remote firewall override list → no-op ok."""
+    stacks_dir = tmp_path / "stacks"
+    stacks_dir.mkdir()
+    orchestrator.project_root = tmp_path
+    orchestrator.enabled_services = ["jupyter"]  # no redpanda
+
+    def _fake_run(_script: str, **_kw: Any) -> Any:
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.returncode = 0
+        return cp
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.ssh_run_script", _fake_run)
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "ok"
+    assert "orphans_removed=0" in result.detail
