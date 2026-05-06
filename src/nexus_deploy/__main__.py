@@ -2548,6 +2548,152 @@ def _run_all(args: list[str]) -> int:
     return 0
 
 
+def _run_pre_bootstrap(args: list[str]) -> int:
+    """`nexus-deploy run-pre-bootstrap`.
+
+    Phase 4a (#505) — runs the pre-bootstrap pipeline (service-env →
+    stack-sync → firewall-configure → compose-up → infisical-provision)
+    in a single Python invocation, replacing the per-CLI calls in
+    deploy.sh's [3/7]-[7/7-start] section.
+
+    Reads ``SECRETS_JSON`` from stdin (Tofu output). Reads workspace
+    coords + firewall_rules + admin password from env vars (deploy.sh
+    derives them in bash and exports them).
+
+    On rc=0 emits eval-able stdout for deploy.sh's surviving glue:
+    ``INFISICAL_TOKEN=<token>`` + ``PROJECT_ID=<id>`` (the two values
+    that downstream non-migrated bash blocks still need). Empty values
+    on rc=1 (provision soft-fail) so eval clears any stale value.
+
+    Required env: ``ADMIN_EMAIL``, ``REPO_NAME``, ``GITEA_REPO_OWNER``,
+    ``ENABLED_SERVICES``, ``DOMAIN``, ``INFISICAL_PASS``.
+    Optional env: ``WORKSPACE_BRANCH`` (default ``main``),
+    ``GITEA_USER_USERNAME``, ``GITEA_USER_EMAIL``, ``GITEA_USER_PASS``,
+    ``OM_PRINCIPAL_DOMAIN``, ``SSH_HOST_ALIAS`` (default ``nexus``),
+    ``FIREWALL_RULES_JSON`` (default ``{}``), ``STACKS_DIR`` (default
+    ``$PWD``).
+
+    Exit codes:
+    - 0: every phase ok or skipped.
+    - 1: at least one phase produced status='partial' (deploy.sh
+         continues — operator sees the per-phase log).
+    - 2: at least one phase failed (orchestrator aborted; subsequent
+         deploy.sh steps that depend on Infisical/etc must abort too).
+    """
+    if args:
+        print(f"run-pre-bootstrap: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    admin_email = os.environ.get("ADMIN_EMAIL") or ""
+    repo_name = os.environ.get("REPO_NAME") or ""
+    gitea_repo_owner = os.environ.get("GITEA_REPO_OWNER") or ""
+    enabled_str = os.environ.get("ENABLED_SERVICES") or ""
+    domain = os.environ.get("DOMAIN") or ""
+    admin_password_infisical = os.environ.get("INFISICAL_PASS") or ""
+
+    missing = [
+        name
+        for name, val in (
+            ("ADMIN_EMAIL", admin_email),
+            ("REPO_NAME", repo_name),
+            ("GITEA_REPO_OWNER", gitea_repo_owner),
+            ("ENABLED_SERVICES", enabled_str),
+            ("DOMAIN", domain),
+            ("INFISICAL_PASS", admin_password_infisical),
+        )
+        if not val
+    ]
+    if missing:
+        print(
+            f"run-pre-bootstrap: missing required env: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    enabled = [s.strip() for s in enabled_str.replace(",", " ").split() if s.strip()]
+    workspace_branch = os.environ.get("WORKSPACE_BRANCH") or "main"
+    gitea_user_username = os.environ.get("GITEA_USER_USERNAME") or None
+    gitea_user_email = os.environ.get("GITEA_USER_EMAIL") or None
+    gitea_user_password = os.environ.get("GITEA_USER_PASS") or None
+    ssh_host = os.environ.get("SSH_HOST_ALIAS") or "nexus"
+    firewall_json = os.environ.get("FIREWALL_RULES_JSON") or "{}"
+    stacks_dir = (
+        Path(os.environ.get("STACKS_DIR") or "") if os.environ.get("STACKS_DIR") else Path.cwd()
+    )
+
+    try:
+        config = NexusConfig.from_secrets_json(sys.stdin.read())
+    except ConfigError as exc:
+        print(f"run-pre-bootstrap: {exc}", file=sys.stderr)
+        return 2
+
+    bootstrap_env = BootstrapEnv(
+        domain=domain,
+        admin_email=admin_email,
+        gitea_user_email=gitea_user_email,
+        gitea_user_username=gitea_user_username,
+        gitea_repo_owner=gitea_repo_owner,
+        repo_name=repo_name,
+        om_principal_domain=os.environ.get("OM_PRINCIPAL_DOMAIN") or None,
+    )
+
+    orchestrator = Orchestrator(
+        config=config,
+        bootstrap_env=bootstrap_env,
+        enabled_services=enabled,
+        repo_name=repo_name,
+        gitea_repo_owner=gitea_repo_owner,
+        workspace_branch=workspace_branch,
+        gitea_user_username=gitea_user_username,
+        gitea_user_email=gitea_user_email,
+        gitea_user_password=gitea_user_password,
+        ssh_host=ssh_host,
+        domain=domain,
+        firewall_json=firewall_json,
+        stacks_dir=stacks_dir,
+        admin_password_infisical=admin_password_infisical,
+    )
+
+    try:
+        result = orchestrator.run_pre_bootstrap()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(
+            f"run-pre-bootstrap: transport failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"run-pre-bootstrap: unexpected error ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Per-phase log to stderr.
+    for phase in result.phases:
+        marker = {"ok": "✓", "partial": "⚠", "failed": "✗", "skipped": "—"}.get(phase.status, "?")
+        detail = f" — {phase.detail}" if phase.detail else ""
+        sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
+
+    # Eval-able stdout: 2 values for deploy.sh's surviving glue. Always
+    # emit (with empty values when not populated) so eval clears stale
+    # shell vars from prior runs.
+    import shlex as _shlex
+
+    sys.stdout.write(
+        f"INFISICAL_TOKEN={_shlex.quote(result.state.infisical_token or '')}\n",
+    )
+    sys.stdout.write(
+        f"PROJECT_ID={_shlex.quote(result.state.project_id or '')}\n",
+    )
+
+    if result.has_hard_failure:
+        return 2
+    if result.has_partial:
+        return 1
+    return 0
+
+
 def _allocate_free_port() -> int:
     """Ask the kernel for a free IPv4 ephemeral port on the loopback.
 
@@ -2646,6 +2792,8 @@ def main() -> int:
         return _service_env(args[1:])
     if args[:1] == ["run-all"]:
         return _run_all(args[1:])
+    if args[:1] == ["run-pre-bootstrap"]:
+        return _run_pre_bootstrap(args[1:])
     if args[:1] == ["r2-tokens"]:
         return _r2_tokens(args[1:])
     if args[:2] == ["firewall", "configure"]:
@@ -2673,6 +2821,9 @@ def main() -> int:
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
+        "run-pre-bootstrap (Phase 4a: service-env → stack-sync → firewall-configure → "
+        "compose-up → infisical-provision; reads SECRETS_JSON from stdin + env vars "
+        "incl. INFISICAL_PASS; emits eval-able stdout: INFISICAL_TOKEN + PROJECT_ID), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
         "(env: TF_VAR_cloudflare_api_token), "
         "firewall configure [--project-root PATH] [--domain DOMAIN] "

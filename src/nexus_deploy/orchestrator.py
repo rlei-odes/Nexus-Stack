@@ -52,12 +52,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from nexus_deploy import compose_runner as _compose_runner
+from nexus_deploy import firewall as _firewall
 from nexus_deploy import gitea as _gitea
 from nexus_deploy import infisical as _infisical
 from nexus_deploy import kestra as _kestra
 from nexus_deploy import secret_sync as _secret_sync
 from nexus_deploy import seeder as _seeder
+from nexus_deploy import service_env as _service_env
 from nexus_deploy import services as _services
+from nexus_deploy import stack_sync as _stack_sync
 from nexus_deploy.config import NexusConfig
 from nexus_deploy.infisical import BootstrapEnv
 from nexus_deploy.ssh import SSHClient
@@ -83,6 +87,16 @@ class OrchestratorState:
     woodpecker_client_secret: str | None = None
     fork_name: str | None = None
     fork_owner: str | None = None
+    # Phase 4a (#505): infisical_token + project_id are now POPULATED by
+    # _phase_infisical_provision (running BEFORE _phase_infisical_bootstrap)
+    # instead of being inherited as orchestrator inputs. Pre-bootstrap
+    # callers don't need to pass them in the constructor; the post-bootstrap
+    # phases read from state. The Orchestrator.infisical_token /
+    # .project_id constructor fields stay as fallbacks for callers that
+    # already have the credentials (e.g. testing the post-bootstrap path
+    # in isolation).
+    infisical_token: str | None = None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +165,18 @@ class Orchestrator:
     project_id: str | None = None
     infisical_token: str | None = None
     infisical_env: str = "dev"
+
+    # Phase 4a (#505) — additions for the pre-bootstrap pipeline.
+    # All optional to keep back-compat with existing post-bootstrap-only
+    # callers (run_all). When unset, phases that need them surface as
+    # status='skipped' with a clear detail.
+    cf_client_id: str | None = None  # Cloudflare Access Service Token id
+    cf_client_secret: str | None = None  # Cloudflare Access Service Token secret
+    persistent_volume_id: str = "0"  # Hetzner Cloud volume id; "0" = no volume
+    stacks_dir: Path = field(default_factory=lambda: Path.cwd())
+    firewall_json: str = "{}"  # raw `tofu output -json firewall_rules` body
+    domain: str = ""  # for firewall RedPanda rendering
+    admin_password_infisical: str | None = None  # for infisical provision-admin
 
     state: OrchestratorState = field(default_factory=OrchestratorState)
     results: list[PhaseResult] = field(default_factory=list)
@@ -635,6 +661,406 @@ class Orchestrator:
 
     def _phase_secret_sync_marimo(self, ssh: SSHClient) -> PhaseResult:
         return self._phase_secret_sync(ssh, "marimo")
+
+    # ---------------------------------------------------------------------
+    # Phase 4a (#505) — pre-bootstrap pipeline.
+    #
+    # These phases run BEFORE the existing infisical-bootstrap phase and
+    # collectively replace deploy.sh's [0/7]-[7/7] CLI invocations + the
+    # interleaved bash glue. Each wraps an already-migrated module's
+    # public function and converts its result/exception into a PhaseResult.
+    # No new logic — just a unified place to chain them with state-handoff.
+    #
+    # The pre-bootstrap phases come in two clusters:
+    #
+    # 1. **Local-only** (don't need an SSHClient): service-env render,
+    #    firewall override generation. They're declared with an ``ssh``
+    #    parameter for signature consistency with the existing phases
+    #    (so the run_pre_bootstrap loop can call them uniformly), but
+    #    the parameter goes unused.
+    #
+    # 2. **Server-side** (use the wrapped helper's own ssh.run_script
+    #    plumbing): stack-sync, compose up, infisical provision-admin.
+    #    These don't need the orchestrator's shared SSHClient because
+    #    their helper functions invoke ``ssh nexus`` via subprocess
+    #    independently (legacy compatibility — we don't refactor those
+    #    helpers in this PR).
+    # ---------------------------------------------------------------------
+
+    def _phase_service_env(self, ssh: SSHClient) -> PhaseResult:
+        """Render per-service ``stacks/<svc>/.env`` files locally + (when
+        Gitea is enabled) append the Gitea workspace block to the
+        Gitea-integrated stacks. Replaces deploy.sh's
+        ``service-env --enabled`` invocation (Modul 3.4c, #527).
+
+        Local-only: no SSH calls. The ``ssh`` parameter is present for
+        signature consistency with the run_pre_bootstrap loop; unused
+        here.
+        """
+        del ssh  # unused — local-only phase
+        try:
+            result = _service_env.render_all_env_files(
+                self.config,
+                self.bootstrap_env,
+                self.enabled_services,
+                stacks_dir=self.stacks_dir / "stacks",
+            )
+        except _service_env.ServiceEnvError as exc:
+            # Hard-fail conditions (e.g. SFTPGo with empty password) —
+            # the legacy bash exits 1 with a red banner; the Python
+            # equivalent raises so we surface it here.
+            return PhaseResult(
+                name="service-env",
+                status="failed",
+                detail=str(exc),
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            return PhaseResult(
+                name="service-env",
+                status="failed",
+                detail=f"transport ({type(exc).__name__})",
+            )
+        except Exception as exc:
+            return PhaseResult(
+                name="service-env",
+                status="failed",
+                detail=f"unexpected ({type(exc).__name__})",
+            )
+
+        # Optionally append the Gitea workspace block. Mirrors the CLI
+        # handler's logic: only when ALL the workspace coords are present
+        # AND gitea is enabled.
+        gitea_appended_count = 0
+        if "gitea" in self.enabled_services and all(
+            (
+                self.bootstrap_env.gitea_repo_owner,
+                self.repo_name,
+            ),
+        ):
+            gitea_repo_url = (
+                f"http://gitea:3000/{self.bootstrap_env.gitea_repo_owner}/{self.repo_name}.git"
+            )
+            try:
+                cfg = _service_env.GiteaWorkspaceConfig(
+                    gitea_repo_url=gitea_repo_url,
+                    gitea_username=self.gitea_user_username or "",
+                    gitea_password=self.gitea_user_password or "",
+                    git_author_name=self.gitea_user_username or "",
+                    git_author_email=self.gitea_user_email or "",
+                    repo_name=self.repo_name,
+                    workspace_branch=self.workspace_branch,
+                )
+                appended = _service_env.append_gitea_workspace_block(
+                    cfg,
+                    self.enabled_services,
+                    stacks_dir=self.stacks_dir / "stacks",
+                )
+                gitea_appended_count = len(appended)
+            except OSError as exc:
+                return PhaseResult(
+                    name="service-env",
+                    status="partial",
+                    detail=(
+                        f"rendered={result.rendered} but gitea-block append "
+                        f"failed: {type(exc).__name__}"
+                    ),
+                )
+
+        if result.failed > 0:
+            if result.rendered == 0:
+                return PhaseResult(
+                    name="service-env",
+                    status="failed",
+                    detail=f"rendered=0 failed={result.failed}",
+                )
+            return PhaseResult(
+                name="service-env",
+                status="partial",
+                detail=(
+                    f"rendered={result.rendered} skipped={result.skipped} "
+                    f"failed={result.failed} gitea_appended={gitea_appended_count}"
+                ),
+            )
+        return PhaseResult(
+            name="service-env",
+            status="ok",
+            detail=(
+                f"rendered={result.rendered} skipped={result.skipped} "
+                f"gitea_appended={gitea_appended_count}"
+            ),
+        )
+
+    def _phase_stack_sync(self, ssh: SSHClient) -> PhaseResult:
+        """Rsync each enabled stack to ``/opt/docker-server/stacks/<svc>/``
+        and clean up disabled stack directories on the server. Replaces
+        deploy.sh's ``stack-sync --enabled`` invocation (Modul 3.3, #523).
+
+        Uses ``run_stack_sync`` which manages its own rsync subprocess
+        + cleanup ssh.run_script invocation independently — the
+        orchestrator's shared SSHClient is not consumed here.
+        """
+        del ssh  # run_stack_sync manages its own subprocess invocations
+        try:
+            result = _stack_sync.run_stack_sync(
+                self.stacks_dir / "stacks",
+                self.enabled_services,
+                host=self.ssh_host,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            return PhaseResult(
+                name="stack-sync",
+                status="failed",
+                detail=f"transport ({type(exc).__name__})",
+            )
+        except Exception as exc:
+            return PhaseResult(
+                name="stack-sync",
+                status="failed",
+                detail=f"unexpected ({type(exc).__name__})",
+            )
+        cleanup_failed = result.cleanup.failed if result.cleanup is not None else 0
+        cleanup_removed = result.cleanup.removed if result.cleanup is not None else 0
+        cleanup_missing_or_unparseable = result.cleanup is None
+        if cleanup_missing_or_unparseable:
+            # No parseable RESULT from the cleanup script — same hard-fail
+            # contract as the per-CLI handler maps to rc=2.
+            return PhaseResult(
+                name="stack-sync",
+                status="failed",
+                detail=(
+                    f"rsync_synced={result.synced} rsync_failed={result.failed_rsync} "
+                    "cleanup script produced no parseable RESULT"
+                ),
+            )
+        if result.failed_rsync > 0 or cleanup_failed > 0:
+            return PhaseResult(
+                name="stack-sync",
+                status="partial",
+                detail=(
+                    f"rsync_synced={result.synced} rsync_failed={result.failed_rsync} "
+                    f"cleanup_removed={cleanup_removed} cleanup_failed={cleanup_failed}"
+                ),
+            )
+        return PhaseResult(
+            name="stack-sync",
+            status="ok",
+            detail=(f"rsync_synced={result.synced} cleanup_removed={cleanup_removed}"),
+        )
+
+    def _phase_firewall_configure(self, ssh: SSHClient) -> PhaseResult:
+        """Generate per-service ``docker-compose.firewall.yml`` overrides
+        and (when RedPanda has firewall ports) the dual-listener override
+        + substituted ``redpanda-firewall.yaml``. Replaces deploy.sh's
+        ``firewall configure --domain`` invocation (Modul 3.4e, #531).
+
+        Local-only — the rendered files are written to ``stacks/<svc>/``
+        on the runner. The subsequent server-side scp + orphan-cleanup
+        loop stays in deploy.sh for now (Phase 4b will migrate it).
+        """
+        del ssh  # local-only phase
+        try:
+            gen, write = _firewall.configure(
+                firewall_json=self.firewall_json,
+                stacks_dir=self.stacks_dir,
+                domain=self.domain,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            return PhaseResult(
+                name="firewall-configure",
+                status="failed",
+                detail=str(exc),
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            return PhaseResult(
+                name="firewall-configure",
+                status="failed",
+                detail=f"transport ({type(exc).__name__})",
+            )
+        except Exception as exc:
+            return PhaseResult(
+                name="firewall-configure",
+                status="failed",
+                detail=f"unexpected ({type(exc).__name__})",
+            )
+
+        if gen.zero_entry:
+            if write.failed:
+                return PhaseResult(
+                    name="firewall-configure",
+                    status="partial",
+                    detail=(
+                        f"zero-entry mode but stale-cleanup had {len(write.failed)} failure(s)"
+                    ),
+                )
+            return PhaseResult(
+                name="firewall-configure",
+                status="ok",
+                detail="zero-entry (no rules)",
+            )
+
+        if gen.skipped:
+            # Per #531 R7 #4: skipped services mean Tofu requested a rule
+            # but compose.yml was unparseable → existing override stays
+            # in place but state may be inconsistent with Tofu.
+            return PhaseResult(
+                name="firewall-configure",
+                status="partial",
+                detail=(
+                    f"rendered={len(gen.compiled)} skipped={len(gen.skipped)} "
+                    f"redpanda={'yes' if gen.redpanda else 'no'}"
+                ),
+            )
+        if write.failed:
+            return PhaseResult(
+                name="firewall-configure",
+                status="partial",
+                detail=(
+                    f"rendered={len(gen.compiled)} written={len(write.written)} "
+                    f"failed={len(write.failed)}"
+                ),
+            )
+        return PhaseResult(
+            name="firewall-configure",
+            status="ok",
+            detail=(f"rendered={len(gen.compiled)} redpanda={'yes' if gen.redpanda else 'no'}"),
+        )
+
+    def _phase_compose_up(self, ssh: SSHClient) -> PhaseResult:
+        """Start containers in parallel via
+        :func:`compose_runner.run_compose_up`. Replaces deploy.sh's
+        ``compose up --enabled`` invocation (Modul 2.2a, #505).
+
+        ``run_compose_up`` invokes ``ssh nexus 'bash -s'`` via
+        subprocess internally — the orchestrator's shared SSHClient
+        is not consumed here.
+        """
+        del ssh  # run_compose_up manages its own ssh script invocation
+        try:
+            result = _compose_runner.run_compose_up(self.enabled_services)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            return PhaseResult(
+                name="compose-up",
+                status="failed",
+                detail=f"transport ({type(exc).__name__})",
+            )
+        except Exception as exc:
+            return PhaseResult(
+                name="compose-up",
+                status="failed",
+                detail=f"unexpected ({type(exc).__name__})",
+            )
+        if result.failed > 0:
+            return PhaseResult(
+                name="compose-up",
+                status="partial",
+                detail=f"started={result.started} failed={result.failed}",
+            )
+        return PhaseResult(
+            name="compose-up",
+            status="ok",
+            detail=f"started={result.started}",
+        )
+
+    def _phase_infisical_provision(self, ssh: SSHClient) -> PhaseResult:
+        """Bootstrap the Infisical admin + workspace. Replaces deploy.sh's
+        ``infisical provision-admin`` invocation (Modul 3.4f, #530).
+
+        Populates ``self.state.infisical_token`` and ``self.state.project_id``
+        on success — those values are then consumed by the existing
+        ``_phase_infisical_bootstrap`` phase. Read the constructor's
+        ``project_id`` / ``infisical_token`` fields as fallback (so a
+        post-bootstrap-only test can still bypass this phase).
+        """
+        del ssh  # provision_admin manages its own ssh.run_script call
+        admin_email = self.bootstrap_env.admin_email or ""
+        admin_password = self.admin_password_infisical or ""
+        if not admin_email or not admin_password:
+            return PhaseResult(
+                name="infisical-provision",
+                status="skipped",
+                detail="ADMIN_EMAIL or admin_password_infisical missing",
+            )
+        try:
+            result = _infisical.provision_admin(
+                admin_email=admin_email,
+                admin_password=admin_password,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            return PhaseResult(
+                name="infisical-provision",
+                status="failed",
+                detail=f"transport ({type(exc).__name__})",
+            )
+        except Exception as exc:
+            return PhaseResult(
+                name="infisical-provision",
+                status="failed",
+                detail=f"unexpected ({type(exc).__name__})",
+            )
+
+        if not result.has_credentials:
+            # Same contract as #530 R2 #4: rc=1 (soft-fail) when the
+            # provision didn't produce usable credentials. Pre-bootstrap
+            # caller should treat this as 'continue without secret push'.
+            return PhaseResult(
+                name="infisical-provision",
+                status="partial",
+                detail=f"status={result.status} (no usable credentials)",
+            )
+
+        # Populate state for downstream phases.
+        self.state.infisical_token = result.token
+        self.state.project_id = result.project_id
+        # Also populate the orchestrator's input fields so the existing
+        # _phase_infisical_bootstrap (which reads self.project_id /
+        # self.infisical_token) finds the values.
+        self.project_id = result.project_id
+        self.infisical_token = result.token
+
+        return PhaseResult(
+            name="infisical-provision",
+            status="ok",
+            detail=f"status={result.status}",
+        )
+
+    def run_pre_bootstrap(self) -> OrchestratorResult:
+        """Run the pre-bootstrap pipeline: service-env → stack-sync →
+        firewall-configure → compose-up → infisical-provision.
+
+        Resets ``self.results`` so re-invoking the same instance does
+        not duplicate prior phase outputs. ``self.state`` is left as-is
+        (production callers create a fresh ``Orchestrator`` per run).
+
+        Failure of any phase aborts the run; partial-success phases
+        continue. Same rc=0/1/2 dispatch contract as :meth:`run_all`.
+
+        The phases here don't need the orchestrator's shared SSHClient
+        — the wrapped helpers each manage their own subprocess / ssh
+        invocations independently. That's why this method doesn't
+        open an ExitStack-managed ssh context (in contrast to
+        :meth:`run_all`).
+        """
+        self.results = []
+        # ssh arg is unused by every pre-bootstrap phase but kept for
+        # signature consistency. Pass a None placeholder cast for type-
+        # checker; phases that *would* use it get their own context
+        # internally via the wrapped helper.
+        from typing import cast as _cast
+
+        ssh_placeholder = _cast("SSHClient", None)
+        phases: list[Callable[[SSHClient], PhaseResult]] = [
+            self._phase_service_env,
+            self._phase_stack_sync,
+            self._phase_firewall_configure,
+            self._phase_compose_up,
+            self._phase_infisical_provision,
+        ]
+        for phase in phases:
+            result = phase(ssh_placeholder)
+            self.results.append(result)
+            if result.status == "failed":
+                break
+        return OrchestratorResult(phases=tuple(self.results), state=self.state)
 
 
 # Module-level helper so the CLI handler can shell out cleanly.
