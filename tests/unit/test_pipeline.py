@@ -532,9 +532,15 @@ def test_cli_run_pipeline_returns_0_on_clean_run(
     assert "Deployment Complete" in out
 
 
-def test_cli_run_pipeline_returns_1_on_partial(
+def test_cli_run_pipeline_returns_0_on_partial_with_stderr_warning(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """R-rc-mapping (Phase 4c): partial phases must NOT fail the
+    workflow step — deploy.sh's wrapping bash absorbed rc=1 from the
+    per-CLI handlers (``case 0|1) continue ;;``), but ``run-pipeline``
+    is the top-level CLI invoked directly by spin-up.yml's bash with
+    ``set -e`` — a non-zero exit fails the step. Partial is a
+    'warn and continue' semantic: rc=0 + stderr warning, NOT rc=1."""
     from nexus_deploy.__main__ import _run_pipeline
 
     fake = PipelineResult(
@@ -548,7 +554,11 @@ def test_cli_run_pipeline_returns_1_on_partial(
         ),
     )
     monkeypatch.setattr("nexus_deploy.__main__._pipeline.run_pipeline", lambda **_: fake)
-    assert _run_pipeline([]) == 1
+    rc = _run_pipeline([])
+    assert rc == 0  # NOT 1 — see docstring above.
+    err = capsys.readouterr().err
+    assert "status='partial'" in err
+    assert "deploy succeeded with warnings" in err
 
 
 # ---------------------------------------------------------------------------

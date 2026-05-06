@@ -2632,10 +2632,23 @@ def _run_pipeline(args: list[str]) -> int:
     # phases; this is the pipeline-level wrap).
     sys.stdout.write(_pipeline.format_done_banner(result))
 
-    # Exit-code dispatch: any phase 'partial' across the two pipelines
-    # → rc=1 (warn-and-continue, mirrors deploy.sh's case 0|1).
+    # Exit-code dispatch: a successful deploy returns 0 — even when
+    # one or more phases produced ``status='partial'``. The original
+    # per-CLI handlers (run-all / run-pre-bootstrap, called from the
+    # legacy deploy.sh) returned rc=1 for partial because deploy.sh
+    # absorbed it (``case 0|1) continue ;;``). ``run-pipeline`` is now
+    # the top-level CLI invoked directly by spin-up.yml's bash with
+    # ``set -e``, so a non-zero exit fails the workflow step. Partial
+    # is a "warn and continue" semantic surfaced via stderr per-phase
+    # log; only actual hard failures (PipelineError, raised above)
+    # get the rc=2 treatment.
     has_partial = result.pre_bootstrap.has_partial or result.run_all.has_partial
-    return 1 if has_partial else 0
+    if has_partial:
+        sys.stderr.write(
+            "\nNote: one or more phases reported status='partial' "
+            "(see per-phase log above) — deploy succeeded with warnings.\n",
+        )
+    return 0
 
 
 def _run_pre_bootstrap(args: list[str]) -> int:
