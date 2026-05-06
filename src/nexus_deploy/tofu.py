@@ -5,6 +5,12 @@ ad-hoc ``$(cd "$TOFU_DIR" && tofu output -json X 2>/dev/null || echo
 "{}")`` pattern (8 call-sites in deploy.sh) with a single class whose
 fallback behavior is explicit per-call.
 
+Phase 4c (#505) extension: adds :func:`state_list_ok` for the
+pre-flight check that replaces deploy.sh's ``tofu state list >/dev/
+null 2>&1`` guard, and :func:`load_r2_credentials` +
+:class:`R2Credentials` for parsing ``tofu/.r2-credentials`` (the
+shell-format AWS-creds file the R2 backend expects).
+
 ``tofu apply`` is intentionally NOT wrapped here — that lands with the
 orchestrator (Modul 3.4) so the streaming-output and per-stage logging
 concerns live next to where they're consumed.
@@ -13,7 +19,9 @@ concerns live next to where they're consumed.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, overload
 
@@ -103,3 +111,102 @@ class TofuRunner:
             if default is _MISSING:
                 raise TofuError(f"tofu output -json {name} returned non-JSON stdout") from exc
             return default
+
+    def state_list_ok(self) -> bool:
+        """Return True iff ``tofu state list`` exits 0.
+
+        Used as a Phase 4c pre-flight check: the pipeline aborts with
+        a clear error message before any output reads if the state is
+        uninitialised (e.g. operator forgot to run the initial-setup
+        workflow first). Replaces deploy.sh:53's
+        ``if ! tofu state list >/dev/null 2>&1; then …`` guard.
+
+        Returns False on:
+        - tofu binary missing (FileNotFoundError)
+        - tofu_dir not a directory
+        - state-list returns non-zero (state not initialised)
+        - timeout (treated as not-ok; caller surfaces a hard failure
+          via downstream behavior)
+        """
+        if not self.tofu_dir.is_dir():
+            return False
+        try:
+            completed = subprocess.run(
+                ["tofu", "state", "list"],
+                cwd=self.tofu_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+
+
+@dataclass(frozen=True)
+class R2Credentials:
+    """Parsed contents of ``tofu/.r2-credentials``.
+
+    The pipeline injects these into ``os.environ`` as
+    ``AWS_ACCESS_KEY_ID`` + ``AWS_SECRET_ACCESS_KEY`` BEFORE any tofu
+    call (the R2 backend reads them from the env). We model them as a
+    typed dataclass instead of a dict so the caller can't accidentally
+    pass the wrong shape.
+    """
+
+    access_key_id: str
+    secret_access_key: str
+
+
+# Shell-style ``KEY="value"`` or ``KEY=value`` line. Anchored to start-
+# of-line so a stray ``=`` inside a comment or value doesn't match.
+# Captures KEY (post-validated against expected names) and value (with
+# surrounding double-quotes optionally stripped). The regex
+# deliberately tolerates whitespace around ``=`` so a hand-edited file
+# with ``KEY = value`` still parses.
+_R2_CRED_LINE = re.compile(
+    r'^\s*(?P<key>[A-Z_][A-Z0-9_]*)\s*=\s*"?(?P<value>[^"\n\r]*)"?\s*$',
+    re.MULTILINE,
+)
+
+
+def load_r2_credentials(creds_file: Path) -> R2Credentials | None:
+    """Parse ``tofu/.r2-credentials`` if it exists.
+
+    The file is a simple shell-source-able assignments list::
+
+        R2_ACCESS_KEY_ID="abc123"
+        R2_SECRET_ACCESS_KEY="def456"
+
+    Returns ``None`` when the file doesn't exist (legitimate skip in
+    local-dev / CI without R2 backend; pipeline continues with
+    whatever AWS_* env the operator already set). Raises
+    :class:`TofuError` when the file exists but doesn't contain BOTH
+    expected keys (mis-named keys / malformed syntax / one-key-only
+    is operator error and a silent skip would mask it leading to a
+    "tofu state inaccessible" error 30 seconds later that doesn't
+    point at the credential file).
+    """
+    if not creds_file.is_file():
+        return None
+    try:
+        text = creds_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise TofuError(f"could not read {creds_file}: {type(exc).__name__}: {exc}") from exc
+
+    parsed: dict[str, str] = {}
+    for match in _R2_CRED_LINE.finditer(text):
+        parsed[match.group("key")] = match.group("value")
+
+    access_key = parsed.get("R2_ACCESS_KEY_ID", "")
+    secret_key = parsed.get("R2_SECRET_ACCESS_KEY", "")
+    if not access_key or not secret_key:
+        raise TofuError(
+            f"{creds_file} is missing R2_ACCESS_KEY_ID and/or "
+            "R2_SECRET_ACCESS_KEY (file present but malformed)"
+        )
+    return R2Credentials(
+        access_key_id=access_key,
+        secret_access_key=secret_key,
+    )
