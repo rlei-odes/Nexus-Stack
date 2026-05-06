@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.tofu — Phase 3 Modul 3.2 (#505)."""
+"""Tests for nexus_deploy.tofu — Phase 3 Modul 3.2 + Phase 4c (#505)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,16 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nexus_deploy.tofu import TofuError, TofuRunner
+from nexus_deploy.tofu import (
+    R2Credentials,
+    TofuError,
+    TofuRunner,
+    load_r2_credentials,
+)
 
 # -- output_raw ---------------------------------------------------------
 
@@ -286,3 +292,217 @@ def test_output_json_actually_invokes_subprocess(tmp_path: Path) -> None:
     finally:
         os.environ["PATH"] = old_path
     assert result == {"server_ip": "1.2.3.4"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4c (#505) — state_list_ok + R2 credentials parser
+# ---------------------------------------------------------------------------
+
+
+def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=["tofu"],
+        returncode=returncode,
+        stdout=stdout,
+        stderr="",
+    )
+
+
+# ---- TofuRunner.state_list_ok ----
+
+
+def test_state_list_ok_false_when_dir_missing(tmp_path: Path) -> None:
+    """Pre-flight: missing tofu_dir → not ok (don't even try to run)."""
+    runner = TofuRunner(tmp_path / "does-not-exist")
+    assert runner.state_list_ok() is False
+
+
+def test_state_list_ok_true_when_state_initialized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(stdout="some.resource\n"),
+    )
+    assert TofuRunner(tmp_path).state_list_ok() is True
+
+
+def test_state_list_ok_false_when_state_uninitialized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(stdout="", returncode=1),
+    )
+    assert TofuRunner(tmp_path).state_list_ok() is False
+
+
+def test_state_list_ok_false_on_missing_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=FileNotFoundError("tofu")),
+    )
+    assert TofuRunner(tmp_path).state_list_ok() is False
+
+
+def test_state_list_ok_false_on_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["tofu"], 60.0)),
+    )
+    assert TofuRunner(tmp_path).state_list_ok() is False
+
+
+# ---- TofuRunner.diagnose_state (PR #535 R2 #2) ----
+
+
+def test_diagnose_state_returns_none_when_initialized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(stdout="some.resource\n"),
+    )
+    assert TofuRunner(tmp_path).diagnose_state() is None
+
+
+def test_diagnose_state_directory_missing(tmp_path: Path) -> None:
+    runner = TofuRunner(tmp_path / "nope")
+    reason = runner.diagnose_state()
+    assert reason is not None
+    assert "directory not found" in reason
+
+
+def test_diagnose_state_binary_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=FileNotFoundError("tofu")),
+    )
+    reason = TofuRunner(tmp_path).diagnose_state()
+    assert reason == "tofu binary not found on PATH"
+
+
+def test_diagnose_state_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["tofu"], 60.0)),
+    )
+    reason = TofuRunner(tmp_path).diagnose_state()
+    assert reason is not None
+    assert "timed out" in reason
+
+
+def test_diagnose_state_includes_stderr_tail_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Auth/backend failures (rc!=0) → reason carries stderr tail."""
+    completed = subprocess.CompletedProcess(
+        args=["tofu"],
+        returncode=1,
+        stdout="",
+        stderr="Error: Backend configuration changed: AWS credentials invalid\n",
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: completed,
+    )
+    reason = TofuRunner(tmp_path).diagnose_state()
+    assert reason is not None
+    assert "rc=1" in reason
+    assert "AWS credentials invalid" in reason
+
+
+# ---- load_r2_credentials ----
+
+
+def test_load_r2_credentials_returns_none_when_file_missing(tmp_path: Path) -> None:
+    """Legitimate skip — local-dev / CI without R2 backend."""
+    assert load_r2_credentials(tmp_path / "does-not-exist") is None
+
+
+def test_load_r2_credentials_parses_quoted_values(tmp_path: Path) -> None:
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text(
+        'R2_ACCESS_KEY_ID="abc123"\nR2_SECRET_ACCESS_KEY="def456"\n',
+        encoding="utf-8",
+    )
+    assert load_r2_credentials(creds_file) == R2Credentials(
+        access_key_id="abc123",
+        secret_access_key="def456",
+    )
+
+
+def test_load_r2_credentials_parses_unquoted_values(tmp_path: Path) -> None:
+    """Tolerant: hand-edited file without quotes still works."""
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text(
+        "R2_ACCESS_KEY_ID=abc\nR2_SECRET_ACCESS_KEY=def\n",
+        encoding="utf-8",
+    )
+    assert load_r2_credentials(creds_file) == R2Credentials(
+        access_key_id="abc",
+        secret_access_key="def",
+    )
+
+
+def test_load_r2_credentials_tolerates_whitespace_around_equals(tmp_path: Path) -> None:
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text(
+        'R2_ACCESS_KEY_ID = "abc"\nR2_SECRET_ACCESS_KEY  =  "def"\n',
+        encoding="utf-8",
+    )
+    parsed = load_r2_credentials(creds_file)
+    assert parsed is not None
+    assert parsed.access_key_id == "abc"
+    assert parsed.secret_access_key == "def"
+
+
+def test_load_r2_credentials_raises_when_one_key_missing(tmp_path: Path) -> None:
+    """File present but malformed → raise. Silent skip would mask
+    the operator error and surface as 'tofu state inaccessible' 30
+    seconds later."""
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text('R2_ACCESS_KEY_ID="abc"\n', encoding="utf-8")
+    with pytest.raises(TofuError, match="missing R2_"):
+        load_r2_credentials(creds_file)
+
+
+def test_load_r2_credentials_raises_when_both_keys_missing(tmp_path: Path) -> None:
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text("# just a comment\n", encoding="utf-8")
+    with pytest.raises(TofuError, match="missing R2_"):
+        load_r2_credentials(creds_file)
+
+
+def test_load_r2_credentials_raises_on_unreadable_file(tmp_path: Path) -> None:
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text("R2_ACCESS_KEY_ID=a\nR2_SECRET_ACCESS_KEY=b\n", encoding="utf-8")
+    with (
+        patch.object(Path, "read_text", side_effect=PermissionError("denied")),
+        pytest.raises(TofuError, match="could not read"),
+    ):
+        load_r2_credentials(creds_file)
+
+
+def test_load_r2_credentials_ignores_extra_keys(tmp_path: Path) -> None:
+    """Forward-compat: a future contributor adding R2_ENDPOINT or
+    similar shouldn't break the parser."""
+    creds_file = tmp_path / ".r2-credentials"
+    creds_file.write_text(
+        'R2_ACCESS_KEY_ID="a"\nR2_SECRET_ACCESS_KEY="b"\nR2_ENDPOINT="https://r2.example"\n',
+        encoding="utf-8",
+    )
+    assert load_r2_credentials(creds_file) == R2Credentials(
+        access_key_id="a",
+        secret_access_key="b",
+    )
+
+
+def test_r2_credentials_frozen() -> None:
+    from dataclasses import FrozenInstanceError
+
+    creds = R2Credentials(access_key_id="a", secret_access_key="b")
+    with pytest.raises(FrozenInstanceError):
+        creds.access_key_id = "other"  # type: ignore[misc]

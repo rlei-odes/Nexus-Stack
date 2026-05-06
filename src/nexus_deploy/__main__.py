@@ -30,6 +30,7 @@ from pathlib import Path
 import requests
 
 from nexus_deploy import __version__, hello
+from nexus_deploy import pipeline as _pipeline
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
 from nexus_deploy.gitea import (
@@ -2554,6 +2555,147 @@ def _run_all(args: list[str]) -> int:
     return 0
 
 
+def _run_pipeline(args: list[str]) -> int:
+    """`nexus-deploy run-pipeline`.
+
+    Phase 4c (#505) — top-level deploy entrypoint that REPLACES
+    ``scripts/deploy.sh``. Calls
+    :func:`nexus_deploy.pipeline.run_pipeline` which orchestrates:
+
+    - R2 credentials env-injection from ``tofu/.r2-credentials``
+    - ``tofu state list`` pre-flight
+    - config.tfvars parse + Gitea identity derivation
+    - 7 ``tofu output`` reads
+    - ssh-keygen -R cleanup
+    - setup chain (configure_ssh / wait_for_ssh / ensure_jq /
+      mount_persistent_volume)
+    - Optional Docker Hub login + Wetty SSH-Agent setup
+    - ``Orchestrator.run_pre_bootstrap``
+    - ``Orchestrator.run_all``
+    - Service URLs banner
+
+    All in-process — no subprocess CLI invocations of nexus_deploy
+    sub-commands, no eval-able stdout payloads.
+
+    Required env: none (everything is read from tofu state +
+    config.tfvars).
+
+    Optional env (workflow secrets, all forwarded via
+    :class:`PipelineOptions`):
+    - ``SSH_PRIVATE_KEY_CONTENT`` — base64-encoded into BootstrapEnv
+    - ``GH_MIRROR_TOKEN`` + ``GH_MIRROR_REPOS`` — for mirror-mode
+    - ``DOCKERHUB_USER`` + ``DOCKERHUB_TOKEN`` — for higher pull rate
+    - ``INFISICAL_ENV`` — defaults to "dev"
+    - ``PROJECT_ROOT`` — defaults to ``$PWD``; the repo checkout root
+
+    Exit codes:
+    - 0: deploy succeeded — covers both clean runs AND runs where
+         one or more phases reported ``status='partial'``. Partial
+         is surfaced as a stderr warning, NOT a non-zero exit, so
+         spin-up.yml's ``shell: bash -e`` step doesn't fail the
+         workflow on a soft warning. (Tightened in PR #535 R0/R1.)
+    - 2: hard failure (PipelineError; tofu state missing, secrets
+         empty, ssh wait timeout, orchestrator phase status='failed').
+    """
+    if args:
+        print(f"run-pipeline: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    project_root_env = os.environ.get("PROJECT_ROOT")
+    project_root = Path(project_root_env) if project_root_env else Path.cwd()
+
+    options = _pipeline.PipelineOptions(
+        ssh_private_key_content=os.environ.get("SSH_PRIVATE_KEY_CONTENT") or None,
+        gh_mirror_token=os.environ.get("GH_MIRROR_TOKEN") or None,
+        gh_mirror_repos=os.environ.get("GH_MIRROR_REPOS") or None,
+        dockerhub_user=os.environ.get("DOCKERHUB_USER") or None,
+        dockerhub_token=os.environ.get("DOCKERHUB_TOKEN") or None,
+        infisical_env=os.environ.get("INFISICAL_ENV") or "dev",
+    )
+
+    try:
+        result = _pipeline.run_pipeline(project_root=project_root, options=options)
+    except _pipeline.PipelineError as exc:
+        print(f"run-pipeline: {exc}", file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError as exc:
+        # PR #535 R1 #6: include rc + stderr/stdout tail so CI failures
+        # are diagnosable without re-running with --debug. Don't print
+        # ``exc.cmd`` — it can carry secrets via env-var-prefixed forms.
+        tail = (exc.stderr or exc.stdout or "")[-500:].rstrip()
+        print(
+            f"run-pipeline: subprocess failed (rc={exc.returncode})"
+            + (f": {tail}" if tail else ""),
+            file=sys.stderr,
+        )
+        return 2
+    except subprocess.TimeoutExpired as exc:
+        # No rc on timeout (the process didn't exit), but ``timeout``
+        # tells the operator how long we waited.
+        print(
+            f"run-pipeline: subprocess timed out after {exc.timeout}s ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+    except SetupError as exc:
+        # Setup-helper-specific errors (configure_ssh / wait_for_ssh /
+        # ensure_jq / mount_persistent_volume / setup_wetty_ssh_agent)
+        # carry a clear message — surface it directly.
+        print(f"run-pipeline: setup step failed: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(
+            f"run-pipeline: OS error ({type(exc).__name__}): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"run-pipeline: unexpected error ({type(exc).__name__}): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Per-phase log to stderr — operators need visibility into which
+    # phases ran/skipped/failed/partialled. The Orchestrator records
+    # PhaseResult into result.phases but never emits stderr lines of
+    # its own; without this loop a successful run-pipeline shows only
+    # the compose-up "started and running" markers + the done banner,
+    # masking secret-sync / git-sync / kestra-secret-sync failures
+    # that surfaced via PhaseResult(status='partial' or 'failed').
+    # Mirror the legacy ``_run_pre_bootstrap`` / ``_run_all`` handlers.
+    markers = {"ok": "✓", "partial": "⚠", "failed": "✗", "skipped": "—"}
+    for label, sub_result in (
+        ("pre-bootstrap", result.pre_bootstrap),
+        ("run-all", result.run_all),
+    ):
+        sys.stderr.write(f"\n[{label}]\n")
+        for phase in sub_result.phases:
+            marker = markers.get(phase.status, "?")
+            detail = f" — {phase.detail}" if phase.detail else ""
+            sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
+
+    sys.stdout.write(_pipeline.format_done_banner(result))
+
+    # Exit-code dispatch: a successful deploy returns 0 — even when
+    # one or more phases produced ``status='partial'``. The original
+    # per-CLI handlers (run-all / run-pre-bootstrap, called from the
+    # legacy deploy.sh) returned rc=1 for partial because deploy.sh
+    # absorbed it (``case 0|1) continue ;;``). ``run-pipeline`` is now
+    # the top-level CLI invoked directly by spin-up.yml's bash with
+    # ``set -e``, so a non-zero exit fails the workflow step. Partial
+    # is a "warn and continue" semantic surfaced via stderr per-phase
+    # log; only actual hard failures (PipelineError, raised above)
+    # get the rc=2 treatment.
+    has_partial = result.pre_bootstrap.has_partial or result.run_all.has_partial
+    if has_partial:
+        sys.stderr.write(
+            "\nNote: one or more phases reported status='partial' "
+            "(see per-phase log above) — deploy succeeded with warnings.\n",
+        )
+    return 0
+
+
 def _run_pre_bootstrap(args: list[str]) -> int:
     """`nexus-deploy run-pre-bootstrap`.
 
@@ -2869,6 +3011,8 @@ def main() -> int:
         return _run_all(args[1:])
     if args[:1] == ["run-pre-bootstrap"]:
         return _run_pre_bootstrap(args[1:])
+    if args[:1] == ["run-pipeline"]:
+        return _run_pipeline(args[1:])
     if args[:1] == ["r2-tokens"]:
         return _r2_tokens(args[1:])
     if args[:2] == ["firewall", "configure"]:
@@ -2901,6 +3045,10 @@ def main() -> int:
         "SECRETS_JSON from stdin + env vars incl. INFISICAL_PASS, FIREWALL_RULES_JSON, "
         "ADMIN_USERNAME, IMAGE_VERSIONS_JSON; emits eval-able stdout: INFISICAL_TOKEN + "
         "PROJECT_ID + REPO_NAME + GITEA_REPO_OWNER + WORKSPACE_BRANCH), "
+        "run-pipeline (Phase 4c top-level entry — replaces scripts/deploy.sh; "
+        "reads tofu state + config.tfvars; optional env: SSH_PRIVATE_KEY_CONTENT, "
+        "GH_MIRROR_TOKEN, GH_MIRROR_REPOS, DOCKERHUB_USER, DOCKERHUB_TOKEN, "
+        "INFISICAL_ENV, PROJECT_ROOT), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
         "(env: TF_VAR_cloudflare_api_token), "
         "firewall configure [--project-root PATH] [--domain DOMAIN] "

@@ -14,7 +14,7 @@ not new logic. Focus on:
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2105,10 +2105,17 @@ def test_run_pre_bootstrap_resets_stale_credentials(
     assert result.has_partial
     # Stale credentials MUST be cleared on BOTH surfaces, even though
     # the infisical-provision phase didn't populate fresh ones.
-    assert orchestrator.state.infisical_token is None
-    assert orchestrator.state.project_id is None
-    assert orchestrator.infisical_token is None
-    assert orchestrator.project_id is None
+    # mypy's narrowing flagged each ``is None`` assertion as
+    # unreachable because the pre-test assignments above set the
+    # attributes to specific str literals — even though the
+    # orchestrator's reset block clears them at runtime. Casting
+    # back to ``str | None`` re-widens the type so mypy doesn't
+    # treat the asserts as dead code. Pre-existing CI failure on
+    # main since #532 R1 #4 — fixed here.
+    assert cast(str | None, orchestrator.state.infisical_token) is None
+    assert cast(str | None, orchestrator.state.project_id) is None
+    assert cast(str | None, orchestrator.infisical_token) is None
+    assert cast(str | None, orchestrator.project_id) is None
 
 
 def test_phase_service_env_skips_gitea_block_on_incomplete_coords(

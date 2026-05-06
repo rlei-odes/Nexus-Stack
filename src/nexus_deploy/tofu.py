@@ -5,6 +5,12 @@ ad-hoc ``$(cd "$TOFU_DIR" && tofu output -json X 2>/dev/null || echo
 "{}")`` pattern (8 call-sites in deploy.sh) with a single class whose
 fallback behavior is explicit per-call.
 
+Phase 4c (#505) extension: adds :func:`state_list_ok` for the
+pre-flight check that replaces deploy.sh's ``tofu state list >/dev/
+null 2>&1`` guard, and :func:`load_r2_credentials` +
+:class:`R2Credentials` for parsing ``tofu/.r2-credentials`` (the
+shell-format AWS-creds file the R2 backend expects).
+
 ``tofu apply`` is intentionally NOT wrapped here — that lands with the
 orchestrator (Modul 3.4) so the streaming-output and per-stage logging
 concerns live next to where they're consumed.
@@ -13,7 +19,9 @@ concerns live next to where they're consumed.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, overload
 
@@ -103,3 +111,122 @@ class TofuRunner:
             if default is _MISSING:
                 raise TofuError(f"tofu output -json {name} returned non-JSON stdout") from exc
             return default
+
+    def state_list_ok(self) -> bool:
+        """Return True iff ``tofu state list`` exits 0.
+
+        Convenience wrapper around :meth:`diagnose_state` for callers
+        that only need a yes/no signal (the existing ``test_tofu.py``
+        contract). New callers that want to surface a failure reason
+        to the operator should use :meth:`diagnose_state` directly.
+        """
+        return self.diagnose_state() is None
+
+    def diagnose_state(self) -> str | None:
+        """Return ``None`` when state is initialised + accessible.
+
+        Otherwise returns a short human-readable reason string —
+        useful for surfacing in operator-facing error messages
+        instead of the generic "state … is not initialised". PR #535
+        R2 #2: ``state_list_ok`` returned False for several distinct
+        causes (binary missing, backend auth/timeout, state really
+        empty), and the pipeline conflated them into one error
+        message that was misleading when the real problem was e.g.
+        a missing ``tofu`` binary or an R2 backend timeout.
+
+        Possible return values:
+        - ``"directory not found: <path>"``
+        - ``"tofu binary not found on PATH"``
+        - ``"tofu state list timed out after Ns"``
+        - ``"state list failed (rc=N): <stderr-tail>"``
+        - ``None`` (state OK)
+        """
+        if not self.tofu_dir.is_dir():
+            return f"directory not found: {self.tofu_dir}"
+        try:
+            completed = subprocess.run(
+                ["tofu", "state", "list"],
+                cwd=self.tofu_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+            )
+        except FileNotFoundError:
+            return "tofu binary not found on PATH"
+        except subprocess.TimeoutExpired:
+            return "tofu state list timed out after 60s"
+        if completed.returncode == 0:
+            return None
+        tail = (completed.stderr or completed.stdout or "").strip()[-300:]
+        if tail:
+            return f"state list failed (rc={completed.returncode}): {tail}"
+        return f"state list failed (rc={completed.returncode})"
+
+
+@dataclass(frozen=True)
+class R2Credentials:
+    """Parsed contents of ``tofu/.r2-credentials``.
+
+    The pipeline injects these into ``os.environ`` as
+    ``AWS_ACCESS_KEY_ID`` + ``AWS_SECRET_ACCESS_KEY`` BEFORE any tofu
+    call (the R2 backend reads them from the env). We model them as a
+    typed dataclass instead of a dict so the caller can't accidentally
+    pass the wrong shape.
+    """
+
+    access_key_id: str
+    secret_access_key: str
+
+
+# Shell-style ``KEY="value"`` or ``KEY=value`` line. Anchored to start-
+# of-line so a stray ``=`` inside a comment or value doesn't match.
+# Captures KEY (post-validated against expected names) and value (with
+# surrounding double-quotes optionally stripped). The regex
+# deliberately tolerates whitespace around ``=`` so a hand-edited file
+# with ``KEY = value`` still parses.
+_R2_CRED_LINE = re.compile(
+    r'^\s*(?P<key>[A-Z_][A-Z0-9_]*)\s*=\s*"?(?P<value>[^"\n\r]*)"?\s*$',
+    re.MULTILINE,
+)
+
+
+def load_r2_credentials(creds_file: Path) -> R2Credentials | None:
+    """Parse ``tofu/.r2-credentials`` if it exists.
+
+    The file is a simple shell-source-able assignments list::
+
+        R2_ACCESS_KEY_ID="abc123"
+        R2_SECRET_ACCESS_KEY="def456"
+
+    Returns ``None`` when the file doesn't exist (legitimate skip in
+    local-dev / CI without R2 backend; pipeline continues with
+    whatever AWS_* env the operator already set). Raises
+    :class:`TofuError` when the file exists but doesn't contain BOTH
+    expected keys (mis-named keys / malformed syntax / one-key-only
+    is operator error and a silent skip would mask it leading to a
+    "tofu state inaccessible" error 30 seconds later that doesn't
+    point at the credential file).
+    """
+    if not creds_file.is_file():
+        return None
+    try:
+        text = creds_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise TofuError(f"could not read {creds_file}: {type(exc).__name__}: {exc}") from exc
+
+    parsed: dict[str, str] = {}
+    for match in _R2_CRED_LINE.finditer(text):
+        parsed[match.group("key")] = match.group("value")
+
+    access_key = parsed.get("R2_ACCESS_KEY_ID", "")
+    secret_key = parsed.get("R2_SECRET_ACCESS_KEY", "")
+    if not access_key or not secret_key:
+        raise TofuError(
+            f"{creds_file} is missing R2_ACCESS_KEY_ID and/or "
+            "R2_SECRET_ACCESS_KEY (file present but malformed)"
+        )
+    return R2Credentials(
+        access_key_id=access_key,
+        secret_access_key=secret_key,
+    )

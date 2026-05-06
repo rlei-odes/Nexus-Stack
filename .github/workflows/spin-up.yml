@@ -124,21 +124,23 @@ jobs:
           tofu_version: 1.10.0
 
       - name: Install uv
-        # Required by `scripts/deploy.sh` for the `nexus_deploy` Python
-        # package (#505 phase-1: config.py replaces deploy.sh's
-        # SECRETS_JSON jq pipeline). Pinned to the same version the
-        # python-tests CI uses so behaviour matches across workflows.
+        # Required by the `nexus_deploy` Python package — since #505
+        # Phase 4c, `python -m nexus_deploy run-pipeline` IS the
+        # deploy entrypoint (deploy.sh has been deleted). Pinned to
+        # the same version the python-tests CI uses so behaviour
+        # matches across workflows.
         uses: astral-sh/setup-uv@v3
         with:
           version: "0.11.7"
           enable-cache: true
 
       - name: Sync nexus_deploy runtime deps
-        # Pre-resolve the lockfile-pinned runtime deps now so deploy.sh's
-        # `uv run python -m nexus_deploy ...` calls don't hit the network
-        # mid-deploy. `--frozen` requires uv.lock to match pyproject.toml
-        # (which CI's python-tests already enforces); `--no-dev` skips
-        # ruff/mypy/pytest etc. since we only need runtime here.
+        # Pre-resolve the lockfile-pinned runtime deps now so the
+        # `python -m nexus_deploy run-pipeline` step below doesn't
+        # hit the network mid-deploy. `--frozen` requires uv.lock to
+        # match pyproject.toml (which CI's python-tests already
+        # enforces); `--no-dev` skips ruff/mypy/pytest etc. since we
+        # only need runtime here.
         run: uv sync --frozen --no-dev
 
       - name: Install cloudflared
@@ -521,13 +523,19 @@ jobs:
           fi
 
       - name: Deploy stacks
+        # Phase 4c (#505): replaced ./scripts/deploy.sh with the
+        # Python pipeline. Everything that was in deploy.sh now lives
+        # in nexus_deploy.pipeline.run_pipeline (R2 creds, tofu reads,
+        # tfvars parse, ssh setup, orchestrator phases, done banner).
         env:
           SSH_PRIVATE_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY || inputs.ssh_private_key }}
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
           GH_MIRROR_REPOS: ${{ secrets.GH_MIRROR_REPOS }}
+          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          chmod +x scripts/deploy.sh
-          ./scripts/deploy.sh
+          uv run --quiet --project "$GITHUB_WORKSPACE" \
+            python -m nexus_deploy run-pipeline
 
           # Read Infisical credentials from server for use in later steps
           echo "  Reading Infisical credentials from server..."
