@@ -2043,7 +2043,17 @@ class Orchestrator:
         if flow_skipped_reason and not flow_triggered:
             details.append(f"flow_skip={flow_skipped_reason}")
 
-        # Both sub-steps are best-effort; only ALL-failed → partial.
+        # Partial when EITHER:
+        #   (a) Kestra was enabled but the flow-sync re-trigger didn't
+        #       fire (covers transport failure, KestraError, or
+        #       missing admin creds — anything that left
+        #       flow_triggered=False despite kestra being in scope).
+        #   (b) Git-restart loop reported any per-service failure.
+        # When kestra is NOT enabled, flow_triggered stays False but
+        # the (a) gate excludes it from partial-ness — that's the
+        # legitimate "no flow-sync to trigger" case. PR #533 R6 #2
+        # corrected the comment — was: "only ALL-failed → partial",
+        # which contradicted the actual logic.
         is_partial = (
             not flow_triggered and "kestra" in self.enabled_services
         ) or restart_result.failed > 0

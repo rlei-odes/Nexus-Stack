@@ -270,7 +270,12 @@ if ! ENABLED_SERVICES_JSON=$(cd "$TOFU_DIR" && tofu output -json enabled_service
     exit 1
 fi
 ENABLED_SERVICES=$(echo "$ENABLED_SERVICES_JSON" | jq -r '.[]')
-ENABLED_SERVICES_CSV=$(echo "$ENABLED_SERVICES" | tr '\n ' ',,')
+# PR #533 R6 #1: use printf (not echo) so the empty-services case
+# stays an empty string instead of becoming "," (echo always emits
+# a trailing newline, which `tr` converts to a comma — a single
+# comma would make the downstream CLI's CSV-parser think a service
+# named "" is enabled).
+ENABLED_SERVICES_CSV=$(printf '%s' "$ENABLED_SERVICES" | tr '\n ' ',,')
 
 # Read firewall_rules JSON from Tofu — required by run-pre-bootstrap.
 # Same fail-fast contract as before: a transient Tofu read failure
