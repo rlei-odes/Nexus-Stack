@@ -90,10 +90,12 @@ Nexus-Stack/
 │   ├── package.json            # Dependencies (astro)
 │   └── schema.sql              # D1 database schema
 ├── scripts/
-│   ├── deploy.sh               # Post-infrastructure deployment script
 │   ├── init-r2-state.sh        # R2 bucket + credentials setup
 │   ├── setup-control-panel-secrets.sh  # Control Panel secrets setup
 │   └── check-control-panel-env.sh
+│   # Note: deploy.sh removed in Phase 4c (#505) — replaced by
+│   # `python -m nexus_deploy run-pipeline`. spin-up.yml calls the
+│   # Python entrypoint directly.
 └── docs/                       # Documentation (single source of truth for nexus-stack.ch)
     ├── CONTRIBUTING.md         # Contribution guidelines (GitHub-only, not synced)
     ├── user-guides/            # End-user guides (students/participants using a Control Plane)
@@ -290,7 +292,8 @@ When adding a new Docker stack, **all locations must be updated**:
 8. **Add admin credentials (if service has admin UI):**
    - Add `random_password.<service>_admin` resource in `tofu/stack/main.tf`
    - Add password to `secrets` output in `tofu/stack/outputs.tf`
-   - Add auto-setup API call in `scripts/deploy.sh` (Step 6/6)
+   - Add auto-setup hook to `src/nexus_deploy/services.py` (the
+     services-configure phase dispatch loop)
    - Add password to Infisical secrets push payload
    - Verify credentials are pushed to Infisical
 
@@ -321,15 +324,14 @@ resource "random_password" "myservice_admin" {
 }
 ```
 
-**Example auto-setup (in deploy.sh):**
-```bash
-if echo "$ENABLED_SERVICES" | grep -qw "myservice" && [ -n "$MYSERVICE_PASS" ]; then
-    echo "  Configuring MyService admin..."
-    # Call service's admin setup API
-    curl -s -X POST 'http://localhost:PORT/api/setup' \
-        -d '{"username":"admin","password":"'$MYSERVICE_PASS'"}'
-fi
-```
+**Example auto-setup (in `src/nexus_deploy/services.py`):**
+
+Add an entry to the `_SERVICE_HOOKS` registry — the
+`services-configure` phase dispatches each enabled service's hook in
+one SSH round-trip. Hooks are pure-rendering functions: they produce
+the bash that runs on the server. See existing hooks
+(`_render_filestash_setup`, `_render_redpanda_setup`, etc.) for
+the pattern + per-hook unit tests in `tests/unit/test_services.py`.
 
 > **Note:** The `services.yaml` file defines service metadata (subdomain, port, image), while `stacks/` contains Docker Compose definitions. Both must be in sync. Runtime state (enabled/disabled) is stored in Cloudflare D1 and managed via the Control Plane.
 
@@ -572,7 +574,7 @@ networks:
 
 ### Code Examples (`examples/workspace-seeds/`)
 
-Sample code that ships with Nexus-Stack and gets auto-seeded into every user's Gitea workspace repo on spin-up. **`scripts/deploy.sh` walks `examples/workspace-seeds/` recursively and POSTs each file under the `nexus_seeds/` prefix in the workspace repo via Gitea's contents API**, so `workspace-seeds/kestra/flows/x.yaml` lands at the user repo's `nexus_seeds/kestra/flows/x.yaml`, registered by `system.flow-sync` under namespace `nexus-tutorials`. The `nexus_seeds/` prefix (introduced in #501) keeps Nexus-Stack-managed files visually separated from the user's own course material at the repo root.
+Sample code that ships with Nexus-Stack and gets auto-seeded into every user's Gitea workspace repo on spin-up. **The `_phase_seed` orchestrator phase (in `src/nexus_deploy/orchestrator.py`, delegating to `src/nexus_deploy/seeder.py`) walks `examples/workspace-seeds/` recursively and POSTs each file under the `nexus_seeds/` prefix in the workspace repo via Gitea's contents API**, so `workspace-seeds/kestra/flows/x.yaml` lands at the user repo's `nexus_seeds/kestra/flows/x.yaml`, registered by `system.flow-sync` under namespace `nexus-tutorials`. The `nexus_seeds/` prefix (introduced in #501) keeps Nexus-Stack-managed files visually separated from the user's own course material at the repo root.
 
 When adding or editing seeded examples:
 
@@ -580,8 +582,8 @@ When adding or editing seeded examples:
 2. **Two folder conventions, pick the right one:**
    - **Per-stack folder** (e.g. `kestra/flows/`, `kestra/workflows/`) — when the seed is unambiguously tied to one Nexus-Stack and that stack expects to find it at a stack-specific path. Today only `kestra/` qualifies.
    - **Per-consumer-type folder** (e.g. `notebooks/`, `scripts/`, `dbt/`, `sql/`) — when the same files are consumed by *several* stacks (notebooks → Jupyter + Marimo + code-server; SQL → DuckDB + Trino + ClickHouse). New top-level subdirs need a corresponding consumer wired up.
-3. **No schedule triggers in seeded Kestra flows.** Seeded flows live on every user stack — a cron trigger fires N times when there are N users, multiplying CloudFront downloads, R2 egress, Databricks Free-Edition quota burn, and Kestra container CPU. Examples are teaching artifacts; users hit **Execute** in the Kestra UI to run them. If you genuinely need a scheduled flow, register it directly in `deploy.sh` via the Kestra API (the `system.flow-sync` flow does this) — that's infrastructure, not a learning sample, and lives outside `workspace-seeds/`.
-4. **Reference Infisical-managed secrets only via `{{ secret('NAME') }}`.** Hardcoding credentials in `examples/` is a public-repo leak. During each spin-up, deploy.sh fetches every secret from every Infisical folder, base64-encodes the values, and writes them as `SECRET_<NAME>=<base64>` env-var entries into a delimited block in `stacks/kestra/.env` (search the script for `BEGIN nexus-secret-sync`). Kestra is then `--force-recreate`d so its `EnvVarSecretProvider` loads the new values at startup. `GITEA_TOKEN` is added by the same step as a special case (it's generated post-Gitea-start and isn't in Infisical at the time of `build_folder()` pushes). Net result: seeded flows can reference any Infisical key by name via `{{ secret('NAME') }}` without further setup. Note: this is the OSS-compatible mechanism — the older "POST to /api/v1/secrets/<ns>/<key>" path doesn't exist in Kestra OSS (returns 404; the corresponding GET endpoint reports `readOnly: true`).
+3. **No schedule triggers in seeded Kestra flows.** Seeded flows live on every user stack — a cron trigger fires N times when there are N users, multiplying CloudFront downloads, R2 egress, Databricks Free-Edition quota burn, and Kestra container CPU. Examples are teaching artifacts; users hit **Execute** in the Kestra UI to run them. If you genuinely need a scheduled flow, register it directly via the orchestrator's `_phase_kestra_register` (in `src/nexus_deploy/kestra.py`, the `system.flow-sync` flow does this) — that's infrastructure, not a learning sample, and lives outside `workspace-seeds/`.
+4. **Reference Infisical-managed secrets only via `{{ secret('NAME') }}`.** Hardcoding credentials in `examples/` is a public-repo leak. During each spin-up, the orchestrator's `_phase_kestra_secret_sync` (in `src/nexus_deploy/orchestrator.py`, delegating to `src/nexus_deploy/secret_sync.py`) fetches every secret from every Infisical folder, base64-encodes the values, and writes them as `SECRET_<NAME>=<base64>` env-var entries into a delimited block in `stacks/kestra/.env` (look for `BEGIN nexus-secret-sync` in the rendered remote script). Kestra is then `--force-recreate`d so its `EnvVarSecretProvider` loads the new values at startup. `GITEA_TOKEN` is added by the same step as a special case (it's generated post-Gitea-start and isn't in Infisical at the time of the bootstrap push). Net result: seeded flows can reference any Infisical key by name via `{{ secret('NAME') }}` without further setup. Note: this is the OSS-compatible mechanism — the older "POST to /api/v1/secrets/<ns>/<key>" path doesn't exist in Kestra OSS (returns 404; the corresponding GET endpoint reports `readOnly: true`).
 5. **Make seed files idempotent.** A user may execute a seeded flow more than once. Either detect pre-existing state and skip, or design the flow so re-runs are safe (overwriting outputs is fine; accumulating side-effects is not).
 6. **Existing files in Gitea are never overwritten.** The seed loop uses HTTP `POST` (create-only); it returns 422 for files that already exist and counts them as `SKIPPED`. User edits persist across re-deploys. To ship an updated example, give it a new filename or version-suffix it.
 

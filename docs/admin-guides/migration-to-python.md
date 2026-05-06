@@ -4,7 +4,9 @@ title: "Migration: deploy.sh → Python (`nexus_deploy`)"
 
 ## Overview
 
-`scripts/deploy.sh` (~5.5k lines of bash) is being incrementally replaced by a proper Python package, **`nexus_deploy`**, under `src/nexus_deploy/`. See [GitHub issue #505](https://github.com/stefanko-ch/Nexus-Stack/issues/505) for the full migration plan.
+`scripts/deploy.sh` (~5.5k lines of bash) **has been fully replaced** by a proper Python package, **`nexus_deploy`**, under `src/nexus_deploy/`. See [GitHub issue #505](https://github.com/stefanko-ch/Nexus-Stack/issues/505) for the full migration history.
+
+The migration concluded in Phase 4c: `scripts/deploy.sh` was deleted, and `spin-up.yml` now invokes `python -m nexus_deploy run-pipeline` directly.
 
 ## Why
 
@@ -18,15 +20,17 @@ The deploy script grew organically with the project (65 stacks, 480 commits/mont
 
 ## Strategy: Strangler Fig
 
-The Python package grows alongside the existing `scripts/deploy.sh`. Each migration phase is a separate PR. As Python modules take over, the bash deploy.sh shrinks. In Phase 4 it's removed entirely.
+The Python package grew alongside the existing `scripts/deploy.sh`. Each migration phase was a separate PR. As Python modules took over, the bash deploy.sh shrank. In Phase 4c it was removed entirely.
 
 | Phase | Goal | Status |
 |---|---|---|
-| **0** | Setup: `pyproject.toml`, ruff/mypy/pytest, CI quality gates | **In progress** |
-| 1 | Migrate highest-pain modules: `infisical.py`, `secret_sync.py`, `config.py` | Pending |
-| 2 | `seeder.py`, `services.py`, `kestra.py` | Pending |
-| 3 | `ssh.py`, `tofu.py`, `stack_sync.py`, `orchestrator.py` | Pending |
-| 4 | Remove deploy.sh; spin-up.yml calls Python directly | Pending |
+| 0 | Setup: `pyproject.toml`, ruff/mypy/pytest, CI quality gates | **Done** |
+| 1 | Migrate highest-pain modules: `infisical.py`, `secret_sync.py`, `config.py` | **Done** |
+| 2 | `seeder.py`, `services.py`, `kestra.py`, `compose_runner.py`, `gitea.py` | **Done** |
+| 3 | `ssh.py`, `tofu.py`, `stack_sync.py`, `setup.py`, `service_env.py`, `firewall.py` | **Done** |
+| 4a | Orchestrator class with `run_pre_bootstrap` + `run_all` | **Done** (#532) |
+| 4b | Wire deploy.sh to invoke the orchestrator's two CLIs (1525 → 469 LoC) | **Done** (#533) |
+| 4c | Remove deploy.sh; spin-up.yml calls `python -m nexus_deploy run-pipeline` | **Done** (this PR) |
 
 Acceptance for each migrated module: **gold-master tests** that compare Python output byte-for-byte against pre-migration bash output, so behavior cannot drift silently.
 

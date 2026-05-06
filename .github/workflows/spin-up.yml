@@ -521,13 +521,19 @@ jobs:
           fi
 
       - name: Deploy stacks
+        # Phase 4c (#505): replaced ./scripts/deploy.sh with the
+        # Python pipeline. Everything that was in deploy.sh now lives
+        # in nexus_deploy.pipeline.run_pipeline (R2 creds, tofu reads,
+        # tfvars parse, ssh setup, orchestrator phases, done banner).
         env:
           SSH_PRIVATE_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY || inputs.ssh_private_key }}
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
           GH_MIRROR_REPOS: ${{ secrets.GH_MIRROR_REPOS }}
+          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          chmod +x scripts/deploy.sh
-          ./scripts/deploy.sh
+          uv run --quiet --project "$GITHUB_WORKSPACE" \
+            python -m nexus_deploy run-pipeline
 
           # Read Infisical credentials from server for use in later steps
           echo "  Reading Infisical credentials from server..."
