@@ -264,6 +264,22 @@ def test_render_redpanda_config_substitutes_token() -> None:
     assert f"{REDPANDA_DOMAIN_PREFIX}example.com" in rendered
 
 
+def test_render_redpanda_config_template_without_token_raises() -> None:
+    """R-template-drift (#531 R13): if the template was edited and the
+    placeholder token removed/misspelled, str.replace would silently
+    emit the template unchanged and RedPanda would advertise a stale
+    address. Fail fast instead so the deploy aborts and the operator
+    sees that the template needs updating."""
+    template_no_token = (
+        "kafka_api:\n"
+        "  - address: 0.0.0.0\n"
+        "    port: 9092\n"
+        "advertised_kafka_api: hardcoded.example.com\n"  # no placeholder
+    )
+    with pytest.raises(ValueError, match="placeholder"):
+        render_redpanda_config(template_no_token, "example.com")
+
+
 def test_render_redpanda_config_empty_domain_raises() -> None:
     """Legacy bash silently skipped on empty $DOMAIN; Python surfaces
     it so the caller can decide whether to skip or abort."""

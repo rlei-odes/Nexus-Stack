@@ -287,11 +287,27 @@ def render_redpanda_config(template_text: str, domain: str) -> str:
     legacy bash skipped silently when ``$DOMAIN`` was empty (the
     surrounding ``if [ -n "$DOMAIN" ]`` gate), but the Python path
     surfaces the error so the caller can decide whether to skip.
+
+    Also raises ``ValueError`` when the template doesn't contain the
+    expected placeholder token. ``str.replace`` would silently emit
+    the template unchanged in that case, and RedPanda would advertise
+    a stale / unrendered ``advertised_kafka_api`` value at startup —
+    silent template-drift breakage. Fail fast on the deploy so the
+    operator knows the template needs updating.
     """
     if not domain:
         raise ValueError(
             "render_redpanda_config: domain is empty; refusing to substitute "
             f"{REDPANDA_TEMPLATE_TOKEN!r} with a malformed value",
+        )
+    if REDPANDA_TEMPLATE_TOKEN not in template_text:
+        raise ValueError(
+            f"render_redpanda_config: template doesn't contain the expected "
+            f"placeholder {REDPANDA_TEMPLATE_TOKEN!r}. Either the template at "
+            f"{REDPANDA_TEMPLATE_PATH} was edited and the token removed/"
+            f"misspelled, or this code's REDPANDA_TEMPLATE_TOKEN drifted from "
+            f"the template. Refusing to write an unsubstituted config that "
+            f"would make RedPanda advertise a wrong external address.",
         )
     replacement = f"{REDPANDA_DOMAIN_PREFIX}{domain}"
     return template_text.replace(REDPANDA_TEMPLATE_TOKEN, replacement)
