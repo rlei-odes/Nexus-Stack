@@ -1901,10 +1901,14 @@ def test_run_pre_bootstrap_runs_phases_in_order(
         _make_phase("infisical-provision"),
     )
     result = orchestrator.run_pre_bootstrap()
+    # PR #532 R5 #1: firewall-configure must run BEFORE stack-sync so
+    # the per-stack docker-compose.firewall.yml overrides are part of
+    # what rsync pushes to the server, before compose-up brings the
+    # containers up.
     assert invocation_order == [
         "service-env",
-        "stack-sync",
         "firewall-configure",
+        "stack-sync",
         "compose-up",
         "infisical-provision",
     ]
@@ -1938,7 +1942,9 @@ def test_run_pre_bootstrap_aborts_on_failure(
         _make_phase("firewall-configure", "ok"),
     )
     result = orchestrator.run_pre_bootstrap()
-    assert invocation_order == ["service-env", "stack-sync"]
+    # service-env (ok) → firewall-configure (ok) → stack-sync (failed)
+    # → abort. compose-up + infisical-provision must NOT run.
+    assert invocation_order == ["service-env", "firewall-configure", "stack-sync"]
     assert result.has_hard_failure
 
 
@@ -2083,7 +2089,7 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
 
 
 def _setup_pre_bootstrap_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set the 6 required env vars for run-pre-bootstrap."""
+    """Set the 7 required env vars for run-pre-bootstrap."""
     for var, val in (
         ("ADMIN_EMAIL", "admin@example.com"),
         ("REPO_NAME", "nexus-example-com-gitea"),
@@ -2091,6 +2097,7 @@ def _setup_pre_bootstrap_env(monkeypatch: pytest.MonkeyPatch) -> None:
         ("ENABLED_SERVICES", "gitea,kestra"),
         ("DOMAIN", "example.com"),
         ("INFISICAL_PASS", "pw"),
+        ("FIREWALL_RULES_JSON", "{}"),  # explicit zero-entry mode
     ):
         monkeypatch.setenv(var, val)
     monkeypatch.setattr("sys.stdin.read", lambda: "{}")
@@ -2118,6 +2125,7 @@ def test_cli_run_pre_bootstrap_missing_env_returns_2(
         ("ENABLED_SERVICES", "gitea"),
         ("DOMAIN", "example.com"),
         ("INFISICAL_PASS", "pw"),
+        ("FIREWALL_RULES_JSON", "{}"),
     ):
         monkeypatch.setenv(var, val)
     monkeypatch.delenv("ADMIN_EMAIL", raising=False)
@@ -2127,6 +2135,35 @@ def test_cli_run_pre_bootstrap_missing_env_returns_2(
     err = capsys.readouterr().err
     assert "missing required env" in err
     assert "ADMIN_EMAIL" in err
+
+
+def test_cli_run_pre_bootstrap_missing_firewall_rules_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R-firewall-required (PR #532 R5 #2): FIREWALL_RULES_JSON is now
+    required and has NO default. A missing/empty value must abort with
+    rc=2 — falling back to "{}" silently triggers destructive cleanup
+    of existing override files via the firewall module's zero-entry
+    mode. Operators must pass "{}" explicitly to opt in."""
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    # All other required vars set; FIREWALL_RULES_JSON deliberately missing.
+    for var, val in (
+        ("ADMIN_EMAIL", "admin@example.com"),
+        ("REPO_NAME", "r"),
+        ("GITEA_REPO_OWNER", "o"),
+        ("ENABLED_SERVICES", "gitea"),
+        ("DOMAIN", "example.com"),
+        ("INFISICAL_PASS", "pw"),
+    ):
+        monkeypatch.setenv(var, val)
+    monkeypatch.delenv("FIREWALL_RULES_JSON", raising=False)
+    monkeypatch.setattr("sys.stdin.read", lambda: "{}")
+    rc = _run_pre_bootstrap([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "missing required env" in err
+    assert "FIREWALL_RULES_JSON" in err
 
 
 def test_cli_run_pre_bootstrap_rc0_emits_credentials_to_stdout(

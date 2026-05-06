@@ -1093,10 +1093,22 @@ class Orchestrator:
         self.state.project_id = None
         self.infisical_token = None
         self.project_id = None
+        # Phase order matters (PR #532 R5 #1):
+        #   service-env  — writes per-stack .env files locally
+        #   firewall     — writes per-stack docker-compose.firewall.yml
+        #                  overrides locally (must be BEFORE stack-sync
+        #                  so rsync picks them up)
+        #   stack-sync   — rsyncs everything in stacks/<svc>/ to the
+        #                  server (without --delete; remote orphan
+        #                  cleanup of stale firewall overrides stays in
+        #                  deploy.sh's bash for Phase 4b)
+        #   compose-up   — sees the synced overrides → containers start
+        #                  with correct firewall exposure
+        #   infisical    — bootstraps Infisical admin + workspace last
         phases: list[Callable[[], PhaseResult]] = [
             self._phase_service_env,
-            self._phase_stack_sync,
             self._phase_firewall_configure,
+            self._phase_stack_sync,
             self._phase_compose_up,
             self._phase_infisical_provision,
         ]

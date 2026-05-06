@@ -2580,16 +2580,20 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     ``infisical provision-admin`` CLI (#530).
 
     Required env: ``ADMIN_EMAIL``, ``REPO_NAME``, ``GITEA_REPO_OWNER``,
-    ``ENABLED_SERVICES``, ``DOMAIN``, ``INFISICAL_PASS``.
+    ``ENABLED_SERVICES``, ``DOMAIN``, ``INFISICAL_PASS``,
+    ``FIREWALL_RULES_JSON`` — explicit, NOT defaulted (PR #532 R5 #2):
+    a missing/empty value would otherwise be silently treated as
+    zero-entry mode by the firewall module and trigger destructive
+    cleanup of existing override files. Operators MUST pass an
+    explicit ``"{}"`` to opt into zero-entry mode.
     Optional env: ``WORKSPACE_BRANCH`` (default ``main``),
     ``GITEA_USER_USERNAME``, ``GITEA_USER_EMAIL``, ``GITEA_USER_PASS``,
     ``OM_PRINCIPAL_DOMAIN``, ``SSH_HOST_ALIAS`` (default ``nexus``),
-    ``FIREWALL_RULES_JSON`` (default ``{}``), ``PROJECT_ROOT`` (default
-    ``$PWD``) — the repo checkout root; phases derive
-    ``$PROJECT_ROOT/stacks`` for per-service compose paths. (Renamed
-    from ``STACKS_DIR`` in PR #532 R2 #1: deploy.sh's ``STACKS_DIR``
-    is the actual stacks dir, so reusing the name produced
-    ``.../stacks/stacks/...``.)
+    ``PROJECT_ROOT`` (default ``$PWD``) — the repo checkout root;
+    phases derive ``$PROJECT_ROOT/stacks`` for per-service compose paths.
+    (Renamed from ``STACKS_DIR`` in PR #532 R2 #1: deploy.sh's
+    ``STACKS_DIR`` is the actual stacks dir, so reusing the name
+    produced ``.../stacks/stacks/...``.)
 
     Exit codes:
     - 0: every phase ok or skipped.
@@ -2608,6 +2612,12 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     enabled_str = os.environ.get("ENABLED_SERVICES") or ""
     domain = os.environ.get("DOMAIN") or ""
     admin_password_infisical = os.environ.get("INFISICAL_PASS") or ""
+    # PR #532 R5 #2: FIREWALL_RULES_JSON is required (no default).
+    # An accidental empty value would be treated by the firewall module
+    # as intentional zero-entry mode and trigger destructive cleanup of
+    # existing override files on disk. Operators must pass "{}" explicitly
+    # to opt into zero-entry mode.
+    firewall_json = os.environ.get("FIREWALL_RULES_JSON") or ""
 
     # Build a list of variable NAMES that are missing/empty. CodeQL's
     # 'clear-text logging of sensitive information' rule scans for
@@ -2622,6 +2632,7 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         ("ENABLED_SERVICES", enabled_str),
         ("DOMAIN", domain),
         ("INFISICAL_PASS", admin_password_infisical),
+        ("FIREWALL_RULES_JSON", firewall_json),
     )
     missing_names = [name for name, val in required_env if not val]
     if missing_names:
@@ -2637,7 +2648,6 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     gitea_user_email = os.environ.get("GITEA_USER_EMAIL") or None
     gitea_user_password = os.environ.get("GITEA_USER_PASS") or None
     ssh_host = os.environ.get("SSH_HOST_ALIAS") or "nexus"
-    firewall_json = os.environ.get("FIREWALL_RULES_JSON") or "{}"
     project_root_env = os.environ.get("PROJECT_ROOT")
     project_root = Path(project_root_env) if project_root_env else Path.cwd()
 
