@@ -814,8 +814,8 @@ def _render_marimo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     and silently skips, leaving Marimo with no ``GITEA_REPO_URL`` /
     ``GITEA_USERNAME`` / ``GITEA_PASSWORD`` / ``REPO_NAME`` plumbed
     through to the container — the bug the user observed in
-    initial-setup where 'Marimo kein Gitea angebunden, Repo muss in
-    Marimo sichtbar sein'.
+    initial-setup test surfaced — Marimo wasn't connected to Gitea
+    and the workspace repo wasn't visible in the Marimo UI.
 
     SPARK_CONNECT_URL is hardcoded in stacks/marimo/docker-compose.yml's
     ``environment:`` block at ``sc://spark-connect:15002``. Compose

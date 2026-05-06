@@ -64,7 +64,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -565,9 +565,3 @@ __all__ = [
     "render_redpanda_config",
     "write_overrides",
 ]
-
-
-# Defensive: silence unused-import lint for ``field`` (we don't use
-# it directly here but keeping the import means future dataclass
-# additions don't need to remember to re-import).
-_ = field
