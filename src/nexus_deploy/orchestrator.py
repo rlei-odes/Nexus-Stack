@@ -1319,7 +1319,15 @@ class Orchestrator:
             )
             orphans = [r for r in remote_overrides if r not in local_overrides]
             if orphans:
-                rm_script = "\n".join(
+                # PR #533 R2 #1: fail-fast on per-orphan rm failure. Without
+                # this, a permission-denied (or any non-zero) rm in the
+                # middle of the loop would be masked by a later success and
+                # the script would exit 0 — phase reports ok even though
+                # stale firewall overrides remain on the server, leaving
+                # host ports exposed despite Tofu closing them. set -e
+                # propagates the first failure as the script's rc; check=True
+                # then converts it to CalledProcessError → status='failed'.
+                rm_script = "set -e\n" + "\n".join(
                     f"rm -f {_REMOTE_STACKS_DIR}/{shlex.quote(orphan)}" for orphan in orphans
                 )
                 _remote.ssh_run_script(rm_script, host=self.ssh_host, check=True)
@@ -1464,11 +1472,23 @@ class Orchestrator:
         env_content = "\n".join(lines) + "\n"
 
         try:
-            # Write via ssh stdin; cat redirects into the target file.
-            # Same pattern as the legacy bash:
-            #   echo "$ENV_CONTENT" | ssh nexus "cat > $REMOTE_STACKS_DIR/.env"
-            write_script = f"cat > {_REMOTE_STACKS_DIR}/.env <<'NEXUS_GLOBAL_ENV_EOF'\n{env_content}NEXUS_GLOBAL_ENV_EOF\n"
-            _remote.ssh_run_script(write_script, host=self.ssh_host, check=True)
+            # PR #533 R2 #2: write env_content via ssh-stdin streaming
+            # (NOT a heredoc). The previous heredoc-with-fixed-delimiter
+            # approach was a heredoc-injection risk: any image-version
+            # value or USER_EMAIL containing the literal string
+            # "NEXUS_GLOBAL_ENV_EOF" on a line by itself would terminate
+            # the heredoc early and the rest of env_content would be
+            # interpreted as shell commands on the server. Streaming
+            # via stdin removes the delimiter entirely — the ssh
+            # command is just `cat > <path>`, env_content goes through
+            # stdin where bash treats it as bytes, not script source.
+            subprocess.run(
+                ["ssh", self.ssh_host, f"cat > {_REMOTE_STACKS_DIR}/.env"],
+                input=env_content,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return PhaseResult(
                 name="global-env",

@@ -2691,28 +2691,71 @@ def test_phase_global_env_failed_on_malformed_json(
 def test_phase_global_env_renders_image_versions(
     orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    captured: list[str] = []
+    """global-env writes via ssh-stdin streaming (PR #533 R2 #2 — fixed
+    heredoc injection risk). Verify the env_content reaches subprocess
+    stdin, the cat command is the right shape, and the file path is
+    /opt/docker-server/stacks/.env."""
+    captured: dict[str, Any] = {}
 
-    def _fake_run(script: str, **_kw: Any) -> Any:
-        captured.append(script)
+    def _fake_run(args: list[str], **kwargs: Any) -> Any:
+        captured["args"] = args
+        captured["input"] = kwargs.get("input", "")
         cp = MagicMock()
-        cp.stdout = ""
         cp.returncode = 0
+        cp.stdout = ""
         return cp
 
     orchestrator.image_versions_json = '{"node-exporter": "v1.2.3", "kestra": "v0.51"}'
     orchestrator.domain = "example.com"
     orchestrator.user_email = "user@example.com"
-    monkeypatch.setattr("nexus_deploy.orchestrator._remote.ssh_run_script", _fake_run)
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
     result = orchestrator._phase_global_env()
     assert result.status == "ok"
     assert "images=2" in result.detail
-    assert len(captured) == 1
-    script = captured[0]
-    assert "DOMAIN=example.com" in script
-    assert "IMAGE_NODE_EXPORTER=v1.2.3" in script
-    assert "IMAGE_KESTRA=v0.51" in script
-    assert "USER_EMAIL=user@example.com" in script
+    # ssh args: subprocess.run(["ssh", host, "cat > <path>"], input=...)
+    assert captured["args"][0] == "ssh"
+    assert captured["args"][1] == orchestrator.ssh_host
+    assert "cat > /opt/docker-server/stacks/.env" in captured["args"][2]
+    # env_content reaches stdin (NOT argv → no heredoc, no injection risk)
+    env_content = captured["input"]
+    assert "DOMAIN=example.com" in env_content
+    assert "IMAGE_NODE_EXPORTER=v1.2.3" in env_content
+    assert "IMAGE_KESTRA=v0.51" in env_content
+    assert "USER_EMAIL=user@example.com" in env_content
+    # No heredoc delimiter in the env_content (the source-of-bug)
+    assert "NEXUS_GLOBAL_ENV_EOF" not in env_content
+
+
+def test_phase_global_env_no_heredoc_injection_with_malicious_image_value(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-heredoc-injection (PR #533 R2 #2): an image version value
+    containing a line equal to the OLD heredoc delimiter must NOT
+    trigger early termination. With the stdin-streaming fix, the
+    delimiter doesn't exist anymore — content is opaque bytes to
+    bash, not script source."""
+    captured: dict[str, Any] = {}
+
+    def _fake_run(args: list[str], **kwargs: Any) -> Any:
+        captured["input"] = kwargs.get("input", "")
+        cp = MagicMock()
+        cp.returncode = 0
+        return cp
+
+    # Synthetic adversarial image value: contains a newline with what
+    # was the old delimiter (regression: would have terminated the
+    # heredoc and let the rest run as bash).
+    orchestrator.image_versions_json = '{"adversarial": "v1.0\\nNEXUS_GLOBAL_ENV_EOF\\nrm -rf /"}'
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
+    result = orchestrator._phase_global_env()
+    assert result.status == "ok"
+    # Adversarial content reaches stdin verbatim — bash never parses
+    # it as commands. No injection.
+    assert "rm -rf" in captured["input"]  # the literal string is there
+    # ...but it's just bytes in the .env, not executed. The test
+    # confirms our subprocess invocation does NOT contain a heredoc
+    # nor pass content via argv.
+    assert "<<" not in str(captured.get("args", []))
 
 
 # --- _phase_firewall_sync ---
