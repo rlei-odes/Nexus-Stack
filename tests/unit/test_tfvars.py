@@ -103,6 +103,31 @@ def test_parse_whitespace_around_equals(tmp_path: Path) -> None:
     assert config.admin_email_raw == "admin@example.com"
 
 
+def test_parse_trailing_hash_comment(tmp_path: Path) -> None:
+    """PR #535 R2 #3: hand-edited tfvars with HCL line-comments after
+    the closing quote must still parse. Legacy bash grep/sed handled
+    these fine; the original strict regex silently dropped them."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com" # primary domain\n'
+        'admin_email = "admin@example.com"  # ops contact\n'
+        'user_email = "user@example.com"\n',
+    )
+    config = parse(fixture)
+    assert config.domain == "example.com"
+    assert config.admin_email_raw == "admin@example.com"
+    assert config.user_email_raw == "user@example.com"
+
+
+def test_parse_trailing_slash_comment(tmp_path: Path) -> None:
+    """PR #535 R2 #3: HCL also accepts ``//`` line-comments."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com" // primary\nadmin_email = "a@example.com"\n',
+    )
+    assert parse(fixture).domain == "example.com"
+
+
 def test_parse_whitespace_inside_value_preserved(tmp_path: Path) -> None:
     """Leading/trailing space inside the quoted value IS preserved by
     parse() — the trim happens in derive()."""

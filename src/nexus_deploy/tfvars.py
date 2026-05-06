@@ -82,8 +82,18 @@ class GiteaIdentity:
 # Anchored with ``re.MULTILINE`` so each ``finditer`` match is one
 # physical line. Captures the quoted-string contents only — no
 # escape-handling (the project's keys never contain `"` or `\`).
+#
+# The trailing portion accepts an optional inline comment after the
+# closing quote: HCL ``#`` / ``//`` line-comment, or ``/* ... */``
+# inline. Without this, hand-edited tfvars like
+# ``domain = "example.com" # primary domain`` would silently parse
+# to an empty string (PR #535 R2 #3 — legacy bash grep/sed handled
+# the same shapes correctly because it captured between quotes
+# regardless of trailing text).
 _TFVARS_LINE = re.compile(
-    r'^\s*(?P<key>domain|admin_email|user_email)\s*=\s*"(?P<value>[^"\n\r]*)"\s*$',
+    r"^\s*(?P<key>domain|admin_email|user_email)\s*=\s*"
+    r'"(?P<value>[^"\n\r]*)"\s*'
+    r"(?:(?:#|//).*|/\*.*?\*/\s*)?$",
     re.MULTILINE,
 )
 

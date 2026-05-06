@@ -355,6 +355,65 @@ def test_state_list_ok_false_on_timeout(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert TofuRunner(tmp_path).state_list_ok() is False
 
 
+# ---- TofuRunner.diagnose_state (PR #535 R2 #2) ----
+
+
+def test_diagnose_state_returns_none_when_initialized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(stdout="some.resource\n"),
+    )
+    assert TofuRunner(tmp_path).diagnose_state() is None
+
+
+def test_diagnose_state_directory_missing(tmp_path: Path) -> None:
+    runner = TofuRunner(tmp_path / "nope")
+    reason = runner.diagnose_state()
+    assert reason is not None
+    assert "directory not found" in reason
+
+
+def test_diagnose_state_binary_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=FileNotFoundError("tofu")),
+    )
+    reason = TofuRunner(tmp_path).diagnose_state()
+    assert reason == "tofu binary not found on PATH"
+
+
+def test_diagnose_state_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["tofu"], 60.0)),
+    )
+    reason = TofuRunner(tmp_path).diagnose_state()
+    assert reason is not None
+    assert "timed out" in reason
+
+
+def test_diagnose_state_includes_stderr_tail_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Auth/backend failures (rc!=0) → reason carries stderr tail."""
+    completed = subprocess.CompletedProcess(
+        args=["tofu"],
+        returncode=1,
+        stdout="",
+        stderr="Error: Backend configuration changed: AWS credentials invalid\n",
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: completed,
+    )
+    reason = TofuRunner(tmp_path).diagnose_state()
+    assert reason is not None
+    assert "rc=1" in reason
+    assert "AWS credentials invalid" in reason
+
+
 # ---- load_r2_credentials ----
 
 

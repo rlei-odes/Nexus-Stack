@@ -107,11 +107,21 @@ def _ssh_keygen_cleanup(*targets: str) -> None:
     ssh-keygen exits non-zero, but that's expected on a fresh runner.
     Captured output is discarded — operators don't need to see the
     "Host added/removed" diagnostic for this prep step.
+
+    PR #535 R2 #1: also suppresses ``TimeoutExpired`` so a hung
+    ssh-keygen (the timeout is a defence against an unkillable child,
+    not a meaningful deadline) can't abort the deploy. ``check=False``
+    means CalledProcessError doesn't fire today, but the suppress is
+    kept defensively in case a future change flips ``check=True``.
     """
     for target in targets:
         if not target:
             continue
-        with contextlib.suppress(subprocess.CalledProcessError, OSError):
+        with contextlib.suppress(
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ):
             subprocess.run(
                 ["ssh-keygen", "-R", target],
                 check=False,
@@ -211,6 +221,22 @@ def run_pipeline(
     tofu_dir = project_root / "tofu" / "stack"
     runner = tofu_runner if tofu_runner is not None else _tofu.TofuRunner(tofu_dir=tofu_dir)
     if not runner.state_list_ok():
+        # PR #535 R2 #2: surface the actual cause when available so
+        # operators can distinguish "state not initialised" from
+        # "tofu binary missing" / "backend timed out" / "rc=N + stderr".
+        # The gate stays on state_list_ok() (preserves DI/Mock contract
+        # in tests). diagnose_state() is only called for the error
+        # message; we type-check the return so a MagicMock-generated
+        # attribute (which would yield a Mock, not a real str) cleanly
+        # falls back to the generic message instead of stringifying
+        # the Mock object into the operator-facing error.
+        reason_obj = runner.diagnose_state() if hasattr(runner, "diagnose_state") else None
+        reason: str | None = reason_obj if isinstance(reason_obj, str) else None
+        if reason:
+            raise PipelineError(
+                f"OpenTofu state at {tofu_dir} not usable: {reason} — "
+                "run the initial-setup workflow first if state is missing",
+            )
         raise PipelineError(
             f"OpenTofu state at {tofu_dir} is not initialised — "
             "run the initial-setup workflow first",

@@ -2656,8 +2656,25 @@ def _run_pipeline(args: list[str]) -> int:
         )
         return 2
 
-    # Per-phase log to stderr (orchestrator already logged its own
-    # phases; this is the pipeline-level wrap).
+    # Per-phase log to stderr — operators need visibility into which
+    # phases ran/skipped/failed/partialled. The Orchestrator records
+    # PhaseResult into result.phases but never emits stderr lines of
+    # its own; without this loop a successful run-pipeline shows only
+    # the compose-up "started and running" markers + the done banner,
+    # masking secret-sync / git-sync / kestra-secret-sync failures
+    # that surfaced via PhaseResult(status='partial' or 'failed').
+    # Mirror the legacy ``_run_pre_bootstrap`` / ``_run_all`` handlers.
+    markers = {"ok": "✓", "partial": "⚠", "failed": "✗", "skipped": "—"}
+    for label, sub_result in (
+        ("pre-bootstrap", result.pre_bootstrap),
+        ("run-all", result.run_all),
+    ):
+        sys.stderr.write(f"\n[{label}]\n")
+        for phase in sub_result.phases:
+            marker = markers.get(phase.status, "?")
+            detail = f" — {phase.detail}" if phase.detail else ""
+            sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
+
     sys.stdout.write(_pipeline.format_done_banner(result))
 
     # Exit-code dispatch: a successful deploy returns 0 — even when

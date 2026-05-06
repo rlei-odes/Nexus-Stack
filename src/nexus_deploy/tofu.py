@@ -115,21 +115,34 @@ class TofuRunner:
     def state_list_ok(self) -> bool:
         """Return True iff ``tofu state list`` exits 0.
 
-        Used as a Phase 4c pre-flight check: the pipeline aborts with
-        a clear error message before any output reads if the state is
-        uninitialised (e.g. operator forgot to run the initial-setup
-        workflow first). Replaces deploy.sh:53's
-        ``if ! tofu state list >/dev/null 2>&1; then …`` guard.
+        Convenience wrapper around :meth:`diagnose_state` for callers
+        that only need a yes/no signal (the existing ``test_tofu.py``
+        contract). New callers that want to surface a failure reason
+        to the operator should use :meth:`diagnose_state` directly.
+        """
+        return self.diagnose_state() is None
 
-        Returns False on:
-        - tofu binary missing (FileNotFoundError)
-        - tofu_dir not a directory
-        - state-list returns non-zero (state not initialised)
-        - timeout (treated as not-ok; caller surfaces a hard failure
-          via downstream behavior)
+    def diagnose_state(self) -> str | None:
+        """Return ``None`` when state is initialised + accessible.
+
+        Otherwise returns a short human-readable reason string —
+        useful for surfacing in operator-facing error messages
+        instead of the generic "state … is not initialised". PR #535
+        R2 #2: ``state_list_ok`` returned False for several distinct
+        causes (binary missing, backend auth/timeout, state really
+        empty), and the pipeline conflated them into one error
+        message that was misleading when the real problem was e.g.
+        a missing ``tofu`` binary or an R2 backend timeout.
+
+        Possible return values:
+        - ``"directory not found: <path>"``
+        - ``"tofu binary not found on PATH"``
+        - ``"tofu state list timed out after Ns"``
+        - ``"state list failed (rc=N): <stderr-tail>"``
+        - ``None`` (state OK)
         """
         if not self.tofu_dir.is_dir():
-            return False
+            return f"directory not found: {self.tofu_dir}"
         try:
             completed = subprocess.run(
                 ["tofu", "state", "list"],
@@ -139,9 +152,16 @@ class TofuRunner:
                 text=True,
                 timeout=60.0,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
-        return completed.returncode == 0
+        except FileNotFoundError:
+            return "tofu binary not found on PATH"
+        except subprocess.TimeoutExpired:
+            return "tofu state list timed out after 60s"
+        if completed.returncode == 0:
+            return None
+        tail = (completed.stderr or completed.stdout or "").strip()[-300:]
+        if tail:
+            return f"state list failed (rc={completed.returncode}): {tail}"
+        return f"state list failed (rc={completed.returncode})"
 
 
 @dataclass(frozen=True)
