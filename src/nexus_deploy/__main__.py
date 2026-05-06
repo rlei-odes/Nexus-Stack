@@ -2565,6 +2565,20 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     that downstream non-migrated bash blocks still need). Empty values
     on rc=1 (provision soft-fail) so eval clears any stale value.
 
+    SECURITY: stdout carries an Infisical bearer token. The CALLER
+    MUST redirect stdout to a file (or pipe through ``eval``) so the
+    token doesn't end up in workflow logs / terminal scrollback. The
+    established deploy.sh pattern is::
+
+        OUT=$(mktemp); echo "$OUT" >> "$RUNNER_CLEANUP_PATHS"
+        run-pre-bootstrap > "$OUT" || RC=$?
+        eval "$(cat "$OUT")"
+
+    The mktemp tempfile is auto-cleaned by the global EXIT trap.
+    DON'T invoke this command interactively without a redirection.
+    Same eval-pattern + redirection conventions as the legacy
+    ``infisical provision-admin`` CLI (#530).
+
     Required env: ``ADMIN_EMAIL``, ``REPO_NAME``, ``GITEA_REPO_OWNER``,
     ``ENABLED_SERVICES``, ``DOMAIN``, ``INFISICAL_PASS``.
     Optional env: ``WORKSPACE_BRANCH`` (default ``main``),
@@ -2591,21 +2605,24 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     domain = os.environ.get("DOMAIN") or ""
     admin_password_infisical = os.environ.get("INFISICAL_PASS") or ""
 
-    missing = [
-        name
-        for name, val in (
-            ("ADMIN_EMAIL", admin_email),
-            ("REPO_NAME", repo_name),
-            ("GITEA_REPO_OWNER", gitea_repo_owner),
-            ("ENABLED_SERVICES", enabled_str),
-            ("DOMAIN", domain),
-            ("INFISICAL_PASS", admin_password_infisical),
-        )
-        if not val
-    ]
-    if missing:
+    # Build a list of variable NAMES that are missing/empty. CodeQL's
+    # 'clear-text logging of sensitive information' rule scans for
+    # password-typed values reaching log statements; rename to
+    # `missing_names` so the comprehension makes it obvious that only
+    # the (name) projection — not the (val) — gets emitted to stderr.
+    # Caught in PR #532 R1 #1 (CodeQL false positive).
+    required_env = (
+        ("ADMIN_EMAIL", admin_email),
+        ("REPO_NAME", repo_name),
+        ("GITEA_REPO_OWNER", gitea_repo_owner),
+        ("ENABLED_SERVICES", enabled_str),
+        ("DOMAIN", domain),
+        ("INFISICAL_PASS", admin_password_infisical),
+    )
+    missing_names = [name for name, val in required_env if not val]
+    if missing_names:
         print(
-            f"run-pre-bootstrap: missing required env: {', '.join(missing)}",
+            f"run-pre-bootstrap: missing required env: {', '.join(missing_names)}",
             file=sys.stderr,
         )
         return 2

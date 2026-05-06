@@ -1603,7 +1603,7 @@ def test_phase_service_env_happy_path(
         gitea_repo_owner=None,
     )
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_service_env(MagicMock())
+    result = orchestrator._phase_service_env()
     assert result.status == "ok"
     assert "rendered=2" in result.detail
 
@@ -1632,7 +1632,7 @@ def test_phase_service_env_partial_when_failures(
         gitea_repo_owner=None,
     )
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_service_env(MagicMock())
+    result = orchestrator._phase_service_env()
     assert result.status == "partial"
     assert "rendered=1" in result.detail
     assert "failed=1" in result.detail
@@ -1654,7 +1654,7 @@ def test_phase_service_env_failed_on_service_env_error(
         _raises,
     )
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_service_env(MagicMock())
+    result = orchestrator._phase_service_env()
     assert result.status == "failed"
     assert "SFTPGo" in result.detail
 
@@ -1679,7 +1679,7 @@ def test_phase_stack_sync_happy_path(
         lambda *_a, **_kw: fake,
     )
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_stack_sync(MagicMock())
+    result = orchestrator._phase_stack_sync()
     assert result.status == "ok"
     assert "rsync_synced=2" in result.detail
     assert "cleanup_removed=3" in result.detail
@@ -1702,7 +1702,7 @@ def test_phase_stack_sync_failed_when_cleanup_unparseable(
         lambda *_a, **_kw: fake,
     )
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_stack_sync(MagicMock())
+    result = orchestrator._phase_stack_sync()
     assert result.status == "failed"
     assert "no parseable RESULT" in result.detail
 
@@ -1724,7 +1724,7 @@ def test_phase_firewall_configure_zero_entry(
     )
     orchestrator.firewall_json = "{}"
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_firewall_configure(MagicMock())
+    result = orchestrator._phase_firewall_configure()
     assert result.status == "ok"
     assert "zero-entry" in result.detail
 
@@ -1760,7 +1760,7 @@ def test_phase_firewall_configure_partial_when_skipped(
     )
     orchestrator.firewall_json = '{"postgres-1": {"port": 5432}, "kestra-1": {"port": 8080}}'
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_firewall_configure(MagicMock())
+    result = orchestrator._phase_firewall_configure()
     assert result.status == "partial"
     assert "skipped=1" in result.detail
 
@@ -1780,7 +1780,7 @@ def test_phase_firewall_configure_failed_on_value_error(
         _raises,
     )
     orchestrator.stacks_dir = tmp_path
-    result = orchestrator._phase_firewall_configure(MagicMock())
+    result = orchestrator._phase_firewall_configure()
     assert result.status == "failed"
     assert "REDPANDA_KAFKA_DOMAIN" in result.detail
 
@@ -1796,7 +1796,7 @@ def test_phase_compose_up_happy_path(
         "nexus_deploy.orchestrator._compose_runner.run_compose_up",
         lambda *_a, **_kw: ComposeUpResult(started=10, failed=0),
     )
-    result = orchestrator._phase_compose_up(MagicMock())
+    result = orchestrator._phase_compose_up()
     assert result.status == "ok"
     assert "started=10" in result.detail
 
@@ -1812,7 +1812,7 @@ def test_phase_compose_up_partial_on_failures(
         "nexus_deploy.orchestrator._compose_runner.run_compose_up",
         lambda *_a, **_kw: ComposeUpResult(started=8, failed=2),
     )
-    result = orchestrator._phase_compose_up(MagicMock())
+    result = orchestrator._phase_compose_up()
     assert result.status == "partial"
     assert "started=8" in result.detail
     assert "failed=2" in result.detail
@@ -1834,7 +1834,7 @@ def test_phase_infisical_provision_happy_path(
         ),
     )
     orchestrator.admin_password_infisical = "pw"
-    result = orchestrator._phase_infisical_provision(MagicMock())
+    result = orchestrator._phase_infisical_provision()
     assert result.status == "ok"
     assert orchestrator.state.infisical_token == "real-token"
     assert orchestrator.state.project_id == "proj-real"
@@ -1857,7 +1857,7 @@ def test_phase_infisical_provision_partial_on_dropped_creds(
     # partial result.
     orchestrator.state.infisical_token = None
     orchestrator.admin_password_infisical = "pw"
-    result = orchestrator._phase_infisical_provision(MagicMock())
+    result = orchestrator._phase_infisical_provision()
     assert result.status == "partial"
     assert "no usable credentials" in result.detail
     assert orchestrator.state.infisical_token is None
@@ -1868,7 +1868,7 @@ def test_phase_infisical_provision_skipped_when_password_missing(
 ) -> None:
     """No admin password → status=skipped."""
     orchestrator.admin_password_infisical = None
-    result = orchestrator._phase_infisical_provision(MagicMock())
+    result = orchestrator._phase_infisical_provision()
     assert result.status == "skipped"
     assert "admin_password_infisical" in result.detail
 
@@ -1881,7 +1881,7 @@ def test_run_pre_bootstrap_runs_phases_in_order(
     invocation_order: list[str] = []
 
     def _make_phase(name: str) -> Any:
-        def _phase(self: Any, _ssh: Any) -> PhaseResult:
+        def _phase(self: Any) -> PhaseResult:
             invocation_order.append(name)
             return PhaseResult(name=name, status="ok")
 
@@ -1920,7 +1920,7 @@ def test_run_pre_bootstrap_aborts_on_failure(
     invocation_order: list[str] = []
 
     def _make_phase(name: str, status: Literal["ok", "failed"]) -> Any:
-        def _phase(self: Any, _ssh: Any) -> PhaseResult:
+        def _phase(self: Any) -> PhaseResult:
             invocation_order.append(name)
             return PhaseResult(name=name, status=status)
 
@@ -1950,7 +1950,7 @@ def test_run_pre_bootstrap_partial_continues_to_downstream(
     invocation_order: list[str] = []
 
     def _make_phase(name: str, status: Literal["ok", "partial"]) -> Any:
-        def _phase(self: Any, _ssh: Any) -> PhaseResult:
+        def _phase(self: Any) -> PhaseResult:
             invocation_order.append(name)
             return PhaseResult(name=name, status=status)
 
@@ -1977,6 +1977,96 @@ def test_run_pre_bootstrap_partial_continues_to_downstream(
     assert len(invocation_order) == 5
     assert result.has_partial
     assert not result.has_hard_failure
+
+
+def test_run_pre_bootstrap_resets_stale_credentials(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-state-reset (PR #532 R1 #4): re-running on the same instance
+    after a previous run that produced partial credentials must NOT
+    leak the stale token/project_id into the second run's stdout.
+    Reset happens at the top of run_pre_bootstrap before any phase
+    fires."""
+
+    # Simulate a first run that left stale credentials on state.
+    orchestrator.state.infisical_token = "stale-token-from-prior-run"
+    orchestrator.state.project_id = "stale-proj-from-prior-run"
+
+    # Mock all phases to ok except infisical-provision which produces
+    # status='partial' WITHOUT populating state (simulating the bug
+    # condition: dropped credentials).
+    def _ok_phase(_self: Any) -> PhaseResult:
+        return PhaseResult(name="ok-phase", status="ok")
+
+    def _partial_no_creds(_self: Any) -> PhaseResult:
+        return PhaseResult(name="infisical-provision", status="partial", detail="dropped")
+
+    monkeypatch.setattr(Orchestrator, "_phase_service_env", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_firewall_configure", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_compose_up", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_infisical_provision", _partial_no_creds)
+
+    result = orchestrator.run_pre_bootstrap()
+    assert result.has_partial
+    # Stale credentials MUST be cleared, even though the
+    # infisical-provision phase didn't populate fresh ones.
+    assert orchestrator.state.infisical_token is None
+    assert orchestrator.state.project_id is None
+
+
+def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """R-gitea-guard (PR #532 R1 #3): when ANY workspace coord is
+    empty (e.g. gitea_user_password=None), the Gitea workspace block
+    is NOT appended — refuses to write a broken block with empty
+    PASSWORD/AUTHOR fields. Mirrors the CLI handler's
+    workspace_coords_complete check."""
+    from nexus_deploy.service_env import ServiceEnvResult, ServiceRenderResult
+
+    fake_result = ServiceEnvResult(
+        services=(ServiceRenderResult(service="postgres", status="rendered"),),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.render_all_env_files",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    append_called = False
+
+    def _spy_append(*_a: Any, **_kw: Any) -> tuple[str, ...]:
+        nonlocal append_called
+        append_called = True
+        return ()
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.append_gitea_workspace_block",
+        _spy_append,
+    )
+
+    # Set repo_owner + repo_name (the original lax check would've
+    # passed) but leave gitea_user_password=None — the new full check
+    # must catch this.
+    orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_repo_owner="owner",
+        gitea_user_email="ops@example.com",
+    )
+    orchestrator.gitea_user_username = "ops"
+    orchestrator.gitea_user_password = None  # missing — must skip the append
+    orchestrator.stacks_dir = tmp_path
+
+    result = orchestrator._phase_service_env()
+    assert result.status == "ok"
+    assert "gitea_appended=0" in result.detail
+    assert append_called is False, (
+        "append_gitea_workspace_block must NOT be called when any coord is empty"
+    )
 
 
 # ---------------------------------------------------------------------------

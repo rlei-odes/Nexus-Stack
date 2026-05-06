@@ -687,17 +687,17 @@ class Orchestrator:
     #    helpers in this PR).
     # ---------------------------------------------------------------------
 
-    def _phase_service_env(self, ssh: SSHClient) -> PhaseResult:
+    def _phase_service_env(self) -> PhaseResult:
         """Render per-service ``stacks/<svc>/.env`` files locally + (when
         Gitea is enabled) append the Gitea workspace block to the
         Gitea-integrated stacks. Replaces deploy.sh's
         ``service-env --enabled`` invocation (Modul 3.4c, #527).
 
-        Local-only: no SSH calls. The ``ssh`` parameter is present for
-        signature consistency with the run_pre_bootstrap loop; unused
-        here.
+        Local-only — no SSH context needed. Pre-bootstrap phases drop
+        the ``ssh`` arg from their signature (caught in PR #532 R1 #2:
+        passing a None-cast-as-SSHClient is a runtime-contract footgun
+        even if the current body uses ``del ssh``).
         """
-        del ssh  # unused — local-only phase
         try:
             result = _service_env.render_all_env_files(
                 self.config,
@@ -728,15 +728,24 @@ class Orchestrator:
             )
 
         # Optionally append the Gitea workspace block. Mirrors the CLI
-        # handler's logic: only when ALL the workspace coords are present
-        # AND gitea is enabled.
+        # handler's `workspace_coords_complete` check exactly — ALL six
+        # coords (repo_url, username, password, author_name, author_email,
+        # repo_name) must be non-empty, otherwise we'd write a
+        # broken Gitea block (empty PASSWORD/AUTHOR fields) that's
+        # harder to diagnose than a missing block. Caught in PR #532
+        # R1 #3.
         gitea_appended_count = 0
-        if "gitea" in self.enabled_services and all(
+        gitea_user_email_value = self.gitea_user_email or self.bootstrap_env.gitea_user_email
+        workspace_coords_complete = all(
             (
                 self.bootstrap_env.gitea_repo_owner,
                 self.repo_name,
+                self.gitea_user_username,
+                self.gitea_user_password,
+                gitea_user_email_value,
             ),
-        ):
+        )
+        if "gitea" in self.enabled_services and workspace_coords_complete:
             gitea_repo_url = (
                 f"http://gitea:3000/{self.bootstrap_env.gitea_repo_owner}/{self.repo_name}.git"
             )
@@ -746,7 +755,7 @@ class Orchestrator:
                     gitea_username=self.gitea_user_username or "",
                     gitea_password=self.gitea_user_password or "",
                     git_author_name=self.gitea_user_username or "",
-                    git_author_email=self.gitea_user_email or "",
+                    git_author_email=gitea_user_email_value or "",
                     repo_name=self.repo_name,
                     workspace_branch=self.workspace_branch,
                 )
@@ -790,16 +799,16 @@ class Orchestrator:
             ),
         )
 
-    def _phase_stack_sync(self, ssh: SSHClient) -> PhaseResult:
+    def _phase_stack_sync(self) -> PhaseResult:
         """Rsync each enabled stack to ``/opt/docker-server/stacks/<svc>/``
         and clean up disabled stack directories on the server. Replaces
         deploy.sh's ``stack-sync --enabled`` invocation (Modul 3.3, #523).
 
         Uses ``run_stack_sync`` which manages its own rsync subprocess
         + cleanup ssh.run_script invocation independently — the
-        orchestrator's shared SSHClient is not consumed here.
+        orchestrator's shared SSHClient is not consumed here, so the
+        signature drops the ``ssh`` arg.
         """
-        del ssh  # run_stack_sync manages its own subprocess invocations
         try:
             result = _stack_sync.run_stack_sync(
                 self.stacks_dir / "stacks",
@@ -847,7 +856,7 @@ class Orchestrator:
             detail=(f"rsync_synced={result.synced} cleanup_removed={cleanup_removed}"),
         )
 
-    def _phase_firewall_configure(self, ssh: SSHClient) -> PhaseResult:
+    def _phase_firewall_configure(self) -> PhaseResult:
         """Generate per-service ``docker-compose.firewall.yml`` overrides
         and (when RedPanda has firewall ports) the dual-listener override
         + substituted ``redpanda-firewall.yaml``. Replaces deploy.sh's
@@ -857,7 +866,6 @@ class Orchestrator:
         on the runner. The subsequent server-side scp + orphan-cleanup
         loop stays in deploy.sh for now (Phase 4b will migrate it).
         """
-        del ssh  # local-only phase
         try:
             gen, write = _firewall.configure(
                 firewall_json=self.firewall_json,
@@ -925,16 +933,15 @@ class Orchestrator:
             detail=(f"rendered={len(gen.compiled)} redpanda={'yes' if gen.redpanda else 'no'}"),
         )
 
-    def _phase_compose_up(self, ssh: SSHClient) -> PhaseResult:
+    def _phase_compose_up(self) -> PhaseResult:
         """Start containers in parallel via
         :func:`compose_runner.run_compose_up`. Replaces deploy.sh's
         ``compose up --enabled`` invocation (Modul 2.2a, #505).
 
         ``run_compose_up`` invokes ``ssh nexus 'bash -s'`` via
         subprocess internally — the orchestrator's shared SSHClient
-        is not consumed here.
+        is not consumed here, so the signature drops the ``ssh`` arg.
         """
-        del ssh  # run_compose_up manages its own ssh script invocation
         try:
             result = _compose_runner.run_compose_up(self.enabled_services)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
@@ -961,7 +968,7 @@ class Orchestrator:
             detail=f"started={result.started}",
         )
 
-    def _phase_infisical_provision(self, ssh: SSHClient) -> PhaseResult:
+    def _phase_infisical_provision(self) -> PhaseResult:
         """Bootstrap the Infisical admin + workspace. Replaces deploy.sh's
         ``infisical provision-admin`` invocation (Modul 3.4f, #530).
 
@@ -970,8 +977,10 @@ class Orchestrator:
         ``_phase_infisical_bootstrap`` phase. Read the constructor's
         ``project_id`` / ``infisical_token`` fields as fallback (so a
         post-bootstrap-only test can still bypass this phase).
+
+        ``provision_admin`` manages its own ssh.run_script call —
+        no shared SSHClient context, so the signature drops ``ssh``.
         """
-        del ssh  # provision_admin manages its own ssh.run_script call
         admin_email = self.bootstrap_env.admin_email or ""
         admin_password = self.admin_password_infisical or ""
         if not admin_email or not admin_password:
@@ -1027,9 +1036,13 @@ class Orchestrator:
         """Run the pre-bootstrap pipeline: service-env → stack-sync →
         firewall-configure → compose-up → infisical-provision.
 
-        Resets ``self.results`` so re-invoking the same instance does
-        not duplicate prior phase outputs. ``self.state`` is left as-is
-        (production callers create a fresh ``Orchestrator`` per run).
+        Resets ``self.results`` AND the credentials slice of
+        ``self.state`` (``infisical_token`` + ``project_id``) so a
+        re-invocation on the same instance can't leak stale credentials
+        from a prior run into the current rc=1 stdout emission. Caught
+        in PR #532 R1 #4. Other state fields stay (gitea_token /
+        woodpecker_* / fork_*) since they're populated by post-bootstrap
+        phases and a re-run would naturally re-set them.
 
         Failure of any phase aborts the run; partial-success phases
         continue. Same rc=0/1/2 dispatch contract as :meth:`run_all`.
@@ -1038,17 +1051,16 @@ class Orchestrator:
         — the wrapped helpers each manage their own subprocess / ssh
         invocations independently. That's why this method doesn't
         open an ExitStack-managed ssh context (in contrast to
-        :meth:`run_all`).
+        :meth:`run_all`), and why pre-bootstrap phases drop the ``ssh``
+        arg from their signature (per PR #532 R1 #2 — passing a
+        None-cast-as-SSHClient is a runtime-contract footgun).
         """
         self.results = []
-        # ssh arg is unused by every pre-bootstrap phase but kept for
-        # signature consistency. Pass a None placeholder cast for type-
-        # checker; phases that *would* use it get their own context
-        # internally via the wrapped helper.
-        from typing import cast as _cast
-
-        ssh_placeholder = _cast("SSHClient", None)
-        phases: list[Callable[[SSHClient], PhaseResult]] = [
+        # Reset credentials so a re-run can't carry over stale token/
+        # project_id from a previous invocation that produced rc=1.
+        self.state.infisical_token = None
+        self.state.project_id = None
+        phases: list[Callable[[], PhaseResult]] = [
             self._phase_service_env,
             self._phase_stack_sync,
             self._phase_firewall_configure,
@@ -1056,7 +1068,7 @@ class Orchestrator:
             self._phase_infisical_provision,
         ]
         for phase in phases:
-            result = phase(ssh_placeholder)
+            result = phase()
             self.results.append(result)
             if result.status == "failed":
                 break
