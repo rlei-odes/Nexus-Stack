@@ -124,21 +124,23 @@ jobs:
           tofu_version: 1.10.0
 
       - name: Install uv
-        # Required by `scripts/deploy.sh` for the `nexus_deploy` Python
-        # package (#505 phase-1: config.py replaces deploy.sh's
-        # SECRETS_JSON jq pipeline). Pinned to the same version the
-        # python-tests CI uses so behaviour matches across workflows.
+        # Required by the `nexus_deploy` Python package — since #505
+        # Phase 4c, `python -m nexus_deploy run-pipeline` IS the
+        # deploy entrypoint (deploy.sh has been deleted). Pinned to
+        # the same version the python-tests CI uses so behaviour
+        # matches across workflows.
         uses: astral-sh/setup-uv@v3
         with:
           version: "0.11.7"
           enable-cache: true
 
       - name: Sync nexus_deploy runtime deps
-        # Pre-resolve the lockfile-pinned runtime deps now so deploy.sh's
-        # `uv run python -m nexus_deploy ...` calls don't hit the network
-        # mid-deploy. `--frozen` requires uv.lock to match pyproject.toml
-        # (which CI's python-tests already enforces); `--no-dev` skips
-        # ruff/mypy/pytest etc. since we only need runtime here.
+        # Pre-resolve the lockfile-pinned runtime deps now so the
+        # `python -m nexus_deploy run-pipeline` step below doesn't
+        # hit the network mid-deploy. `--frozen` requires uv.lock to
+        # match pyproject.toml (which CI's python-tests already
+        # enforces); `--no-dev` skips ruff/mypy/pytest etc. since we
+        # only need runtime here.
         run: uv sync --frozen --no-dev
 
       - name: Install cloudflared

@@ -18,7 +18,9 @@ Coverage targets:
 - R-banner-renders: format_done_banner produces a stable shape.
 - R-options-defaults: missing PipelineOptions fields default
   cleanly.
-- R-rc-mapping: CLI handler maps 0/1/2 from the result + exception.
+- R-rc-mapping: CLI handler returns 0 for clean OR partial runs
+  (partial → stderr warning, never a non-zero exit) and 2 for hard
+  failures. The rc=1-on-partial path was removed in PR #535 R0.
 """
 
 from __future__ import annotations

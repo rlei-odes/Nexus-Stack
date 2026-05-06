@@ -87,13 +87,15 @@ Enforced via CI on every PR (`.github/workflows/python-tests.yml`):
 | Coverage | `pytest --cov --cov-fail-under=80` | ≥80% line coverage on `src/nexus_deploy/` |
 | Shell | `shellcheck scripts/*.sh` | zero violations on remaining bash |
 
-## During the migration
+## Historical notes (Phase 0-4b, kept for archive)
 
-While both code paths coexist (Phase 0-3):
+While both code paths coexisted (Phase 0-4b, before Phase 4c removed deploy.sh):
 
-- **`scripts/deploy.sh` stays the entry point** for `gh workflow run spin-up.yml`. It progressively shells out to `python -m nexus_deploy <command>` for migrated functionality.
-- **New deployment features**: if the relevant module has been migrated, implement in Python; otherwise, in bash. Don't double-implement.
-- **Existing Python scripts** elsewhere in the repo (e.g., `stacks/*/connectivity-test.py`) are out of scope — this migration only covers the deploy orchestration.
+- `scripts/deploy.sh` was the entry point for `gh workflow run spin-up.yml` and progressively shelled out to `python -m nexus_deploy <command>` for already-migrated functionality.
+- New deployment features were added in Python when the relevant module was migrated, otherwise in bash — to avoid double-implementation.
+- Existing Python scripts elsewhere in the repo (e.g. `stacks/*/connectivity-test.py`) were out of scope; the migration only covered deploy orchestration.
+
+After Phase 4c, all of the above is moot: the only entry point is `python -m nexus_deploy run-pipeline`, and there is no bash deploy path to keep parity with.
 
 ## See also
 

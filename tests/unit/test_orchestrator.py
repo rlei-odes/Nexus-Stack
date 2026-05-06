@@ -2112,10 +2112,10 @@ def test_run_pre_bootstrap_resets_stale_credentials(
     # back to ``str | None`` re-widens the type so mypy doesn't
     # treat the asserts as dead code. Pre-existing CI failure on
     # main since #532 R1 #4 — fixed here.
-    assert cast("str | None", orchestrator.state.infisical_token) is None
-    assert cast("str | None", orchestrator.state.project_id) is None
-    assert cast("str | None", orchestrator.infisical_token) is None
-    assert cast("str | None", orchestrator.project_id) is None
+    assert cast(str | None, orchestrator.state.infisical_token) is None
+    assert cast(str | None, orchestrator.state.project_id) is None
+    assert cast(str | None, orchestrator.infisical_token) is None
+    assert cast(str | None, orchestrator.project_id) is None
 
 
 def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
