@@ -1309,8 +1309,17 @@ class Orchestrator:
                 str(p.relative_to(stacks_dir_local))
                 for p in stacks_dir_local.glob("*/docker-compose.firewall.yml")
             )
+            # PR #533 R4 #2: scope `|| true` to the ls pipeline only,
+            # NOT to the cd. The previous form `cd … 2>/dev/null && ls
+            # … || true` masked failure of cd (e.g. /opt/.../stacks
+            # missing on the server), letting `remote_overrides` look
+            # empty → no orphans detected → phase reports ok despite
+            # stale overrides remaining. Now `set -e` + bare cd fails
+            # fast on missing stacks dir; only the ls's "no matches"
+            # exit-1 is tolerated by the inner `|| true`.
             remote_listing = _remote.ssh_run_script(
-                f"cd {_REMOTE_STACKS_DIR} 2>/dev/null && "
+                f"set -e\n"
+                f"cd {_REMOTE_STACKS_DIR}\n"
                 "ls */docker-compose.firewall.yml 2>/dev/null | sort || true",
                 host=self.ssh_host,
                 check=True,
@@ -1376,9 +1385,17 @@ class Orchestrator:
                     host=self.ssh_host,
                     check=False,
                 )
-                # chown 101:101 (redpanda user); fall back to chmod 777
-                # if sudo isn't available (CI runner without passwordless
-                # sudo).
+                # chown 101:101 (RedPanda's container user) on the
+                # config dir so the rootless container can read it.
+                # Fall back to chmod 777 when chown fails — typically
+                # because uid 101 doesn't exist on the host as a real
+                # user (some minimal images / FS layouts disallow
+                # chown to a numeric uid that's not in /etc/passwd).
+                # Both paths use sudo: the nexus user can't
+                # chown/chmod files owned by 101:101 from a previous
+                # firewall-on deploy without escalation. PR #533 R4 #3
+                # corrected the comment — was: "sudo isn't available"
+                # which contradicted the still-sudo'd fallback.
                 chown_script = (
                     f"sudo chown -R 101:101 {_REMOTE_STACKS_DIR}/redpanda/config "
                     f"|| sudo chmod -R 777 {_REMOTE_STACKS_DIR}/redpanda/config"
@@ -1624,8 +1641,13 @@ class Orchestrator:
            Budget: 180s (60x3s; faster because warm cache).
 
         Skipped when kestra not enabled OR Infisical creds missing.
-        Partial when wait_ready times out (the secret-sync still
-        attempts but may not succeed); failed only on transport error.
+        Partial when EITHER wait_ready times out (we then skip
+        run_sync_for_stack entirely — pushing secrets to a Kestra
+        whose basic-auth layer isn't ready yet would 401) OR the
+        sync produced any folder-fetch failure. Failed only on
+        transport error. Docstring corrected in PR #533 R4 #1
+        (was: "secret-sync still attempts" — not what the
+        implementation does).
         """
         if "kestra" not in self.enabled_services:
             return PhaseResult(
