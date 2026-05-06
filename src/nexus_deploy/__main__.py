@@ -2584,8 +2584,12 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     Optional env: ``WORKSPACE_BRANCH`` (default ``main``),
     ``GITEA_USER_USERNAME``, ``GITEA_USER_EMAIL``, ``GITEA_USER_PASS``,
     ``OM_PRINCIPAL_DOMAIN``, ``SSH_HOST_ALIAS`` (default ``nexus``),
-    ``FIREWALL_RULES_JSON`` (default ``{}``), ``STACKS_DIR`` (default
-    ``$PWD``).
+    ``FIREWALL_RULES_JSON`` (default ``{}``), ``PROJECT_ROOT`` (default
+    ``$PWD``) — the repo checkout root; phases derive
+    ``$PROJECT_ROOT/stacks`` for per-service compose paths. (Renamed
+    from ``STACKS_DIR`` in PR #532 R2 #1: deploy.sh's ``STACKS_DIR``
+    is the actual stacks dir, so reusing the name produced
+    ``.../stacks/stacks/...``.)
 
     Exit codes:
     - 0: every phase ok or skipped.
@@ -2634,9 +2638,8 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     gitea_user_password = os.environ.get("GITEA_USER_PASS") or None
     ssh_host = os.environ.get("SSH_HOST_ALIAS") or "nexus"
     firewall_json = os.environ.get("FIREWALL_RULES_JSON") or "{}"
-    stacks_dir = (
-        Path(os.environ.get("STACKS_DIR") or "") if os.environ.get("STACKS_DIR") else Path.cwd()
-    )
+    project_root_env = os.environ.get("PROJECT_ROOT")
+    project_root = Path(project_root_env) if project_root_env else Path.cwd()
 
     try:
         config = NexusConfig.from_secrets_json(sys.stdin.read())
@@ -2667,7 +2670,7 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         ssh_host=ssh_host,
         domain=domain,
         firewall_json=firewall_json,
-        stacks_dir=stacks_dir,
+        project_root=project_root,
         admin_password_infisical=admin_password_infisical,
     )
 

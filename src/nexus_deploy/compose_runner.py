@@ -319,6 +319,7 @@ ScriptRunner = Callable[[str], subprocess.CompletedProcess[str]]
 def run_compose_up(
     enabled: list[str],
     *,
+    host: str = "nexus",
     dify_storage_prep: bool | None = None,
     script_runner: ScriptRunner | None = None,
 ) -> ComposeUpResult:
@@ -327,6 +328,11 @@ def run_compose_up(
     ``dify_storage_prep`` defaults to True iff ``"dify"`` is in
     ``enabled`` — caller can override (tests pass False to skip the
     chown block, production lets the default fire).
+
+    ``host`` selects which ssh-config alias the remote script runs
+    against. Defaults to ``"nexus"`` for back-compat with existing
+    callers; orchestrator passes its ``self.ssh_host`` so a non-default
+    ``SSH_HOST_ALIAS`` reaches every phase uniformly (PR #532 R2 #2).
 
     Returns ``ComposeUpResult(started=0, failed=len(enabled))`` if the
     remote script produced no parseable RESULT line — same defensive
@@ -340,7 +346,7 @@ def run_compose_up(
 
     script = render_remote_script(parents=parents, leaves=leaves, dify_storage_prep=actual_dify)
 
-    run_script = script_runner or (lambda s: _remote.ssh_run_script(s))
+    run_script = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
     completed = run_script(script)
 
     # Forward remote per-service ✓/✗ + warnings to local stderr (Modul-1.2

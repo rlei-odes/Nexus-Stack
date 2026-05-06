@@ -90,11 +90,14 @@ class OrchestratorState:
     # Phase 4a (#505): infisical_token + project_id are now POPULATED by
     # _phase_infisical_provision (running BEFORE _phase_infisical_bootstrap)
     # instead of being inherited as orchestrator inputs. Pre-bootstrap
-    # callers don't need to pass them in the constructor; the post-bootstrap
-    # phases read from state. The Orchestrator.infisical_token /
-    # .project_id constructor fields stay as fallbacks for callers that
-    # already have the credentials (e.g. testing the post-bootstrap path
-    # in isolation).
+    # callers don't need to pass them in the constructor.
+    #
+    # Note: post-bootstrap phases currently gate on the
+    # ``self.infisical_token`` / ``self.project_id`` orchestrator fields,
+    # not on these state mirrors. ``_phase_infisical_provision`` writes
+    # to BOTH (state + self.field) so a single full-pipeline run sees
+    # the values everywhere. State stays as the canonical record for
+    # the CLI's stdout emission. Caught in PR #532 R2 #5.
     infisical_token: str | None = None
     project_id: str | None = None
 
@@ -173,7 +176,14 @@ class Orchestrator:
     cf_client_id: str | None = None  # Cloudflare Access Service Token id
     cf_client_secret: str | None = None  # Cloudflare Access Service Token secret
     persistent_volume_id: str = "0"  # Hetzner Cloud volume id; "0" = no volume
-    stacks_dir: Path = field(default_factory=lambda: Path.cwd())
+    # Repository checkout root on the runner — phases derive
+    # ``project_root / "stacks"`` for per-service compose/.env paths.
+    # Renamed from ``stacks_dir`` in PR #532 R2 #1: deploy.sh defines
+    # ``STACKS_DIR=$PROJECT_ROOT/stacks`` (the actual stacks dir), so
+    # wiring that env var into a field of the same name and then
+    # appending ``/"stacks"`` produced a broken ``.../stacks/stacks/...``
+    # path. The CLI handler now reads ``PROJECT_ROOT`` instead.
+    project_root: Path = field(default_factory=lambda: Path.cwd())
     firewall_json: str = "{}"  # raw `tofu output -json firewall_rules` body
     domain: str = ""  # for firewall RedPanda rendering
     admin_password_infisical: str | None = None  # for infisical provision-admin
@@ -674,17 +684,21 @@ class Orchestrator:
     # The pre-bootstrap phases come in two clusters:
     #
     # 1. **Local-only** (don't need an SSHClient): service-env render,
-    #    firewall override generation. They're declared with an ``ssh``
-    #    parameter for signature consistency with the existing phases
-    #    (so the run_pre_bootstrap loop can call them uniformly), but
-    #    the parameter goes unused.
+    #    firewall override generation.
     #
     # 2. **Server-side** (use the wrapped helper's own ssh.run_script
     #    plumbing): stack-sync, compose up, infisical provision-admin.
     #    These don't need the orchestrator's shared SSHClient because
-    #    their helper functions invoke ``ssh nexus`` via subprocess
-    #    independently (legacy compatibility — we don't refactor those
-    #    helpers in this PR).
+    #    their helper functions invoke ``ssh <host>`` via subprocess
+    #    independently — they accept ``host=self.ssh_host`` so a
+    #    non-default ``SSH_HOST_ALIAS`` reaches every phase uniformly
+    #    (caught in PR #532 R2 #2).
+    #
+    # Both clusters' phase methods take no parameters (no shared
+    # SSHClient, no ssh arg) — the run_pre_bootstrap loop calls them as
+    # ``phase()``. The previous design passed a None-cast-as-SSHClient
+    # for signature consistency with the existing phases; that was a
+    # runtime-contract footgun and was removed in PR #532 R1 #2.
     # ---------------------------------------------------------------------
 
     def _phase_service_env(self) -> PhaseResult:
@@ -703,7 +717,7 @@ class Orchestrator:
                 self.config,
                 self.bootstrap_env,
                 self.enabled_services,
-                stacks_dir=self.stacks_dir / "stacks",
+                stacks_dir=self.project_root / "stacks",
             )
         except _service_env.ServiceEnvError as exc:
             # Hard-fail conditions (e.g. SFTPGo with empty password) —
@@ -762,7 +776,7 @@ class Orchestrator:
                 appended = _service_env.append_gitea_workspace_block(
                     cfg,
                     self.enabled_services,
-                    stacks_dir=self.stacks_dir / "stacks",
+                    stacks_dir=self.project_root / "stacks",
                 )
                 gitea_appended_count = len(appended)
             except OSError as exc:
@@ -811,7 +825,7 @@ class Orchestrator:
         """
         try:
             result = _stack_sync.run_stack_sync(
-                self.stacks_dir / "stacks",
+                self.project_root / "stacks",
                 self.enabled_services,
                 host=self.ssh_host,
             )
@@ -869,7 +883,7 @@ class Orchestrator:
         try:
             gen, write = _firewall.configure(
                 firewall_json=self.firewall_json,
-                stacks_dir=self.stacks_dir,
+                stacks_dir=self.project_root,
                 domain=self.domain,
             )
         except (ValueError, FileNotFoundError) as exc:
@@ -943,7 +957,10 @@ class Orchestrator:
         is not consumed here, so the signature drops the ``ssh`` arg.
         """
         try:
-            result = _compose_runner.run_compose_up(self.enabled_services)
+            result = _compose_runner.run_compose_up(
+                self.enabled_services,
+                host=self.ssh_host,
+            )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return PhaseResult(
                 name="compose-up",
@@ -993,6 +1010,7 @@ class Orchestrator:
             result = _infisical.provision_admin(
                 admin_email=admin_email,
                 admin_password=admin_password,
+                host=self.ssh_host,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return PhaseResult(
@@ -1036,13 +1054,17 @@ class Orchestrator:
         """Run the pre-bootstrap pipeline: service-env → stack-sync →
         firewall-configure → compose-up → infisical-provision.
 
-        Resets ``self.results`` AND the credentials slice of
-        ``self.state`` (``infisical_token`` + ``project_id``) so a
-        re-invocation on the same instance can't leak stale credentials
-        from a prior run into the current rc=1 stdout emission. Caught
-        in PR #532 R1 #4. Other state fields stay (gitea_token /
-        woodpecker_* / fork_*) since they're populated by post-bootstrap
-        phases and a re-run would naturally re-set them.
+        Resets ``self.results`` AND the credentials on BOTH
+        ``self.state`` (``infisical_token`` + ``project_id``) and the
+        orchestrator's own ``self.infisical_token`` / ``self.project_id``
+        fields, so a re-invocation on the same instance can't leak
+        stale credentials from a prior run — neither into the current
+        rc=1 stdout emission (state) nor into a downstream call to
+        :meth:`run_all` whose post-bootstrap phases gate on the fields.
+        Caught in PR #532 R1 #4 (state) and R2 #3 (fields). Other state
+        slots (gitea_token / woodpecker_* / fork_*) stay because they're
+        populated by post-bootstrap phases and a re-run would naturally
+        re-set them.
 
         Failure of any phase aborts the run; partial-success phases
         continue. Same rc=0/1/2 dispatch contract as :meth:`run_all`.
@@ -1056,10 +1078,16 @@ class Orchestrator:
         None-cast-as-SSHClient is a runtime-contract footgun).
         """
         self.results = []
-        # Reset credentials so a re-run can't carry over stale token/
-        # project_id from a previous invocation that produced rc=1.
+        # Reset credentials on BOTH state mirrors and the orchestrator's
+        # own fields so a re-run can't carry over stale token / project_id
+        # from a previous invocation that produced rc=1. State guards the
+        # rc=1 stdout emission; the self.fields guard the post-bootstrap
+        # phases (infisical-bootstrap, secret-sync) when the same instance
+        # is later passed to run_all. Caught in PR #532 R2 #3.
         self.state.infisical_token = None
         self.state.project_id = None
+        self.infisical_token = None
+        self.project_id = None
         phases: list[Callable[[], PhaseResult]] = [
             self._phase_service_env,
             self._phase_stack_sync,

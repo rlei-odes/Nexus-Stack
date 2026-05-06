@@ -1602,7 +1602,7 @@ def test_phase_service_env_happy_path(
         admin_email="admin@example.com",
         gitea_repo_owner=None,
     )
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_service_env()
     assert result.status == "ok"
     assert "rendered=2" in result.detail
@@ -1631,7 +1631,7 @@ def test_phase_service_env_partial_when_failures(
         admin_email="admin@example.com",
         gitea_repo_owner=None,
     )
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_service_env()
     assert result.status == "partial"
     assert "rendered=1" in result.detail
@@ -1653,7 +1653,7 @@ def test_phase_service_env_failed_on_service_env_error(
         "nexus_deploy.orchestrator._service_env.render_all_env_files",
         _raises,
     )
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_service_env()
     assert result.status == "failed"
     assert "SFTPGo" in result.detail
@@ -1678,7 +1678,7 @@ def test_phase_stack_sync_happy_path(
         "nexus_deploy.orchestrator._stack_sync.run_stack_sync",
         lambda *_a, **_kw: fake,
     )
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_stack_sync()
     assert result.status == "ok"
     assert "rsync_synced=2" in result.detail
@@ -1701,7 +1701,7 @@ def test_phase_stack_sync_failed_when_cleanup_unparseable(
         "nexus_deploy.orchestrator._stack_sync.run_stack_sync",
         lambda *_a, **_kw: fake,
     )
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_stack_sync()
     assert result.status == "failed"
     assert "no parseable RESULT" in result.detail
@@ -1723,7 +1723,7 @@ def test_phase_firewall_configure_zero_entry(
         ),
     )
     orchestrator.firewall_json = "{}"
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_firewall_configure()
     assert result.status == "ok"
     assert "zero-entry" in result.detail
@@ -1759,7 +1759,7 @@ def test_phase_firewall_configure_partial_when_skipped(
         ),
     )
     orchestrator.firewall_json = '{"postgres-1": {"port": 5432}, "kestra-1": {"port": 8080}}'
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_firewall_configure()
     assert result.status == "partial"
     assert "skipped=1" in result.detail
@@ -1779,7 +1779,7 @@ def test_phase_firewall_configure_failed_on_value_error(
         "nexus_deploy.orchestrator._firewall.configure",
         _raises,
     )
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
     result = orchestrator._phase_firewall_configure()
     assert result.status == "failed"
     assert "REDPANDA_KAFKA_DOMAIN" in result.detail
@@ -1989,9 +1989,15 @@ def test_run_pre_bootstrap_resets_stale_credentials(
     Reset happens at the top of run_pre_bootstrap before any phase
     fires."""
 
-    # Simulate a first run that left stale credentials on state.
+    # Simulate a first run that left stale credentials on BOTH state
+    # mirrors and the orchestrator's own fields. Both must be cleared
+    # (R1 #4 cleared state; R2 #3 also clears self.fields so a follow-on
+    # run_all() can't pick up stale creds via the post-bootstrap phase
+    # gating).
     orchestrator.state.infisical_token = "stale-token-from-prior-run"
     orchestrator.state.project_id = "stale-proj-from-prior-run"
+    orchestrator.infisical_token = "stale-token-from-prior-run"
+    orchestrator.project_id = "stale-proj-from-prior-run"
 
     # Mock all phases to ok except infisical-provision which produces
     # status='partial' WITHOUT populating state (simulating the bug
@@ -2010,10 +2016,12 @@ def test_run_pre_bootstrap_resets_stale_credentials(
 
     result = orchestrator.run_pre_bootstrap()
     assert result.has_partial
-    # Stale credentials MUST be cleared, even though the
-    # infisical-provision phase didn't populate fresh ones.
+    # Stale credentials MUST be cleared on BOTH surfaces, even though
+    # the infisical-provision phase didn't populate fresh ones.
     assert orchestrator.state.infisical_token is None
     assert orchestrator.state.project_id is None
+    assert orchestrator.infisical_token is None
+    assert orchestrator.project_id is None
 
 
 def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
@@ -2059,7 +2067,7 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
     )
     orchestrator.gitea_user_username = "ops"
     orchestrator.gitea_user_password = None  # missing — must skip the append
-    orchestrator.stacks_dir = tmp_path
+    orchestrator.project_root = tmp_path
 
     result = orchestrator._phase_service_env()
     assert result.status == "ok"
