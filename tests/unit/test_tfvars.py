@@ -169,6 +169,21 @@ def test_parse_raises_on_missing_file(tmp_path: Path) -> None:
         parse(tmp_path / "does-not-exist.tfvars")
 
 
+def test_parse_wraps_unreadable_file_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """File is_file() True (passes the missing-file gate) but
+    read_text raises OSError → TfvarsError carries the cause."""
+    fixture = _write_tfvars(tmp_path / "config.tfvars", "")
+
+    def _raise_oserror(_self: Path, **_kw: object) -> str:
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(Path, "read_text", _raise_oserror)
+    with pytest.raises(TfvarsError, match=r"could not read .* PermissionError"):
+        parse(fixture)
+
+
 # ---------------------------------------------------------------------------
 # derive_gitea_identity — admin/user collision fallback
 # ---------------------------------------------------------------------------

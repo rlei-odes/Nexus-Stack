@@ -185,6 +185,24 @@ def test_pipeline_aborts_when_tofu_state_uninitialized(
     fake_tofu_runner.output_json.assert_not_called()
 
 
+def test_pipeline_state_failure_surfaces_diagnose_reason(
+    project_root: Path, fake_tofu_runner: MagicMock, setup_mocks: dict[str, Any]
+) -> None:
+    """PR #535 R2 #2: when state_list_ok=False AND diagnose_state
+    returns a real reason string, the PipelineError carries the
+    reason so operators can distinguish 'state missing' from
+    'tofu binary missing' / 'backend timeout' / 'rc=N + stderr'."""
+    fake_tofu_runner.state_list_ok.return_value = False
+    fake_tofu_runner.diagnose_state.return_value = "tofu binary not found on PATH"
+    with pytest.raises(PipelineError, match=r"tofu binary not found on PATH"):
+        run_pipeline(
+            project_root=project_root,
+            options=PipelineOptions(),
+            tofu_runner=fake_tofu_runner,
+        )
+    fake_tofu_runner.output_json.assert_not_called()
+
+
 def test_pipeline_aborts_on_empty_secrets(
     project_root: Path,
     fake_tofu_runner: MagicMock,
@@ -348,6 +366,56 @@ def test_format_done_banner_contains_service_urls() -> None:
     assert "jupyter: https://jupyter.example.com" in banner
     assert "ssh nexus" in banner
     assert "Credentials available in Infisical" in banner
+
+
+def test_pipeline_aborts_on_unparseable_secrets(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ConfigError from NexusConfig.from_secrets_json is wrapped in
+    PipelineError. NexusConfig is currently permissive (every field
+    Optional[str]) so this branch is only reachable when a future
+    field gains stricter validation; we monkeypatch to exercise it
+    today and pin the error-wrapping contract."""
+    from nexus_deploy.config import ConfigError
+
+    def _raise(_raw: str) -> Any:
+        raise ConfigError("SECRETS_JSON failed validation")
+
+    monkeypatch.setattr("nexus_deploy.pipeline.NexusConfig.from_secrets_json", _raise)
+    with pytest.raises(PipelineError, match=r"could not parse secrets JSON"):
+        run_pipeline(
+            project_root=project_root,
+            options=PipelineOptions(),
+            tofu_runner=fake_tofu_runner,
+        )
+
+
+def test_pipeline_aborts_when_enabled_services_not_list(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    mock_orchestrator: MagicMock,
+) -> None:
+    """Defensive guard: tofu's enabled_services output must be a list.
+    A dict / scalar would let downstream `"wetty" in enabled_services`
+    silently pass when wetty is in fact a key, not an enabled service."""
+    original = fake_tofu_runner.output_json.side_effect
+
+    def _wrap(name: str, default: Any = None) -> Any:
+        if name == "enabled_services":
+            return {"wetty": True}
+        return original(name, default)
+
+    fake_tofu_runner.output_json.side_effect = _wrap
+    with pytest.raises(PipelineError, match=r"enabled_services is dict, expected list"):
+        run_pipeline(
+            project_root=project_root,
+            options=PipelineOptions(),
+            tofu_runner=fake_tofu_runner,
+        )
 
 
 def test_format_done_banner_handles_empty_service_urls() -> None:
@@ -583,3 +651,68 @@ def test_pipeline_result_frozen() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         result.service_urls = {"foo": "bar"}  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Pure-function helpers
+# ---------------------------------------------------------------------------
+
+
+def test_b64_encode_ssh_key_empty_returns_empty() -> None:
+    """Empty / None content must NOT round-trip to ``Cg==`` —
+    BootstrapEnv treats any non-empty value as a populated key."""
+    from nexus_deploy.pipeline import _b64_encode_ssh_key
+
+    assert _b64_encode_ssh_key(None) == ""
+    assert _b64_encode_ssh_key("") == ""
+
+
+def test_b64_encode_ssh_key_matches_legacy_bash_semantic() -> None:
+    """``echo "$KEY" | base64`` appends a trailing newline before the
+    pipe — so the legacy-equivalent encoding is base64(content + '\\n').
+    """
+    import base64
+
+    from nexus_deploy.pipeline import _b64_encode_ssh_key
+
+    encoded = _b64_encode_ssh_key("ssh-ed25519 AAAA...")
+    decoded = base64.b64decode(encoded).decode("utf-8")
+    assert decoded == "ssh-ed25519 AAAA...\n"
+
+
+def test_ssh_keygen_cleanup_skips_empty_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty-string targets must NOT spawn a subprocess (would be a
+    ssh-keygen syntax error and waste a fork)."""
+    import subprocess
+
+    from nexus_deploy.pipeline import _ssh_keygen_cleanup
+
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    monkeypatch.setattr("nexus_deploy.pipeline.subprocess.run", _fake_run)
+    _ssh_keygen_cleanup("ssh.example.com", "", "1.2.3.4")
+    assert len(calls) == 2
+    assert ["ssh-keygen", "-R", "ssh.example.com"] in calls
+    assert ["ssh-keygen", "-R", "1.2.3.4"] in calls
+
+
+def test_ssh_keygen_cleanup_swallows_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #535 R2 #1: TimeoutExpired must NOT propagate (best-effort)."""
+    import subprocess
+
+    from nexus_deploy.pipeline import _ssh_keygen_cleanup
+
+    def _hang(*_a: Any, **_kw: Any) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(["ssh-keygen"], 10.0)
+
+    monkeypatch.setattr("nexus_deploy.pipeline.subprocess.run", _hang)
+    # Must not raise.
+    _ssh_keygen_cleanup("ssh.example.com")
