@@ -1310,18 +1310,20 @@ class Orchestrator:
                 str(p.relative_to(stacks_dir_local))
                 for p in stacks_dir_local.glob("*/docker-compose.firewall.yml")
             )
-            # PR #533 R4 #2: scope `|| true` to the ls pipeline only,
-            # NOT to the cd. The previous form `cd … 2>/dev/null && ls
-            # … || true` masked failure of cd (e.g. /opt/.../stacks
-            # missing on the server), letting `remote_overrides` look
-            # empty → no orphans detected → phase reports ok despite
-            # stale overrides remaining. Now `set -e` + bare cd fails
-            # fast on missing stacks dir; only the ls's "no matches"
-            # exit-1 is tolerated by the inner `|| true`.
+            # PR #533 R4 #2 + R8 #1: use `find` (not `ls | sort || true`).
+            # `find -name … -printf '%P\n'` returns 0 on the legitimate
+            # "no matches" case (empty stdout) AND propagates a non-
+            # zero rc on real errors (unreadable subdir, etc.). The
+            # `set -euo pipefail` ensures `find` failures inside the
+            # `find | sort` pipeline aren't masked by `sort`'s exit
+            # code. cd is bare so a missing /opt/…/stacks fails fast
+            # → CalledProcessError → status='failed'. No `|| true`
+            # anywhere — every error path now propagates.
             remote_listing = _remote.ssh_run_script(
-                f"set -e\n"
+                f"set -euo pipefail\n"
                 f"cd {_REMOTE_STACKS_DIR}\n"
-                "ls */docker-compose.firewall.yml 2>/dev/null | sort || true",
+                "find . -mindepth 2 -maxdepth 2 -name docker-compose.firewall.yml "
+                "-type f -printf '%P\\n' | sort",
                 host=self.ssh_host,
                 check=True,
             )
