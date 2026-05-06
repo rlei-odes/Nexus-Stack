@@ -750,9 +750,13 @@ class Orchestrator:
         # R1 #3.
         gitea_appended_count = 0
         gitea_user_email_value = self.gitea_user_email or self.bootstrap_env.gitea_user_email
+        # Single source of truth: self.gitea_repo_owner (required
+        # constructor field). The bootstrap_env mirror exists for the
+        # in-script seeder/secret-sync path but should NOT diverge from
+        # the orchestrator's own field. Caught in PR #532 R3 #1.
         workspace_coords_complete = all(
             (
-                self.bootstrap_env.gitea_repo_owner,
+                self.gitea_repo_owner,
                 self.repo_name,
                 self.gitea_user_username,
                 self.gitea_user_password,
@@ -760,9 +764,7 @@ class Orchestrator:
             ),
         )
         if "gitea" in self.enabled_services and workspace_coords_complete:
-            gitea_repo_url = (
-                f"http://gitea:3000/{self.bootstrap_env.gitea_repo_owner}/{self.repo_name}.git"
-            )
+            gitea_repo_url = f"http://gitea:3000/{self.gitea_repo_owner}/{self.repo_name}.git"
             try:
                 cfg = _service_env.GiteaWorkspaceConfig(
                     gitea_repo_url=gitea_repo_url,
