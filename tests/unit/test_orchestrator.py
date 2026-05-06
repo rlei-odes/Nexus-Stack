@@ -2769,6 +2769,32 @@ def test_phase_global_env_rejects_dollar_in_value(
     assert "shell-unsafe" in result.detail
 
 
+def test_phase_global_env_rejects_unsafe_image_versions_key(
+    orchestrator: Orchestrator,
+) -> None:
+    """R-shell-unsafe-key-reject (PR #533 R5 #1): an image-versions
+    key with shell metacharacters or whitespace would survive the
+    existing dash→underscore normalization and produce an env-file
+    line whose left-hand side breaks shell parsing OR injects
+    commands when sourced. Reject keys that don't normalize to a
+    valid POSIX shell variable name (^[A-Z_][A-Z0-9_]*$)."""
+    orchestrator.image_versions_json = '{"foo;rm-rf": "v1.0"}'
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "not a valid POSIX shell variable name" in result.detail
+    assert "foo;rm-rf" in result.detail
+
+
+def test_phase_global_env_rejects_image_versions_key_with_space(
+    orchestrator: Orchestrator,
+) -> None:
+    """Keys with whitespace also fail the gate."""
+    orchestrator.image_versions_json = '{"foo bar": "v1.0"}'
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "not a valid POSIX shell variable name" in result.detail
+
+
 def test_phase_global_env_rejects_unsafe_admin_email(
     orchestrator: Orchestrator,
 ) -> None:

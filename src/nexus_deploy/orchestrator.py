@@ -1485,6 +1485,19 @@ class Orchestrator:
                 return f"{label} contains shell-unsafe character(s); refusing to write .env"
             return None
 
+        # PR #533 R5 #1: validate KEYS too. A malicious / invalid
+        # image-versions key (e.g. one containing ';', whitespace, or
+        # a newline) would survive normalization (the existing
+        # ``replace("-","_").upper()`` only handles dashes), get
+        # written as ``IMAGE_<bad-key>=<value>``, and either break
+        # the env-file format outright OR become an injection vector
+        # when the file is later sourced. Tofu emits image-versions
+        # keys from image-versions.tfvars where contributors control
+        # the names, so this is a defense-in-depth gate, not just
+        # paranoia. The post-normalization name must be a valid
+        # POSIX shell var name.
+        valid_var_name = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
         admin_email_value = self.bootstrap_env.admin_email or ""
         admin_username_value = self.admin_username or self.config.admin_username or ""
         validations = [
@@ -1494,6 +1507,16 @@ class Orchestrator:
             ("USER_EMAIL", self.user_email),
         ]
         for key, value in image_versions.items():
+            normalized_key = "IMAGE_" + str(key).replace("-", "_").upper()
+            if not valid_var_name.match(normalized_key):
+                return PhaseResult(
+                    name="global-env",
+                    status="failed",
+                    detail=(
+                        f"image_versions key {key!r} normalizes to {normalized_key!r}, "
+                        "which is not a valid POSIX shell variable name; refusing to write .env"
+                    ),
+                )
             validations.append((f"image_versions[{key}]", str(value)))
         for label, value in validations:
             err = _validate_value(label, value)

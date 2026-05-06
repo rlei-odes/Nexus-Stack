@@ -332,7 +332,7 @@ PRE_BOOT_OUT=$(mktemp)
 chmod 600 "$PRE_BOOT_OUT"
 echo "$PRE_BOOT_OUT" >> "$RUNNER_CLEANUP_PATHS"
 PRE_BOOT_RC=0
-echo "$SECRETS_JSON" | \
+printf '%s' "$SECRETS_JSON" | \
     DOMAIN="$DOMAIN" \
     ADMIN_EMAIL="$ADMIN_EMAIL" \
     ADMIN_USERNAME="$ADMIN_USERNAME" \
@@ -402,7 +402,7 @@ else
     SSH_KEY_BASE64=""
 fi
 
-echo "$SECRETS_JSON" | \
+printf '%s' "$SECRETS_JSON" | \
     DOMAIN="$DOMAIN" \
     ADMIN_EMAIL="$ADMIN_EMAIL" \
     ADMIN_USERNAME="$ADMIN_USERNAME" \
