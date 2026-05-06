@@ -2062,9 +2062,17 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
         _spy_append,
     )
 
-    # Set repo_owner + repo_name (the original lax check would've
-    # passed) but leave gitea_user_password=None — the new full check
-    # must catch this.
+    # The orchestrator fixture already sets self.gitea_repo_owner +
+    # self.repo_name (the canonical sources of truth post-R3 #1). We
+    # override the user-cred coords here: username + email are present
+    # but gitea_user_password=None. Since the workspace_coords_complete
+    # check requires ALL 5 inputs (repo_owner, repo_name,
+    # gitea_user_username, gitea_user_password, gitea_user_email) to
+    # be non-empty, the missing password alone must skip the append —
+    # otherwise we'd write an .env block with PASSWORD="" which breaks
+    # the workspace git_clone at runtime. Comment updated in PR #532
+    # R7 #3 to reflect the post-R3 source-of-truth + the actual coord
+    # being missing.
     orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
         domain="example.com",
         admin_email="admin@example.com",
@@ -2072,7 +2080,7 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
         gitea_user_email="ops@example.com",
     )
     orchestrator.gitea_user_username = "ops"
-    orchestrator.gitea_user_password = None  # missing — must skip the append
+    orchestrator.gitea_user_password = None  # missing → workspace_coords_complete=False
     orchestrator.project_root = tmp_path
 
     result = orchestrator._phase_service_env()

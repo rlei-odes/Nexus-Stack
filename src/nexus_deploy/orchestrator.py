@@ -957,9 +957,12 @@ class Orchestrator:
         :func:`compose_runner.run_compose_up`. Replaces deploy.sh's
         ``compose up --enabled`` invocation (Modul 2.2a, #505).
 
-        ``run_compose_up`` invokes ``ssh nexus 'bash -s'`` via
-        subprocess internally — the orchestrator's shared SSHClient
-        is not consumed here, so the signature drops the ``ssh`` arg.
+        ``run_compose_up`` invokes ``ssh <host> 'bash -s'`` via
+        subprocess internally, where ``<host>`` is ``self.ssh_host``
+        (default ``"nexus"``, override via ``SSH_HOST_ALIAS``). The
+        orchestrator's shared SSHClient is not consumed here, so the
+        signature drops the ``ssh`` arg. Docstring updated in PR #532
+        R7 #1 — was 'ssh nexus' before R2 #2 plumbed host through.
         """
         try:
             result = _compose_runner.run_compose_up(
@@ -994,14 +997,23 @@ class Orchestrator:
         """Bootstrap the Infisical admin + workspace. Replaces deploy.sh's
         ``infisical provision-admin`` invocation (Modul 3.4f, #530).
 
-        Populates ``self.state.infisical_token`` and ``self.state.project_id``
-        on success — those values are then consumed by the existing
-        ``_phase_infisical_bootstrap`` phase. Read the constructor's
-        ``project_id`` / ``infisical_token`` fields as fallback (so a
-        post-bootstrap-only test can still bypass this phase).
+        On success, populates BOTH the state mirrors
+        (``self.state.infisical_token`` + ``self.state.project_id``,
+        for the CLI's stdout emission) AND the orchestrator's own
+        fields (``self.infisical_token`` + ``self.project_id``, which
+        the post-bootstrap phases gate on). On a partial/failed
+        outcome, the fields stay None — ``run_pre_bootstrap`` zeros
+        BOTH surfaces at start so a re-run can't carry stale creds
+        (PR #532 R1 #4 + R2 #3). Note: there is NO read-fallback to
+        constructor-provided creds — callers wanting to bypass this
+        phase should use ``run_all`` directly with ``infisical_token``
+        + ``project_id`` set in the constructor (docstring corrected
+        in PR #532 R7 #2; previously claimed a fallback that didn't
+        exist).
 
         ``provision_admin`` manages its own ssh.run_script call —
         no shared SSHClient context, so the signature drops ``ssh``.
+        ``host=self.ssh_host`` is passed through (PR #532 R2 #2).
         """
         admin_email = self.bootstrap_env.admin_email or ""
         admin_password = self.admin_password_infisical or ""
