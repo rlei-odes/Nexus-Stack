@@ -1595,8 +1595,16 @@ def test_phase_service_env_happy_path(
         "nexus_deploy.orchestrator._service_env.render_all_env_files",
         lambda *_a, **_kw: fake_result,
     )
-    # Skip the gitea-block append branch by clearing the bootstrap env's
-    # repo_owner so the workspace_coords_complete check fails.
+    # Skip the gitea-block append branch. Post-R3 #1 the
+    # workspace_coords_complete check uses self.gitea_repo_owner (set
+    # to "admin" by the fixture), so clearing the bootstrap_env mirror
+    # alone wouldn't fail the guard. The actual skip happens because
+    # the orchestrator fixture leaves gitea_user_username, _password,
+    # _email at None — those three coords fail the all() check, which
+    # is what we want here (this test focuses on the happy path of
+    # render_all_env_files, not the gitea-append branch). The minimal
+    # bootstrap_env is kept for hygiene. Comment corrected in PR #532
+    # R8 #1.
     orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
         domain="example.com",
         admin_email="admin@example.com",
