@@ -395,6 +395,130 @@ def test_pipeline_aborts_on_unparseable_secrets(
         )
 
 
+def test_pipeline_wraps_tfvars_error_as_pipeline_error(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+) -> None:
+    """PR #535 R4 #3: TfvarsError → PipelineError so the CLI handler
+    classifies it as a pre-flight failure (rc=2 with actionable
+    message), not "unexpected error"."""
+    # Delete config.tfvars after the fixture created it so parse()
+    # raises TfvarsError("not found").
+    (project_root / "tofu" / "stack" / "config.tfvars").unlink()
+    with pytest.raises(PipelineError, match=r"could not load .* config\.tfvars"):
+        run_pipeline(
+            project_root=project_root,
+            options=PipelineOptions(),
+            tofu_runner=fake_tofu_runner,
+        )
+
+
+def test_pipeline_wraps_r2_creds_tofu_error(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+) -> None:
+    """PR #535 R4 #2: TofuError from load_r2_credentials (malformed
+    file) → PipelineError. Without the wrap the CLI shows
+    "unexpected error (TofuError)" which masks the actionable cause."""
+    # Overwrite the fixture's well-formed creds with a malformed
+    # body that triggers TofuError (file exists but no valid keys).
+    (project_root / "tofu" / ".r2-credentials").write_text(
+        "garbage line that is not KEY=value\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match=r"could not load .*\.r2-credentials"):
+        run_pipeline(
+            project_root=project_root,
+            options=PipelineOptions(),
+            tofu_runner=fake_tofu_runner,
+        )
+
+
+def test_pipeline_wraps_required_output_missing(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+) -> None:
+    """PR #535 R4 #1: when a destructive-default output (e.g.
+    enabled_services) is missing → TofuError → PipelineError. The
+    previous safe-looking ``default=[]`` would silently drive
+    stack-sync to remove all remote stacks."""
+    from nexus_deploy.tofu import TofuError
+
+    def _output_json(name: str, default: Any = None) -> Any:
+        if name == "secrets":
+            return {"ADMIN_USERNAME": "admin"}
+        if name in ("enabled_services", "firewall_rules", "ssh_service_token"):
+            raise TofuError(f"tofu output -json {name} failed")
+        return default
+
+    fake_tofu_runner.output_json.side_effect = _output_json
+    with pytest.raises(PipelineError, match=r"required tofu output missing or invalid"):
+        run_pipeline(
+            project_root=project_root,
+            options=PipelineOptions(),
+            tofu_runner=fake_tofu_runner,
+        )
+
+
+def test_pipeline_warns_on_volume_mount_failure(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    mock_orchestrator: MagicMock,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PR #535 R4 #4: when persistent_volume_id is non-zero but
+    mount_persistent_volume returned mounted=False, emit a stderr
+    warning. Failure stays non-fatal (deploy continues)."""
+    from nexus_deploy.setup import VolumeMountResult
+
+    setup_mocks["mount_persistent_volume"].return_value = VolumeMountResult(
+        mounted=False,
+        fstab_added=False,
+        detail="fallback-failed",
+    )
+    # Run pipeline; should NOT raise because mount failure is non-fatal.
+    run_pipeline(
+        project_root=project_root,
+        options=PipelineOptions(),
+        tofu_runner=fake_tofu_runner,
+    )
+    err = capsys.readouterr().err
+    assert "persistent volume 1234 did NOT mount" in err
+    assert "fallback-failed" in err
+
+
+def test_pipeline_silent_when_volume_id_zero_and_unmounted(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    mock_orchestrator: MagicMock,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the operator hasn't configured a volume (volume_id="0"),
+    mounted=False is the EXPECTED outcome and must NOT warn."""
+    from nexus_deploy.setup import VolumeMountResult
+
+    fake_tofu_runner.output_raw.side_effect = lambda name, default="": (
+        "0" if name == "persistent_volume_id" else "1.2.3.4"
+    )
+    setup_mocks["mount_persistent_volume"].return_value = VolumeMountResult(
+        mounted=False,
+        fstab_added=False,
+        detail="skipped",
+    )
+    run_pipeline(
+        project_root=project_root,
+        options=PipelineOptions(),
+        tofu_runner=fake_tofu_runner,
+    )
+    err = capsys.readouterr().err
+    assert "did NOT mount" not in err
+
+
 def test_pipeline_aborts_when_enabled_services_not_list(
     project_root: Path,
     fake_tofu_runner: MagicMock,

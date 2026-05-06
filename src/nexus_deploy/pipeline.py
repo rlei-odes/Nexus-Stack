@@ -35,6 +35,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -211,8 +212,17 @@ def run_pipeline(
     """
     # 1. R2 credentials env-injection (BEFORE any tofu call — the R2
     #    backend reads AWS_* from os.environ at tofu-binary startup).
+    #    PR #535 R4 #2: wrap TofuError → PipelineError so a malformed
+    #    .r2-credentials file is reported as a pipeline pre-flight
+    #    failure (rc=2 + actionable message) instead of being
+    #    classified as "unexpected error" by the CLI handler.
     creds_file = project_root / "tofu" / ".r2-credentials"
-    creds = _tofu.load_r2_credentials(creds_file)
+    try:
+        creds = _tofu.load_r2_credentials(creds_file)
+    except _tofu.TofuError as exc:
+        raise PipelineError(
+            f"could not load {creds_file}: {exc} — delete the file or fix it to KEY=value form",
+        ) from exc
     if creds is not None:
         os.environ["AWS_ACCESS_KEY_ID"] = creds.access_key_id
         os.environ["AWS_SECRET_ACCESS_KEY"] = creds.secret_access_key
@@ -243,8 +253,15 @@ def run_pipeline(
         )
 
     # 3. config.tfvars + identity derivation.
+    #    PR #535 R4 #3: wrap TfvarsError → PipelineError. tfvars.parse
+    #    raises on missing/unreadable config.tfvars; without the wrap
+    #    the CLI surfaces it as "unexpected error (TfvarsError)" which
+    #    masks an obviously-actionable preflight issue.
     tfvars_path = tofu_dir / "config.tfvars"
-    tfvars_config = _tfvars.parse(tfvars_path)
+    try:
+        tfvars_config = _tfvars.parse(tfvars_path)
+    except _tfvars.TfvarsError as exc:
+        raise PipelineError(f"could not load {tfvars_path}: {exc}") from exc
     if not tfvars_config.domain:
         raise PipelineError(
             f"{tfvars_path} is missing a non-empty 'domain' value",
@@ -263,10 +280,30 @@ def run_pipeline(
     except ConfigError as exc:
         raise PipelineError(f"could not parse secrets JSON: {exc}") from exc
 
-    image_versions = runner.output_json("image_versions", default={})
-    enabled_services_raw = runner.output_json("enabled_services", default=[])
-    firewall_rules = runner.output_json("firewall_rules", default={})
-    ssh_service_token = runner.output_json("ssh_service_token", default={})
+    # PR #535 R4 #1: outputs whose empty/default values would be
+    # destructive must be REQUIRED — no default → TofuError on
+    # missing → wrapped to PipelineError. The previous safe-looking
+    # defaults (``[]`` / ``{}``) silently triggered destructive
+    # downstream behavior when state was partially applied:
+    # ``enabled_services=[]`` makes the stack-sync phase remove ALL
+    # remote stacks, and ``firewall_rules={}`` puts firewall-configure
+    # into zero-entry mode (wiping existing per-stack overrides).
+    # state_list_ok() above doesn't catch the partial-apply case
+    # (state file exists, but the specific outputs were never
+    # populated by a complete tofu run).
+    try:
+        image_versions = runner.output_json("image_versions")
+        enabled_services_raw = runner.output_json("enabled_services")
+        firewall_rules = runner.output_json("firewall_rules")
+        ssh_service_token = runner.output_json("ssh_service_token")
+    except _tofu.TofuError as exc:
+        raise PipelineError(
+            f"required tofu output missing or invalid: {exc} — "
+            "state may be partially applied; re-run initial-setup",
+        ) from exc
+    # ``server_ip`` and ``persistent_volume_id`` ARE optional —
+    # missing server_ip just means ssh-keygen cleanup has fewer
+    # targets; missing volume id falls back to "0" (= no volume).
     server_ip = runner.output_raw("server_ip", default="")
     persistent_volume_id = runner.output_raw("persistent_volume_id", default="0")
 
@@ -304,7 +341,20 @@ def run_pipeline(
 
         ssh = stack.enter_context(SSHClient("nexus"))
         _setup.ensure_jq(ssh)
-        _setup.mount_persistent_volume(persistent_volume_id, ssh)
+        # PR #535 R4 #4: capture the mount result and emit a stderr
+        # warning when the operator actually has a volume configured
+        # (volume_id != "0") but mounting fell through. Mirrors the
+        # legacy bash behavior where "fallback-failed" / "no parseable
+        # RESULT" lines were visible to the operator. Mount failure
+        # stays non-fatal (downstream stacks that don't need the
+        # volume can still come up) so we warn but don't raise.
+        mount_result = _setup.mount_persistent_volume(persistent_volume_id, ssh)
+        if persistent_volume_id not in ("", "0") and not mount_result.mounted:
+            sys.stderr.write(
+                f"⚠ persistent volume {persistent_volume_id} did NOT mount: "
+                f"{mount_result.detail or 'no detail'} — "
+                "downstream stacks that depend on /opt/data may misbehave\n",
+            )
 
         if options.dockerhub_user and options.dockerhub_token:
             login_fn = docker_hub_login if docker_hub_login is not None else _docker_hub_login
