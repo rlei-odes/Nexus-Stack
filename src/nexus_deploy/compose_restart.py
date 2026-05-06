@@ -110,24 +110,37 @@ def render_remote_script(services: list[str]) -> str:
         return "echo 'RESULT restarted=0 failed=0'\n"
 
     services_quoted = " ".join(f"'{s}'" for s in services)
+    # PR #533 R1 #5: suppress docker compose's normal output. Only
+    # emit the concise per-service ✓/✗ lines; on failure, capture
+    # docker compose's stderr for the operator. Matches the legacy
+    # bash `>/dev/null 2>&1 || true` semantics — restart loops
+    # produce minimal log output by default.
     return f"""\
 set -u
 STACKS_DIR={_REMOTE_STACKS_DIR}
 RESTARTED=0
 FAILED=0
+COMPOSE_ERR=$(mktemp)
+trap 'rm -f "$COMPOSE_ERR"' EXIT HUP INT TERM
 for SVC in {services_quoted}; do
     if [ ! -d "$STACKS_DIR/$SVC" ]; then
         echo "  ✗ Restart $SVC: stack directory missing on server" >&2
         FAILED=$((FAILED + 1))
         continue
     fi
-    if (cd "$STACKS_DIR/$SVC" && docker compose restart 2>&1); then
+    if (cd "$STACKS_DIR/$SVC" && docker compose restart) >/dev/null 2>"$COMPOSE_ERR"; then
         echo "  ✓ Restarted $SVC"
         RESTARTED=$((RESTARTED + 1))
     else
         echo "  ✗ Restart $SVC: docker compose restart returned non-zero" >&2
+        # Only print compose stderr on failure so operators can
+        # diagnose; the success path stays quiet.
+        if [ -s "$COMPOSE_ERR" ]; then
+            sed 's/^/      /' "$COMPOSE_ERR" >&2
+        fi
         FAILED=$((FAILED + 1))
     fi
+    : > "$COMPOSE_ERR"
 done
 echo "RESULT restarted=$RESTARTED failed=$FAILED"
 """

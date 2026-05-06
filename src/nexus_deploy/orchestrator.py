@@ -1197,7 +1197,7 @@ class Orchestrator:
         # Dual-write: state mirrors (for stdout emission to surviving
         # bash) AND orchestrator constructor fields (for downstream
         # phases that gate on self.repo_name / self.gitea_repo_owner /
-        # self.workspace_branch).
+        # self.workspace_branch / self.gitea_user_*).
         self.state.repo_name = coords.repo_name
         self.state.gitea_repo_owner = coords.gitea_repo_owner
         self.state.gitea_repo_url = coords.gitea_repo_url
@@ -1209,6 +1209,17 @@ class Orchestrator:
         self.repo_name = coords.repo_name
         self.gitea_repo_owner = coords.gitea_repo_owner
         self.workspace_branch = coords.workspace_branch
+        # PR #533 R1 #3: also dual-write the user-identity constructor
+        # fields, since _phase_service_env's workspace-block-append
+        # guard reads self.gitea_user_username / _password / _email.
+        # In admin-fallback mode (no GITEA_USER_EMAIL / _PASS env), the
+        # legacy bash filled these from admin coords; the orchestrator
+        # must replicate that behavior so the workspace block IS
+        # appended. Existing constructor values win — tests can
+        # pre-seed alternative identities.
+        self.gitea_user_username = self.gitea_user_username or coords.gitea_git_user or None
+        self.gitea_user_password = self.gitea_user_password or coords.gitea_git_pass or None
+        self.gitea_user_email = self.gitea_user_email or coords.git_email or None
         # bootstrap_env mirrors — synced so the downstream Infisical-
         # bootstrap secret push uses the same user identity the
         # workspace block was rendered against. BootstrapEnv is frozen
@@ -1277,6 +1288,20 @@ class Orchestrator:
             )
 
         stacks_dir_local = self.project_root / "stacks"
+        # PR #533 R1 #4 — destructive-footgun guard. Without this check,
+        # a missing local stacks/ dir would yield empty Path.glob and we'd
+        # treat EVERY remote firewall override as an orphan and rm them.
+        # That's catastrophic if project_root is mis-set or the checkout
+        # is incomplete. Fail fast instead.
+        if not stacks_dir_local.is_dir():
+            return PhaseResult(
+                name="firewall-sync",
+                status="failed",
+                detail=(
+                    f"local stacks dir {stacks_dir_local} is missing — "
+                    "refusing to compute orphan list (would rm every remote firewall override)"
+                ),
+            )
         try:
             # Step 1: orphan cleanup
             local_overrides = sorted(

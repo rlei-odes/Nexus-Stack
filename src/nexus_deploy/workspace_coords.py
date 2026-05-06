@@ -125,9 +125,14 @@ def _parse_owner_repo(github_url: str) -> str:
     """Extract ``"<owner>/<repo>"`` from a GitHub URL.
 
     Mirrors the deploy.sh sed: strip ``https?://github.com/`` prefix,
-    strip query-string + fragment + trailing slash + ``.git``. Returns
-    empty string on a URL that doesn't fit the pattern (defensive: the
-    caller's regex check is the gate, this is the parser).
+    strip query-string + fragment + trailing slash + ``.git``. For a
+    non-GitHub URL the function returns the input unchanged after
+    this strip pass (e.g. ``https://gitlab.com/foo/bar`` → as-is).
+    The caller's ``re.match("^[^/]+/[^/]+$", ...)`` check is what
+    ultimately gates the API call — this function only normalizes,
+    it does NOT filter. Docstring corrected in PR #533 R1 #6 (was:
+    "Returns empty string on a URL that doesn't fit the pattern" —
+    not what the implementation does).
     """
     stripped = re.sub(r"^https?://github\.com/", "", github_url)
     stripped = re.sub(r"[?#].*$", "", stripped)

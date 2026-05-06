@@ -2355,6 +2355,41 @@ def test_phase_seed_skips_in_mirror_mode(orchestrator: Orchestrator) -> None:
 # --- _phase_workspace_coords ---
 
 
+def test_phase_workspace_coords_dual_writes_user_identity_for_admin_fallback(
+    minimal_env: BootstrapEnv,
+) -> None:
+    """R-admin-fallback (PR #533 R1 #3): in admin-fallback mode (no
+    GITEA_USER_EMAIL / _PASS env), workspace-coords must populate
+    self.gitea_user_username / _password / _email from admin coords
+    so _phase_service_env's workspace-block-append guard passes.
+    Otherwise the workspace block is silently skipped — breaking
+    git-integrated stacks (jupyter/marimo/code-server etc.)."""
+    orchestrator = Orchestrator(
+        config=NexusConfig(
+            admin_username="admin",
+            gitea_admin_password="admin-pw",
+        ),
+        bootstrap_env=minimal_env,
+        enabled_services=["gitea"],
+        repo_name="",
+        gitea_repo_owner="",
+        domain="example.com",
+        admin_username="admin",
+        gitea_admin_pass="admin-pw",
+        # No gitea_user_* — admin-fallback mode
+        gitea_user_email=None,
+        gitea_user_password=None,
+        gitea_user_username=None,
+    )
+    result = orchestrator._phase_workspace_coords()
+    assert result.status == "ok"
+    # Critical: self.gitea_user_* must be populated for the workspace
+    # block to be appended in admin-fallback mode.
+    assert orchestrator.gitea_user_username == "admin"
+    assert orchestrator.gitea_user_password == "admin-pw"
+    assert orchestrator.gitea_user_email == "admin@example.com"
+
+
 def test_phase_workspace_coords_dual_writes_state_and_self_field(
     orchestrator: Orchestrator,
 ) -> None:
@@ -2690,6 +2725,23 @@ def test_phase_firewall_sync_failed_when_project_root_missing(
     result = orchestrator._phase_firewall_sync()
     assert result.status == "failed"
     assert "is not a directory" in result.detail
+
+
+def test_phase_firewall_sync_failed_when_local_stacks_dir_missing(
+    orchestrator: Orchestrator, tmp_path: Any
+) -> None:
+    """R-destructive-footgun (PR #533 R1 #4): when project_root exists
+    but the inner stacks/ dir is missing (e.g. checkout incomplete),
+    Path.glob silently returns nothing — without an explicit guard
+    we'd treat every remote firewall override as orphan and rm them.
+    Must fail fast instead."""
+    # project_root exists but stacks/ subdir does not
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "failed"
+    assert "local stacks dir" in result.detail
+    assert "is missing" in result.detail
+    assert "would rm every remote" in result.detail
 
 
 def test_phase_firewall_sync_no_orphans_no_redpanda(
