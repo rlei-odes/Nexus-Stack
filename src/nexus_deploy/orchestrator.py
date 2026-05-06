@@ -700,6 +700,7 @@ class Orchestrator:
                 infisical_token=self.infisical_token,
                 infisical_env=self.infisical_env,
                 gitea_token=self.state.gitea_token or "",
+                host=self.ssh_host,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return PhaseResult(
@@ -1723,6 +1724,7 @@ class Orchestrator:
                     infisical_token=self.infisical_token,
                     infisical_env=self.infisical_env,
                     gitea_token=self.state.gitea_token or "",
+                    host=self.ssh_host,
                 )
 
                 # Step 3: wait for Kestra to come back up after force-
@@ -1816,8 +1818,21 @@ class Orchestrator:
             f"WOODPECKER_GITEA_CLIENT={client_id}\n"
             f"WOODPECKER_GITEA_SECRET={client_secret}\n"
         )
+        # PR #533 R7 #2: split rsync from docker-compose so the two
+        # error paths produce actionable distinct details. Previously
+        # both were 'transport (CalledProcessError)' which couldn't
+        # tell an operator whether to investigate ssh connectivity
+        # or container logs.
         try:
             env_path.write_text(env_content, encoding="utf-8")
+        except OSError as exc:
+            return PhaseResult(
+                name="woodpecker-apply",
+                status="failed",
+                detail=f"local write ({type(exc).__name__})",
+            )
+
+        try:
             # Rsync the woodpecker dir (NOT just the .env — server may
             # need updated docker-compose.yml + any contributor edits
             # too). Same pattern as the legacy bash.
@@ -1825,33 +1840,50 @@ class Orchestrator:
                 woodpecker_dir,
                 f"{self.ssh_host}:{_REMOTE_STACKS_DIR}/woodpecker/",
             )
-            # docker compose up -d. PR #533 R3 #1: use compose's
-            # ``--env-file`` flag instead of ``source`` to pick up
-            # IMAGE_WOODPECKER_* image versions. Compose parses the
-            # env-file with its own KEY=VALUE format (no shell
-            # interpretation), so a malicious image-version value
-            # containing ``$()`` / backticks / ``;`` / ``\n`` cannot
-            # trigger remote command execution. The previous source
-            # pattern (still used by compose_runner.py for now —
-            # tracked for Phase 4c follow-up) was a known foot-gun.
-            up_script = (
-                f"cd {_REMOTE_STACKS_DIR}/woodpecker "
-                f"&& docker compose --env-file {_REMOTE_STACKS_DIR}/.env up -d"
-            )
-            _remote.ssh_run_script(up_script, host=self.ssh_host, check=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            # ssh / rsync / docker-compose transport — partial because
-            # the file itself is written locally; operator can re-deploy.
+            # rsync transport — distinct from compose-up failure;
+            # operator should check ssh connectivity / disk on the
+            # server.
             return PhaseResult(
                 name="woodpecker-apply",
                 status="partial",
-                detail=f"transport ({type(exc).__name__})",
+                detail=f"rsync transport ({type(exc).__name__})",
             )
-        except OSError as exc:
+
+        # docker compose up -d. PR #533 R3 #1: use compose's
+        # ``--env-file`` flag instead of ``source`` to pick up
+        # IMAGE_WOODPECKER_* image versions. Compose parses the
+        # env-file with its own KEY=VALUE format (no shell
+        # interpretation), so a malicious image-version value
+        # containing ``$()`` / backticks / ``;`` / ``\n`` cannot
+        # trigger remote command execution. The previous source
+        # pattern (still used by compose_runner.py for now —
+        # tracked for Phase 4c follow-up) was a known foot-gun.
+        up_script = (
+            f"cd {_REMOTE_STACKS_DIR}/woodpecker "
+            f"&& docker compose --env-file {_REMOTE_STACKS_DIR}/.env up -d"
+        )
+        try:
+            _remote.ssh_run_script(up_script, host=self.ssh_host, check=True)
+        except subprocess.CalledProcessError as exc:
+            # docker compose returned non-zero — service-level failure
+            # (image pull failed, container crashed at startup, port
+            # collision, …). Forward the captured stdout to the
+            # detail so operators see the compose error inline.
+            stdout_excerpt = (exc.output or "").strip().splitlines()[-1:] if exc.output else []
+            tail = stdout_excerpt[0] if stdout_excerpt else "no stdout captured"
             return PhaseResult(
                 name="woodpecker-apply",
-                status="failed",
-                detail=f"local write/rsync ({type(exc).__name__})",
+                status="partial",
+                detail=f"docker compose up -d failed (rc={exc.returncode}): {tail[:120]}",
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Genuine ssh transport timeout — operator should
+            # investigate connectivity, not container state.
+            return PhaseResult(
+                name="woodpecker-apply",
+                status="partial",
+                detail=f"ssh transport timeout ({type(exc).__name__})",
             )
         except Exception as exc:
             return PhaseResult(
