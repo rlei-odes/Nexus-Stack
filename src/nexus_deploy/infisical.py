@@ -394,9 +394,16 @@ def provision_admin(
     admin_password: str,
     organization_name: str = "Nexus",
     project_name: str = "Nexus Stack",
+    host: str = "nexus",
     script_runner: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
 ) -> ProvisionResult:
     """Render + run the provision script via SSH, parse result.
+
+    ``host`` selects which ssh-config alias the remote script runs
+    against. Defaults to ``"nexus"`` for back-compat with existing
+    callers; orchestrator passes its ``self.ssh_host`` so a non-default
+    ``SSH_HOST_ALIAS`` reaches every pre-bootstrap phase uniformly
+    (PR #532 R2 #2).
 
     ``script_runner`` is a DI seam for tests; production callers pass
     None and get :func:`_remote.ssh_run_script` (script-via-stdin so
@@ -404,7 +411,7 @@ def provision_admin(
     """
     if not admin_email or not admin_password:
         return ProvisionResult(status="not-ready", token=None, project_id=None)
-    runner = script_runner or (lambda s: _remote.ssh_run_script(s))
+    runner = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
     script = render_provision_admin_script(
         admin_email=admin_email,
         admin_password=admin_password,

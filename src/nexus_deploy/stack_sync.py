@@ -370,6 +370,7 @@ def rsync_enabled_stacks(
 def cleanup_disabled_stacks(
     enabled: list[str],
     *,
+    host: str = "nexus",
     script_runner: ScriptRunner | None = None,
     remote_stacks_dir: str = _REMOTE_STACKS_DIR,
 ) -> CleanupResult | None:
@@ -382,11 +383,26 @@ def cleanup_disabled_stacks(
     enabled list is itself a configuration error, not a hint to
     preserve folders that match it).
 
-    Returns None on transport failure or unparseable RESULT line.
+    ``host`` selects which ssh-config alias the cleanup script runs
+    against; defaults to ``"nexus"`` for back-compat. ``run_stack_sync``
+    passes its own ``host`` so rsync + cleanup target the same alias
+    (PR #532 R4 #1).
+
+    Returns None only when the script produced no parseable RESULT
+    line (unparseable / missing). Transport-level failures
+    (``subprocess.CalledProcessError`` from a non-zero ssh exit,
+    ``subprocess.TimeoutExpired`` from a hung connection) propagate
+    to the caller — the default runner uses
+    :func:`_remote.ssh_run_script` with ``check=True``. The orchestrator
+    wraps the call in a try/except and converts those into a
+    ``status='failed'`` PhaseResult; direct callers should do the same.
+    Docstring corrected in PR #532 R6 #4 (was: "Returns None on
+    transport failure or unparseable RESULT line", which falsely
+    promised exception-to-None coercion).
     """
     safe_enabled = [s for s in enabled if _is_safe_name(s)]
     script = render_cleanup_script(safe_enabled, stacks_dir=remote_stacks_dir)
-    runner = script_runner or (lambda s: _remote.ssh_run_script(s))
+    runner = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
     completed = runner(script)
 
     # Forward per-stack diagnostics ("Stopping foo...", "Removing
@@ -426,6 +442,7 @@ def run_stack_sync(
     )
     cleanup = cleanup_disabled_stacks(
         enabled,
+        host=host,
         script_runner=script_runner,
         remote_stacks_dir=remote_stacks_dir,
     )

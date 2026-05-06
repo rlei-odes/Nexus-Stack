@@ -1568,3 +1568,693 @@ def test_phase_secret_sync_partial_when_no_usable_result(
     )
     result = orchestrator._phase_secret_sync(MagicMock(), "jupyter")
     assert result.status == "partial"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4a (#505) — pre-bootstrap pipeline phases.
+# Each new phase is exercised with a happy path + at least one failure
+# / partial path to lock the PhaseResult contract.
+# ---------------------------------------------------------------------------
+
+
+def test_phase_service_env_happy_path(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """All renders ok → status=ok with the rendered/skipped counts in detail."""
+    from nexus_deploy.service_env import ServiceEnvResult, ServiceRenderResult
+
+    fake_result = ServiceEnvResult(
+        services=(
+            ServiceRenderResult(service="postgres", status="rendered"),
+            ServiceRenderResult(service="kestra", status="rendered"),
+        ),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.render_all_env_files",
+        lambda *_a, **_kw: fake_result,
+    )
+    # Skip the gitea-block append branch. Post-R3 #1 the
+    # workspace_coords_complete check uses self.gitea_repo_owner (set
+    # to "admin" by the fixture), so clearing the bootstrap_env mirror
+    # alone wouldn't fail the guard. The actual skip happens because
+    # the orchestrator fixture leaves gitea_user_username, _password,
+    # _email at None — those three coords fail the all() check, which
+    # is what we want here (this test focuses on the happy path of
+    # render_all_env_files, not the gitea-append branch). The minimal
+    # bootstrap_env is kept for hygiene. Comment corrected in PR #532
+    # R8 #1.
+    orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_repo_owner=None,
+    )
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_service_env()
+    assert result.status == "ok"
+    assert "rendered=2" in result.detail
+
+
+def test_phase_service_env_partial_when_failures(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Some renders failed but at least one succeeded → status=partial."""
+    from nexus_deploy.service_env import ServiceEnvResult, ServiceRenderResult
+
+    fake_result = ServiceEnvResult(
+        services=(
+            ServiceRenderResult(service="postgres", status="rendered"),
+            ServiceRenderResult(service="kestra", status="failed", detail="oops"),
+        ),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.render_all_env_files",
+        lambda *_a, **_kw: fake_result,
+    )
+    orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_repo_owner=None,
+    )
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_service_env()
+    assert result.status == "partial"
+    assert "rendered=1" in result.detail
+    assert "failed=1" in result.detail
+
+
+def test_phase_service_env_failed_on_service_env_error(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """ServiceEnvError (e.g. SFTPGo with empty password) → status=failed."""
+    from nexus_deploy.service_env import ServiceEnvError
+
+    def _raises(*_a: Any, **_kw: Any) -> None:
+        raise ServiceEnvError("SFTPGo password is empty")
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.render_all_env_files",
+        _raises,
+    )
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_service_env()
+    assert result.status == "failed"
+    assert "SFTPGo" in result.detail
+
+
+def test_phase_stack_sync_happy_path(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """rsync ok + cleanup ok → status=ok."""
+    from nexus_deploy.stack_sync import CleanupResult, RsyncResult, StackSyncResult
+
+    fake = StackSyncResult(
+        rsync=(
+            RsyncResult(service="postgres", status="synced"),
+            RsyncResult(service="kestra", status="synced"),
+        ),
+        cleanup=CleanupResult(stopped=0, removed=3, failed=0),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._stack_sync.run_stack_sync",
+        lambda *_a, **_kw: fake,
+    )
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_stack_sync()
+    assert result.status == "ok"
+    assert "rsync_synced=2" in result.detail
+    assert "cleanup_removed=3" in result.detail
+
+
+def test_phase_stack_sync_failed_when_cleanup_unparseable(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """cleanup is None (no parseable RESULT) → status=failed."""
+    from nexus_deploy.stack_sync import RsyncResult, StackSyncResult
+
+    fake = StackSyncResult(
+        rsync=(RsyncResult(service="postgres", status="synced"),),
+        cleanup=None,
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._stack_sync.run_stack_sync",
+        lambda *_a, **_kw: fake,
+    )
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_stack_sync()
+    assert result.status == "failed"
+    assert "no parseable RESULT" in result.detail
+
+
+def test_phase_firewall_configure_zero_entry(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Empty firewall_rules → zero-entry mode → status=ok."""
+    from nexus_deploy.firewall import GenerateResult, WriteResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._firewall.configure",
+        lambda *_a, **_kw: (
+            GenerateResult(compiled=(), redpanda=None, zero_entry=True),
+            WriteResult(written=()),
+        ),
+    )
+    orchestrator.firewall_json = "{}"
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_firewall_configure()
+    assert result.status == "ok"
+    assert "zero-entry" in result.detail
+
+
+def test_phase_firewall_configure_partial_when_skipped(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Skipped services → status=partial (per #531 R7 #4)."""
+    from nexus_deploy.firewall import (
+        CompiledOverride,
+        GenerateResult,
+        WriteResult,
+    )
+
+    fake_compiled = CompiledOverride(
+        service="postgres",
+        target_path=tmp_path / "postgres" / "docker-compose.firewall.yml",
+        yaml_content="services: {}\n",
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._firewall.configure",
+        lambda *_a, **_kw: (
+            GenerateResult(
+                compiled=(fake_compiled,),
+                redpanda=None,
+                skipped=("kestra",),
+                zero_entry=False,
+            ),
+            WriteResult(written=(fake_compiled.target_path,)),
+        ),
+    )
+    orchestrator.firewall_json = '{"postgres-1": {"port": 5432}, "kestra-1": {"port": 8080}}'
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_firewall_configure()
+    assert result.status == "partial"
+    assert "skipped=1" in result.detail
+
+
+def test_phase_firewall_configure_failed_on_value_error(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """ValueError (e.g. missing template token) → status=failed."""
+
+    def _raises(**_kw: Any) -> None:
+        raise ValueError("RedPanda template missing __REDPANDA_KAFKA_DOMAIN__")
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._firewall.configure",
+        _raises,
+    )
+    orchestrator.project_root = tmp_path
+    result = orchestrator._phase_firewall_configure()
+    assert result.status == "failed"
+    assert "REDPANDA_KAFKA_DOMAIN" in result.detail
+
+
+def test_phase_compose_up_happy_path(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All containers started → status=ok."""
+    from nexus_deploy.compose_runner import ComposeUpResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_runner.run_compose_up",
+        lambda *_a, **_kw: ComposeUpResult(started=10, failed=0),
+    )
+    result = orchestrator._phase_compose_up()
+    assert result.status == "ok"
+    assert "started=10" in result.detail
+
+
+def test_phase_compose_up_partial_on_failures(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Some containers failed → status=partial."""
+    from nexus_deploy.compose_runner import ComposeUpResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_runner.run_compose_up",
+        lambda *_a, **_kw: ComposeUpResult(started=8, failed=2),
+    )
+    result = orchestrator._phase_compose_up()
+    assert result.status == "partial"
+    assert "started=8" in result.detail
+    assert "failed=2" in result.detail
+
+
+def test_phase_infisical_provision_happy_path(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provision returns usable creds → state populated, status=ok."""
+    from nexus_deploy.infisical import ProvisionResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._infisical.provision_admin",
+        lambda *_a, **_kw: ProvisionResult(
+            status="freshly-bootstrapped",
+            token="real-token",
+            project_id="proj-real",
+        ),
+    )
+    orchestrator.admin_password_infisical = "pw"
+    result = orchestrator._phase_infisical_provision()
+    assert result.status == "ok"
+    assert orchestrator.state.infisical_token == "real-token"
+    assert orchestrator.state.project_id == "proj-real"
+    assert orchestrator.infisical_token == "real-token"
+    assert orchestrator.project_id == "proj-real"
+
+
+def test_phase_infisical_provision_partial_on_dropped_creds(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """has_credentials=False → partial."""
+    from nexus_deploy.infisical import ProvisionResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._infisical.provision_admin",
+        lambda *_a, **_kw: ProvisionResult(status="loaded-existing", token=None, project_id=None),
+    )
+    # Reset to None so the post-bootstrap fallback doesn't mask the
+    # partial result.
+    orchestrator.state.infisical_token = None
+    orchestrator.admin_password_infisical = "pw"
+    result = orchestrator._phase_infisical_provision()
+    assert result.status == "partial"
+    assert "no usable credentials" in result.detail
+    assert orchestrator.state.infisical_token is None
+
+
+def test_phase_infisical_provision_skipped_when_password_missing(
+    orchestrator: Orchestrator,
+) -> None:
+    """No admin password → status=skipped."""
+    orchestrator.admin_password_infisical = None
+    result = orchestrator._phase_infisical_provision()
+    assert result.status == "skipped"
+    assert "admin_password_infisical" in result.detail
+
+
+def test_run_pre_bootstrap_runs_phases_in_order(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All 5 pre-bootstrap phases run in deterministic order."""
+    invocation_order: list[str] = []
+
+    def _make_phase(name: str) -> Any:
+        def _phase(self: Any) -> PhaseResult:
+            invocation_order.append(name)
+            return PhaseResult(name=name, status="ok")
+
+        return _phase
+
+    monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env"))
+    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _make_phase("stack-sync"))
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_firewall_configure",
+        _make_phase("firewall-configure"),
+    )
+    monkeypatch.setattr(Orchestrator, "_phase_compose_up", _make_phase("compose-up"))
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_infisical_provision",
+        _make_phase("infisical-provision"),
+    )
+    result = orchestrator.run_pre_bootstrap()
+    # PR #532 R5 #1: firewall-configure must run BEFORE stack-sync so
+    # the per-stack docker-compose.firewall.yml overrides are part of
+    # what rsync pushes to the server, before compose-up brings the
+    # containers up.
+    assert invocation_order == [
+        "service-env",
+        "firewall-configure",
+        "stack-sync",
+        "compose-up",
+        "infisical-provision",
+    ]
+    assert [p.name for p in result.phases] == invocation_order
+    assert result.is_success
+
+
+def test_run_pre_bootstrap_aborts_on_failure(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A phase with status='failed' aborts the run; downstream phases skipped."""
+    invocation_order: list[str] = []
+
+    def _make_phase(name: str, status: Literal["ok", "failed"]) -> Any:
+        def _phase(self: Any) -> PhaseResult:
+            invocation_order.append(name)
+            return PhaseResult(name=name, status=status)
+
+        return _phase
+
+    monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env", "ok"))
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_stack_sync",
+        _make_phase("stack-sync", "failed"),
+    )
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_firewall_configure",
+        _make_phase("firewall-configure", "ok"),
+    )
+    result = orchestrator.run_pre_bootstrap()
+    # service-env (ok) → firewall-configure (ok) → stack-sync (failed)
+    # → abort. compose-up + infisical-provision must NOT run.
+    assert invocation_order == ["service-env", "firewall-configure", "stack-sync"]
+    assert result.has_hard_failure
+
+
+def test_run_pre_bootstrap_partial_continues_to_downstream(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partial-success phase doesn't abort — all 5 phases still run."""
+    invocation_order: list[str] = []
+
+    def _make_phase(name: str, status: Literal["ok", "partial"]) -> Any:
+        def _phase(self: Any) -> PhaseResult:
+            invocation_order.append(name)
+            return PhaseResult(name=name, status=status)
+
+        return _phase
+
+    monkeypatch.setattr(Orchestrator, "_phase_service_env", _make_phase("service-env", "ok"))
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_stack_sync",
+        _make_phase("stack-sync", "partial"),
+    )
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_firewall_configure",
+        _make_phase("firewall-configure", "ok"),
+    )
+    monkeypatch.setattr(Orchestrator, "_phase_compose_up", _make_phase("compose-up", "ok"))
+    monkeypatch.setattr(
+        Orchestrator,
+        "_phase_infisical_provision",
+        _make_phase("infisical-provision", "ok"),
+    )
+    result = orchestrator.run_pre_bootstrap()
+    assert len(invocation_order) == 5
+    assert result.has_partial
+    assert not result.has_hard_failure
+
+
+def test_run_pre_bootstrap_resets_stale_credentials(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-state-reset (PR #532 R1 #4): re-running on the same instance
+    after a previous run that produced partial credentials must NOT
+    leak the stale token/project_id into the second run's stdout.
+    Reset happens at the top of run_pre_bootstrap before any phase
+    fires."""
+
+    # Simulate a first run that left stale credentials on BOTH state
+    # mirrors and the orchestrator's own fields. Both must be cleared
+    # (R1 #4 cleared state; R2 #3 also clears self.fields so a follow-on
+    # run_all() can't pick up stale creds via the post-bootstrap phase
+    # gating).
+    orchestrator.state.infisical_token = "stale-token-from-prior-run"
+    orchestrator.state.project_id = "stale-proj-from-prior-run"
+    orchestrator.infisical_token = "stale-token-from-prior-run"
+    orchestrator.project_id = "stale-proj-from-prior-run"
+
+    # Mock all phases to ok except infisical-provision which produces
+    # status='partial' WITHOUT populating state (simulating the bug
+    # condition: dropped credentials).
+    def _ok_phase(_self: Any) -> PhaseResult:
+        return PhaseResult(name="ok-phase", status="ok")
+
+    def _partial_no_creds(_self: Any) -> PhaseResult:
+        return PhaseResult(name="infisical-provision", status="partial", detail="dropped")
+
+    monkeypatch.setattr(Orchestrator, "_phase_service_env", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_stack_sync", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_firewall_configure", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_compose_up", _ok_phase)
+    monkeypatch.setattr(Orchestrator, "_phase_infisical_provision", _partial_no_creds)
+
+    result = orchestrator.run_pre_bootstrap()
+    assert result.has_partial
+    # Stale credentials MUST be cleared on BOTH surfaces, even though
+    # the infisical-provision phase didn't populate fresh ones.
+    assert orchestrator.state.infisical_token is None
+    assert orchestrator.state.project_id is None
+    assert orchestrator.infisical_token is None
+    assert orchestrator.project_id is None
+
+
+def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """R-gitea-guard (PR #532 R1 #3): when ANY workspace coord is
+    empty (e.g. gitea_user_password=None), the Gitea workspace block
+    is NOT appended — refuses to write a broken block with empty
+    PASSWORD/AUTHOR fields. Mirrors the CLI handler's
+    workspace_coords_complete check."""
+    from nexus_deploy.service_env import ServiceEnvResult, ServiceRenderResult
+
+    fake_result = ServiceEnvResult(
+        services=(ServiceRenderResult(service="postgres", status="rendered"),),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.render_all_env_files",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    append_called = False
+
+    def _spy_append(*_a: Any, **_kw: Any) -> tuple[str, ...]:
+        nonlocal append_called
+        append_called = True
+        return ()
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._service_env.append_gitea_workspace_block",
+        _spy_append,
+    )
+
+    # The orchestrator fixture already sets self.gitea_repo_owner +
+    # self.repo_name (the canonical sources of truth post-R3 #1). We
+    # override the user-cred coords here: username + email are present
+    # but gitea_user_password=None. Since the workspace_coords_complete
+    # check requires ALL 5 inputs (repo_owner, repo_name,
+    # gitea_user_username, gitea_user_password, gitea_user_email) to
+    # be non-empty, the missing password alone must skip the append —
+    # otherwise we'd write an .env block with PASSWORD="" which breaks
+    # the workspace git_clone at runtime. Comment updated in PR #532
+    # R7 #3 to reflect the post-R3 source-of-truth + the actual coord
+    # being missing.
+    orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_repo_owner="owner",
+        gitea_user_email="ops@example.com",
+    )
+    orchestrator.gitea_user_username = "ops"
+    orchestrator.gitea_user_password = None  # missing → workspace_coords_complete=False
+    orchestrator.project_root = tmp_path
+
+    result = orchestrator._phase_service_env()
+    assert result.status == "ok"
+    assert "gitea_appended=0" in result.detail
+    assert append_called is False, (
+        "append_gitea_workspace_block must NOT be called when any coord is empty"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4a — `nexus-deploy run-pre-bootstrap` CLI handler tests.
+# ---------------------------------------------------------------------------
+
+
+def _setup_pre_bootstrap_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the 7 required env vars for run-pre-bootstrap."""
+    for var, val in (
+        ("ADMIN_EMAIL", "admin@example.com"),
+        ("REPO_NAME", "nexus-example-com-gitea"),
+        ("GITEA_REPO_OWNER", "admin"),
+        ("ENABLED_SERVICES", "gitea,kestra"),
+        ("DOMAIN", "example.com"),
+        ("INFISICAL_PASS", "pw"),
+        ("FIREWALL_RULES_JSON", "{}"),  # explicit zero-entry mode
+    ):
+        monkeypatch.setenv(var, val)
+    monkeypatch.setattr("sys.stdin.read", lambda: "{}")
+
+
+def test_cli_run_pre_bootstrap_unknown_arg_returns_2(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    rc = _run_pre_bootstrap(["--unknown"])
+    assert rc == 2
+    assert "unknown args" in capsys.readouterr().err
+
+
+def test_cli_run_pre_bootstrap_missing_env_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    # ADMIN_EMAIL deliberately missing; set the rest.
+    for var, val in (
+        ("REPO_NAME", "r"),
+        ("GITEA_REPO_OWNER", "o"),
+        ("ENABLED_SERVICES", "gitea"),
+        ("DOMAIN", "example.com"),
+        ("INFISICAL_PASS", "pw"),
+        ("FIREWALL_RULES_JSON", "{}"),
+    ):
+        monkeypatch.setenv(var, val)
+    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+    monkeypatch.setattr("sys.stdin.read", lambda: "{}")
+    rc = _run_pre_bootstrap([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "missing required env" in err
+    assert "ADMIN_EMAIL" in err
+
+
+def test_cli_run_pre_bootstrap_missing_firewall_rules_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R-firewall-required (PR #532 R5 #2): FIREWALL_RULES_JSON is now
+    required and has NO default. A missing/empty value must abort with
+    rc=2 — falling back to "{}" silently triggers destructive cleanup
+    of existing override files via the firewall module's zero-entry
+    mode. Operators must pass "{}" explicitly to opt in."""
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    # All other required vars set; FIREWALL_RULES_JSON deliberately missing.
+    for var, val in (
+        ("ADMIN_EMAIL", "admin@example.com"),
+        ("REPO_NAME", "r"),
+        ("GITEA_REPO_OWNER", "o"),
+        ("ENABLED_SERVICES", "gitea"),
+        ("DOMAIN", "example.com"),
+        ("INFISICAL_PASS", "pw"),
+    ):
+        monkeypatch.setenv(var, val)
+    monkeypatch.delenv("FIREWALL_RULES_JSON", raising=False)
+    monkeypatch.setattr("sys.stdin.read", lambda: "{}")
+    rc = _run_pre_bootstrap([])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "missing required env" in err
+    assert "FIREWALL_RULES_JSON" in err
+
+
+def test_cli_run_pre_bootstrap_rc0_emits_credentials_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Happy path: orchestrator returns ok with populated creds → rc=0
+    AND INFISICAL_TOKEN + PROJECT_ID on stdout (eval-able)."""
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    _setup_pre_bootstrap_env(monkeypatch)
+    fake_result = OrchestratorResult(
+        phases=(PhaseResult("p1", "ok"),),
+        state=OrchestratorState(
+            infisical_token="real-token",
+            project_id="proj-real",
+        ),
+    )
+    with patch.object(Orchestrator, "run_pre_bootstrap", return_value=fake_result):
+        rc = _run_pre_bootstrap([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "INFISICAL_TOKEN=real-token" in out
+    assert "PROJECT_ID=proj-real" in out
+
+
+def test_cli_run_pre_bootstrap_rc1_on_partial_emits_empty_creds(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Partial: e.g. infisical-provision dropped creds → rc=1 with
+    empty INFISICAL_TOKEN + PROJECT_ID (eval clears stale values)."""
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    _setup_pre_bootstrap_env(monkeypatch)
+    fake_result = OrchestratorResult(
+        phases=(PhaseResult("infisical-provision", "partial"),),
+        state=OrchestratorState(),  # empty token/project_id
+    )
+    with patch.object(Orchestrator, "run_pre_bootstrap", return_value=fake_result):
+        rc = _run_pre_bootstrap([])
+    assert rc == 1
+    out = capsys.readouterr().out
+    # shlex.quote of empty string → ''
+    assert "INFISICAL_TOKEN=''" in out
+    assert "PROJECT_ID=''" in out
+
+
+def test_cli_run_pre_bootstrap_rc2_on_hard_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    _setup_pre_bootstrap_env(monkeypatch)
+    fake_result = OrchestratorResult(
+        phases=(PhaseResult("stack-sync", "failed"),),
+        state=OrchestratorState(),
+    )
+    with patch.object(Orchestrator, "run_pre_bootstrap", return_value=fake_result):
+        rc = _run_pre_bootstrap([])
+    assert rc == 2
+
+
+def test_cli_run_pre_bootstrap_transport_failure_returns_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SSH/transport failure mid-run → rc=2 with stderr explanation."""
+    from nexus_deploy.__main__ import _run_pre_bootstrap
+
+    _setup_pre_bootstrap_env(monkeypatch)
+
+    def _raises(self: Any) -> Any:
+        import subprocess
+
+        raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=30)
+
+    with patch.object(Orchestrator, "run_pre_bootstrap", _raises):
+        rc = _run_pre_bootstrap([])
+    assert rc == 2
+    assert "transport failure" in capsys.readouterr().err
