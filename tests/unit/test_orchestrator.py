@@ -2726,14 +2726,68 @@ def test_phase_global_env_renders_image_versions(
     assert "NEXUS_GLOBAL_ENV_EOF" not in env_content
 
 
-def test_phase_global_env_no_heredoc_injection_with_malicious_image_value(
+def test_phase_global_env_rejects_shell_unsafe_image_value(
     orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R-heredoc-injection (PR #533 R2 #2): an image version value
-    containing a line equal to the OLD heredoc delimiter must NOT
-    trigger early termination. With the stdin-streaming fix, the
-    delimiter doesn't exist anymore — content is opaque bytes to
-    bash, not script source."""
+    """R-shell-unsafe-reject (PR #533 R3 #2): a malicious image-version
+    value containing shell metacharacters must REJECT before write.
+
+    The previous test (R2 #2) only asserted no heredoc-injection —
+    but the global .env is later sourced (compose_runner.py legacy
+    pattern), so an unescaped value with `$()` / backticks / `;` /
+    `\\n` would still trigger remote command execution at source
+    time. This test asserts the validation gate now rejects such
+    values up-front with status='failed', refusing to write."""
+    write_called = False
+
+    def _fake_run(args: list[str], **kwargs: Any) -> Any:
+        nonlocal write_called
+        write_called = True
+        cp = MagicMock()
+        cp.returncode = 0
+        return cp
+
+    # Synthetic adversarial image value: contains newline + 'rm -rf /'.
+    # If sourced unescaped, the rm command would execute on the server.
+    orchestrator.image_versions_json = '{"adversarial": "v1.0\\nrm -rf /"}'
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "shell-unsafe" in result.detail
+    # Critically: the write subprocess MUST NOT have been called.
+    assert not write_called, "validation must reject BEFORE writing the .env"
+
+
+def test_phase_global_env_rejects_dollar_in_value(
+    orchestrator: Orchestrator,
+) -> None:
+    """Same gate, different metacharacter — `$(cmd)` in a value would
+    execute at source time."""
+    orchestrator.image_versions_json = '{"foo": "v1.$(rm -rf /)"}'
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "shell-unsafe" in result.detail
+
+
+def test_phase_global_env_rejects_unsafe_admin_email(
+    orchestrator: Orchestrator,
+) -> None:
+    """ADMIN_EMAIL also goes through validation."""
+    orchestrator.bootstrap_env = type(orchestrator.bootstrap_env)(
+        domain="example.com",
+        admin_email="admin@example.com; rm -rf /",
+    )
+    orchestrator.image_versions_json = "{}"
+    result = orchestrator._phase_global_env()
+    assert result.status == "failed"
+    assert "shell-unsafe" in result.detail
+
+
+def test_phase_global_env_accepts_normal_image_versions(
+    orchestrator: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sanity: real image versions like ``treeverse/lakefs:1.73.0``,
+    ``v1.2.3``, ``latest`` pass the validation gate."""
     captured: dict[str, Any] = {}
 
     def _fake_run(args: list[str], **kwargs: Any) -> Any:
@@ -2742,20 +2796,14 @@ def test_phase_global_env_no_heredoc_injection_with_malicious_image_value(
         cp.returncode = 0
         return cp
 
-    # Synthetic adversarial image value: contains a newline with what
-    # was the old delimiter (regression: would have terminated the
-    # heredoc and let the rest run as bash).
-    orchestrator.image_versions_json = '{"adversarial": "v1.0\\nNEXUS_GLOBAL_ENV_EOF\\nrm -rf /"}'
+    orchestrator.image_versions_json = '{"lakefs": "treeverse/lakefs:1.73.0", "kestra": "v0.51.9"}'
+    orchestrator.user_email = "user+admin@example.com"
+    orchestrator.domain = "example.com"
     monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", _fake_run)
     result = orchestrator._phase_global_env()
     assert result.status == "ok"
-    # Adversarial content reaches stdin verbatim — bash never parses
-    # it as commands. No injection.
-    assert "rm -rf" in captured["input"]  # the literal string is there
-    # ...but it's just bytes in the .env, not executed. The test
-    # confirms our subprocess invocation does NOT contain a heredoc
-    # nor pass content via argv.
-    assert "<<" not in str(captured.get("args", []))
+    assert "IMAGE_LAKEFS=treeverse/lakefs:1.73.0" in captured["input"]
+    assert "IMAGE_KESTRA=v0.51.9" in captured["input"]
 
 
 # --- _phase_firewall_sync ---

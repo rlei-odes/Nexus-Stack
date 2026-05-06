@@ -45,6 +45,7 @@ passed into phases.
 from __future__ import annotations
 
 import contextlib
+import re
 import shlex
 import socket
 import subprocess
@@ -1448,6 +1449,44 @@ class Orchestrator:
                 detail=f"image_versions_json malformed: {type(exc).__name__}",
             )
 
+        # PR #533 R3 #2: validate every value before writing. The
+        # global .env is consumed by TWO mechanisms — compose_runner's
+        # ``set -a; source $GLOBAL_ENV; set +a`` (legacy, pre-Phase 4b
+        # — sourcing a file with shell-unsafe values would let a
+        # malicious image-version trigger RCE) AND compose's
+        # ``env_file:`` directive (literal-string semantics; quoted
+        # values would surface as literal characters in the rendered
+        # service env). The safe intersection is "values without
+        # shell metacharacters". Reject up-front instead of trying
+        # to escape — image versions and emails legitimately need
+        # alphanum + ``.-_:/@+`` only.
+        shell_unsafe = re.compile(r"[\s$`\\();&|<>!?*\[\]{}\"'\n\r]")
+
+        def _validate_value(label: str, value: str) -> str | None:
+            """Return error string if value is shell-unsafe, else None."""
+            if shell_unsafe.search(value):
+                return f"{label} contains shell-unsafe character(s); refusing to write .env"
+            return None
+
+        admin_email_value = self.bootstrap_env.admin_email or ""
+        admin_username_value = self.admin_username or self.config.admin_username or ""
+        validations = [
+            ("DOMAIN", self.domain),
+            ("ADMIN_EMAIL", admin_email_value),
+            ("ADMIN_USERNAME", admin_username_value),
+            ("USER_EMAIL", self.user_email),
+        ]
+        for key, value in image_versions.items():
+            validations.append((f"image_versions[{key}]", str(value)))
+        for label, value in validations:
+            err = _validate_value(label, value)
+            if err is not None:
+                return PhaseResult(
+                    name="global-env",
+                    status="failed",
+                    detail=err,
+                )
+
         lines = [
             "# Auto-generated global config - DO NOT EDIT",
             "# Managed by OpenTofu via image-versions.tfvars",
@@ -1456,8 +1495,8 @@ class Orchestrator:
             f"DOMAIN={self.domain}",
             "",
             "# Admin credentials",
-            f"ADMIN_EMAIL={self.bootstrap_env.admin_email or ''}",
-            f"ADMIN_USERNAME={self.admin_username or self.config.admin_username or ''}",
+            f"ADMIN_EMAIL={admin_email_value}",
+            f"ADMIN_USERNAME={admin_username_value}",
             f"USER_EMAIL={self.user_email}",
             "",
             "# Docker image versions",
@@ -1741,12 +1780,18 @@ class Orchestrator:
                 woodpecker_dir,
                 f"{self.ssh_host}:{_REMOTE_STACKS_DIR}/woodpecker/",
             )
-            # docker compose up -d. Source the global .env to pick up
-            # IMAGE_WOODPECKER_* image versions.
+            # docker compose up -d. PR #533 R3 #1: use compose's
+            # ``--env-file`` flag instead of ``source`` to pick up
+            # IMAGE_WOODPECKER_* image versions. Compose parses the
+            # env-file with its own KEY=VALUE format (no shell
+            # interpretation), so a malicious image-version value
+            # containing ``$()`` / backticks / ``;`` / ``\n`` cannot
+            # trigger remote command execution. The previous source
+            # pattern (still used by compose_runner.py for now —
+            # tracked for Phase 4c follow-up) was a known foot-gun.
             up_script = (
                 f"cd {_REMOTE_STACKS_DIR}/woodpecker "
-                f"&& source {_REMOTE_STACKS_DIR}/.env "
-                "&& docker compose up -d"
+                f"&& docker compose --env-file {_REMOTE_STACKS_DIR}/.env up -d"
             )
             _remote.ssh_run_script(up_script, host=self.ssh_host, check=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

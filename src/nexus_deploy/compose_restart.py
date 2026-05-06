@@ -192,7 +192,17 @@ def run_restart(
         return RestartResult(restarted=0, failed=0)
 
     script = render_remote_script(services)
-    runner = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
+    # PR #533 R3 #3: default runner uses ``check=False`` so an ssh
+    # transport failure (network blip, expired CF Access token, host
+    # down) returns a CompletedProcess with non-zero rc instead of
+    # raising CalledProcessError. The RESULT-line parser then sees no
+    # parseable line and the function returns
+    # ``RestartResult(failed=len(services))``. The orchestrator
+    # converts that to ``status='partial'`` (best-effort restart-loop
+    # semantics — same as the legacy bash ``|| true``). With
+    # ``check=True``, an exception would have aborted the entire
+    # post-bootstrap pipeline; behavior change vs legacy.
+    runner = script_runner or (lambda s: _remote.ssh_run_script(s, host=host, check=False))
     completed = runner(script)
 
     # Forward per-service ✓/✗ lines to local stderr — same
@@ -204,8 +214,10 @@ def run_restart(
 
     result = parse_result(completed.stdout)
     if result is None:
-        # No RESULT line = remote script broke before the final echo.
-        # Treat every requested service as failed so the caller surfaces
-        # this as a partial / failed PhaseResult.
+        # No RESULT line = remote script broke before the final echo,
+        # OR ssh transport failed (with check=False, that's also a
+        # non-zero rc but no RESULT). Treat every requested service as
+        # failed so the caller surfaces this as a partial / failed
+        # PhaseResult — best-effort semantics matching legacy bash.
         return RestartResult(restarted=0, failed=len(services))
     return result
