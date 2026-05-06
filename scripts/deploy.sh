@@ -467,8 +467,17 @@ echo ""
 echo -e "${YELLOW}  Generating firewall port overrides...${NC}"
 
 if ! FIREWALL_JSON=$(cd "$TOFU_DIR" && tofu output -json firewall_rules 2>/dev/null); then
-    echo -e "${YELLOW}  Warning: Unable to load firewall_rules from OpenTofu. No firewall overrides will be generated.${NC}" >&2
-    FIREWALL_JSON="{}"
+    # Tofu read failed (state corruption, network blip, missing
+    # firewall_rules output, …). MUST NOT fall through to '{}' here:
+    # the Python firewall configure treats {} as intentional zero-
+    # entry mode and DELETES every existing docker-compose.firewall.yml
+    # locally + remotely. A transient Tofu read failure would then
+    # silently nuke the production firewall overrides — the exact
+    # security-relevant inconsistency the rest of the rc=1 plumbing
+    # was designed to prevent. Abort instead so the operator
+    # investigates Tofu state before any cleanup runs.
+    echo -e "${RED}  ✗ Failed to load firewall_rules from OpenTofu — refusing to fall through to zero-entry mode (would delete every existing firewall override). Aborting; investigate Tofu state.${NC}" >&2
+    exit 1
 fi
 
 FW_RC=0
@@ -481,14 +490,19 @@ echo "$FIREWALL_JSON" | DOMAIN="$DOMAIN" \
 case "$FW_RC" in
     0) ;;
     1)
-        # rc=1 means at least one write OR stale-cleanup failed → the
-        # local + remote firewall state is now INCONSISTENT with what
-        # OpenTofu requested. Continuing into the copy/start phases
-        # would either leave a removed port still exposed (failed
-        # cleanup) or skip a newly-requested port (failed render).
-        # Abort so the workflow surfaces the mismatch instead of
-        # finishing green with a broken firewall posture.
-        echo -e "${RED}  ✗ Firewall override generation had per-file failures — local/remote state is now inconsistent with Tofu; aborting${NC}" >&2
+        # rc=1 covers THREE distinct conditions (see firewall configure
+        # CLI docstring in __main__.py): partial write failure, zero-
+        # entry stale-cleanup failure, OR a service was skipped because
+        # its docker-compose.yml was unparseable. All three mean the
+        # local+remote firewall state is now INCONSISTENT with what
+        # Tofu requested — continuing into the copy/start phases would
+        # either leave a removed port still exposed (failed cleanup),
+        # skip a newly-requested port (failed render), or carry a
+        # stale override for a service whose port-rule changed but
+        # couldn't be re-rendered (skipped). Abort so the workflow
+        # surfaces the mismatch; check the inner Python stderr above
+        # for the specific cause.
+        echo -e "${RED}  ✗ Firewall override generation reports state inconsistent with Tofu (write/cleanup failure or unparseable compose.yml on a Tofu-requested service) — aborting; see Python stderr above for the specific cause${NC}" >&2
         exit 1
         ;;
     *) echo -e "${RED}  ✗ Firewall override generation failed (rc=$FW_RC); aborting${NC}" >&2; exit "$FW_RC" ;;
@@ -538,10 +552,14 @@ if [ -n "$ORPHANS" ]; then
     # crashed before its rm -f doesn't leave stale entries that a later
     # PID-reused shell reads back as 'this run failed'.
     FW_ORPHAN_FAILS=$(mktemp -t firewall-orphan-fails.XXXXXX)
-    # Cleanup on every script exit (success OR failure) so we don't
-    # accumulate /tmp clutter across runs.
-    # shellcheck disable=SC2064  # intentional EXIT-time expansion
-    trap "rm -f \"$FW_ORPHAN_FAILS\"" EXIT
+    # Append to the existing RUNNER_CLEANUP_PATHS list so the global
+    # EXIT trap (installed at the top of this script around line 207)
+    # cleans this tempfile up alongside the others. DO NOT install a
+    # second `trap ... EXIT` — bash trap is REPLACE-not-ADD, and a
+    # second trap would clobber the global one, leaving every other
+    # tempfile listed in REMOTE_CLEANUP_PATHS / RUNNER_CLEANUP_PATHS
+    # uncleaned for the rest of the script.
+    echo "$FW_ORPHAN_FAILS" >> "$RUNNER_CLEANUP_PATHS"
     echo "$ORPHANS" | while IFS= read -r orphan; do
         echo "  Removing orphan: stacks/$orphan"
         if ! ssh nexus "rm -f /opt/docker-server/stacks/$orphan"; then

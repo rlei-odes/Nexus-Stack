@@ -817,11 +817,19 @@ def _render_marimo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     initial-setup where 'Marimo kein Gitea angebunden, Repo muss in
     Marimo sichtbar sein'.
 
-    SPARK_CONNECT_URL is hardcoded in the docker-compose env block
-    (sc://spark-connect:15002) so we deliberately don't shadow it
-    here from a per-deploy override; if a future caller needs to
-    swap clusters they can set it as a real Infisical secret which
-    lands in .infisical.env via the secret-sync path.
+    SPARK_CONNECT_URL is hardcoded in stacks/marimo/docker-compose.yml's
+    ``environment:`` block at ``sc://spark-connect:15002``. Compose
+    gives ``environment:`` precedence over values coming from
+    ``env_file:`` (.env / .infisical.env), so:
+      - We deliberately don't write SPARK_CONNECT_URL to .env here.
+      - Setting it as an Infisical secret would land in
+        ``.infisical.env`` but be SHADOWED by the compose
+        ``environment:`` value — Infisical override won't actually
+        take effect.
+    To swap clusters, edit the ``SPARK_CONNECT_URL`` line in
+    stacks/marimo/docker-compose.yml directly (or override it with
+    a docker-compose.override.yml) — there is no env-file path that
+    can replace the value.
     """
     del c, e  # no derived vars at the moment; the file is intentionally minimal
     return RenderedEnv(env_vars={})
