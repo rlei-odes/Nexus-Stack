@@ -2604,8 +2604,14 @@ def _read_single_pair_from_tfvars(text: str) -> _hetzner.ServerSpec | None:
     # PR #537 R2 #3: use the named ``value`` capture group instead of
     # ``match.group(0).split('"', 2)[1]`` — same semantics, but the
     # intent (extract the quoted value) is now explicit in the regex.
-    type_value = type_match.group("value")
-    loc_value = loc_match.group("value")
+    # PR #537 R8 #3: ``.strip()`` before ``.lower()``. A hand-edited
+    # tfvars like ``server_location = "hel1 "`` (with stray trailing
+    # whitespace inside the quotes) would otherwise produce a
+    # ServerSpec with location='hel1 ' that never matches the
+    # whitespace-stripped Hetzner location keys → confusing 'unknown
+    # location' diagnostic for what is actually a copy-paste artefact.
+    type_value = type_match.group("value").strip()
+    loc_value = loc_match.group("value").strip()
     if not type_value or not loc_value:
         return None
     return _hetzner.ServerSpec(

@@ -108,6 +108,34 @@ def test_parse_preferences_rejects_duplicate_pair() -> None:
         parse_preferences("cx43:fsn1, cx43:fsn1")
 
 
+def test_parse_preferences_rejects_quote_in_value() -> None:
+    """PR #537 R8 #1: a value containing ``"`` would break the
+    downstream tfvars rewrite (close the HCL string early). Reject
+    at the parser boundary before it can reach the rewriter."""
+    with pytest.raises(ValueError, match="invalid characters"):
+        parse_preferences('cx43:fsn1", server_type = "evil')
+
+
+def test_parse_preferences_rejects_newline_in_value() -> None:
+    """Embedded newline would split the HCL value across multiple
+    lines on rewrite. Defensive — the env var pipeline shouldn't
+    emit newlines but a hand-edited config.tfvars could.
+    (Input keeps a single colon so the charset check fires; a
+    multi-colon input would short-circuit to the colon-count error
+    instead — see test_parse_preferences_rejects_token_with_multiple_colons.)"""
+    with pytest.raises(ValueError, match="invalid characters"):
+        parse_preferences("cx43:fsn1\nbreakout")
+
+
+def test_parse_preferences_accepts_dash_in_identifier() -> None:
+    """Hetzner's identifier shape is ``[a-z0-9-]+``; no current name
+    uses a dash but the API spec allows it. Don't over-constrain."""
+    # Synthetic — no real Hetzner type uses this shape, but the
+    # parser must not preemptively reject it.
+    result = parse_preferences("cx-future:fsn1")
+    assert result == (ServerSpec("cx-future", "fsn1"),)
+
+
 def test_parse_preferences_rejects_only_commas() -> None:
     """``,,,`` parses to all-empty tokens (skipped) → no specs."""
     with pytest.raises(ValueError, match="no valid entries"):
