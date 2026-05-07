@@ -2684,7 +2684,7 @@ def test_phase_kestra_secret_sync_partial_when_kestra_pass_missing(
 
 
 def test_phase_kestra_secret_sync_constructs_correct_stack_target(
-    minimal_env: BootstrapEnv, monkeypatch: pytest.MonkeyPatch
+    minimal_env: BootstrapEnv,
 ) -> None:
     """Issue #543: regression test pinning the Kestra-specific
     StackTarget overrides inside the orchestrator phase. Without
@@ -2697,8 +2697,6 @@ def test_phase_kestra_secret_sync_constructs_correct_stack_target(
     Mocks ssh_run + KestraClient.wait_ready + run_sync_for_stack
     so the assertion is purely on the StackTarget shape passed in.
     """
-    from unittest.mock import patch
-
     config = NexusConfig(
         admin_username="admin",
         gitea_admin_password="gitea-admin",

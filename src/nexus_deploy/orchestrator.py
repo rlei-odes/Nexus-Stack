@@ -1702,10 +1702,19 @@ class Orchestrator:
                 #   - env_file_basename=".env" (not .infisical.env;
                 #     Kestra's compose loads .env directly, no separate
                 #     legacy file)
-                #   - legacy_env_file_basename=None (Kestra never had
-                #     a legacy .infisical.env; without this override
-                #     the script wrote SECRETS to .infisical.env and
-                #     the legacy-strip step nuked them on next run)
+                #   - legacy_env_file_basename=None (the
+                #     StackTarget default is ``.env``, intended as the
+                #     migration-from-legacy strip target for the
+                #     Jupyter/Marimo path that writes to
+                #     ``.infisical.env``. For Kestra the SECRET block
+                #     IS written to ``.env`` itself; without this
+                #     None-override the remote script's legacy-strip
+                #     step would sed-strip the just-written
+                #     ``BEGIN/END nexus-secret-sync`` block out of
+                #     the same ``.env`` and the mv would wipe its
+                #     own output. ``None`` skips the legacy-strip
+                #     branch entirely — kestra has no migration
+                #     concern.)
                 #   - key_prefix="SECRET_" (Kestra's
                 #     ``{{ secret('GITEA_TOKEN') }}`` looks up env var
                 #     ``SECRET_GITEA_TOKEN``)
