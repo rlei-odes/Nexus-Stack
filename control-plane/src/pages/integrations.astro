@@ -223,6 +223,12 @@ import Layout from '../layouts/Layout.astro';
 </style>
 
 <script is:inline>
+  // Single initial config GET on mount: populates the form + status
+  // text AND toggles the Sync button. refreshDatabricksConfig() takes
+  // over after saveDatabricksConfig() to re-check when the operator
+  // changes credentials mid-page. (Previously this function and
+  // refreshDatabricksPanel() each fetched /api/databricks-config on
+  // load — two requests for the same data; consolidated to one.)
   async function loadDatabricksConfig() {
     try {
       const res = await fetch('/api/databricks-config');
@@ -232,6 +238,14 @@ import Layout from '../layouts/Layout.astro';
         if (data.configured) {
           document.getElementById('databricks-status').textContent = 'Configured';
           document.getElementById('databricks-status').style.color = '#00ff88';
+        }
+        // Sync-button gate. ``dbxBtn`` is bound below in this same
+        // <script> block; this function runs after that binding is
+        // hoisted at parse time.
+        const btn = document.getElementById('btn-sync-databricks');
+        if (btn) {
+          btn.disabled = !data.configured;
+          btn.title = data.configured ? '' : 'Configure Databricks host and token above first';
         }
       }
     } catch (error) {
@@ -284,9 +298,10 @@ import Layout from '../layouts/Layout.astro';
   loadDatabricksConfig();
 
   // ---------------------------------------------------------------
-  // Databricks Sync panel — moved from Secrets tab. The save-config
-  // button kicks refreshDatabricksPanel() so the Sync button enables
-  // immediately after the host+token have been persisted.
+  // Databricks Sync panel — moved from Secrets tab. saveDatabricksConfig()
+  // calls refreshDatabricksConfig() so the Sync button enables
+  // immediately after the host+token have been persisted, no reload
+  // needed.
   // ---------------------------------------------------------------
   function escapeHtml(str) {
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -362,9 +377,11 @@ import Layout from '../layouts/Layout.astro';
     }
   }
 
-  async function refreshDatabricksPanel() {
+  // Initial load helper — only fetches the last-sync summary.
+  // The config-GET / button-gate is handled by loadDatabricksConfig()
+  // (called separately above) so we don't double-fetch on mount.
+  async function loadLastSync() {
     if (!dbxBtn) return;
-    await refreshDatabricksConfig();
     try {
       const res = await fetch('/api/databricks-sync', { credentials: 'same-origin' });
       const ct = res.headers.get('content-type') || '';
@@ -406,6 +423,6 @@ import Layout from '../layouts/Layout.astro';
 
   if (dbxBtn) {
     dbxBtn.addEventListener('click', syncDatabricks);
-    refreshDatabricksPanel();
+    loadLastSync();
   }
 </script>
