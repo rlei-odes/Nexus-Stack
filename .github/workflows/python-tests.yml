@@ -71,15 +71,14 @@ jobs:
 
       - name: shellcheck remaining bash
         run: |
-          # The remaining bash scripts (deploy.sh shrinks phase-by-phase
-          # but is here through Phase 3; the small helpers stay bash).
+          # Lints the small helper scripts left in scripts/ — operator
+          # one-shots (init-r2-state, cleanup-orphaned-resources,
+          # setup-control-panel-secrets, check-control-panel-env). The
+          # main deploy path is Python (python -m nexus_deploy
+          # run-pipeline) since Phase 4c (#535).
           # `find -print0 | xargs -0` is portable to macOS bash 3.2 too.
-          #
-          # `--severity=error` only blocks on real bugs. Existing scripts
-          # (deploy.sh in particular) carry a long tail of style/info nits
-          # (SC2029, SC2086, SC2087, etc.) that are out of scope for Phase 0
-          # — Phase 4 (#505) tightens this to `--severity=warning` once
-          # deploy.sh is gone and only the small helpers remain.
+          # `--severity=error` only blocks on real bugs; the helpers
+          # carry a few style/info nits we tolerate.
           find scripts -maxdepth 2 -name '*.sh' -type f -print0 \
             | xargs -0 uv run shellcheck --severity=error --exclude=SC1091,SC2001
 
@@ -130,8 +129,8 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: pytest unit
-        # Phase 0: only unit tests exist. Integration tests land in Phase 1
-        # and run via the same step (pytest discovers them via testpaths).
+        # Unit tests only. Integration tests, when added, run via the same
+        # step (pytest discovers them via testpaths in pyproject.toml).
         # `--cov-fail-under=80` makes the gate explicit on the CLI;
         # pyproject.toml's [tool.coverage.report] also has fail_under=80
         # so local + CI agree even if someone runs `coverage report` directly.

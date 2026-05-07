@@ -71,8 +71,11 @@ repos:
         args: [--config-file=pyproject.toml]
 
   # ---------------------------------------------------------------------------
-  # Shellcheck — for the bash files we keep
-  # Only the bash helpers and (during migration) deploy.sh itself.
+  # Shellcheck — for the bash helper scripts we keep (init-r2-state,
+  # cleanup-orphaned-resources, setup-control-panel-secrets,
+  # check-control-panel-env). The deploy path itself is Python since
+  # Phase 4c (#535); these are operator one-shots, not part of the
+  # spin-up loop.
   # Pre-commit installs shellcheck via the precommit-shfmt-shellcheck mirror.
   # ---------------------------------------------------------------------------
   - repo: https://github.com/shellcheck-py/shellcheck-py
@@ -81,9 +84,8 @@ repos:
       - id: shellcheck
         files: ^scripts/.*\.sh$
         args:
-          # `--severity=error` only blocks real bugs. deploy.sh carries a
-          # long tail of pre-existing style/info nits that Phase 4 (#505)
-          # cleans up once deploy.sh is gone. Tighten to `warning` then.
+          # `--severity=error` only blocks real bugs; the helpers carry a
+          # few pre-existing style/info nits we tolerate.
           - --severity=error
           # SC1091: not following sourced files (we source ../backend.hcl
           # which lives outside the repo at runtime — checkable only on VM).

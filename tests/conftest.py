@@ -1,11 +1,11 @@
 """Shared pytest fixtures for nexus_deploy tests.
 
-Phase 0 ships a small set: just enough to demonstrate the pattern
-and unblock unit-test writing in Phase 1. Real fixtures (mock
-Infisical API, mock SSH server, fake SECRETS_JSON, testcontainers)
-land alongside the modules that need them — pytest auto-discovers
-fixtures from any conftest.py in the test path, so per-module
-conftest.py files are fine and encouraged.
+Deliberately kept small — most fixtures (mock Infisical API, mock
+SSH server, fake SECRETS_JSON shapes, etc.) live alongside the
+modules that need them in per-module test files, since pytest
+auto-discovers fixtures from any ``conftest.py`` on the test path.
+This file holds only the cross-cutting helpers used by enough
+modules that defining them once is worth the indirection.
 """
 
 from __future__ import annotations
@@ -28,11 +28,13 @@ def tmp_workdir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_secrets_json() -> dict[str, str]:
-    """Minimal valid SECRETS_JSON shape.
+    """Minimal valid SECRETS_JSON shape — used as a starter fixture
+    by tests that don't care about the specific field set.
 
-    Phase 1's `config.py` expansion replaces this with a richer
-    fixture that covers all ~70 fields. For Phase 0 we just want
-    a stable example to demonstrate fixture wiring.
+    Tests that exercise field-level behaviour (most of
+    ``test_config.py``, ``test_orchestrator.py``, etc.) define their
+    own richer fixtures locally so this stays a stable cross-cutting
+    minimum.
     """
     return {
         "domain": "example.com",

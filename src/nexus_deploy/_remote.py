@@ -1,18 +1,19 @@
-"""Subprocess primitives for talking to the nexus server (Phase 1, #505).
+"""Subprocess primitives for talking to the nexus server.
 
-Temporary scaffolding while the migration is in progress: these are
-plain ``subprocess.run`` wrappers around ``ssh nexus <cmd>`` and
-``rsync … nexus:…``, mirroring the bash-side patterns one-to-one so the
-strangler-fig handoff doesn't change network behaviour.
+Plain ``subprocess.run`` wrappers around ``ssh nexus <cmd>`` and
+``rsync … nexus:…``. Coexists with :mod:`nexus_deploy.ssh.SSHClient`
+(paramiko-backed, persistent connection, port-forwarding, SFTP):
+SSHClient is preferred for orchestrator phases that need a long-
+lived session or port-forward; ``_remote`` stays for one-shot
+fire-and-forget calls where spawning a fresh ssh process is cheaper
+and clearer than reusing a paramiko connection.
 
-Phase 3 (#505 Modul 3.1) replaces this with ``nexus_deploy.ssh.SSHClient``
-— a paramiko-backed client with persistent connection, port-forwarding,
-and proper SFTP. Until then, every consumer here uses the system ``ssh``
-config alias `nexus` (which the spin-up workflow's "Setup SSH config"
-step writes), so anything that works in deploy.sh works here too.
+Every consumer here uses the system ``ssh`` config alias ``nexus``,
+which the spin-up workflow's "Setup SSH config" step writes. That
+alias is the ground truth for connection params; the wrappers
+themselves don't know about hostnames, ports, or service tokens.
 
-Tests mock ``subprocess.run`` directly. There are no integration tests
-in this module — those land with the paramiko refactor in Phase 3.
+Tests mock ``subprocess.run`` directly — see ``tests/unit/test_remote.py``.
 """
 
 from __future__ import annotations

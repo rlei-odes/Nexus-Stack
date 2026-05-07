@@ -1,8 +1,10 @@
-"""Phase 0 smoke tests — proves the package imports and CI runs.
+"""Smoke tests — proves the package imports and CI runs.
 
-Replaced in Phase 1 with real module tests. Until then these
-exist to keep the test runner non-empty and confirm the toolchain
-(ruff + mypy + pytest + coverage gate) is wired up.
+Kept after the Phase 4c migration completed (#535) because they
+remain the cheapest signal for "the toolchain is actually wired
+up" — a refactor that breaks importability or silently regresses
+the no-args / --version CLI shape would surface here before the
+heavier per-module tests run.
 """
 
 from __future__ import annotations
@@ -15,9 +17,9 @@ import nexus_deploy
 from nexus_deploy import __main__, cli, hello
 
 
-def test_hello_returns_phase_marker() -> None:
+def test_hello_returns_stable_string() -> None:
     """Smoke: package is importable, hello() returns a stable string."""
-    assert hello() == "nexus_deploy phase-0 ready"
+    assert hello() == "nexus_deploy ready"
 
 
 def test_version_present() -> None:
@@ -34,7 +36,7 @@ def test_main_no_args_prints_hello(
     rc = __main__.main()
     captured = capsys.readouterr()
     assert rc == 0
-    assert "phase-0 ready" in captured.out
+    assert "nexus_deploy ready" in captured.out
 
 
 def test_main_version_flag(
@@ -67,4 +69,4 @@ def test_cli_main_delegates_to_main_module(
     rc = cli.main()
     captured = capsys.readouterr()
     assert rc == 0
-    assert "phase-0 ready" in captured.out
+    assert "nexus_deploy ready" in captured.out
