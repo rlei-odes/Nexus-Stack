@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.r2_tokens — Phase 3 Modul 3.4f (#530).
+"""Tests for nexus_deploy.r2_tokens.
 
 Covers the orphan-R2-API-token bug from PR #530 R2:
 

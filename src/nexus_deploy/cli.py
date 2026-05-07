@@ -1,8 +1,11 @@
-"""CLI dispatch — Phase 0 stub, Phase 1 plugs in real subcommands.
+"""CLI dispatch — thin re-export of ``__main__.main``.
 
-Imported by the `[project.scripts]` entry in pyproject.toml so
-`uv sync` exposes a `nexus-deploy` shell command equivalent to
-`python -m nexus_deploy`.
+Imported by the ``[project.scripts]`` entry in ``pyproject.toml``
+so ``uv sync`` exposes a ``nexus-deploy`` shell command equivalent
+to ``python -m nexus_deploy``. The actual subcommand routing lives
+in :mod:`nexus_deploy.__main__`; this module exists only so the
+console-script entry point has a stable import path that doesn't
+read like ``__main__:main``.
 """
 
 from __future__ import annotations

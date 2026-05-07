@@ -1,12 +1,11 @@
-"""Tests for nexus_deploy.tfvars — Phase 4c (#505).
+"""Tests for nexus_deploy.tfvars.
 
 Pure-logic test surface. Two layers:
 
 1. ``parse(path)`` — regex extraction of domain / admin_email /
    user_email from a synthetic config.tfvars fixture.
 2. ``derive_gitea_identity(config)`` — admin-email collision
-   fallback + first-comma-trim semantics. Mirrors deploy.sh:80-99
-   exactly.
+   fallback + first-comma-trim semantics.
 """
 
 from __future__ import annotations
@@ -238,7 +237,7 @@ def test_derive_first_comma_entry_used(tmp_path: Path) -> None:
 def test_derive_trims_whitespace_from_emails(tmp_path: Path) -> None:
     """Self-provisioned tfvars commonly have leading spaces inside
     quoted values. Gitea/Windmill/Wiki.js validators reject those, so
-    derive() must trim. Mirrors the legacy bash sed at deploy.sh:80-81."""
+    derive() trims both halves before further processing."""
     config = TfvarsConfig(
         domain="example.com",
         admin_email_raw="   admin@example.com   ",

@@ -1,9 +1,9 @@
 """nexus_deploy — Python orchestration for Nexus-Stack deployment.
 
-This package is being built incrementally to replace `scripts/deploy.sh`.
-See issue #505 for the migration plan. Until Phase 4 lands, the bash
-deploy.sh remains the entry point and shells out to
-`python -m nexus_deploy <command>` for migrated functionality.
+The single entrypoint is ``python -m nexus_deploy run-pipeline``,
+invoked by ``.github/workflows/spin-up.yml``. See
+``docs/admin-guides/migration-to-python.md`` for historical context
+on how this package came to be.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -17,9 +17,11 @@ except PackageNotFoundError:  # pragma: no cover
 
 
 def hello() -> str:
-    """Phase 0 smoke-test target — proves the package imports + CI runs.
+    """Smoke-test target — proves the package imports + CI runs.
 
-    Replace this with real entry points in Phase 1 (`infisical`,
-    `secret-sync` CLI commands).
+    Kept as the bare ``python -m nexus_deploy`` (no subcommand)
+    response so ``hello world``-style sanity checks have a fast,
+    side-effect-free path. Real work goes through the subcommand
+    dispatcher in :mod:`nexus_deploy.__main__`.
     """
-    return "nexus_deploy phase-0 ready"
+    return "nexus_deploy ready"

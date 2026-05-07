@@ -1,8 +1,8 @@
-"""Tests for nexus_deploy.infisical — Phase 1 Modul 1.1 (#505).
+"""Tests for nexus_deploy.infisical.
 
 Covers:
 - skip-empty rule (#504 contract: preserve operator UI edits)
-- folder list + per-folder key list match deploy.sh source-order
+- folder list + per-folder key list are emitted in a stable source-order
 - payload JSON shape (folder + secrets-batch upsert)
 - adversarial token quoting in the remote bash loop
 - end-to-end bootstrap with mocked ssh/rsync runners
@@ -92,7 +92,7 @@ def test_secrets_payload_shape() -> None:
 
 
 def test_secrets_payload_preserves_secret_order() -> None:
-    """Source-order matches deploy.sh's jq filter (sequential `secretKey: $kN`)."""
+    """Source-order matches the canonical layout's jq filter (sequential `secretKey: $kN`)."""
     spec = FolderSpec("dify", {"DIFY_USERNAME": "u", "DIFY_PASSWORD": "p", "DIFY_DB_PASSWORD": "d"})
     payload = spec.secrets_payload("p", "e")
     secrets = payload["secrets"]
@@ -363,9 +363,9 @@ def test_bootstrap_writes_payloads_with_restrictive_perms(tmp_path: Path) -> Non
 def test_bootstrap_removes_local_payloads_on_success(tmp_path: Path) -> None:
     """After a successful bootstrap, the local f-/s-*.json files are gone.
 
-    Mirrors deploy.sh's ``rm -rf "$PUSH_DIR"`` cleanup. Files contain
-    secret values; leaving them on the runner is a secrets-at-rest
-    leak.
+    The bootstrap is responsible for removing its own ``$PUSH_DIR``
+    payloads — they contain secret values and leaving them on the
+    runner is a secrets-at-rest leak.
     """
     push_dir = tmp_path / "push"
     client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
@@ -517,7 +517,9 @@ def test_bootstrap_parses_ok_fail_counts(tmp_path: Path) -> None:
 
 
 def test_bootstrap_takes_last_line_of_stdout(tmp_path: Path) -> None:
-    """deploy.sh's baseline-capture WARN message can precede the OK:FAIL line."""
+    """The remote bash may emit a baseline-capture ``WARN`` message
+    before the trailing ``OK:FAIL`` line; the parser must take the
+    last line, not the first."""
     client = InfisicalClient("p", "dev", "tok", push_dir=tmp_path / "p")
     result = client.bootstrap(
         [FolderSpec("k", {"X": "v"})],
@@ -578,7 +580,7 @@ def test_bootstrap_runs_ssh_loop_with_token(tmp_path: Path) -> None:
 def test_cli_infisical_bootstrap_requires_project_id_and_token(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Missing required env → rc=2 (hard fail; deploy.sh aborts)."""
+    """Missing required env → rc=2 (hard fail; the orchestrator aborts the deploy)."""
     from nexus_deploy.__main__ import main
 
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
@@ -657,7 +659,8 @@ def test_cli_infisical_bootstrap_partial_failure_returns_1(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """API-reported partial failure (folder errors) → rc=1; deploy.sh warns + continues."""
+    """API-reported partial failure (folder errors) → rc=1; the orchestrator
+    surfaces this as a partial PhaseResult and continues the deploy."""
     from nexus_deploy.__main__ import main
 
     def fake_ssh(_script: str) -> subprocess.CompletedProcess[str]:
@@ -687,9 +690,10 @@ def test_cli_infisical_bootstrap_unexpected_exception_returns_2(
     must surface as rc=2, NOT rc=1.
 
     Python's default unhandled-exception exit code is 1, which would
-    collide with the "partial push" semantic in deploy.sh and cause
-    the deploy to continue past a broken bootstrap. The broad
-    ``except Exception`` in the CLI re-routes that to rc=2.
+    collide with the "partial push" semantic the orchestrator uses
+    for soft-fail Infisical results and cause the deploy to continue
+    past a broken bootstrap. The broad ``except Exception`` in the
+    CLI re-routes that to rc=2.
 
     Also asserts: the exception's ``str(exc)`` / ``repr(exc)`` contents
     must NOT surface in stderr — those can carry attribute values from
@@ -723,7 +727,7 @@ def test_cli_infisical_bootstrap_transport_failure_returns_2(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """rsync/ssh transport failure (CalledProcessError, etc.) → rc=2; deploy.sh aborts.
+    """rsync/ssh transport failure (CalledProcessError, etc.) → rc=2; the caller aborts.
 
     We must NOT pass through the underlying CalledProcessError because
     its ``cmd`` attribute carries the full argv — and even though we
@@ -766,7 +770,7 @@ class _StubStdin:
 
 
 # ---------------------------------------------------------------------------
-# provision_admin — Phase 3 Modul 3.4f (#505)
+# provision_admin
 # ---------------------------------------------------------------------------
 
 
@@ -974,7 +978,7 @@ def test_cli_infisical_provision_admin_returns_1_when_creds_dropped(
     """R-creds-required-for-rc-0 (#530 R2 #4): a `loaded-existing` /
     `freshly-bootstrapped` status with token=None (e.g. invalid-UTF8
     base64 decode dropped the token) MUST be reported as rc=1, not
-    rc=0. Otherwise deploy.sh prints '✓ Infisical provisioned' while
+    rc=0. Otherwise the caller prints '✓ Infisical provisioned' while
     eval'ing empty INFISICAL_TOKEN= / PROJECT_ID= lines that
     downstream consumers treat as legitimate."""
     import nexus_deploy.__main__ as main_mod
@@ -1016,9 +1020,9 @@ def test_cli_infisical_provision_admin_returns_1_when_creds_dropped(
     rc = main_mod._infisical_provision_admin([])
     assert rc == 1, "loaded-existing without credentials must be soft-fail"
     captured = capsys.readouterr()
-    # The handler still writes the eval lines (deploy.sh's eval needs to
+    # The handler still writes the eval lines (the caller's eval needs to
     # CLEAR stale values from prior runs), but the rc=1 signals the
-    # soft-fail so deploy.sh skips the "✓ Infisical provisioned" branch.
+    # soft-fail so the caller skips the "✓ Infisical provisioned" branch.
     # Critically the values must be EMPTY-quoted, not stale or garbage.
     assert "INFISICAL_TOKEN=''" in captured.out
     assert "PROJECT_ID=''" in captured.out

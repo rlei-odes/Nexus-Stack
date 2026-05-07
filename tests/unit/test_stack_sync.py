@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.stack_sync — Phase 3 Modul 3.3 (#505).
+"""Tests for nexus_deploy.stack_sync.
 
 Round-tagged invariants on the rendered cleanup bash, exec'd-bash
 regression tests for the disabled-stack matching semantics, rsync
@@ -126,7 +126,7 @@ def test_render_quotes_enabled_list_safely() -> None:
 
 def test_render_uses_docker_compose_yml_check_before_compose_down() -> None:
     """Compose-down only fires when docker-compose.yml is present —
-    matches deploy.sh's branch (we don't try to `compose down` a
+    matches the canonical layout's branch (we don't try to `compose down` a
     folder that's just leftover assets)."""
     script = render_cleanup_script([])
     assert 'if [ -f "${stack_dir}docker-compose.yml" ]' in script
@@ -213,8 +213,8 @@ def test_exec_cleanup_line_exact_match_no_substring_collision() -> None:
 def test_exec_cleanup_rm_runs_even_when_compose_down_fails() -> None:
     """Round-1 PR #523: a stuck container shouldn't block folder removal.
 
-    Legacy deploy.sh used ``docker compose down 2>/dev/null || true``
-    and ran ``rm -rf`` regardless. A previous version of this module
+    The historical contract was ``docker compose down 2>/dev/null || true``
+    followed by an unconditional ``rm -rf``. A previous version of this module
     inserted a ``continue`` after the down-failure branch which
     diverged from that contract and left orphan folders behind. This
     test pins the post-fix behaviour: when ``docker compose down``
@@ -452,7 +452,7 @@ def test_rsync_enabled_failed_on_unsafe_name(tmp_path: Path) -> None:
 
 def test_rsync_enabled_continues_after_per_service_failure(tmp_path: Path) -> None:
     """One service's rsync failure does NOT abort the loop — strictly
-    more forgiving than deploy.sh's `set -e` semantics."""
+    more forgiving than the caller's `set -e` semantics."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     (tmp_path / "c").mkdir()

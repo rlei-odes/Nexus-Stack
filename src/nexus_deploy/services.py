@@ -1,17 +1,15 @@
-"""Per-service admin-setup hooks (Phase 2 Moduls 2.2b + 2.2c + 2.2d, #505).
+"""Per-service admin-setup hooks for the auto-configure phase.
 
-Replaces admin-setup blocks in ``scripts/deploy.sh`` (the [7/7]
-Auto-configuring services section). Three hook families:
+Three hook families cover the supported services:
 
-**REST first-init** (Modul 2.2b — Portainer, n8n, Metabase, LakeFS,
-OpenMetadata):
+**REST first-init** (Portainer, n8n, Metabase, LakeFS, OpenMetadata):
 
   1. Waits for the service container to be HTTP-ready
   2. Optionally checks "already configured" (idempotent skip)
   3. POSTs the admin-init / first-setup payload
   4. Yellow-warns on failure, never aborts
 
-**docker-exec CLI** (Modul 2.2c — RedPanda, Superset):
+**docker-exec CLI** (RedPanda, Superset):
 
   1. Waits for the service container to be HTTP-ready
   2. Runs an in-container CLI (``rpk`` for RedPanda, ``superset
@@ -22,7 +20,7 @@ OpenMetadata):
      harmlessly if user exists; Superset falls back to ``fab
      reset-password`` if ``fab create-admin`` reports user-exists
 
-**Python-side file mutation** (Modul 2.2d — Filestash):
+**Python-side file mutation** (Filestash):
 
   1. Stage 1: rendered bash pulls the container's config.json via
      ``docker exec cat``, base64-encoded over the wire
@@ -36,16 +34,14 @@ OpenMetadata):
   family). The win: JSON mutation is pure-Python testable, replacing
   a 100-line jq chain with a typed dict transform.
 
-Future admin-setup families:
-- 2.2e: Gitea (synchronous, depends on Postgres + seeder)
-- Future: SFTPGo, Garage, Windmill, Wikijs, Dify (each has its own
-  pattern; migrating piecemeal as time allows)
+Additional hooks (Wikijs, Dify, Windmill, Garage, SFTPGo) live
+alongside these in the same file using whichever family fits the
+service.
 
-Why one ssh round-trip with rendered bash (consistent with infisical /
-secret_sync / seeder / compose_runner): the curl loop is proven, one
-SSH connection vs N, the rendered script is testable as a string,
-and Phase 3 (#505 Modul 3.1) replaces the bash rendering wholesale
-with paramiko + ``requests``.
+Why one ssh round-trip with rendered bash (consistent with
+:mod:`infisical` / :mod:`secret_sync` / :mod:`seeder` /
+:mod:`compose_runner`): the curl loop is proven, one SSH connection
+vs N, and the rendered script is testable as a string.
 
 Eight rounds of hardening preserved (one regression test per round
 in ``tests/unit/test_services.py``):
@@ -75,11 +71,9 @@ R4. JSON setup-body built via jq with secrets injected as env vars
     argv either. Together: no fork visible via ``ps -ef`` carries
     a credential value.
 R5. Idempotent skip when ``already_configured_substring`` appears in
-    the pre-setup probe response (deploy.sh's ``[ -z "$SETUP_TOKEN" ]``
-    / ``"setup_complete":true`` / etc. branches).
+    the pre-setup probe response (e.g. ``"setup_complete":true``).
 R6. error_strategy=continue: a failed hook NEVER aborts the orchestrator;
-    the next hook still runs. Mirrors deploy.sh's ``yellow-warn,
-    continue`` pattern.
+    the next hook still runs (yellow-warn-and-continue).
 R7. Hook execution order matches the caller-provided ``enabled_hooks``
     argument (NOT registry insertion order). Operators get the order
     they typed.
@@ -115,8 +109,8 @@ _RESULT_LINE_RE = re.compile(
 # interpolating into the rendered bash — prevents shell injection
 # via $(), backticks, semicolons, etc. if a buggy or adversarial
 # caller ever passes a name with shell metacharacters. In production
-# `enabled_hooks` comes from deploy.sh's $ENABLED_SERVICES (which
-# itself comes from `tofu output -json` keys, all alphanumeric +
+# `enabled_hooks` comes from the orchestrator's $ENABLED_SERVICES
+# list (sourced from `tofu output -json` keys — all alphanumeric +
 # dash), so this is defence in depth.
 _VALID_HOOK_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -355,9 +349,8 @@ def render_lakefs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
         return 'echo "RESULT hook=lakefs status=skipped-not-ready"\n'
     access_q = shlex.quote(access_key)
     secret_q = shlex.quote(secret_key)
-    # Storage namespace selection mirrors deploy.sh's legacy LakeFS
-    # block: ``[ -n "$HETZNER_S3_SERVER" ] && [ -n "$HETZNER_S3_BUCKET" ]``
-    # — BOTH must be set. Bucket alone isn't enough because LakeFS
+    # Storage namespace selection: BOTH HETZNER_S3_SERVER AND
+    # HETZNER_S3_BUCKET must be set. Bucket alone isn't enough because LakeFS
     # also needs the endpoint URL to read/write S3, and a partially
     # configured tofu state (bucket without server) would land us in
     # the s3:// branch with broken connectivity. Both NexusConfig
@@ -396,8 +389,8 @@ lakefs_hook() {{
     fi
     HETZNER_BUCKET={hetzner_bucket_q}
     HETZNER_SERVER={hetzner_server_q}
-    # BOTH must be set to pick the s3:// namespace (matches legacy
-    # deploy.sh — bucket alone without endpoint would break read/write).
+    # BOTH must be set to pick the s3:// namespace (bucket alone
+    # without endpoint would break read/write).
     if [ -n "$HETZNER_BUCKET" ] && [ -n "$HETZNER_SERVER" ]; then
         STORAGE_NS="s3://${{HETZNER_BUCKET}}/lakefs/"
         REPO_NAME="hetzner-object-storage"
@@ -536,8 +529,7 @@ openmetadata_hook
 
 
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Modul 2.2c — docker-exec hooks: RedPanda, Superset.
+# docker-exec hooks: RedPanda, Superset.
 #
 # Different family from the 5 REST hooks above. Pattern:
 #   1. Wait for HTTP healthcheck (mostly via ``docker exec curl`` from
@@ -550,14 +542,13 @@ openmetadata_hook
 #      exists" error is treated as already-configured; Superset:
 #      fab create-admin → fab reset-password fallback).
 #
-# Why argv-vs-stdin matters for docker exec: the legacy deploy.sh
-# acknowledged it didn't hide passwords, using ``docker exec -e
-# RPK_PASS='$pass'`` — the env-var literal lands in docker's argv
-# on the host. Our migration takes the strictly-more-correct path:
-# ``printf '%s' "$pass" | docker exec -i <container> sh -c 'PASS=$(cat); ...'``
-# keeps the password on stdin only. The inner CLI ``rpk acl user
-# create --password "$PASS"`` still has the password in its argv
-# inside the container (visible to other processes in the same
+# Why argv-vs-stdin matters for docker exec: passing a password via
+# ``docker exec -e RPK_PASS='$pass'`` lands the env-var literal in
+# docker's argv on the host. The strictly-more-correct path is
+# ``printf '%s' "$pass" | docker exec -i <container> sh -c 'PASS=$(cat); ...'``,
+# which keeps the password on stdin only. The inner CLI ``rpk acl
+# user create --password "$PASS"`` still has the password in its
+# argv inside the container (visible to other processes in the same
 # container), but the OUTER host-level ``ps -ef`` shows just the
 # benign sh -c invocation.
 # ---------------------------------------------------------------------------
@@ -606,7 +597,8 @@ def render_redpanda_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     password_q = shlex.quote(password)
     return f"""
 redpanda_hook() {{
-    # Wall-clock-bounded readiness wait (matches Modul 2.2b R2 pattern).
+    # Wall-clock-bounded readiness wait (matches the per-spec
+    # healthcheck-timeout convention from R2).
     # `curl -sf` returns non-zero on 4xx/5xx responses (NOT just on
     # transport failures), so the loop only breaks on a true 200 OK
     # — earlier `curl -s` would have broken on a 503 too, letting the
@@ -644,8 +636,8 @@ redpanda_hook() {{
     if echo "$USER_RESULT" | grep -qi 'already exists\\|user already\\|already in use'; then
         # Rotation path: delete + recreate. Brief no-user window —
         # acceptable because we just proved the broker is responsive.
-        # Legacy deploy.sh skipped this entirely, leaving Infisical
-        # rotation silently broken.
+        # Without this branch, an Infisical password rotation would
+        # silently leave the broker out of sync.
         USER_EXISTED=true
         docker exec redpanda rpk acl user delete nexus-redpanda >/dev/null 2>&1 || true
         USER_RESULT=$(printf '%s' "$REDPANDA_PASSWORD" | \\
@@ -661,10 +653,9 @@ redpanda_hook() {{
         return 0
     fi
     # rpk cluster config set: superusers list. Capture the result so
-    # we can fail loudly — without this, the user has no permissions
-    # and the broker rejects every ACL-protected operation. Legacy
-    # deploy.sh swallowed errors here, which could mark the hook
-    # `configured` even when the cluster config update failed.
+    # we can fail loudly — without this check, the user would have
+    # no permissions and the broker would reject every ACL-protected
+    # operation while the hook reported `configured`.
     SUPER_RESULT=$(docker exec redpanda rpk cluster config set superusers '["nexus-redpanda"]' 2>&1 || echo "")
     if ! echo "$SUPER_RESULT" | grep -qi 'success\\|updated\\|set'; then
         echo "  ⚠ rpk cluster config set superusers failed: $SUPER_RESULT" >&2
@@ -673,10 +664,10 @@ redpanda_hook() {{
     fi
     # Restart only on FIRST setup. SASL listener config is set on the
     # broker side once and stays applied across rotations, so a
-    # password-only change doesn't need a restart. Legacy deploy.sh
-    # restarted unconditionally on every spin-up — harmless when the
-    # broker had no traffic but introduces a multi-second window
-    # where producers/consumers reconnect for no reason.
+    # password-only change doesn't need a restart. An unconditional
+    # restart would be harmless when the broker has no traffic but
+    # introduces a multi-second window where producers/consumers
+    # reconnect for no reason.
     if [ "$USER_EXISTED" = "false" ]; then
         # First-setup restart: the SASL listener config takes effect
         # only after a broker restart. Capture the exit code — if the
@@ -776,13 +767,12 @@ superset_hook
 
 
 # ---------------------------------------------------------------------------
-# Modul 3.4d — admin-setup hooks for the remaining 6 stacks
-# (Uptime Kuma, Garage, Wiki.js, Dify, Windmill, SFTPGo — all
-# bash-render hooks in this section). SFTPGo was originally planned
-# as a Python hook (filestash-style with two SSH round-trips), but
-# its JSON construction is built remote-side via ``jq -n env``, so
-# no Python-side mutation is needed and the bash-render pattern is
-# uniform across all six. Migrated from deploy.sh L995-L2497.
+# Admin-setup hooks for the bash-render family: Uptime Kuma, Garage,
+# Wiki.js, Dify, Windmill, SFTPGo. SFTPGo was originally a candidate
+# for the filestash-style Python hook (two SSH round-trips), but its
+# JSON construction is built remote-side via ``jq -n env``, so no
+# Python-side mutation is needed and the bash-render pattern is
+# uniform across all six.
 # ---------------------------------------------------------------------------
 
 
@@ -790,14 +780,12 @@ def render_uptime_kuma_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """Uptime Kuma: manual-setup placeholder (issue #145).
 
     The Socket.io-based admin bootstrap fails from inside the
-    container — see legacy ``deploy.sh:1296-1306`` for the disabled
-    block. Until #145 is fixed, this hook emits a stderr warning
-    pointing operators at Infisical for credentials and reports
-    ``skipped-not-ready``. Registering it explicitly (instead of
-    leaving the no-op in deploy.sh) gives operators a hook line in
-    the workflow log + makes it trivial to swap in the real
-    auto-setup the moment Socket.io / container networking
-    constraints are resolved.
+    container — see issue #145. Until that's fixed, this hook emits
+    a stderr warning pointing operators at Infisical for credentials
+    and reports ``skipped-not-ready``. Registering the hook
+    explicitly gives operators a hook line in the workflow log and
+    makes it trivial to swap in the real auto-setup the moment
+    Socket.io / container networking constraints are resolved.
     """
     del config, env  # signature uniform across hooks
     return """
@@ -824,8 +812,8 @@ def render_garage_hook(config: NexusConfig, env: BootstrapEnv) -> str:
        ``/garage layout apply --version 1`` + ``/garage key create
        nexus-garage-key``.
 
-    Mirrors deploy.sh:1318-1354. Wait via ``/health`` HTTP probe
-    on the admin API (port 3903) bounded to 30s wall-clock.
+    Wait via ``/health`` HTTP probe on the admin API (port 3903)
+    bounded to 30s wall-clock.
 
     Idempotency contract:
     - Already-configured (any node has a role) → ``already-configured``
@@ -844,12 +832,12 @@ def render_garage_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     return f"""
 garage_hook() {{
 {wait}
-    # Capture the layout-show exit status separately. Legacy deploy.sh
-    # used `|| echo ""` here, which silently treats ANY failure
-    # (Docker daemon unhealthy, container missing, RPC timeout) as
-    # "already-configured" because the grep then doesn't match.
-    # We surface the exit status so genuine container failures
-    # report `failed` instead of false-positive `already-configured`.
+    # Capture the layout-show exit status separately. ``|| echo ""``
+    # would silently treat ANY failure (Docker daemon unhealthy,
+    # container missing, RPC timeout) as "already-configured"
+    # because the grep then doesn't match. Surfacing the exit status
+    # makes genuine container failures report `failed` instead of
+    # false-positive `already-configured`.
     LAYOUT_RC=0
     LAYOUT_CHECK=$(docker exec garage /garage layout show 2>&1) || LAYOUT_RC=$?
     if [ "$LAYOUT_RC" -ne 0 ]; then
@@ -862,10 +850,9 @@ garage_hook() {{
         return 0
     fi
     # Node id is the first line of `/garage node id`. Validate as
-    # 64-char hex before using — legacy deploy.sh did the same to
-    # avoid running layout commands with garbage if Garage wasn't
-    # fully ready (the earlier wait probe already gates this, but
-    # belt-and-braces).
+    # 64-char hex before using to avoid running layout commands
+    # with garbage if Garage wasn't fully ready (the earlier wait
+    # probe already gates this, but belt-and-braces).
     FULL_NODE_ID=$(docker exec garage /garage node id 2>&1 | head -1 || echo "")
     if [ -z "$FULL_NODE_ID" ] || [ ${{#FULL_NODE_ID}} -ne 64 ] \\
        || ! echo "$FULL_NODE_ID" | grep -qE '^[0-9a-fA-F]{{64}}$'; then
@@ -905,12 +892,10 @@ garage_hook
 def render_wikijs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """Wiki.js: GraphQL ``setup`` mutation (creates admin + finalises install).
 
-    Mirrors deploy.sh:2390-2424. Two-step:
+    Two-step:
     1. Wait for ``/healthz`` to return HTTP 200. Bounded to 90s.
-       (The legacy bash also grepped the body for ``ok``, but Wiki.js
-       returns plain ``OK`` only when status is 200, so the
-       status-only check is equivalent — and matches the
-       ``_render_wait_healthy`` helper used by every other hook.)
+       (Wiki.js returns plain ``OK`` only when status is 200, so a
+       status-only check is equivalent to a body-grep.)
     2. POST GraphQL mutation ``setup($input: SetupInput!)`` with
        admin email + password (twice, "confirm" field) + site URL.
        Wiki.js returns ``{succeeded: true}`` on first run,
@@ -921,10 +906,8 @@ def render_wikijs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     - Re-run: response message contains "already" → ``already-configured``
     - Other: ``failed``
 
-    Email source: legacy used ``$GITEA_USER_EMAIL`` if non-empty
-    else ``$ADMIN_EMAIL``. We use ``env.gitea_user_email`` falling
-    back to ``env.admin_email`` for the same effect (single-address
-    user identity for the Wiki).
+    Email source: ``env.gitea_user_email`` if non-empty, else
+    ``env.admin_email`` (single-address user identity for the Wiki).
     """
     password = config.wikijs_admin_password or ""
     email = env.gitea_user_email or env.admin_email or ""
@@ -939,9 +922,9 @@ def render_wikijs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
         url="http://localhost:3005/healthz",
         timeout_seconds=90,
         interval_seconds=3,
-        # Wiki.js's /healthz returns plain text "OK" with 200; STATUS
-        # check is sufficient. The legacy deploy.sh additionally
-        # grepped the body for 'ok' but a true 200 is the same signal.
+        # Wiki.js's /healthz returns plain text "OK" with 200; a
+        # STATUS check is sufficient (a body-grep for "ok" is the
+        # same signal).
     )
     return f"""
 wikijs_hook() {{
@@ -970,7 +953,7 @@ wikijs_hook
 def render_dify_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """Dify: 2-step admin bootstrap (``/console/api/init`` → ``/console/api/setup``).
 
-    Mirrors deploy.sh:2425-2497. Three stages:
+    Three stages:
     1. Wait for the API to return 200/302/307 on ``/`` (Dify's
        redirect-to-/install pattern indicates the API is alive).
        Bounded to 120s — Dify cold-starts slowly.
@@ -1077,10 +1060,9 @@ def render_windmill_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """Windmill: 5-stage bootstrap (readiness wait, admin user,
     optional regular user, workspace, secure default account).
 
-    Mirrors deploy.sh:2376-2459. All API stages use
-    ``WINDMILL_SUPERADMIN_SECRET`` as the Bearer token (NOT a session
-    cookie — Windmill's superadmin secret authenticates the Admin
-    API directly).
+    All API stages use ``WINDMILL_SUPERADMIN_SECRET`` as the Bearer
+    token (NOT a session cookie — Windmill's superadmin secret
+    authenticates the Admin API directly).
 
     Stages:
     1. Wait for ``/api/version`` to return 200 (Windmill is up).
@@ -1212,11 +1194,11 @@ windmill_hook
 def render_sftpgo_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """SFTPGo: 6-stage admin bootstrap + R2 default-user creation.
 
-    The biggest hook in the file (~250 LoC of rendered bash). Mirrors
-    deploy.sh:1000-1305 — kept as a single rendered bash function
-    rather than a Python hook because all the JSON construction
-    happens remote-side via ``jq -n`` env-vars (no Python-side typed
-    mutation needed, unlike Filestash). Single SSH round-trip.
+    The biggest hook in the file (~250 LoC of rendered bash). Kept
+    as a single rendered bash function rather than a Python hook
+    because all the JSON construction happens remote-side via
+    ``jq -n`` env-vars (no Python-side typed mutation needed, unlike
+    Filestash). Single SSH round-trip.
 
     Stages:
     1. Two-stage readiness: ``/healthz`` 200 AND ``/api/v2/token``
@@ -1383,10 +1365,10 @@ sftpgo_hook() {{
         *) echo "  ⚠ sftpgo R2 folder POST returned HTTP $R2_STATUS" >&2 ;;
     esac
     # Hetzner folder is optional — only if all 5 HZ fields are present
-    # (bucket + server + region + access_key + secret_key). Mirrors
-    # legacy deploy.sh:1206-1207. We check the base64'd-form lengths
-    # because that's what's available in this scope; the access/secret
-    # base64 strings are non-empty iff their plaintext is non-empty.
+    # (bucket + server + region + access_key + secret_key). We check
+    # the base64'd-form lengths because that's what's available in
+    # this scope; the access/secret base64 strings are non-empty iff
+    # their plaintext is non-empty.
     VFOLDERS_JSON='[{{"name":"cloudflare_r2","virtual_path":"/cloudflare_r2","quota_size":-1,"quota_files":-1}}]'
     if [ -n "$SFTPGO_HZ_BUCKET" ] && [ -n "$SFTPGO_HZ_SERVER" ] && [ -n "$SFTPGO_HZ_REGION" ] \\
        && [ -n "$SFTPGO_HZ_AK_B64" ] && [ -n "$SFTPGO_HZ_SK_B64" ]; then
@@ -1435,8 +1417,8 @@ def render_pg_ducklake_hook(config: NexusConfig, env: BootstrapEnv) -> str:
     """pg-ducklake: re-apply ``00-ducklake-bootstrap.sql`` on every
     spin-up to handle credential rotation.
 
-    Mirrors deploy.sh:962-992. The bootstrap SQL is written to
-    ``stacks/pg-ducklake/init/`` by service-env (PR #527), and Postgres'
+    The bootstrap SQL is written to ``stacks/pg-ducklake/init/`` by
+    service-env (PR #527), and Postgres'
     docker-entrypoint-initdb.d only executes scripts on an EMPTY data
     dir — so on persistent-volume deploys (named volume preserved
     across spin-ups), the freshly-rotated credentials in the SQL
@@ -1493,7 +1475,7 @@ pg_ducklake_hook
 
 
 # ---------------------------------------------------------------------------
-# Modul 2.2d — Filestash (Python-side file mutation).
+# Filestash (Python-side file mutation).
 #
 # Filestash stores its admin-side state in a JSON file inside the
 # container at ``/app/data/state/config/config.json``. Three things
@@ -1507,10 +1489,9 @@ pg_ducklake_hook
 #    pre-configured connections so admins don't need to re-enter
 #    credentials in Filestash's web UI on first login.
 #
-# Legacy deploy.sh did all three via a chain of jq invocations
-# server-side. The Python migration pulls the JSON, mutates with
-# typed Python dict transforms, and pushes back. Two ssh round-trips,
-# pure mutation logic, fully testable without any I/O.
+# The hook pulls the JSON, mutates with typed Python dict transforms,
+# and pushes back. Two ssh round-trips, pure mutation logic, fully
+# testable without any I/O.
 # ---------------------------------------------------------------------------
 
 
@@ -1555,8 +1536,8 @@ def _filestash_has_external(config: NexusConfig) -> bool:
 def _filestash_s3_connections(config: NexusConfig) -> list[dict[str, str]]:
     """Build the ``connections`` array.
 
-    Order matches deploy.sh: R2 → Hetzner → External. The first one
-    becomes the primary backend (see :func:`_filestash_primary_backend`).
+    Order: R2 → Hetzner → External. The first one becomes the
+    primary backend (see :func:`_filestash_primary_backend`).
     """
     out: list[dict[str, str]] = []
     if _filestash_has_r2(config):
@@ -1571,8 +1552,8 @@ def _filestash_s3_connections(config: NexusConfig) -> list[dict[str, str]]:
 def _filestash_s3_params(config: NexusConfig) -> dict[str, dict[str, str]]:
     """Build the per-backend params map keyed by label.
 
-    Endpoints are normalised: deploy.sh stores ``$HETZNER_S3_SERVER``
-    without scheme but Filestash needs a full URL, so we prefix
+    Endpoints are normalised: ``HETZNER_S3_SERVER`` is stored without
+    a scheme but Filestash needs a full URL, so we prefix
     ``https://``. R2 + external endpoints already include scheme.
     """
     out: dict[str, dict[str, str]] = {}
@@ -1626,9 +1607,9 @@ def _filestash_mutate_config(
     """Apply the three transforms to a parsed config.json dict.
 
     Returns a NEW dict (does not mutate ``existing``) so callers can
-    snapshot pre/post for diffing. Legacy deploy.sh used in-place
-    ``sed`` + ``jq`` and could leave half-written state on jq
-    failures; the Python path's all-or-nothing semantics are stricter.
+    snapshot pre/post for diffing. The all-or-nothing transform is
+    stricter than an in-place sed/jq chain, which could leave
+    half-written state on a partial failure.
     """
     out: dict[str, Any] = json.loads(json.dumps(existing))  # deep copy
 
@@ -1910,32 +1891,32 @@ ScriptRunner = Callable[[str], "subprocess.CompletedProcess[str]"]
 HookRenderer = Callable[[NexusConfig, BootstrapEnv], str]
 
 _HOOK_REGISTRY: dict[str, HookRenderer] = {
-    # Modul 2.2b — REST first-init hooks
+    # REST first-init hooks
     "portainer": render_portainer_hook,
     "n8n": render_n8n_hook,
     "metabase": render_metabase_hook,
     "lakefs": render_lakefs_hook,
     "openmetadata": render_openmetadata_hook,
-    # Modul 2.2c — docker-exec CLI hooks
+    # docker-exec CLI hooks
     "redpanda": render_redpanda_hook,
     "superset": render_superset_hook,
-    # Modul 3.4d — REST + docker-exec hooks (the remaining admin-setups)
+    # Remaining REST + docker-exec admin-setups
     "uptime-kuma": render_uptime_kuma_hook,
     "garage": render_garage_hook,
     "wikijs": render_wikijs_hook,
     "dify": render_dify_hook,
     "windmill": render_windmill_hook,
     "sftpgo": render_sftpgo_hook,
-    # Modul 3.4f — pg-ducklake bootstrap re-apply (handles cred rotation
-    # on persistent-volume deploys where the entrypoint-initdb scripts
+    # pg-ducklake bootstrap re-apply (handles cred rotation on
+    # persistent-volume deploys where the entrypoint-initdb scripts
     # only ran on first init).
     "pg-ducklake": render_pg_ducklake_hook,
 }
 
 
-# Modul 2.2d Python-side hooks — separate registry because their
-# orchestration shape differs from bash renderers: they need to issue
-# multiple SSH round-trips with Python-side mutation in between.
+# Python-side hooks — separate registry because their orchestration
+# shape differs from bash renderers: they need to issue multiple SSH
+# round-trips with Python-side mutation in between.
 PythonHookFn = Callable[[NexusConfig, ScriptRunner], HookResult]
 
 
@@ -1994,16 +1975,14 @@ def render_remote_script(
     ``__main__._services_configure``) determine the order; the
     registry is only a name → renderer map.
 
-    KNOWN-LIMITATION (acknowledged tradeoff vs legacy deploy.sh):
-    legacy ran several hooks (Portainer, LakeFS, OpenMetadata) in
-    parallel via ``( ... ) & CONFIG_JOBS+=($!)`` background subshells
-    + ``wait``, which capped wall-time at the slowest hook (~180s).
-    Sequential here can reach ~``sum(per-hook timeouts)`` — about
-    7 minutes worst case for the 5 currently-shipped hooks. Phase 3
-    (#505 Modul 3.1, paramiko + asyncio) replaces the bash-render
-    layer wholesale and naturally restores parallelism via
-    ``asyncio.gather``. Until then we accept the increased wall-
-    time in exchange for predictable, easy-to-grep linear logs.
+    KNOWN-LIMITATION: hooks run sequentially. Several of them
+    (Portainer, LakeFS, OpenMetadata) are independent and could run
+    in parallel; sequential wall-time can reach ~``sum(per-hook
+    timeouts)`` — about 7 minutes worst case for the currently-shipped
+    hooks. A future paramiko + asyncio refactor would naturally
+    restore parallelism via ``asyncio.gather``. Until then we accept
+    the increased wall-time in exchange for predictable, easy-to-grep
+    linear logs.
     """
     parts: list[str] = ["set -u  # -e omitted: hook failures must not abort the orchestrator\n"]
     for name in enabled_hooks:
@@ -2011,8 +1990,8 @@ def render_remote_script(
         # before interpolating into the rendered bash. Logged to local
         # stderr (NOT into the rendered script — we cannot trust the
         # value enough to embed it). Production callers should never
-        # hit this path; deploy.sh's $ENABLED_SERVICES is alphanumeric
-        # + dash by tofu-output construction.
+        # hit this path; the orchestrator's $ENABLED_SERVICES is
+        # alphanumeric + dash by tofu-output construction.
         if not _VALID_HOOK_NAME_RE.fullmatch(name):
             sys.stderr.write(f"  ⚠ Dropped hook with unsafe name: {name!r}\n")
             continue
@@ -2057,8 +2036,8 @@ def run_admin_setups(
 ) -> SetupResult:
     """Render → exec → parse, dispatching to bash or python hook family.
 
-    ``enabled`` is the full enabled-services list (same shape as
-    deploy.sh's ``$ENABLED_SERVICES``). Hooks are filtered to those
+    ``enabled`` is the full enabled-services list (the same shape
+    used everywhere else in the package). Hooks are filtered to those
     that have an entry in either ``_HOOK_REGISTRY`` (bash-rendered)
     or ``_PYTHON_HOOK_REGISTRY`` (Python-side, e.g. Filestash);
     unknown services are dropped silently (they belong to other

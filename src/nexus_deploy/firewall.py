@@ -1,10 +1,7 @@
-"""Firewall override generation (Phase 3 Modul 3.4e, #505).
+"""Firewall override generation.
 
-Replaces the ~130-LoC bash block in ``scripts/deploy.sh`` (the
-former ``Generate Docker Compose override files for firewall TCP
-port exposure`` section) with a typed Python equivalent.
-
-The block does three things, all moved here:
+Generates the per-service docker-compose firewall overrides that
+expose TCP ports through the Cloudflare Tunnel. Three responsibilities:
 
 1. **Parse** ``tofu output -json firewall_rules`` into a flat list
    of ``FirewallRule`` entries. The Tofu output uses keys of the
@@ -15,8 +12,8 @@ The block does three things, all moved here:
 
 2. **Render** per-service ``docker-compose.firewall.yml`` overrides.
    Each non-RedPanda service gets a single-listener override that
-   maps ``host:container`` 1:1 (legacy bash invariant). RedPanda
-   gets a dual-listener override:
+   maps ``host:container`` 1:1. RedPanda gets a dual-listener
+   override:
      * 9092 (host) → 19092 (container, SASL listener)
      * 8081 / 18081 (host) → 8081 (container, Schema Registry)
      * everything else: ``p:p``
@@ -33,9 +30,8 @@ The block does three things, all moved here:
 What's NOT migrated here:
 
 * The ``scp`` loop that copies the generated ``.firewall.yml`` files
-  to the server — left as bash in deploy.sh because it's straight
-  file transfer with sudo/chown nuances around RedPanda's
-  ``101:101`` ownership requirement; migration value is low.
+  to the server — runs as part of the orchestrator's
+  ``firewall-sync`` phase, not here.
 * The runtime ``-f docker-compose.firewall.yml`` layering — already
   handled by ``compose_runner.py`` (server-side, on every up).
 

@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.setup — Phase 3 Modul 3.4a (#505).
+"""Tests for nexus_deploy.setup.
 
 8 R-tagged invariants on the rendered ssh-config + volume-mount
 script, retry-loop semantics with injected sleep + probe runner,
@@ -352,7 +352,7 @@ def test_wait_for_ssh_exponential_timeout_ramp() -> None:
     for 8+. Pinned via the timeout_s passed to the probe.
 
     Round-2 PR #524 fix: previous version expected only 2 fast
-    attempts which was off-by-one against deploy.sh's legacy schedule
+    attempts which was off-by-one against the caller's legacy schedule
     (the legacy bash bumped TIMEOUT *after* the failed attempt's
     counter increment, so RETRY=1, 2, AND 3 all stayed at 5s before
     jumping). The new expected list mirrors the legacy bash exactly.
@@ -1012,7 +1012,7 @@ def test_cli_subprocess_setup_unknown_returns_2() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wetty SSH-Agent setup (Phase 3 Modul 3.4f, #505)
+# Wetty SSH-Agent setup
 # ---------------------------------------------------------------------------
 
 
@@ -1316,7 +1316,7 @@ def test_cli_setup_wetty_ssh_agent_returns_1_when_auth_sock_not_written(
     """R-soft-fail-on-missing-env-write (#530 R2 #6): when the
     fail-fast paths in render_wetty_agent_script emit a parseable
     RESULT_WETTY with auth_sock_written=0, the CLI handler must
-    surface rc=1 (not rc=0). Without this, deploy.sh would log a
+    surface rc=1 (not rc=0). Without this, the caller would log a
     misleading 'all 5 steps ok' for a Wetty container that won't
     actually see the agent socket."""
     import subprocess as _sp

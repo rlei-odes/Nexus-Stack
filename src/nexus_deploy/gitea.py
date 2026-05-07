@@ -1,14 +1,20 @@
-"""Gitea admin/user/repo configuration client (Phase 2 Modul 2.2e, #505).
+"""Gitea admin/user/repo configuration + Woodpecker OAuth + mirror setup.
 
-Replaces deploy.sh's L2465-2810 — the synchronous Gitea-configure block
-covering DB password sync, admin user lifecycle (create or sync, with
-legacy email-collision PATCH for stacks deployed pre-v0.51.9), regular
-user lifecycle, API token creation with retry-via-delete on conflict,
-workspace repo creation with private-PATCH fallback, and collaborator
-add. Mirror-mode (``GH_MIRROR_REPOS``) and Woodpecker OAuth
-registration are deferred to Modul 2.2f.
+Canonical Gitea surface for the deploy pipeline. Three end-to-end
+runners:
 
-Two transports — by design, mirroring deploy.sh's split:
+* :func:`run_configure_gitea` — DB-password sync, admin user lifecycle
+  (create or sync, with legacy email-collision PATCH for stacks
+  deployed pre-v0.51.9), regular user lifecycle, API token creation
+  with retry-via-delete on conflict, workspace repo creation with
+  private-PATCH fallback, collaborator add.
+* :func:`run_woodpecker_oauth_setup` — provisions the OAuth2 app
+  Woodpecker CI uses to authenticate against Gitea, returns
+  client-id + client-secret for the Woodpecker .env writer.
+* :func:`run_mirror_setup` — handles ``GH_MIRROR_REPOS`` mirror mode:
+  per-mirror migrate + per-user fork.
+
+Two transports, used deliberately:
 
 - **CLI via ssh.run_script** for admin/user CRUD (list, create,
   change-password). Inside the gitea container the ``gitea admin user``
@@ -16,7 +22,6 @@ Two transports — by design, mirroring deploy.sh's split:
   working REST password — which matters because the whole point of
   the SYNC step is to make basic-auth work after persistent-volume
   password drift. Using REST for these would chicken-egg.
-
 - **REST via port-forward + requests** for token, email PATCH, repo
   CRUD, collaborator add. By the time the token is minted, the admin
   password has already been synced via CLI, so basic-auth works.
@@ -38,11 +43,8 @@ secret never lands in:
   - ``CalledProcessError.cmd`` / ``TimeoutExpired.cmd`` exception
     payloads
 
-This matches the exposure profile of the legacy deploy.sh block
-exactly — same security boundary, no regression. Tightening
-further (e.g. piping the password into ``gitea admin user create``
-via stdin or ``--password-stdin``) is upstream-tooling-dependent
-and out of scope for this migration.
+Tightening further (e.g. piping the password into ``gitea admin user
+create`` via stdin or ``--password-stdin``) is upstream-tooling-dependent.
 
 R5 (path safety): all user/repo path segments are validated against
 ``^[a-zA-Z0-9._-]+$`` before URL interpolation OR shell-quoting.
@@ -70,8 +72,7 @@ _PATH_SAFE_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 # Services that have Git integration (clone the workspace repo on start).
 # Order matters for stable RESTART_SERVICES output → CLI emits the list
-# in this order, intersected with `enabled_services`. Must match
-# deploy.sh L2795 exactly so the strangler-fig handoff doesn't drift.
+# in this order, intersected with `enabled_services`.
 _GIT_INTEGRATED_SERVICES: tuple[str, ...] = (
     "jupyter",
     "marimo",
@@ -113,13 +114,13 @@ _USER_FORK_SANITIZE_RE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9]")
 
 
 def _sanitize_user_for_fork_name(username: str) -> str:
-    """Mirror deploy.sh's ``${GITEA_USER_USERNAME//[^a-zA-Z0-9]/_}``.
+    """Replace every non-alphanumeric char in ``username`` with ``_``.
 
     Used to derive a fork repo name like ``<orig>_<sanitized_user>``
     where the user's username may contain dots or hyphens that
     Gitea allows in usernames but operators want flattened in repo
-    names. Keeps the legacy naming scheme byte-identical so existing
-    forks across re-deploys keep matching.
+    names. The naming scheme is byte-stable so existing forks across
+    re-deploys keep matching.
     """
     return _USER_FORK_SANITIZE_RE.sub("_", username)
 
@@ -128,9 +129,8 @@ def _basename_no_git(repo_url: str) -> str:
     """``basename "$REPO_URL" .git`` — the last path segment with a
     trailing ``.git`` stripped if present.
 
-    Mirrors deploy.sh's clone-mirror name derivation. Handles both
-    ``https://github.com/owner/repo.git`` and ``https://.../repo``
-    (no .git suffix); both yield ``repo``.
+    Handles both ``https://github.com/owner/repo.git`` and
+    ``https://.../repo`` (no .git suffix); both yield ``repo``.
     """
     last = repo_url.rstrip("/").rsplit("/", 1)[-1]
     if last.endswith(".git"):
@@ -141,10 +141,9 @@ def _basename_no_git(repo_url: str) -> str:
 def _escape_sql_string_literal(value: str) -> str:
     """Escape a value for safe inclusion in a single-quoted SQL string.
 
-    Mirrors deploy.sh L2479-2480: ``\\`` → ``\\\\`` first, then
-    ``'`` → ``''``. Order matters — escape backslashes before quotes
-    so a literal backslash in the password doesn't end up doubling
-    the quote escape.
+    ``\\`` → ``\\\\`` first, then ``'`` → ``''``. Order matters —
+    escape backslashes before quotes so a literal backslash in the
+    password doesn't end up doubling the quote escape.
     """
     return value.replace("\\", "\\\\").replace("'", "''")
 
@@ -200,16 +199,13 @@ def _render_db_pw_sync_script(
 
     The password DOES appear in the gitea-db container's ``ps -ef``
     for the brief duration of the ``psql -c "ALTER USER … PASSWORD
-    '<pw>'"`` call (since psql takes the SQL via argv). This matches
-    deploy.sh L2483-2485's exposure profile exactly — no regression.
-    Tightening would require either ``\\password`` (interactive) or
-    a server-side script feeding the SQL via stdin to psql, both of
-    which add complexity for marginal gain on a runner-isolated
-    container.
+    '<pw>'"`` call (since psql takes the SQL via argv). Tightening
+    would require either ``\\password`` (interactive) or a server-
+    side script feeding the SQL via stdin to psql, both of which
+    add complexity for marginal gain on a runner-isolated container.
 
-    Mirrors deploy.sh L2477-2491. RESULT line emitted on success so
-    the caller can disambiguate "succeeded after N tries" from "all
-    N tries failed".
+    A RESULT line is emitted on success so the caller can disambiguate
+    "succeeded after N tries" from "all N tries failed".
     """
     sql = f"ALTER USER \"nexus-gitea\" WITH PASSWORD '{escaped_pw}'"
     quoted_sql = shlex.quote(sql)
@@ -298,10 +294,10 @@ class ForkResult:
 class OAuthAppResult:
     """Result of creating a Gitea OAuth2 application.
 
-    Used for Woodpecker CI's Gitea-as-forge OAuth flow (Modul 2.2f).
+    Used for Woodpecker CI's Gitea-as-forge OAuth flow.
     ``client_id`` and ``client_secret`` are emitted via stdout in
-    eval-able form so deploy.sh can inject them into Woodpecker's
-    ``.env`` before the container starts.
+    eval-able form so the orchestrator can inject them into
+    Woodpecker's ``.env`` before the container starts.
     """
 
     name: str
@@ -316,7 +312,7 @@ class GiteaResult:
     ``token`` is None until :meth:`GiteaCli.mint_token` succeeds (post-
     #519 fix switched from REST basic-auth to CLI peer-auth). The CLI
     handler emits ``GITEA_TOKEN=<token>`` to stdout iff token is
-    non-None — eval-able by deploy.sh.
+    non-None — eval-able by the orchestrator.
     """
 
     db_pw_synced: bool
@@ -343,15 +339,15 @@ class GiteaResult:
         - token must exist (if expected — i.e. core happy path)
         - repo (if present) must be ``created`` or ``already_exists``
 
-        deploy.sh maps False → rc=1 (yellow warn, continue). The CLI
-        only emits ``GITEA_TOKEN=`` to stdout when ``token is not None``
-        — so on partial-failure paths where the token DID get minted
-        (e.g. legacy email PATCH failed but token + repo OK), deploy.sh
+        Maps False → rc=1 (yellow warn, continue). The CLI only emits
+        ``GITEA_TOKEN=`` to stdout when ``token is not None`` — so on
+        partial-failure paths where the token DID get minted (e.g.
+        legacy email PATCH failed but token + repo OK), the caller
         captures the token via ``eval`` and downstream seed/kestra
-        still work; on paths where token is None (token-mint failed)
-        is_success is False AND no token line is emitted, so deploy.sh
-        sees rc=1 but no `$GITEA_TOKEN`, and the seed/kestra blocks
-        skip themselves on the empty-token guard.
+        still work. On paths where token is None (token-mint failed)
+        is_success is False AND no token line is emitted, so the
+        caller sees rc=1 but no ``$GITEA_TOKEN``, and the seed/kestra
+        blocks skip themselves on the empty-token guard.
         """
         if self.admin.status == "failed":
             return False
@@ -424,15 +420,13 @@ class GiteaCli:
     def list_admin_users(self) -> str:
         """Run ``gitea admin user list --admin`` and return raw output.
 
-        Empty string if ssh/docker fails — caller routes empty list
-        to the CREATE branch (deploy.sh L2620-2630 pattern: any
-        unexpected error surfaces on the next CLI call rather than
-        spinning here).
+        Empty string if ssh/docker fails — the caller routes empty
+        list to the CREATE branch, where any unexpected error
+        surfaces on the next CLI call rather than spinning here.
         """
-        # ``2>/dev/null`` mirrors deploy.sh — the CLI sometimes warns
-        # on stderr about deprecated flags; we don't want that noise
-        # mixed into the parsed output. ``|| echo ""`` swallows non-zero
-        # exit (transient docker/gitea startup race).
+        # ``2>/dev/null`` keeps deprecated-flag warnings from polluting
+        # the parsed output. ``|| echo ""`` swallows non-zero exit
+        # (transient docker/gitea startup race).
         result = self.ssh.run_script(
             "docker exec -u git gitea gitea admin user list --admin 2>/dev/null || echo ''",
             check=False,
@@ -478,7 +472,6 @@ class GiteaCli:
         )
         result = self.ssh.run_script(script, check=False, timeout=30.0)
         text = result.stdout
-        # deploy.sh L2600 / L2659: success substrings.
         # ``CreateUserResult.name`` is always the real username (Copilot
         # round 1) — using a role label ("admin"/"user") here while
         # ``sync_password`` returns the actual username made the field
@@ -836,7 +829,7 @@ class GiteaClient:
         return resp.status_code in (204, 422)
 
     # -------------------------------------------------------------------
-    # Mirror-mode operations (Modul 2.2f part 2)
+    # Mirror-mode operations
     # -------------------------------------------------------------------
 
     def get_user_id(self, username: str) -> int | None:
@@ -889,7 +882,6 @@ class GiteaClient:
     ) -> MirrorResult:
         """``POST /api/v1/repos/migrate`` — clone-mirror a remote repo.
 
-        Mirrors deploy.sh's ``GH_MIRROR_REPOS`` migration call.
         ``github_pat`` is the GitHub personal access token used by
         Gitea to clone the (private) source repo; it travels in
         the request body as ``auth_token`` and is never logged
@@ -1109,7 +1101,7 @@ class GiteaClient:
         - other: failure
 
         Uses the user's token (not admin's) so the fork lands in the
-        user's namespace. Mirrors deploy.sh's per-user fork pattern.
+        user's namespace.
         """
         _validate_path_segment(source_owner, kind="owner")
         _validate_path_segment(source_name, kind="repo_name")
@@ -1126,7 +1118,7 @@ class GiteaClient:
         return str(resp.status_code)
 
     # -------------------------------------------------------------------
-    # OAuth2 application management (Woodpecker CI integration, Modul 2.2f)
+    # OAuth2 application management (Woodpecker CI integration)
     # -------------------------------------------------------------------
 
     def list_oauth_apps(self) -> list[dict[str, object]]:
@@ -1299,7 +1291,7 @@ def run_configure_gitea(
     db_sync_attempts: int = 15,
     db_sync_interval_s: float = 2.0,
 ) -> GiteaResult:
-    """End-to-end Gitea configure (deploy.sh L2465-2810 equivalent).
+    """End-to-end Gitea configure runner.
 
     Steps:
 
@@ -1321,7 +1313,7 @@ def run_configure_gitea(
     Returns :class:`GiteaResult` with token in stdout-eval-able form
     via the CLI handoff. Even on partial failures (e.g. legacy email
     PATCH failed but token created), the token IS in the result so
-    deploy.sh can capture it via eval.
+    the orchestrator can capture it via eval.
     """
     admin_username = config.admin_username or "admin"
     admin_password = config.gitea_admin_password or ""
@@ -1384,8 +1376,8 @@ def run_configure_gitea(
         # admin password drift stays — the subsequent REST token mint
         # uses basic-auth with the OpenTofu-generated password and 401s.
         # Fall back to sync_password so we converge on the desired state.
-        # Same defence-in-depth pattern as deploy.sh's rerun-tolerance,
-        # but tightened (Copilot round 1).
+        # Defence-in-depth tightening of rerun-tolerance (Copilot
+        # round 1).
         if admin_result.status == "already_exists":
             admin_result = cli.sync_password(admin_username, admin_password)
 
@@ -1453,7 +1445,7 @@ def run_woodpecker_oauth_setup(
     gitea_token: str,
     admin_username: str,
 ) -> tuple[OAuthAppResult | None, str, bool]:
-    """End-to-end Woodpecker CI OAuth-app provisioning in Gitea (Modul 2.2f).
+    """End-to-end Woodpecker CI OAuth-app provisioning in Gitea.
 
     Idempotent re-run pattern:
       1. List existing OAuth apps under the admin user.
@@ -1467,8 +1459,8 @@ def run_woodpecker_oauth_setup(
          + secret).
       4. Return :class:`OAuthAppResult` with the new credentials.
          The CLI handler emits these via stdout in eval-able form
-         so deploy.sh can write Woodpecker's ``.env`` before the
-         rsync + ``docker compose up -d``.
+         so the orchestrator can write Woodpecker's ``.env`` before
+         the rsync + ``docker compose up -d``.
 
     Returns ``(result, error, rotation_started)``:
 
@@ -1556,8 +1548,8 @@ def run_woodpecker_oauth_setup(
             #   - False: Gitea returned definitive non-success
             #     (4xx with response) → server state KNOWN, app
             #     still exists → rotation NOT started, safe to
-            #     warn-and-continue (deploy.sh keeps existing
-            #     .env, which is still consistent with Gitea)
+            #     warn-and-continue (the existing .env stays
+            #     consistent with Gitea)
             #   - GiteaError: transport timeout/reset OR 5xx →
             #     server state UNKNOWN, app may have been deleted
             #     before the response was lost → conservatively
@@ -1611,7 +1603,7 @@ def run_woodpecker_oauth_setup(
 
 
 # ---------------------------------------------------------------------------
-# Mirror-mode orchestrator (Modul 2.2f part 2)
+# Mirror-mode orchestrator
 # ---------------------------------------------------------------------------
 
 
@@ -1621,7 +1613,7 @@ class MirrorSetupResult:
 
     The CLI handler emits ``FORK_NAME=<name>`` + ``GITEA_REPO_OWNER=<owner>``
     on stdout when ``fork`` reached ``created`` or ``already_exists``,
-    so deploy.sh can call the existing seed-into-fork wrapper post-eval.
+    so the orchestrator can call the existing seed-into-fork wrapper post-eval.
 
     ``is_success`` is True iff every mirror reached ``created`` or
     ``already_exists`` AND (if a fork was attempted) the fork did
@@ -1663,9 +1655,7 @@ def run_mirror_setup(
     fork_token_name: str = "nexus-workspace-fork",  # noqa: S107
     mirror_sync_settle_seconds: float = 3.0,
 ) -> MirrorSetupResult:
-    """End-to-end GH_MIRROR_REPOS provisioning (Modul 2.2f part 2).
-
-    Mirrors deploy.sh's mirror loop (L3224-3412 pre-migration):
+    """End-to-end GH_MIRROR_REPOS provisioning.
 
     1. GET admin's UID (required by Gitea's migrate API).
     2. For each repo URL in ``gh_mirror_repos``:
@@ -1682,15 +1672,14 @@ def run_mirror_setup(
 
     The fork creation (step c) and fork-sync (step e) happen ONLY
     on the first iteration that has both a successful migrate AND a
-    configured user — same single-fork-per-stack semantics as
-    deploy.sh's ``FORKED_WORKSPACE`` / ``SYNCED_FORK`` flags. Later
+    configured user — single-fork-per-stack semantics. Later
     iterations still do mirror+collab.
 
     All admin actions use ``gitea_token`` (token-bearer). The fork
     creation step uses a temporary token minted on behalf of
     ``gitea_user_username`` via admin basic-auth, then deleted right
-    after — mirrors the legacy bash pattern. Both ``gitea_token`` and
-    ``admin_password`` reach REST as request-auth only, never argv.
+    after. Both ``gitea_token`` and ``admin_password`` reach REST as
+    request-auth only, never argv.
     """
     # Path safety on admin_username — used in URL interpolation
     # immediately below.
@@ -1787,11 +1776,9 @@ def run_mirror_setup(
         # Fork the FIRST successful mirror into the user's namespace
         # (idempotent across spin-ups via the existing-fork 409 branch).
         # On transient failure (token mint glitch, fork POST 5xx),
-        # retry on the next mirror iteration — matches the legacy
-        # deploy.sh's ``FORKED_WORKSPACE`` flag which only got set
-        # to 1 on HTTP 202/409 success. Without retry, a single
-        # bad first mirror would prevent the fork on every later
-        # mirror in the same loop too. (Copilot R3)
+        # retry on the next mirror iteration. Without retry, a
+        # single bad first mirror would prevent the fork on every
+        # later mirror in the same loop too. (Copilot R3)
         if fork is None and gitea_user_username:
             sanitized = _sanitize_user_for_fork_name(gitea_user_username)
             fork_name = f"{orig_name}_{sanitized}"
@@ -1869,8 +1856,7 @@ def run_mirror_setup(
             collaborator_added_count += 1
 
         # Sync the fork from upstream — only on the first iteration
-        # where the fork was actually created/already-existed (matches
-        # deploy.sh's SYNCED_FORK flag scoped to the first iteration).
+        # where the fork was actually created/already-existed.
         if fork is not None and fork.status in ("created", "already_exists") and not fork_synced:
             fork_synced = True  # set even if the merge below soft-fails
             client.trigger_mirror_sync(admin_username, mirror_name)

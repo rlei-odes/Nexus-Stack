@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.kestra — Phase 2 Modul 2.3 (#505).
+"""Tests for nexus_deploy.kestra.
 
 Mocks HTTP via ``responses`` (already a project dep). All paths
 exercised: idempotent POST→PUT register, transport-level errors,
@@ -448,7 +448,7 @@ def test_render_flow_sync_pins_target_namespace() -> None:
     """v1.0 plugin requires targetNamespace; our template MUST set it
     to nexus-tutorials. A regression here would bring back the
     'tasks[0].targetNamespace: must not be null' deploy failure
-    that PR (cited in deploy.sh comments) chased down."""
+    that PR (cited in the caller comments) chased down."""
     yaml_body = render_system_flow_yaml(
         FLOW_SYNC_FLOW_TEMPLATE,
         repo_owner="bob",
@@ -637,7 +637,7 @@ def test_run_register_system_flows_onboarding_kestra_error_recorded_as_trigger_f
 
     Round-2 fix: previously this collapsed to None, which made
     is_success return True even though onboarding never ran. Now the
-    distinct sentinel makes deploy.sh route to the yellow-warning
+    distinct sentinel makes the caller route to the yellow-warning
     branch (rc=1) instead of silently green.
     """
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
@@ -670,11 +670,10 @@ def test_run_register_system_flows_onboarding_kestra_error_recorded_as_trigger_f
 def test_run_register_system_flows_seed_flow_missing_after_success() -> None:
     """SUCCESS execution but the canonical seed flow isn't in Kestra → SEED_FLOW_MISSING.
 
-    Mirrors deploy.sh L3479-3490: a SUCCESS execution against an empty
-    seed tree (no flows in the workspace repo) wouldn't surface as
-    FAILED. Without the post-execute verify, deploy would falsely
-    print green "registered" while operators couldn't find the
-    tutorial flow.
+    A SUCCESS execution against an empty seed tree (no flows in the
+    workspace repo) would not surface as FAILED. Without the
+    post-execute verify, the deploy would falsely print green
+    "registered" while operators couldn't find the tutorial flow.
     """
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
@@ -1020,7 +1019,7 @@ def test_cli_kestra_missing_kestra_pass_returns_one_with_warning(
     """No Kestra password in SECRETS_JSON → log warning, rc=1.
 
     Round-2 fix: previously rc=0 (mapped to green "registered" banner).
-    rc=1 routes deploy.sh to the yellow-warning branch — accurate signal
+    rc=1 routes the caller to the yellow-warning branch — accurate signal
     that nothing was registered.
     """
     from nexus_deploy.__main__ import _kestra_register_system_flows
@@ -1210,7 +1209,7 @@ def test_cli_kestra_emits_actionable_warning_per_execution_state(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Round-2 fix: instead of bare enum (TRIGGER_FAILED), CLI emits
-    a human-actionable hint mirroring deploy.sh's per-case warnings."""
+    a human-actionable hint mirroring the caller's per-case warnings."""
     from nexus_deploy.__main__ import _kestra_register_system_flows
 
     _set_required_env(monkeypatch)

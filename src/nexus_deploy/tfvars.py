@@ -1,9 +1,9 @@
-"""config.tfvars parser + Gitea identity derivation (Phase 4c, #505).
+"""config.tfvars parser + Gitea identity derivation.
 
-Replaces the ~50 LoC bash block in scripts/deploy.sh:60-99 that
-greps + sed-extracts ``domain``, ``admin_email``, ``user_email`` from
-``tofu/stack/config.tfvars`` and applies the admin-email collision
-fallback. Pure logic + a single file read; no subprocess.
+Reads ``tofu/stack/config.tfvars`` to extract the three operator-supplied
+fields (``domain``, ``admin_email``, ``user_email``) and derives the
+Gitea identity (admin + user names + display names) used by the rest of
+the pipeline. Pure logic + a single file read; no subprocess.
 
 Public surface:
 
@@ -31,9 +31,7 @@ empty-after-parse case with a clear error. Tests pin this
 soft-skip behavior; if you need fail-fast on malformed forms,
 add a post-parse validation in ``run_pipeline`` rather than
 tightening the regex (a contributor swap to e.g. heredoc syntax
-shouldn't break tfvars consumption everywhere). PR #535 R1 #3
-corrected the docstring; the historical "fails fast" wording was
-aspirational, not what the code actually does.
+shouldn't break tfvars consumption everywhere).
 """
 
 from __future__ import annotations
@@ -124,8 +122,7 @@ def parse(path: Path) -> TfvarsConfig:
 
 
 def _trim(value: str) -> str:
-    """Whitespace-trim. Mirrors the legacy bash
-    ``sed 's/^[[:space:]]*//; s/[[:space:]]*$//'`` (deploy.sh:80-81).
+    """Whitespace-trim a tfvars-derived string.
 
     Necessary because Gitea / Windmill / Wiki.js validators reject
     space-prefixed emails, and self-provisioned tfvars commonly have
@@ -138,11 +135,10 @@ def _trim(value: str) -> str:
 def derive_gitea_identity(config: TfvarsConfig) -> GiteaIdentity:
     """Apply the admin-email collision fallback.
 
-    The legacy bash block (deploy.sh:80-99) splits user_email on the
-    first comma (it may be a multi-admin list for the Cloudflare
-    Access allow-list, but Gitea's user.email column accepts only
-    one address), trims both, and then enforces the
-    admin != user invariant with a synthetic
+    Splits user_email on the first comma (it may be a multi-admin
+    list for the Cloudflare Access allow-list, but Gitea's
+    user.email column accepts only one address), trims both, and
+    then enforces the admin != user invariant with a synthetic
     ``gitea-admin@<domain>`` fallback.
 
     Reasons (in priority order) for falling back:

@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.config — Phase 1 Modul 1.3 (#505).
+"""Tests for nexus_deploy.config.
 
 Covers:
 - pure-data parsing (`from_secrets_json`)
@@ -31,12 +31,12 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 # ---------------------------------------------------------------------------
 
 
-def test_field_count_matches_deploy_sh() -> None:
+def test_field_count() -> None:
     """The single-source-of-truth tuple has the right field count.
 
-    Sanity-check guard: if someone adds a tofu var + jq line in deploy.sh
-    but forgets to add the pendant in `_FIELDS`, the capture-script
-    drift-detection will fire — but this test catches it earlier.
+    Pinning the count guards against accidental field drops or
+    silent drift between :data:`_FIELDS` and the upstream tofu
+    schema.
     """
     assert len(_FIELDS) == 88
 
@@ -131,11 +131,12 @@ def test_dump_shell_emits_all_fields() -> None:
 
 
 def test_dump_shell_admin_username_default_is_admin() -> None:
-    """deploy.sh's `// "admin"` jq fallback — NOT the tofu-default `"nexus"`.
+    """When SECRETS_JSON is ``{}`` the per-field fallback fires —
+    ``ADMIN_USERNAME`` defaults to ``admin``.
 
-    The tofu-default kicks in via `tofu output` and lands in SECRETS_JSON;
-    only when SECRETS_JSON is `{}` does the jq fallback fire. This test
-    pins config.py to that exact behaviour for byte-identity.
+    The tofu-default may also produce a different value when
+    ``tofu output`` lands a populated SECRETS_JSON; the per-field
+    fallback only kicks in for the missing/empty case.
     """
     config = NexusConfig.from_secrets_json("{}")
     parsed = _parse_dump(config.dump_shell())
@@ -152,9 +153,9 @@ def test_dump_shell_external_s3_fallbacks() -> None:
 def test_dump_shell_empty_string_treated_as_missing() -> None:
     """Both `null` and `""` must trigger the per-field fallback.
 
-    deploy.sh's `// empty` returns "" for both null and missing keys;
-    the bash test `[ -n "$VAR" ]` then treats "" the same as unset.
-    For byte-identity, our fallbacks must also fire on "".
+    Downstream consumers test ``[ -n "$VAR" ]`` and treat "" the
+    same as unset, so an empty-string value should fire the
+    per-field fallback exactly like ``null`` / missing key.
     """
     config = NexusConfig.from_secrets_json('{"external_s3_label": ""}')
     parsed = _parse_dump(config.dump_shell())
@@ -164,15 +165,13 @@ def test_dump_shell_empty_string_treated_as_missing() -> None:
 def test_dump_shell_eval_injection_safe(tmp_path: Path) -> None:
     """Adversarial values must NOT execute when the output is bash-eval'd.
 
-    The strangler-fig handoff in deploy.sh is now ``eval "$(... | python
-    -m nexus_deploy config dump-shell --stdin)"``. Eval introduces a
-    command-execution surface that the legacy ``VAR=$(jq …)`` flow did
-    not have (jq's stdout was captured directly into bash variables, no
-    second evaluation pass). shlex.quote in :meth:`NexusConfig.dump_shell`
-    is what keeps the new eval path safe: this test proves it by feeding
-    payloads that WOULD execute under naive concatenation
-    (``$(touch …)``, backticks, ``;`` injection) and asserting that
-    nothing materialises in a per-test canary dir.
+    The dump-shell output is consumed via ``eval``, which introduces
+    a command-execution surface. shlex.quote in
+    :meth:`NexusConfig.dump_shell` is what keeps that path safe:
+    this test proves it by feeding payloads that WOULD execute
+    under naive concatenation (``$(touch …)``, backticks, ``;``
+    injection) and asserting that nothing materialises in a
+    per-test canary dir.
 
     Marker files target ``tmp_path`` (a per-test pytest tmpdir) plus a
     unique ``NEXUS_DEPLOY_INJECT_*`` prefix so a stray glob can't ever
@@ -230,7 +229,7 @@ def test_dump_shell_empty_snapshot(snapshot: SnapshotAssertion) -> None:
 
 
 def test_from_tofu_output_missing_tofu(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """tofu binary not on PATH → fallback to empty config (mirrors deploy.sh:115)."""
+    """tofu binary not on PATH → fallback to empty config."""
     monkeypatch.setenv("PATH", "/nonexistent")
     config = NexusConfig.from_tofu_output(tofu_dir=tmp_path)
     for _, json_key, _ in _FIELDS:
@@ -359,9 +358,9 @@ def test_cli_dump_shell_stdin_mode(
 ) -> None:
     """`config dump-shell --stdin` reads SECRETS_JSON from stdin.
 
-    This is the deploy.sh integration path — bash already has SECRETS_JSON
-    from its own tofu call (for the empty-check) and pipes it to us so we
-    don't run tofu twice.
+    Useful when the caller already invoked ``tofu output`` (for an
+    empty-check or other pre-flight) and wants to pipe the JSON in
+    instead of having us re-run tofu.
     """
     import io
 

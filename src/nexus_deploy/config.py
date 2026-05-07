@@ -1,22 +1,21 @@
-"""Typed parsing of `tofu output -json secrets` (Phase 1, #505).
+"""Typed parsing of ``tofu output -json secrets``.
 
-Replaces the 88-field jq-pipeline block in `scripts/deploy.sh:115-212`
-that lifted SECRETS_JSON into bash globals. The migration uses the
-strangler-fig pattern: deploy.sh keeps running, but instead of running
-its own jq pipeline it `eval`s the output of `python -m nexus_deploy
-config dump-shell`. Same bash globals after eval, single Python source
-of truth for the secret schema.
+:class:`NexusConfig` is the canonical representation of the
+SECRETS_JSON payload produced by the OpenTofu stack. It is built from
+either a raw JSON string (:meth:`NexusConfig.from_secrets_json`) or
+directly from the tofu CLI (:meth:`NexusConfig.from_tofu_output`), and
+is the single source of truth for the secret schema consumed by the
+rest of ``nexus_deploy``.
 
-Field-mapping ground truth: every entry in ``_FIELDS`` (88 tuples)
-corresponds 1:1 to a jq line in the legacy deploy.sh block (L123-212).
-Adding a new secret means editing ``_FIELDS`` here AND adding the
-matching tofu variable.
+Field-mapping ground truth: every entry in ``_FIELDS`` is one
+``(bash_var, json_key, fallback)`` tuple. Adding a new secret means
+editing ``_FIELDS`` here AND adding the matching tofu variable.
 
-Out of scope (these stay in deploy.sh):
-- ``DOMAIN`` / ``ADMIN_EMAIL`` — read from ``config.tfvars`` (L60-61),
-  not from ``tofu output secrets``.
+Out of scope (these are read elsewhere):
+- ``DOMAIN`` / ``ADMIN_EMAIL`` — read from ``config.tfvars`` via
+  :mod:`nexus_deploy.tfvars`, not from ``tofu output secrets``.
 - ``CF_ACCESS_CLIENT_ID`` / ``CF_ACCESS_CLIENT_SECRET`` — read from
-  the separate ``tofu output ssh_service_token`` (L215-217).
+  the separate ``tofu output ssh_service_token``.
 - ``IMAGE_VERSIONS_JSON`` — separate ``tofu output image_versions``.
 """
 
@@ -40,16 +39,13 @@ class ConfigError(Exception):
 #
 # Each tuple: (bash_var_name, json_key, fallback_when_missing).
 #
-# `bash_var_name` is what `dump_shell()` emits and what deploy.sh consumes
-# via `eval`. `json_key` is the snake_case key from `tofu output -json
-# secrets`. `fallback` mirrors the jq `// X` clause exactly:
-#   - "" matches `// empty` (the overwhelming majority)
-#   - "admin" matches `// "admin"` (admin_username — see deploy.sh:123)
-#   - "External Storage" / "auto" mirror the explicit overwrite at L176-177
-#
-# Order matches deploy.sh source-order so the emitted block reads the same
-# top-to-bottom; reviewers comparing the Python output against the legacy
-# bash see no reordering noise.
+# `bash_var_name` is what `dump_shell()` emits for downstream shell
+# consumers via `eval`. `json_key` is the snake_case key from
+# `tofu output -json secrets`. `fallback` is the value substituted when
+# the JSON key is absent or empty:
+#   - "" is the overwhelming majority (omit-if-empty)
+#   - "admin" is the admin_username default
+#   - "External Storage" / "auto" are explicit non-empty defaults
 # ---------------------------------------------------------------------------
 _FIELDS: tuple[tuple[str, str, str], ...] = (
     ("ADMIN_USERNAME", "admin_username", "admin"),
@@ -256,10 +252,10 @@ class NexusConfig(BaseModel):
     def from_secrets_json(cls, raw: str) -> NexusConfig:
         """Parse the output of ``tofu output -json secrets``.
 
-        ``raw`` may be the literal string ``"{}"`` (deploy.sh's fallback
-        when tofu state is missing), in which case every field is
-        ``None`` and :meth:`dump_shell` emits the per-field defaults
-        from ``_FIELDS`` — which is exactly what deploy.sh does today.
+        ``raw`` may be the literal string ``"{}"`` (the fallback when
+        tofu state is missing), in which case every field is ``None``
+        and :meth:`dump_shell` emits the per-field defaults from
+        ``_FIELDS``.
         """
         # ConfigError messages do NOT include the underlying exception's
         # `str(exc)` even though Python lets us. pydantic ValidationError's
@@ -285,10 +281,9 @@ class NexusConfig(BaseModel):
     def from_tofu_output(cls, tofu_dir: Path = Path("tofu/stack")) -> NexusConfig:
         """Run ``tofu output -json secrets`` in ``tofu_dir`` and parse.
 
-        Mirrors deploy.sh:115 exactly — including the "tofu failed →
-        treat as empty config" fallback. Operators see the same
-        behavior whether deploy.sh runs the jq pipeline or invokes us
-        through ``dump-shell`` during the strangler-fig phase.
+        Includes the "tofu failed → treat as empty config" fallback so
+        callers can rely on a usable :class:`NexusConfig` even when the
+        tofu state is missing or the CLI is unavailable.
         """
         try:
             completed = subprocess.run(
@@ -303,28 +298,16 @@ class NexusConfig(BaseModel):
         return cls.from_secrets_json(completed.stdout)
 
     def dump_shell(self) -> str:
-        """Render deploy.sh-compatible bash assignments for ``eval``.
+        """Render bash assignments for ``eval``-style consumption.
 
-        The emitted lines are NOT a byte-for-byte copy of the legacy
-        deploy.sh:123-212 block: that block was a sequence of
-        ``VAR=$(echo "$SECRETS_JSON" | jq -r '.X // empty')`` command
-        substitutions, which don't roundtrip through string output.
-        What is guaranteed is that ``eval``ing this method's output
-        produces the same set of bash variables with the same VALUES
-        — that's the strangler-fig contract for the SECRETS_JSON
-        parsing handoff.
-
-        Output is sorted by source-order (the order in :data:`_FIELDS`),
-        not alphabetical, so a side-by-side review against the legacy
-        deploy.sh block has no spurious reordering noise. Values are
-        passed through :func:`shlex.quote` because this emitted block
-        is consumed via ``eval``; without quoting, an embedded ``$``,
-        backtick, or ``;`` in a secret value would trigger command
-        substitution / variable expansion / command termination at
-        eval time. (Note: the legacy ``VAR=$(jq …)`` form didn't have
-        this specific risk because the captured stdout was assigned
-        directly, never re-evaluated. shlex.quote here is what keeps
-        the new eval-based handoff equally safe.)
+        Each entry in :data:`_FIELDS` becomes a ``VAR=value`` line in
+        source order (not alphabetical), so reviewers can scan the
+        block top-to-bottom alongside the schema definition. Values
+        are passed through :func:`shlex.quote` because the emitted
+        block is consumed via ``eval``; without quoting, an embedded
+        ``$``, backtick, or ``;`` in a secret value would trigger
+        command substitution / variable expansion / command
+        termination at eval time.
         """
         lines: list[str] = []
         for bash_var, json_key, fallback in _FIELDS:

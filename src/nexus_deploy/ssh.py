@@ -1,13 +1,13 @@
-"""SSH client wrapper for nexus_deploy (Phase 3 Modul 3.1, #505).
+"""SSH client wrapper for nexus_deploy.
 
-Class-based replacement for ``_remote.py`` that adds **port-forwarding**
-on top of the existing ``ssh nexus <cmd>`` and ``rsync … nexus:…``
-patterns. The new capability lets Phase-2-Rest modules (Filestash,
-Gitea, Kestra) talk to services on the nexus server via local
-``http://localhost:<port>`` calls instead of rendering a server-side
-bash curl loop — Python ``requests`` calls run locally, exceptions
-surface as exceptions, no token ever crosses into a rendered bash
-script.
+Class-based wrapper around the system ``ssh`` binary that adds
+**port-forwarding** on top of the ``ssh nexus <cmd>`` and
+``rsync … nexus:…`` patterns. The port-forward capability lets REST
+client modules (Filestash, Gitea, Kestra) talk to services on the
+nexus server via local ``http://localhost:<port>`` calls instead of
+rendering a server-side bash curl loop — Python ``requests`` calls
+run locally, exceptions surface as exceptions, no token ever crosses
+into a rendered bash script.
 
 Implementation choice — subprocess + system ``ssh``, not paramiko:
 
@@ -61,11 +61,10 @@ class SSHClient:
                 requests.get("http://localhost:8222/healthz")
 
     All methods accept the same ``timeout`` semantics as
-    ``_remote.py``: ``None`` (default) means no Python-side cap, matching
-    deploy.sh which never wrapped its ``ssh``/``rsync`` calls in
-    ``timeout``. A slow first-cold-start on Hetzner can legitimately
-    take several minutes; a default cap would convert "slow" into
-    spurious ``TimeoutExpired`` errors.
+    ``_remote.py``: ``None`` (default) means no Python-side cap. A
+    slow first-cold-start on Hetzner can legitimately take several
+    minutes; a default cap would convert "slow" into spurious
+    ``TimeoutExpired`` errors.
     """
 
     def __init__(self, host: str = "nexus") -> None:
@@ -101,7 +100,7 @@ class SSHClient:
         never lands in ``ps`` / ``CalledProcessError.cmd``.
 
         With ``merge_stderr=True`` (default), stderr is folded into
-        stdout — parity with deploy.sh's ``ssh nexus "..." 2>&1``.
+        stdout (the ``ssh nexus "..." 2>&1`` equivalent).
         """
         return subprocess.run(
             ["ssh", self.host, cmd],
@@ -154,8 +153,8 @@ class SSHClient:
         ``remote`` follows rsync syntax (e.g. ``"<host>:/tmp/push/"``);
         the alias resolves through the same ssh config as :meth:`run`.
         The trailing slash on ``local`` is auto-appended so rsync
-        uploads the directory's CONTENTS, matching deploy.sh's
-        ``rsync -aq --delete "$PUSH_DIR/" "<host>:/tmp/push/"``.
+        uploads the directory's CONTENTS rather than the directory
+        itself.
 
         ``delete=True`` clears destination paths that don't exist
         locally — used when the local dir is the canonical

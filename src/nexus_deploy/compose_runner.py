@@ -1,20 +1,13 @@
-"""Parallel ``docker compose up`` runner (Phase 2 Modul 2.2a, #505).
+"""Parallel ``docker compose up`` runner.
 
-Replaces the 130-line ``ssh nexus "..."`` heredoc in
-``scripts/deploy.sh`` (the legacy block walked the enabled-services
-list, expanded virtual services to their parent stacks, started each
-stack via ``docker compose up -d --build`` in parallel via bash
-``&``/``wait``, and verified each container made it into ``docker
-ps``). Migration target: the foundation only — the per-service admin-
-setup hooks (Wikijs, Dify, Metabase, Superset, LakeFS, OpenMetadata,
-Gitea, Filestash, RedPanda) are scoped to Modul 2.2b and ship in a
-follow-up PR.
+Walks the enabled-services list, expands virtual services to their
+parent stacks, starts each stack via ``docker compose up -d --build``
+in parallel via bash ``&``/``wait``, and verifies each container made
+it into ``docker ps``.
 
-Why server-side bash loop (consistent with infisical.py +
-secret_sync.py + seeder.py): one SSH round-trip, bash background-
-jobs are proven, the rendered script is testable as a string. Phase 3
-(#505 Modul 3.1) replaces the bash rendering wholesale with paramiko
-+ asyncio.
+Server-side bash loop, consistent with :mod:`infisical` /
+:mod:`secret_sync` / :mod:`seeder`: one SSH round-trip; the rendered
+script is testable as a string.
 
 Eight rounds of hardening preserved (one regression test per round in
 ``tests/unit/test_compose_runner.py``):
@@ -31,7 +24,7 @@ R5. Virtual-service deduplication: a parent stack started for one
     virtual service is NOT started a second time when another
     virtual service from the same parent appears.
 R6. Deferred services skipped (woodpecker — depends on Gitea OAuth
-    credentials, started later in deploy.sh).
+    credentials, started by the post-bootstrap pipeline).
 R7. ``set -a`` + ``source /opt/docker-server/stacks/.env`` exports
     image-version pins to the compose-up environment.
 R8. RESULT line emitted at end with started/failed counts; orchestrator
@@ -50,17 +43,14 @@ from dataclasses import dataclass
 from nexus_deploy import _remote
 
 # Hardcoded deploy-config: parent-stack mapping and deferred services.
-# These live in deploy.sh today (L1796/L1799/L1821); we lift them into
-# module-level constants so the migration is byte-identical.
-# Adding/removing entries here is the same amount of effort as touching
-# deploy.sh. New stacks that don't fit either pattern just don't appear.
+# New stacks that fit one of the two patterns get added here.
 #
-# `_VIRTUAL_SERVICES` is derived from `_STACK_PARENTS.keys()` rather
-# than maintained as a separate frozenset so the two can't drift —
-# previously they were both manually listed and a round-4 review
-# pointed out the duplication risk (a service could be treated as
-# virtual yet have no parent mapping → skipped from leaves AND from
-# parents → silently never started).
+# ``_VIRTUAL_SERVICES`` is derived from ``_STACK_PARENTS.keys()``
+# rather than maintained as a separate frozenset so the two can't
+# drift — previously they were both manually listed and a round-4
+# review pointed out the duplication risk (a service could be treated
+# as virtual yet have no parent mapping → skipped from leaves AND
+# from parents → silently never started).
 _STACK_PARENTS: dict[str, str] = {
     "seaweedfs-filer": "seaweedfs",
     "seaweedfs-manager": "seaweedfs",
@@ -68,7 +58,7 @@ _STACK_PARENTS: dict[str, str] = {
 _VIRTUAL_SERVICES: frozenset[str] = frozenset(_STACK_PARENTS.keys())
 _DEFERRED_SERVICES: frozenset[str] = frozenset({"woodpecker"})
 
-# Server-side stacks dir (mirror of deploy.sh's REMOTE_STACKS_DIR).
+# Server-side stacks dir.
 _REMOTE_STACKS_DIR = "/opt/docker-server/stacks"
 
 # Server-side env file with image-version pins; sourced into the
@@ -119,8 +109,8 @@ def expand_targets(enabled: list[str]) -> tuple[list[str], list[str]]:
     remaining services minus virtuals, parents-already-included, and
     deferred services (R6).
 
-    Returns the two lists in source order (caller sees the same order
-    deploy.sh did, which the operator relies on for log debugging).
+    Returns the two lists in source order so operators can correlate
+    the per-service log lines with the input order.
     """
     parents: list[str] = []
     seen_parents: set[str] = set()
@@ -188,7 +178,7 @@ def render_remote_script(
          forwards every non-RESULT line to local stderr. Net
          operator UX: both ✓ and ✗ land in the workflow-log
          stderr stream alongside the bash warnings, in source
-         order. Phase 3 (paramiko refactor) can preserve the
+         order. A future paramiko refactor could preserve the
          split if desired.
       5. Emit the RESULT line on stdout.
     """
@@ -199,8 +189,8 @@ def render_remote_script(
 
     dify_block = ""
     if dify_storage_prep:
-        # Mirror deploy.sh:1823-1827 — Dify API/worker run as uid 1001,
-        # storage + plugins dirs need ownership match. Idempotent.
+        # Dify API/worker run as uid 1001; storage + plugins dirs
+        # need ownership to match. Idempotent.
         dify_block = """
 mkdir -p /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
 chown -R 1001:1001 /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
@@ -229,13 +219,10 @@ NAMES=()
 
 # 1. Start parent stacks (parallel — see docstring for why no barrier
 #    between parents and leaves).
-# DELIBERATE DIVERGENCE from legacy deploy.sh: the bash version had
-# no `else` branch on the parent-stack `[ -f ... ]` check — a missing
-# parent compose.yml was silently skipped (no FAILED++). We treat it
-# as a real configuration error: a virtual service is enabled, its
-# parent is implied, and the parent's compose.yml is missing —
-# operators need to know. The leaf-stack branch always counted this
-# as failed, so we just unify the two tiers (STRICTLY-MORE-CORRECT).
+# A missing parent compose.yml is a real configuration error: a
+# virtual service is enabled, its parent is implied, and the
+# parent's compose.yml is missing — operators need to know. We
+# unify the two tiers (parent + leaf) so both treat it as failed.
 for svc in "${{PARENTS[@]}}"; do
     if [ -f "$STACKS_DIR/$svc/docker-compose.yml" ]; then
         ( cd "$STACKS_DIR/$svc" && docker compose up -d --build 2>&1 ) &

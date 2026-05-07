@@ -1,22 +1,17 @@
-"""Per-stack ``.infisical.env`` sync from Infisical (Phase 1, #505 Modul 1.2).
+"""Per-stack ``.infisical.env`` sync from Infisical.
 
-Replaces the two ~300-line heredoc blocks in ``scripts/deploy.sh`` that
-fetched Infisical secrets and wrote them to
-``/opt/docker-server/stacks/{jupyter,marimo}/.infisical.env``. Both
-blocks were functionally identical — only stack-name + paths differed.
-Migration collapses them to one parametrised :class:`StackTarget` plus
-a single rendering layer, executed remotely via
-:func:`_remote.ssh_run_script` (script via stdin, NOT argv, so the
-Infisical token can't leak through ``ps`` / CI logs / exception messages).
+Pulls every secret from every Infisical folder configured for a stack
+and writes them to that stack's env-file on the server. One
+parametrised :class:`StackTarget` covers all three supported stacks
+(jupyter, marimo, kestra); the rendering layer is shared and executed
+remotely via :func:`_remote.ssh_run_script` (script via stdin, NOT
+argv, so the Infisical token can't leak through ``ps`` / CI logs /
+exception messages).
 
-Why render bash and exec server-side instead of doing it all in Python:
-the curl + jq + sed + atomic-mv pipeline has been hardened across 8 rounds
-of post-#495 fixes; one SSH round-trip vs ~80 small HTTP roundtrips
-matters at deploy time. Phase 3 (#505 Modul 3.1) replaces the bash
-rendering with paramiko + port-forwarding + ``requests``.
-
-Eight rounds of hardening are preserved (one regression test per round,
-see ``tests/unit/test_secret_sync.py``):
+The remote pipeline (curl + jq + sed + atomic-mv) is rendered as bash
+because one SSH round-trip beats ~80 small HTTP round-trips for a
+typical secret count. Eight rounds of hardening are preserved with
+one regression test per round (see ``tests/unit/test_secret_sync.py``):
 
 R1. ``set -euo pipefail`` inside heredoc — remote bash doesn't inherit.
 R2. Credential transit (was base64-over-heredoc; now stdin via
@@ -41,8 +36,7 @@ from dataclasses import dataclass
 
 from nexus_deploy import _remote
 
-# Marker block delimiters. Must match the legacy deploy.sh secret-sync
-# heredoc blocks BYTE-FOR-BYTE — operators rely on the same greppable
+# Marker block delimiters. Operators rely on the literal greppable
 # marker, and the legacy-env strip regex matches the literal prefix.
 _END_MARKER = "# === END nexus-secret-sync ==="
 
@@ -52,12 +46,11 @@ _INFISICAL_BASE_URL = "http://localhost:8070"
 
 # Server-side path prefix for stack directories. Each stack lives at
 # /opt/docker-server/stacks/<name>/ — convention enforced by the
-# stack-rsync step earlier in deploy.sh.
+# stack-rsync step earlier in the pipeline.
 _REMOTE_STACKS_DIR = "/opt/docker-server/stacks"
 
-# RESULT-line parser (matches deploy.sh's ``echo "RESULT pushed=...
-# wrote=..."`` shape exactly). Anchor at the start so a stray RESULT
-# substring elsewhere in stderr/stdout can't false-match.
+# RESULT-line parser. Anchor at the start so a stray RESULT substring
+# elsewhere in stderr/stdout can't false-match.
 _RESULT_PATTERN = re.compile(
     r"^RESULT pushed=(?P<pushed>\d+) "
     r"skipped_name=(?P<skipped_name>\d+) "
@@ -69,7 +62,8 @@ _RESULT_PATTERN = re.compile(
     re.MULTILINE,
 )
 
-# Same regex the legacy deploy.sh secret-sync used (POSIX shell-identifier rules).
+# POSIX shell-identifier rules — only keys matching this regex can be
+# emitted as env-var lines without breaking the parser.
 _VALID_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -85,14 +79,13 @@ class StackTarget:
       quoted so dotenv parsers accept characters that would otherwise
       break the line; multi-line values are skipped earlier (their
       newlines couldn't survive a single-line shell-readable form).
-      Restart via ``docker compose up -d <stack>`` on change. The
-      original legacy-bash family (#510).
+      Restart via ``docker compose up -d <stack>`` on change.
+      Hardened across the rounds of fixes tracked in #510.
     - **kestra**: write ``SECRET_<KEY>=<base64-value>`` lines to ``.env``
       directly — no quoting (base64 output is already safe for a
       single-line env-var) and no separate ``.infisical.env`` file.
       Force-recreate the container so Kestra's ``EnvVarSecretProvider``
-      re-reads the SECRET_* env vars at process start. Migrated in
-      this PR (Modul 3.4f).
+      re-reads the SECRET_* env vars at process start.
 
     The render pipeline is shared; ``key_prefix``, ``use_base64_values``,
     ``env_file_basename``, ``legacy_env_file_basename``, and
@@ -141,14 +134,13 @@ class StackTarget:
 
     @property
     def begin_marker(self) -> str:
-        """Marker comment ABOVE the rendered block. Preserves the legacy wording.
+        """Marker comment ABOVE the rendered block.
 
-        The legacy deploy.sh heredocs used `Infisical → Jupyter env` /
-        `Infisical → Marimo env` (capitalised stack name); the strip-
-        regex matches the leading `# === BEGIN nexus-secret-sync` only,
-        so the wording AFTER that prefix is just for human readers.
-        Kestra uses a shorter wording matching its legacy
-        deploy.sh:1513 marker.
+        Operators rely on the leading `# === BEGIN nexus-secret-sync`
+        prefix to grep + identify the auto-generated section; the
+        wording AFTER that prefix is just for human readers. Jupyter
+        and Marimo carry the longer Infisical-attribution comment,
+        Kestra uses a shorter form.
         """
         if self.name == "kestra":
             return (
@@ -183,20 +175,20 @@ class SyncResult:
     def is_partial(self) -> bool:
         """True if the sync wrote a file but had failed-folder counts > 0.
 
-        Maps to CLI rc=1 (deploy.sh warns + continues). Distinct from
-        rc=2 (transport / unexpected exception → deploy.sh aborts).
+        Maps to CLI rc=1 (caller warns + continues). Distinct from
+        rc=2 (transport / unexpected exception → caller aborts).
         """
         return self.wrote and self.failed_folders > 0
 
 
 # ---------------------------------------------------------------------------
-# Pure-logic helpers — deploy.sh-bash equivalents, unit-testable in Python.
+# Pure-logic helpers — unit-testable in Python without an SSH round-trip.
 # Each one has a matching invariant in test_secret_sync.py.
 # ---------------------------------------------------------------------------
 
 
 def is_safe_envfile_key(key: str) -> bool:
-    """Mirror the legacy deploy.sh secret-sync — POSIX shell identifier rules.
+    """POSIX shell-identifier rule for env-file keys.
 
     Keys that fail this are skipped with `SKIPPED_NAME++`. Examples:
     ``FOO_BAR`` ok, ``1FOO`` rejected (leading digit), ``FOO-BAR``
@@ -206,7 +198,7 @@ def is_safe_envfile_key(key: str) -> bool:
 
 
 def has_multiline(value: str) -> bool:
-    """Mirror the legacy deploy.sh secret-sync — env-file format can't carry newlines portably.
+    """Detect values that can't be carried portably in env-file format.
 
     Values containing ``\\n`` are skipped with `SKIPPED_MULTI++`. The
     log line emitted server-side names the KEY only, never the value
@@ -216,7 +208,7 @@ def has_multiline(value: str) -> bool:
 
 
 def escape_dotenv_value(value: str) -> str:
-    r"""Mirror the legacy deploy.sh secret-sync — dotenv-safe escape.
+    r"""Apply dotenv-safe escapes to a secret value.
 
     Two replacements, in this order (order matters: backslash first
     so we don't double-escape the escapes from the quote-replacement):
@@ -265,21 +257,13 @@ def render_remote_script(
     secrets_url_q = shlex.quote(f"{_INFISICAL_BASE_URL}/api/v3/secrets/raw")
     key_prefix_q = shlex.quote(target.key_prefix)
 
-    # The bash below is the legacy deploy.sh secret-sync heredoc lifted
-    # near-verbatim (see git history pre-#510 for the original blocks).
-    # Differences from the heredoc form:
-    #   - Inputs come pre-decoded (shlex-quoted via stdin), no
-    #     base64 transit step (R2).
-    #   - The legacy-block strip uses the same anchored sed range
-    #     delete as deploy.sh (`/^# === BEGIN nexus-secret-sync/,
-    #     /^# === END nexus-secret-sync/d`). The match is on the
-    #     fixed `# === BEGIN/END nexus-secret-sync` prefix only —
-    #     no per-stack interpolation — so no Python-side regex
-    #     escaping is needed. The variable parts of the marker text
-    #     (Jupyter / Marimo wording) sit AFTER the matched prefix
-    #     and only matter for the `printf` that writes the new block.
-    #   - The "BEGIN marker" comment text in the new block matches
-    #     deploy.sh's wording exactly (target.begin_marker).
+    # The legacy-block strip uses an anchored sed range delete:
+    #   `/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d`.
+    # The match is on the fixed `# === BEGIN/END nexus-secret-sync`
+    # prefix only — no per-stack interpolation — so no Python-side
+    # regex escaping is needed. The variable parts of the marker text
+    # (Jupyter / Marimo wording) sit AFTER the matched prefix and
+    # only matter for the `printf` that writes the new block.
     return f"""set -euo pipefail
 
 PID={pid_q}
@@ -442,9 +426,9 @@ chmod 600 "$ENV_FILE"
 
 TMP_OUT=$(mktemp -p "$(dirname "$ENV_FILE")" .infisical.env.XXXXXX)
 chmod 600 "$TMP_OUT"
-# Strip any existing block, then append the new one. Same anchored
-# regex deploy.sh used; markers are interpolated as fixed strings so
-# operator-edited content above/below stays put.
+# Strip any existing block, then append the new one. Markers are
+# interpolated as fixed strings so operator-edited content
+# above/below the auto-generated block stays put.
 sed '/^# === BEGIN nexus-secret-sync/,/^# === END nexus-secret-sync/d' "$ENV_FILE" > "$TMP_OUT"
 cat "$NEW_BLOCK" >> "$TMP_OUT"
 mv "$TMP_OUT" "$ENV_FILE"
@@ -472,8 +456,8 @@ echo "RESULT pushed=$PUSHED skipped_name=$SKIPPED_NAME skipped_multi=$SKIPPED_MU
 def parse_result(stdout: str) -> SyncResult | None:
     """Extract the ``RESULT`` line from remote stdout.
 
-    Returns None if no parseable RESULT line exists (mirrors deploy.sh's
-    ``[ -z "$JUP_PUSHED" ]`` empty-result branch).
+    Returns None if no parseable RESULT line exists; the caller maps
+    that to the same warn-and-skip path as a fully-skipped sync.
     """
     match = _RESULT_PATTERN.search(stdout)
     if match is None:
@@ -514,10 +498,10 @@ def run_sync_for_stack(
     """Render the remote script, exec it via stdin, parse the result.
 
     On ``wrote=True`` follows up with ``docker compose up -d <stack>``
-    via :func:`_remote.ssh_run` (separate ssh-call mirrors deploy.sh's
-    two-step flow). The restart's exit code is logged but doesn't
-    change the returned :class:`SyncResult` — restart failures surface
-    via stderr but the secret-sync itself was successful.
+    via :func:`_remote.ssh_run` (separate ssh-call so the restart's
+    exit code can fail independently of the secret-write step).
+    Restart failures surface via stderr but don't change the returned
+    :class:`SyncResult` — the secret-sync itself was successful.
 
     ``host`` selects which ssh-config alias the remote calls run
     against; defaults to ``"nexus"`` for back-compat. Orchestrator
@@ -549,15 +533,15 @@ def run_sync_for_stack(
     # script writes these to stderr but `_remote.ssh_run_script` uses
     # merge_stderr=True so they land in stdout alongside the RESULT
     # line. We strip RESULT (it's wire-format, not human-readable) and
-    # forward everything else to local stderr — same UX as the legacy
-    # deploy.sh heredoc, where remote stderr was streamed directly.
+    # forward everything else to local stderr.
     for line in completed.stdout.splitlines():
         if not line.startswith("RESULT "):
             sys.stderr.write(line + "\n")
     result = parse_result(completed.stdout)
     if result is None:
-        # No RESULT line — return all-zeros. Caller (CLI) maps this to
-        # the same warn-and-skip path deploy.sh has.
+        # No RESULT line — return all-zeros. Caller (CLI) maps this
+        # to a warn-and-skip path so a transient outage doesn't fail
+        # the whole pipeline.
         return SyncResult(
             pushed=0,
             skipped_invalid_name=0,
@@ -569,7 +553,7 @@ def run_sync_for_stack(
         )
 
     if result.wrote:
-        # Restart on change. Mirrors the legacy deploy.sh restart step —
+        # Restart on change.
         # ``docker compose up -d <stack>`` recomputes the resolved-config
         # hash and recreates only when env_file content changed. Kestra
         # additionally needs ``--force-recreate`` because its
@@ -586,11 +570,10 @@ def run_sync_for_stack(
             run_cmd(restart_cmd)
         except subprocess.CalledProcessError as exc:
             # Forward the captured docker-compose output so the operator
-            # can debug image pulls / compose syntax / network errors —
-            # mirrors the legacy deploy.sh restart step which indented
-            # and printed stdout to stderr. exc.cmd is NOT printed (defence in depth: it
-            # carries the literal argv even though the restart command
-            # doesn't include secrets).
+            # can debug image pulls / compose syntax / network errors.
+            # exc.cmd is NOT printed (defence in depth: it carries the
+            # literal argv even though the restart command doesn't
+            # include secrets).
             sys.stderr.write(
                 f"  ⚠ docker compose up -d {target.name} failed "
                 f"(rc={exc.returncode}) — output follows:\n"

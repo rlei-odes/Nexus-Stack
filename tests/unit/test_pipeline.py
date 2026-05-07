@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.pipeline — Phase 4c (#505).
+"""Tests for nexus_deploy.pipeline.
 
 End-to-end mocked pipeline runs. The 3 new modules + the orchestrator
 are DI'd via monkeypatch + the public ``tofu_runner`` /
@@ -729,12 +729,14 @@ def test_cli_run_pipeline_returns_0_on_clean_run(
 def test_cli_run_pipeline_returns_0_on_partial_with_stderr_warning(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """R-rc-mapping (Phase 4c): partial phases must NOT fail the
-    workflow step — deploy.sh's wrapping bash absorbed rc=1 from the
-    per-CLI handlers (``case 0|1) continue ;;``), but ``run-pipeline``
-    is the top-level CLI invoked directly by spin-up.yml's bash with
-    ``set -e`` — a non-zero exit fails the step. Partial is a
-    'warn and continue' semantic: rc=0 + stderr warning, NOT rc=1."""
+    """R-rc-mapping: partial phases must NOT fail the workflow step.
+
+    Standalone subcommands (``run-all`` / ``run-pre-bootstrap``)
+    return rc=1 on partial so a wrapper script can branch on it,
+    but ``run-pipeline`` is the top-level CLI invoked directly by
+    spin-up.yml's bash with ``set -e`` — a non-zero exit fails the
+    step. Partial is a 'warn and continue' semantic: rc=0 + stderr
+    warning, NOT rc=1."""
     from nexus_deploy.__main__ import _run_pipeline
 
     fake = PipelineResult(

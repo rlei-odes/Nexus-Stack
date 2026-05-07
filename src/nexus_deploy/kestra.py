@@ -1,30 +1,23 @@
-"""Kestra flow-registration client (Phase 2 Modul 2.3, #505).
+"""Kestra flow-registration client.
 
-Replaces deploy.sh's L3343-3508 — the ``REMOTE_REGISTER_EOF`` heredoc
-that ssh-piped a server-side bash script which (a) wrote a curl
-``--config`` file with basic-auth, (b) defined a ``register_flow``
-shell function with POST-then-PUT idempotent dispatch, (c) registered
-the two ``system.git-sync`` / ``system.flow-sync`` flows, and (d)
-optionally triggered a one-shot ``flow-sync`` execution to onboard
-user-seeded flows immediately instead of waiting for the 15-min cron.
+Registers the two ``system.git-sync`` / ``system.flow-sync`` flows
+that drive the workspace-repo onboarding loop, and optionally
+triggers a one-shot ``flow-sync`` execution so user-seeded flows
+appear immediately instead of waiting for the 15-min cron.
 
-The new architecture demonstrates the Phase 3 pattern that
-``ssh.SSHClient.port_forward`` was built for: open a tunnel, talk to
-the service via local ``requests`` calls, surface HTTP errors as
-typed Python exceptions. No rendered server-side bash, no
-heredoc-quoting, no escape-twice escape-thrice quoting hell — and
-the entire flow logic is unit-testable against ``responses``-mocked
-HTTP without ever running ssh.
+The architecture uses ``ssh.SSHClient.port_forward`` to open a tunnel
+and talk to Kestra's REST API via local ``requests`` calls, surfacing
+HTTP errors as typed Python exceptions. No server-side rendered bash,
+no heredoc-quoting, and the entire flow logic is unit-testable
+against ``responses``-mocked HTTP without ever running ssh.
 
 API:
 
 - :class:`KestraClient` — basic-auth REST client. ``wait_ready``,
   ``register_flow`` (POST 200/201 / 422 → PUT 200/201 / failed),
   ``execute_flow``, ``wait_for_execution``.
-- :func:`render_system_flow_yaml` — string-template-based YAML
-  builder for the two system flows. Templates ship verbatim from
-  deploy.sh so the registered flow body is byte-equivalent (modulo
-  the substituted variables).
+- :func:`render_system_flow_yaml` — string-template YAML builder for
+  the two system flows.
 - :func:`run_register_system_flows` — top-level orchestrator: takes
   an already-forwarded ``base_url``, instantiates KestraClient,
   waits for Kestra, registers both flows, optionally triggers
@@ -107,10 +100,9 @@ ExecutionState = Literal[
 
 # Canonical seeded flow that system.flow-sync should produce after
 # pulling nexus_seeds/kestra/flows/ from the workspace repo. Hardcoded
-# because deploy.sh hardcoded it for the same reason: it's the
-# single ship-with-Nexus-Stack tutorial flow under the
-# nexus-tutorials namespace, and "did flow-sync actually run?" needs
-# a deterministic check, not a guess across all user flows.
+# because it's the single ship-with-Nexus-Stack tutorial flow under
+# the nexus-tutorials namespace, and "did flow-sync actually run?"
+# needs a deterministic check, not a guess across all user flows.
 _SEED_VERIFICATION_NS = "nexus-tutorials"
 _SEED_VERIFICATION_ID = "r2-taxi-pipeline"
 
@@ -243,8 +235,8 @@ class KestraClient:
         Kestra v1.0 OSS does NOT have an upsert verb — POST is
         create-only (returns 422 with ``"Flow id already exists"`` if
         the flow is there) and PUT is update-only (returns 404 if the
-        flow doesn't exist). Neither alone covers re-runs. The
-        deploy.sh logic combined them; we mirror that exactly.
+        flow doesn't exist). Neither alone covers re-runs, so we
+        chain them.
         """
         full_name = f"{namespace}.{flow_id}"
         try:
@@ -437,8 +429,8 @@ class KestraClient:
 
 
 # ---------------------------------------------------------------------------
-# System-flow YAML templates. Verbatim from deploy.sh L3410-3443 with
-# {placeholder} substitutions for the per-deploy fields. Schema is
+# System-flow YAML templates with {placeholder} substitutions for
+# per-deploy fields. Schema is
 # pinned to Kestra v1.0 OSS plugin shape (SyncNamespaceFiles +
 # SyncFlows from io.kestra.plugin.git, both of which require
 # targetNamespace / namespace fields on v1.0).
@@ -593,8 +585,8 @@ def run_register_system_flows(
     )
     if not client.wait_ready(timeout_s=ready_timeout_s):
         # Kestra never reached basic-auth-accepted state. Both flows
-        # would 401; surface a clean partial result so deploy.sh sees
-        # rc=1 (yellow warning, continue).
+        # would 401; surface a clean partial result so the caller
+        # sees rc=1 (yellow warning, continue).
         return SystemFlowsResult(
             flows=(
                 RegisterResult(name="system.git-sync", status="failed", detail="kestra not ready"),
@@ -626,10 +618,9 @@ def run_register_system_flows(
     except KestraError:
         # Couldn't even start the onboarding execute → record as
         # TRIGGER_FAILED (NOT None). is_success treats this as a
-        # partial-failure so deploy.sh's case-block routes to the
-        # yellow-warning branch instead of green-success — the
-        # onboarding genuinely didn't run, and the operator deserves
-        # to see that signal.
+        # partial-failure so the caller routes to the yellow-warning
+        # branch instead of green-success — the onboarding genuinely
+        # didn't run, and the operator deserves to see that signal.
         return SystemFlowsResult(flows=register_results, execution_state="TRIGGER_FAILED")
 
     # If the execution itself didn't reach SUCCESS, surface its terminal
@@ -644,7 +635,7 @@ def run_register_system_flows(
     # workspace repo) wouldn't surface as FAILED — Kestra's SyncFlows
     # runs cleanly with zero files. Without this check the deploy
     # would print green "registered" while operators couldn't find
-    # their tutorial flow. Mirrors deploy.sh L3479-3490 exactly.
+    # their tutorial flow.
     try:
         seed_visible = client.flow_exists(_SEED_VERIFICATION_NS, _SEED_VERIFICATION_ID)
     except KestraError as exc:

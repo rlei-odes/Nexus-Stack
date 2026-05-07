@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.tofu — Phase 3 Modul 3.2 + Phase 4c (#505)."""
+"""Tests for nexus_deploy.tofu."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def test_output_raw_invokes_tofu_with_correct_args(
 
 
 def test_output_raw_default_tofu_dir_is_stack() -> None:
-    """No-arg constructor uses tofu/stack — matches deploy.sh's $TOFU_DIR."""
+    """No-arg constructor uses tofu/stack — matches the canonical layout's $TOFU_DIR."""
     runner = TofuRunner()
     assert runner.tofu_dir == Path("tofu/stack")
 
@@ -52,7 +52,7 @@ def test_output_raw_default_tofu_dir_is_stack() -> None:
 def test_output_raw_strips_trailing_newlines_to_match_dollar_paren(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``tofu output -raw`` adds a trailing ``\\n``; deploy.sh's ``$(...)``
+    """``tofu output -raw`` adds a trailing ``\\n``; the caller's ``$(...)``
     command-substitution strips it. The Python wrapper must do the same
     or downstream f-strings get a stray ``\\n`` in the middle of URLs etc.
     POSIX ``$(...)`` strips ALL trailing newlines, not just one — match
@@ -258,7 +258,7 @@ def test_output_json_default_none_is_treated_as_supplied(
 def test_output_json_default_empty_string_is_treated_as_supplied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Empty-string default is a valid silent-fallback (matches deploy.sh)."""
+    """Empty-string default is a valid silent-fallback (matches the canonical layout)."""
 
     def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError(2, "tofu")
@@ -295,7 +295,7 @@ def test_output_json_actually_invokes_subprocess(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4c (#505) — state_list_ok + R2 credentials parser
+# state_list_ok + R2 credentials parser
 # ---------------------------------------------------------------------------
 
 

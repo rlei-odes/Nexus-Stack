@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.orchestrator — Phase 3 Modul 3.4b (#505).
+"""Tests for nexus_deploy.orchestrator.
 
 Heavy mocking of underlying module functions — orchestrator is wiring,
 not new logic. Focus on:
@@ -159,8 +159,9 @@ def test_state_handoff_gitea_token_reaches_seed(
         "nexus_deploy.orchestrator._gitea.run_configure_gitea", fake_gitea_configure
     )
     monkeypatch.setattr("nexus_deploy.orchestrator._seeder.run_seed_for_repo", fake_seed)
-    # Mock other phases to avoid running them. Phase 4b2 (#505) added
-    # 5 new phases to run_all — they're all stubbed here too.
+    # Mock other phases to avoid running them. The post-bootstrap
+    # phase set is stubbed in full so the test stays focused on the
+    # phase-handoff under test.
     monkeypatch.setattr("nexus_deploy.orchestrator.SSHClient", MagicMock())
     for phase_name in (
         "_phase_infisical_bootstrap",
@@ -462,8 +463,7 @@ def test_partial_phase_continues_to_downstream(
     monkeypatch.setattr(orchestrator, "_phase_secret_sync_marimo", make_phase("ss-m"))
 
     result = orchestrator.run_all()
-    # All 14 phases ran despite the partial in services-configure
-    # (Phase 4b2 #505: was 9).
+    # All 14 phases ran despite the partial in services-configure.
     assert len(invoked) == 14
     assert result.has_partial
     assert not result.has_hard_failure
@@ -1361,7 +1361,7 @@ def test_run_all_resets_results_between_runs(
         monkeypatch.setattr(orchestrator, phase_name, lambda _ssh, n=phase_name: _ok_phase(n))
     r1 = orchestrator.run_all()
     r2 = orchestrator.run_all()
-    # Phase 4b2 (#505): 14 phases (was 9).
+    # 14 phases per ``run_all`` invocation.
     assert len(r1.phases) == 14
     assert len(r2.phases) == 14
 
@@ -1619,9 +1619,9 @@ def test_phase_secret_sync_partial_when_no_usable_result(
 
 
 # ---------------------------------------------------------------------------
-# Phase 4a (#505) — pre-bootstrap pipeline phases.
-# Each new phase is exercised with a happy path + at least one failure
-# / partial path to lock the PhaseResult contract.
+# Pre-bootstrap pipeline phases. Each phase is exercised with a happy
+# path + at least one failure / partial path to lock the PhaseResult
+# contract.
 # ---------------------------------------------------------------------------
 
 
@@ -1933,9 +1933,10 @@ def test_run_pre_bootstrap_runs_phases_in_order(
     orchestrator: Orchestrator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """All 8 pre-bootstrap phases run in deterministic order. Updated
-    for Phase 4b1 (#505): adds workspace-coords (first), firewall-sync
-    (after stack-sync), global-env (after firewall-sync)."""
+    """All 8 pre-bootstrap phases run in deterministic order:
+    workspace-coords (first), service-env, firewall-configure,
+    stack-sync, firewall-sync, global-env, compose-up,
+    infisical-provision."""
     invocation_order: list[str] = []
 
     def _make_phase(name: str) -> Any:
@@ -2024,8 +2025,7 @@ def test_run_pre_bootstrap_partial_continues_to_downstream(
     orchestrator: Orchestrator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Partial-success phase doesn't abort — all 8 phases still run
-    (Phase 4b1: was 5)."""
+    """Partial-success phase doesn't abort — all 8 phases still run."""
     invocation_order: list[str] = []
 
     def _make_phase(name: str, status: Literal["ok", "partial"]) -> Any:
@@ -2180,15 +2180,15 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
 
 
 # ---------------------------------------------------------------------------
-# Phase 4a — `nexus-deploy run-pre-bootstrap` CLI handler tests.
+# `nexus-deploy run-pre-bootstrap` CLI handler tests.
 # ---------------------------------------------------------------------------
 
 
 def _setup_pre_bootstrap_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set the 6 required env vars for run-pre-bootstrap.
 
-    Phase 4b1 (#505): REPO_NAME + GITEA_REPO_OWNER are no longer required
-    (workspace-coords derives them); ADMIN_USERNAME IS now required.
+    REPO_NAME + GITEA_REPO_OWNER are NOT required (workspace-coords
+    derives them); ADMIN_USERNAME IS required.
     """
     for var, val in (
         ("ADMIN_EMAIL", "admin@example.com"),
@@ -2342,7 +2342,7 @@ def test_cli_run_pre_bootstrap_transport_failure_returns_2(
 
 
 # ---------------------------------------------------------------------------
-# Phase 4b1+4b2 (#505) — new phase methods + critical regressions.
+# Phase methods + critical regressions.
 # ---------------------------------------------------------------------------
 
 

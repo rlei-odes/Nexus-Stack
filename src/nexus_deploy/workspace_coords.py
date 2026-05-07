@@ -1,9 +1,9 @@
-"""Workspace-repo coordinate derivation (Phase 4b1, #505).
+"""Workspace-repo coordinate derivation.
 
-Replaces the ~80 LoC bash block in scripts/deploy.sh:295-373 that
-derives REPO_NAME / GITEA_REPO_OWNER / GITEA_REPO_URL / WORKSPACE_BRANCH
-/ GITEA_GIT_USER / GITEA_GIT_PASS / GIT_AUTHOR / GIT_EMAIL from raw
-inputs (DOMAIN, ADMIN_USERNAME, GITEA_USER_EMAIL, GH_MIRROR_REPOS, ...).
+Derives REPO_NAME / GITEA_REPO_OWNER / GITEA_REPO_URL /
+WORKSPACE_BRANCH / GITEA_GIT_USER / GITEA_GIT_PASS / GIT_AUTHOR /
+GIT_EMAIL from raw inputs (DOMAIN, ADMIN_USERNAME, GITEA_USER_EMAIL,
+GH_MIRROR_REPOS, ...).
 
 Three repo-derivation branches:
 
@@ -105,9 +105,10 @@ HttpRunner = Callable[[str, str], str]
 
 
 def _sanitize_username(username: str) -> str:
-    """Replace any non-alphanumeric character with ``_`` — same
-    transformation as deploy.sh's ``${var//[^a-zA-Z0-9]/_}``. Used
-    when constructing the per-user fork name.
+    """Replace any non-alphanumeric character with ``_``.
+
+    Used when constructing the per-user fork name from a Gitea
+    username that may contain dots / hyphens.
     """
     return re.sub(r"[^a-zA-Z0-9]", "_", username)
 
@@ -124,15 +125,14 @@ def _parse_first_mirror(gh_mirror_repos: str) -> str:
 def _parse_owner_repo(github_url: str) -> str:
     """Extract ``"<owner>/<repo>"`` from a GitHub URL.
 
-    Mirrors the deploy.sh sed: strip ``https?://github.com/`` prefix,
-    strip query-string + fragment + trailing slash + ``.git``. For a
-    non-GitHub URL the function returns the input unchanged after
-    this strip pass (e.g. ``https://gitlab.com/foo/bar`` → as-is).
-    The caller's ``re.match("^[^/]+/[^/]+$", ...)`` check is what
-    ultimately gates the API call — this function only normalizes,
-    it does NOT filter. Docstring corrected in PR #533 R1 #6 (was:
-    "Returns empty string on a URL that doesn't fit the pattern" —
-    not what the implementation does).
+    Strip ``https?://github.com/`` prefix, query-string + fragment +
+    trailing slash + ``.git``. For a non-GitHub URL the function
+    returns the input unchanged after this strip pass (e.g.
+    ``https://gitlab.com/foo/bar`` → as-is). The caller's
+    ``re.match("^[^/]+/[^/]+$", ...)`` check is what ultimately
+    gates the API call — this function only normalizes, it does
+    NOT filter (PR #533 R1 #6 fixed a docstring that previously
+    overstated the filtering behaviour).
     """
     stripped = re.sub(r"^https?://github\.com/", "", github_url)
     stripped = re.sub(r"[?#].*$", "", stripped)
@@ -145,9 +145,9 @@ def _parse_owner_repo(github_url: str) -> str:
 def _basename(github_url: str) -> str:
     """Extract the bare repo name from a GitHub URL.
 
-    Same as ``basename "$FIRST_MIRROR" .git`` in deploy.sh: take the
-    last path segment, strip ``.git``. Used to construct
-    ``mirror-readonly-<repo>`` and ``<repo>_<sanitized_user>``.
+    Take the last path segment of a GitHub URL and strip the
+    trailing ``.git``. Used to construct ``mirror-readonly-<repo>``
+    and ``<repo>_<sanitized_user>``.
     """
     name = github_url.rstrip("/").split("/")[-1]
     if name.endswith(".git"):
