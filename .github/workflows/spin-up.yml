@@ -294,19 +294,14 @@ jobs:
             sed -i 's/^          //' tofu/stack/config.tfvars
           fi
 
-          # Issue #536: capacity-fallback preference list. When set,
-          # the select-capacity step below picks the first available
-          # <type>:<location> pair from this list and rewrites the
-          # server_type / server_location lines above. Without it, the
-          # legacy single-pair shorthand (lines 272-273) is used as a
-          # 1-element preference list — backward-compatible with any
-          # existing operator config.
-          if [ -n "${{ vars.SERVER_PREFERENCES }}" ]; then
-            cat >> tofu/stack/config.tfvars << EOF
-          server_preferences = "${{ vars.SERVER_PREFERENCES }}"
-          EOF
-            sed -i 's/^          //' tofu/stack/config.tfvars
-          fi
+          # Issue #536: SERVER_PREFERENCES is NOT written into config.tfvars
+          # here. The select-capacity step below already reads it directly
+          # from the env (highest priority in its source-resolution order),
+          # and tfvars-injecting a workflow variable would be unsafe — a
+          # value containing ``"`` or ``\n`` could break the heredoc and
+          # silently inject extra tfvars keys. The legacy server_type /
+          # server_location lines (above) are used as a 1-element preference
+          # list when the env var isn't set — fully backward-compatible.
 
           # Get Hetzner Object Storage config from control-plane output
           cd tofu/control-plane

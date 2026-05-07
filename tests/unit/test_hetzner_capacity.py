@@ -80,8 +80,18 @@ def test_parse_preferences_rejects_empty_input() -> None:
 
 
 def test_parse_preferences_rejects_token_without_colon() -> None:
-    with pytest.raises(ValueError, match="missing ':' separator"):
+    with pytest.raises(ValueError, match="exactly one ':' separator"):
         parse_preferences("cx43, fsn1")  # comma between, no colon
+
+
+def test_parse_preferences_rejects_token_with_multiple_colons() -> None:
+    """PR #537 R3 #1: ``cx43:fsn1:dc14`` used to parse silently to
+    location=``fsn1:dc14`` because ``partition(':')`` only splits the
+    first colon. That location would never match the Hetzner
+    location-name keys, producing a confusing 'out of stock'
+    outcome with no obvious cause."""
+    with pytest.raises(ValueError, match="exactly one ':' separator"):
+        parse_preferences("cx43:fsn1:dc14")
 
 
 def test_parse_preferences_rejects_empty_half() -> None:

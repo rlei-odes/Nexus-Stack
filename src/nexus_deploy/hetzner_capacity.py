@@ -107,9 +107,14 @@ def parse_preferences(value: str) -> tuple[ServerSpec, ...]:
         token = raw.strip()
         if not token:
             continue
-        if ":" not in token:
+        # PR #537 R3 #1: reject tokens with !=1 colon. ``partition(":")``
+        # silently consumes only the first colon, so ``cx43:fsn1:dc14``
+        # would parse to location=``fsn1:dc14`` — a value that never
+        # matches the Hetzner location-name keys, producing confusing
+        # "out of stock" outcomes for the operator.
+        if token.count(":") != 1:
             raise ValueError(
-                f"server_preferences token missing ':' separator: {token!r}",
+                f"server_preferences token must have exactly one ':' separator: {token!r}",
             )
         server_type, _, location = token.partition(":")
         server_type = server_type.strip().lower()

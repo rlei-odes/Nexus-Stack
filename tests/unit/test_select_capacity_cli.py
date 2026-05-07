@@ -281,7 +281,7 @@ def test_select_capacity_aborts_on_invalid_preferences(
     monkeypatch.setenv("SERVER_PREFERENCES", "cx43, fsn1")  # missing colon
     rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
     assert rc == 2
-    assert "missing ':' separator" in capsys.readouterr().err
+    assert "exactly one ':' separator" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
