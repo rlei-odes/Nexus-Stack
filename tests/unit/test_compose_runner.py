@@ -64,7 +64,7 @@ def test_round_5_parent_skipped_in_leaves_when_already_added() -> None:
 
 
 def test_round_6_deferred_services_skipped() -> None:
-    """R6 — woodpecker is deferred (started later in the caller)."""
+    """R6 — woodpecker is deferred (started later by the orchestrator)."""
     parents, leaves = expand_targets(["jupyter", "woodpecker", "gitea"])
     assert parents == []
     assert "woodpecker" not in leaves
@@ -228,9 +228,9 @@ def test_render_missing_parent_compose_counted_as_failed() -> None:
 def test_render_special_chars_in_service_name_quoted() -> None:
     """shlex.quote protects against future stack names with special chars.
 
-    Realistically the caller's STACK_PARENTS map is hardcoded to
-    safe ASCII names, but defence in depth: a future contributor
-    adding 'foo bar' would not break the rendered bash.
+    Realistically the STACK_PARENTS map is hard-coded to safe ASCII
+    names, but defence in depth: a future contributor adding
+    'foo bar' would not break the rendered bash.
     """
     script = render_remote_script(parents=["foo-bar"], leaves=["a;b"])
     assert "'a;b'" in script  # shlex-quoted form
@@ -380,9 +380,9 @@ def test_cli_compose_up_empty_enabled_returns_zero() -> None:
 def test_run_compose_up_filters_empty_csv_entries() -> None:
     """expand_targets handles empty / duplicate inputs cleanly.
 
-    Regression-test the PARSER side of the round-1 the caller bug:
-    the caller's `tr '\\n ' ',,'` may produce empty entries between
-    consecutive separators or at trailing position. The CLI's
+    Regression-test the PARSER side: an upstream CSV produced by a
+    `tr '\\n ' ',,'` pipeline may contain empty entries between
+    consecutive separators or at the trailing position. The CLI's
     list-comprehension filter `[s.strip() for s in ... if s.strip()]`
     drops them; expand_targets' dedupe handles repeats. Result: a
     CSV like `",jupyter,,marimo,"` resolves to the same targets as

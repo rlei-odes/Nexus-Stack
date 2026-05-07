@@ -65,7 +65,9 @@ def test_ssh_run_no_check_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_rsync_to_remote_appends_trailing_slash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``Path('/foo')`` becomes ``/foo/`` to match the caller's contents-only rsync."""
+    """``Path('/foo')`` is normalised to ``/foo/`` so rsync copies the
+    directory contents (not the directory itself, which would land at
+    ``<dest>/foo/...``)."""
     captured: dict[str, Any] = {}
 
     def fake_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:

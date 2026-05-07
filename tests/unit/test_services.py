@@ -197,8 +197,8 @@ def test_render_metabase_hook_uses_admin_email() -> None:
 
 
 def test_render_lakefs_hook_picks_hetzner_when_both_bucket_and_server_set() -> None:
-    """Storage namespace selection mirrors legacy the caller — BOTH
-    `hetzner_s3_bucket_lakefs` AND `hetzner_s3_server` must be set
+    """Storage namespace selection requires BOTH
+    `hetzner_s3_bucket_lakefs` AND `hetzner_s3_server` to be set
     to land in the s3:// namespace.
 
     Test fixture intentionally uses a non-URL-shaped server value
@@ -231,7 +231,7 @@ def test_render_lakefs_hook_falls_back_to_local_when_no_hetzner() -> None:
 def test_render_lakefs_hook_falls_back_when_only_bucket_set_no_server() -> None:
     """Round-7 finding: bucket alone is NOT enough — endpoint is also
     required. Without the server, lakefs has no way to read/write S3.
-    The legacy the caller required BOTH; we must too."""
+    Both inputs are required; we enforce that here."""
     config = _make_config(hetzner_s3_bucket_lakefs="b1", hetzner_s3_server="")
     script = render_lakefs_hook(config, _make_env())
     # Both fields are present in the rendered script (their values
@@ -277,8 +277,8 @@ def test_render_redpanda_hook_skips_when_password_empty() -> None:
 def test_render_redpanda_hook_password_via_stdin_not_argv() -> None:
     """R4 — RedPanda password reaches docker exec via stdin, NOT
     via ``-e RPK_PASS=value`` (which would put it in docker's argv
-    on the host). Mirrors the legacy the caller acknowledged-leak
-    pattern but strictly more correct.
+    on the host). The host-argv leak surface is closed; the password
+    only ever reaches the redpanda container via stdin.
     """
     canary = "RP-CANARY-X1Y2Z3"
     script = render_redpanda_hook(_make_config(redpanda_admin_password=canary), _make_env())
@@ -318,13 +318,13 @@ def test_render_redpanda_hook_uses_curl_dash_f_for_status_check() -> None:
 
 
 def test_render_redpanda_hook_password_rotation_via_create_first_then_delete() -> None:
-    """Round-1 + round-2 findings: legacy the caller never sync'd the
-    password on a second run — Infisical rotation silently broke
-    clients. STRICTLY-MORE-CORRECT divergence: try-create-first;
-    only delete + recreate IF create reports "already exists" (the
-    rotation case). The delete is gated on the broker proving it's
-    responsive — a transient broker glitch on the first create
-    returns failed without touching state. Round-2 specifically
+    """Round-1 + round-2 findings: rotation must propagate. A previous
+    naive implementation never synced the password on a second run, so
+    Infisical rotation silently broke clients. The current pattern is
+    try-create-first; only delete + recreate IF create reports "already
+    exists" (the rotation case). The delete is gated on the broker
+    proving it's responsive — a transient broker glitch on the first
+    create returns failed without touching state. Round-2 specifically
     flagged delete-before-prove as a real bug — broker could be
     left with no SASL user if create failed transiently.
     """
@@ -345,9 +345,10 @@ def test_render_redpanda_hook_password_rotation_via_create_first_then_delete() -
 
 
 def test_render_redpanda_hook_cluster_config_set_failure_propagates() -> None:
-    """Round-1 finding: legacy the caller swallowed `rpk cluster config
-    set superusers` failures — could mark hook `configured` while the
-    user had no permissions. Now: capture the result, fail loudly.
+    """Round-1 finding: an earlier implementation swallowed
+    `rpk cluster config set superusers` failures — could mark the hook
+    as `configured` while the user had no permissions. Now: capture the
+    result, fail loudly.
     """
     script = render_redpanda_hook(_make_config(), _make_env())
     # The result is captured (NOT discarded via >/dev/null)
@@ -476,8 +477,9 @@ def test_render_garage_hook_idempotency_branches() -> None:
 def test_render_garage_hook_layout_show_failure_reports_failed() -> None:
     """R-exit-status: layout-show exit status is captured separately
     so a Docker-daemon / container-missing failure reports `failed`,
-    not false-positive `already-configured`. Legacy the caller used
-    `|| echo ""` here which silently swallowed real failures."""
+    not false-positive `already-configured`. The naive `|| echo ""`
+    pattern an earlier implementation used here silently swallowed
+    real failures and is explicitly avoided."""
     script = render_garage_hook(_make_config(), _make_env())
     # LAYOUT_RC captured separately, gated before the grep
     assert "LAYOUT_RC=0" in script

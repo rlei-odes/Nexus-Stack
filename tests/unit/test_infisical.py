@@ -2,7 +2,7 @@
 
 Covers:
 - skip-empty rule (#504 contract: preserve operator UI edits)
-- folder list + per-folder key list match the caller source-order
+- folder list + per-folder key list are emitted in a stable source-order
 - payload JSON shape (folder + secrets-batch upsert)
 - adversarial token quoting in the remote bash loop
 - end-to-end bootstrap with mocked ssh/rsync runners
@@ -363,9 +363,9 @@ def test_bootstrap_writes_payloads_with_restrictive_perms(tmp_path: Path) -> Non
 def test_bootstrap_removes_local_payloads_on_success(tmp_path: Path) -> None:
     """After a successful bootstrap, the local f-/s-*.json files are gone.
 
-    Mirrors the caller's ``rm -rf "$PUSH_DIR"`` cleanup. Files contain
-    secret values; leaving them on the runner is a secrets-at-rest
-    leak.
+    The bootstrap is responsible for removing its own ``$PUSH_DIR``
+    payloads — they contain secret values and leaving them on the
+    runner is a secrets-at-rest leak.
     """
     push_dir = tmp_path / "push"
     client = InfisicalClient("p", "dev", "tok", push_dir=push_dir)
@@ -517,7 +517,9 @@ def test_bootstrap_parses_ok_fail_counts(tmp_path: Path) -> None:
 
 
 def test_bootstrap_takes_last_line_of_stdout(tmp_path: Path) -> None:
-    """the caller's baseline-capture WARN message can precede the OK:FAIL line."""
+    """The remote bash may emit a baseline-capture ``WARN`` message
+    before the trailing ``OK:FAIL`` line; the parser must take the
+    last line, not the first."""
     client = InfisicalClient("p", "dev", "tok", push_dir=tmp_path / "p")
     result = client.bootstrap(
         [FolderSpec("k", {"X": "v"})],
@@ -578,7 +580,7 @@ def test_bootstrap_runs_ssh_loop_with_token(tmp_path: Path) -> None:
 def test_cli_infisical_bootstrap_requires_project_id_and_token(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Missing required env → rc=2 (hard fail; the caller aborts)."""
+    """Missing required env → rc=2 (hard fail; the orchestrator aborts the deploy)."""
     from nexus_deploy.__main__ import main
 
     monkeypatch.setattr(sys, "argv", ["nexus-deploy", "infisical", "bootstrap"])
@@ -657,7 +659,8 @@ def test_cli_infisical_bootstrap_partial_failure_returns_1(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """API-reported partial failure (folder errors) → rc=1; the caller warns + continues."""
+    """API-reported partial failure (folder errors) → rc=1; the orchestrator
+    surfaces this as a partial PhaseResult and continues the deploy."""
     from nexus_deploy.__main__ import main
 
     def fake_ssh(_script: str) -> subprocess.CompletedProcess[str]:
@@ -687,9 +690,10 @@ def test_cli_infisical_bootstrap_unexpected_exception_returns_2(
     must surface as rc=2, NOT rc=1.
 
     Python's default unhandled-exception exit code is 1, which would
-    collide with the "partial push" semantic in the caller and cause
-    the deploy to continue past a broken bootstrap. The broad
-    ``except Exception`` in the CLI re-routes that to rc=2.
+    collide with the "partial push" semantic the orchestrator uses
+    for soft-fail Infisical results and cause the deploy to continue
+    past a broken bootstrap. The broad ``except Exception`` in the
+    CLI re-routes that to rc=2.
 
     Also asserts: the exception's ``str(exc)`` / ``repr(exc)`` contents
     must NOT surface in stderr — those can carry attribute values from

@@ -213,8 +213,8 @@ def test_exec_cleanup_line_exact_match_no_substring_collision() -> None:
 def test_exec_cleanup_rm_runs_even_when_compose_down_fails() -> None:
     """Round-1 PR #523: a stuck container shouldn't block folder removal.
 
-    Legacy the caller used ``docker compose down 2>/dev/null || true``
-    and ran ``rm -rf`` regardless. A previous version of this module
+    The historical contract was ``docker compose down 2>/dev/null || true``
+    followed by an unconditional ``rm -rf``. A previous version of this module
     inserted a ``continue`` after the down-failure branch which
     diverged from that contract and left orphan folders behind. This
     test pins the post-fix behaviour: when ``docker compose down``

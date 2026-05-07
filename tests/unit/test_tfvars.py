@@ -5,7 +5,7 @@ Pure-logic test surface. Two layers:
 1. ``parse(path)`` — regex extraction of domain / admin_email /
    user_email from a synthetic config.tfvars fixture.
 2. ``derive_gitea_identity(config)`` — admin-email collision
-   fallback + first-comma-trim semantics. exactly.
+   fallback + first-comma-trim semantics.
 """
 
 from __future__ import annotations

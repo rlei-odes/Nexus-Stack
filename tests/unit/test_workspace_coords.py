@@ -49,8 +49,9 @@ def test_sanitize_username_replaces_non_alphanumeric() -> None:
 
 
 def test_sanitize_username_keeps_unicode_letters_collapsed() -> None:
-    """Mirrors the caller's ``${var//[^a-zA-Z0-9]/_}`` exactly — non-ASCII
-    letters DO get sanitized. Unicode-aware would be a behaviour change."""
+    """The sanitiser collapses every non-``[a-zA-Z0-9]`` character to
+    ``_`` — non-ASCII letters DO get sanitised. Unicode-aware would
+    be a behaviour change."""
     assert _sanitize_username("müller") == "m_ller"
 
 

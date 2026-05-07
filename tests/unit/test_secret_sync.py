@@ -38,7 +38,7 @@ _SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
 
 
 # ---------------------------------------------------------------------------
-# StackTarget — per-stack divergences match the caller's path conventions
+# StackTarget — per-stack path conventions (stacks/<name>/.env etc.)
 # ---------------------------------------------------------------------------
 
 
@@ -57,7 +57,7 @@ def test_stack_target_marimo_paths() -> None:
 
 
 def test_stack_target_begin_marker_capitalised() -> None:
-    """Marker comment includes capitalised stack name (mirrors legacy the caller wording)."""
+    """Marker comment includes the capitalised stack name."""
     assert "Infisical → Jupyter env" in StackTarget(name="jupyter").begin_marker
     assert "Infisical → Marimo env" in StackTarget(name="marimo").begin_marker
 
@@ -156,7 +156,9 @@ def test_has_multiline_round_6() -> None:
 
 
 def test_escape_dotenv_value_basic() -> None:
-    """Round 6 escape rules — mirror legacy the caller secret-sync sed."""
+    """Round 6 escape rules — `"`, `\\`, `$`, ``\\``` get backslash-escaped
+    inside the dotenv value so dotenv parsers (and Kestra's
+    EnvVarSecretProvider) read the original string verbatim."""
     assert escape_dotenv_value("plain") == "plain"
     assert escape_dotenv_value('with"quote') == 'with\\"quote'
     assert escape_dotenv_value("with\\backslash") == "with\\\\backslash"
@@ -445,7 +447,8 @@ def test_render_jq_missing_path_emits_zero_result() -> None:
 
 
 def test_render_marker_strings_match_legacy_format() -> None:
-    """The BEGIN/END markers match the caller's exact wording (sed-grep depends on it)."""
+    """BEGIN/END marker wording is load-bearing — the in-place sed
+    replacement on the server greps for these exact strings."""
     jup = _render_default(stack="jupyter")
     mar = _render_default(stack="marimo")
     assert "BEGIN nexus-secret-sync (Infisical → Jupyter env" in jup
@@ -757,7 +760,8 @@ def test_render_kestra_writes_to_env_not_infisical_env() -> None:
 def test_render_kestra_skips_legacy_strip_when_no_legacy_file() -> None:
     """Kestra's LEGACY_ENV is empty → the legacy-strip block is gated
     on '[ -n \"$LEGACY_ENV\" ]' so it doesn't try to strip a nonexistent
-    file. Mirrors the caller's lack of a legacy .infisical.env for kestra."""
+    file. Reflects the fact that Kestra never had a legacy
+    .infisical.env file in the first place."""
     script = render_remote_script(
         target=_kestra_target(),
         project_id="p",
@@ -1034,9 +1038,9 @@ def test_cli_secret_sync_no_result_line_returns_0(
 ) -> None:
     """Remote stdout w/o RESULT line → all-zero SyncResult → rc=0 + warning.
 
-    Mirrors the caller's `[ -z "$JUP_PUSHED" ]` "no-result" path: the
-    inner script's stderr already explained why; here we just don't
-    abort the deploy.
+    The "no result emitted" branch is non-fatal: the inner script's
+    stderr already explained why, so we don't abort the deploy on
+    top of it.
     """
     from nexus_deploy.__main__ import main
 

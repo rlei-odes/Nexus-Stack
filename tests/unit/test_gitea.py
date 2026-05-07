@@ -470,8 +470,8 @@ def test_round_4_mint_token_returns_sha1_on_success() -> None:
 def test_round_4_mint_token_idempotent_delete_first() -> None:
     """Token already exists → CLI delete succeeds → CLI generate succeeds.
 
-    The legacy the caller delete-then-create pattern is preserved via
-    the unconditional delete in mint_token. The rendered delete script
+    The delete-then-create pattern is preserved via the unconditional
+    delete in mint_token. The rendered delete script
     ends in ``|| true``, so ``ssh.run_script`` always sees rc=0
     regardless of whether the inner docker-exec found a token to
     delete — both states route to the same generate call.

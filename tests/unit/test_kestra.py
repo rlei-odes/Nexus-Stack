@@ -670,11 +670,10 @@ def test_run_register_system_flows_onboarding_kestra_error_recorded_as_trigger_f
 def test_run_register_system_flows_seed_flow_missing_after_success() -> None:
     """SUCCESS execution but the canonical seed flow isn't in Kestra → SEED_FLOW_MISSING.
 
-    Mirrors the caller L3479-3490: a SUCCESS execution against an empty
-    seed tree (no flows in the workspace repo) wouldn't surface as
-    FAILED. Without the post-execute verify, deploy would falsely
-    print green "registered" while operators couldn't find the
-    tutorial flow.
+    A SUCCESS execution against an empty seed tree (no flows in the
+    workspace repo) would not surface as FAILED. Without the
+    post-execute verify, the deploy would falsely print green
+    "registered" while operators couldn't find the tutorial flow.
     """
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)

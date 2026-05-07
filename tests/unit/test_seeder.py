@@ -61,7 +61,9 @@ FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "workspace_
     ],
 )
 def test_is_safe_repo_path_parameterized(path: str, ok: bool) -> None:
-    """R5 — repo-path safety regex matches the canonical layout:3384.
+    """R5 — repo-path safety regex matches the canonical
+    ``[a-zA-Z0-9_./-]+`` shape from ``_VALID_REPO_PATH_RE`` in
+    ``src/nexus_deploy/seeder.py``.
 
     This test only covers the char-level regex. Structural escape
     protection (``..`` segments, leading ``/``, empty segments) is
@@ -141,7 +143,7 @@ def test_round_5_path_safety_rejects_dotdot_escape(tmp_path: Path) -> None:
 
 
 def test_round_6_symlinks_skipped(tmp_path: Path) -> None:
-    """R6 — symlinks are skipped, mirrors the caller's ``find -type f``."""
+    """R6 — symlinks are skipped (regular files only)."""
     seed_root = tmp_path / "seeds"
     seed_root.mkdir()
     real = seed_root / "real.txt"
@@ -170,10 +172,9 @@ def test_round_7_deterministic_ordering() -> None:
 def test_list_seed_files_unsafe_filename_dropped(tmp_path: Path) -> None:
     """Files whose computed repo_path violates _VALID_REPO_PATH_RE are dropped.
 
-    Mirrors the caller's ``Skipping seed with unsafe path`` branch
-    (line 3385) — though the caller counts it as failed, we drop
-    silently here and rely on the operator noticing the file count
-    mismatch. Future enhancement: surface a warning + count.
+    Files with an unsafe computed ``repo_path`` are dropped silently;
+    the caller is expected to notice via the file-count mismatch.
+    Future enhancement: surface a warning + count.
     """
     seed_root = tmp_path / "seeds"
     seed_root.mkdir()

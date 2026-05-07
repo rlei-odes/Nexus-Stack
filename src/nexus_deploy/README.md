@@ -16,7 +16,7 @@ for ad-hoc operator work but rarely needed in the steady state.
 ```bash
 uv sync                   # install deps + this package in editable mode
 uv run pytest             # run tests (~7 sec, no network)
-uv run mypy --strict src/nexus_deploy/   # strict type-check
+uv run mypy               # strict type-check (covers src + tests, per pyproject.toml)
 uv run ruff check .       # lint
 uv run ruff format .      # auto-format
 ```
