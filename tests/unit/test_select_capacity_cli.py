@@ -54,21 +54,6 @@ def tfvars_with_legacy_pair(tmp_path: Path) -> Path:
     return path
 
 
-@pytest.fixture
-def fake_availability_all_in_stock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub Hetzner API so every interesting (type, loc) pair is
-    available. Individual tests narrow this down."""
-    monkeypatch.setattr(
-        _hetzner,
-        "fetch_availability",
-        lambda _token, http_get=None: {
-            "fsn1": {"cx43", "ccx33"},
-            "nbg1": {"cx43", "ccx33"},
-            "hel1": {"cx43", "ccx33"},
-        },
-    )
-
-
 # ---------------------------------------------------------------------------
 # Argument handling
 # ---------------------------------------------------------------------------
@@ -98,6 +83,18 @@ def test_select_capacity_aborts_when_tfvars_missing(
     rc = _select_capacity(["--tfvars", str(tmp_path / "does-not-exist.tfvars")])
     assert rc == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_select_capacity_rejects_tfvars_without_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PR #537 R1 #2: ``--tfvars`` as the last token (no value) used
+    to bottom-out in the generic ``unknown arg '--tfvars'`` branch.
+    Now produces a specific error so the operator knows what's wrong."""
+    rc = _select_capacity(["--tfvars"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--tfvars requires a value" in err
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +306,56 @@ def test_select_capacity_preserves_other_tfvars_lines(
     rewritten = tfvars_with_legacy_pair.read_text()
     assert 'server_image    = "ubuntu-24.04"' in rewritten
     assert 'domain          = "example.com"' in rewritten
+
+
+def test_select_capacity_preserves_trailing_inline_comments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #537 R1 #1: hand-edited tfvars often have inline comments
+    after the value (``server_type = "cx43" # primary``). The rewrite
+    must NOT silently delete them — re-emit the captured trail."""
+    path = tmp_path / "config.tfvars"
+    path.write_text(
+        'server_type = "cx43" # primary instance class\n'
+        'server_location = "hel1"  // hel1 was first in the list\n'
+        'server_image = "ubuntu-24.04"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "ccx33:fsn1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": {"ccx33"}},
+    )
+    rc = _select_capacity(["--tfvars", str(path)])
+    assert rc == 0
+    rewritten = path.read_text()
+    # New value, comment preserved.
+    assert 'server_type = "ccx33" # primary instance class' in rewritten
+    assert 'server_location = "fsn1"  // hel1 was first in the list' in rewritten
+
+
+def test_select_capacity_strips_token_whitespace(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #537 R1 #3: ``HCLOUD_TOKEN`` sourced from a file may carry a
+    trailing newline. The handler must ``.strip()`` before forwarding
+    to ``fetch_availability`` so the Bearer header doesn't get
+    corrupted (HTTP 401 with a confusing root cause)."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "  token-with-whitespace  \n")
+    captured: dict[str, str] = {}
+
+    def _capture_token(token: str, http_get: object = None) -> dict[str, set[str]]:
+        captured["token"] = token
+        return {"hel1": {"cx43"}}
+
+    monkeypatch.setattr(_hetzner, "fetch_availability", _capture_token)
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 0
+    assert captured["token"] == "token-with-whitespace"
 
 
 def test_select_capacity_appends_keys_when_absent(

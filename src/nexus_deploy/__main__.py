@@ -2618,9 +2618,13 @@ def _rewrite_tfvars_pair(text: str, selected: _hetzner.ServerSpec) -> str:
     new_type_line = f'server_type = "{selected.server_type}"'
     new_loc_line = f'server_location = "{selected.location}"'
 
+    # PR #537 R1 #1: re-emit the captured ``trail`` group so trailing
+    # inline comments (``server_type = "cx43" # primary``) survive the
+    # rewrite. Previous version dropped everything after the closing
+    # quote, silently deleting hand-written context.
     if _TFVARS_TYPE_LINE.search(text):
         text = _TFVARS_TYPE_LINE.sub(
-            lambda m: f'{m.group("lead")}"{selected.server_type}"',
+            lambda m: f'{m.group("lead")}"{selected.server_type}"{m.group("trail")}',
             text,
             count=1,
         )
@@ -2629,7 +2633,7 @@ def _rewrite_tfvars_pair(text: str, selected: _hetzner.ServerSpec) -> str:
 
     if _TFVARS_LOC_LINE.search(text):
         text = _TFVARS_LOC_LINE.sub(
-            lambda m: f'{m.group("lead")}"{selected.location}"',
+            lambda m: f'{m.group("lead")}"{selected.location}"{m.group("trail")}',
             text,
             count=1,
         )
@@ -2676,7 +2680,17 @@ def _select_capacity(args: list[str]) -> int:
     tfvars_path: Path | None = None
     i = 0
     while i < len(args):
-        if args[i] == "--tfvars" and i + 1 < len(args):
+        if args[i] == "--tfvars":
+            # PR #537 R1 #2: explicit branch for the missing-value case
+            # so the operator sees a specific error instead of the
+            # generic "unknown arg '--tfvars'" that the fall-through
+            # would produce.
+            if i + 1 >= len(args):
+                print(
+                    "select-capacity: --tfvars requires a value (path to config.tfvars)",
+                    file=sys.stderr,
+                )
+                return 2
             tfvars_path = Path(args[i + 1])
             i += 2
             continue
@@ -2695,7 +2709,14 @@ def _select_capacity(args: list[str]) -> int:
     # variables.tf, which is lowercase here. Lint's all-caps rule
     # is silenced via the inline directive; the name is dictated by
     # Tofu, not us.
-    token = os.environ.get("HCLOUD_TOKEN") or os.environ.get("TF_VAR_hcloud_token")  # noqa: SIM112
+    # PR #537 R1 #3: ``.strip()`` so a stray trailing newline (common
+    # when the env var was sourced from a file) doesn't end up inside
+    # the Bearer header → would cause a hard-to-diagnose HTTP 401.
+    token = (
+        os.environ.get("HCLOUD_TOKEN")
+        or os.environ.get("TF_VAR_hcloud_token")  # noqa: SIM112
+        or ""
+    ).strip()
     if not token:
         sys.stderr.write(
             "⚠ select-capacity: HCLOUD_TOKEN not set; skipping capacity check "
