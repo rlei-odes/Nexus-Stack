@@ -158,7 +158,7 @@ def _default_http_get(url: str, token: str) -> Any:
     )
     try:
         with urllib.request.urlopen(req, timeout=_DEFAULT_TIMEOUT) as resp:  # noqa: S310
-            body = resp.read().decode("utf-8")
+            raw = resp.read()
     except urllib.error.HTTPError as exc:
         raise HetznerCapacityError(
             f"Hetzner API HTTP {exc.code} for {url}: {exc.reason}",
@@ -166,6 +166,17 @@ def _default_http_get(url: str, token: str) -> Any:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise HetznerCapacityError(
             f"Hetzner API request failed for {url}: {type(exc).__name__}: {exc}",
+        ) from exc
+    # PR #537 R6 #4: catch UnicodeDecodeError from a non-UTF-8 body
+    # (e.g. a misconfigured upstream proxy serving binary garbage on
+    # what should be JSON). Without the catch, a decode failure would
+    # propagate as an uncaught UnicodeDecodeError and bypass the
+    # caller's HetznerCapacityError handler.
+    try:
+        body = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HetznerCapacityError(
+            f"Hetzner API returned non-UTF-8 body for {url}: {exc}",
         ) from exc
     try:
         return json.loads(body)

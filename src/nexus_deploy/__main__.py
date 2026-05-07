@@ -2788,9 +2788,11 @@ def _select_capacity(args: list[str]) -> int:
         for line in status_lines:
             sys.stderr.write(line + "\n")
         sys.stderr.write(
-            "Either widen server_preferences (try ccx*, fsn1/nbg1/hel1, etc.) "
-            "or wait — Hetzner stock fluctuates hour by hour. "
-            "Live tracker: https://radar.iodev.org/cloud-status\n",
+            "Either widen the preference list — set `SERVER_PREFERENCES` repo "
+            "variable (highest priority) or the `server_preferences` line in "
+            "config.tfvars to a longer comma list (try ccx*, fsn1/nbg1/hel1, "
+            "cpx32 fallbacks, etc.) — or wait. Hetzner stock fluctuates hour "
+            "by hour. Live tracker: https://radar.iodev.org/cloud-status\n",
         )
         return 2
 

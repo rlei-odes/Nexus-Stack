@@ -537,6 +537,25 @@ def test_default_http_get_wraps_timeout(monkeypatch: pytest.MonkeyPatch) -> None
         _default_http_get("https://api.hetzner.cloud/v1/datacenters", "t")
 
 
+def test_default_http_get_wraps_non_utf8_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR #537 R6 #4: a misconfigured upstream proxy serving binary
+    garbage on what should be JSON would have escaped as an uncaught
+    UnicodeDecodeError. Now wrapped into HetznerCapacityError so the
+    CLI handler sees the same single error class as every other
+    failure mode."""
+    from nexus_deploy.hetzner_capacity import _default_http_get
+
+    # 0x80 is invalid as the start of a UTF-8 sequence.
+    bad_bytes = b"\x80\x81\x82 not utf-8"
+
+    def _fake_urlopen(req: object, timeout: float = 0) -> _FakeUrlopenContext:
+        return _FakeUrlopenContext(bad_bytes)
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    with pytest.raises(HetznerCapacityError, match=r"non-UTF-8"):
+        _default_http_get("https://api.hetzner.cloud/v1/datacenters", "t")
+
+
 def test_default_http_get_wraps_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
     """Body parses to non-JSON → HetznerCapacityError with parser detail.
     Defensive against an upstream proxy that intercepts and serves an
