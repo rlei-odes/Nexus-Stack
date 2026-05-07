@@ -2557,12 +2557,18 @@ def _run_all(args: list[str]) -> int:
     return 0
 
 
+# PR #537 R2 #3+#4: simplified — capture the quoted value via a named
+# ``value`` group (callers no longer need to ``split('"', 2)[1]`` the
+# whole match) and collapse the trail to just ``(?P<trail>.*)``. The
+# previous ``(?:#|//).*|.*`` alternation was redundant — ``.*`` matches
+# everything anyway, so the explicit comment-form alternative didn't
+# constrain anything.
 _TFVARS_TYPE_LINE = re.compile(
-    r'^(?P<lead>\s*server_type\s*=\s*)"[^"\n\r]*"(?P<trail>\s*(?:#|//).*|.*)$',
+    r'^(?P<lead>\s*server_type\s*=\s*)"(?P<value>[^"\n\r]*)"(?P<trail>.*)$',
     re.MULTILINE,
 )
 _TFVARS_LOC_LINE = re.compile(
-    r'^(?P<lead>\s*server_location\s*=\s*)"[^"\n\r]*"(?P<trail>\s*(?:#|//).*|.*)$',
+    r'^(?P<lead>\s*server_location\s*=\s*)"(?P<value>[^"\n\r]*)"(?P<trail>.*)$',
     re.MULTILINE,
 )
 _TFVARS_PREFS_LINE = re.compile(
@@ -2595,13 +2601,16 @@ def _read_single_pair_from_tfvars(text: str) -> _hetzner.ServerSpec | None:
     loc_match = _TFVARS_LOC_LINE.search(text)
     if type_match is None or loc_match is None:
         return None
-    type_quoted = type_match.group(0).split('"', 2)[1]
-    loc_quoted = loc_match.group(0).split('"', 2)[1]
-    if not type_quoted or not loc_quoted:
+    # PR #537 R2 #3: use the named ``value`` capture group instead of
+    # ``match.group(0).split('"', 2)[1]`` — same semantics, but the
+    # intent (extract the quoted value) is now explicit in the regex.
+    type_value = type_match.group("value")
+    loc_value = loc_match.group("value")
+    if not type_value or not loc_value:
         return None
     return _hetzner.ServerSpec(
-        server_type=type_quoted.lower(),
-        location=loc_quoted.lower(),
+        server_type=type_value.lower(),
+        location=loc_value.lower(),
     )
 
 

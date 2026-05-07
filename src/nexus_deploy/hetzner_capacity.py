@@ -43,18 +43,23 @@ _DEFAULT_TIMEOUT = 30.0
 #   1. cx43 (Intel-shared, project default since 2026-05) tried in
 #      three EU regions before falling back to ccx33 (dedicated AMD,
 #      same vCPU/RAM class but ~30% pricier).
-#   2. Region order fsn1 → nbg1 → hel1 — three EU regions with
-#      similar latency from CH/DE; bias toward continental DE first.
+#   2. Region order hel1 → fsn1 → nbg1 — matches the historical
+#      project default ``server_location = "hel1"`` from
+#      ``tofu/stack/variables.tf``, so a fresh install that doesn't
+#      configure SERVER_PREFERENCES at all lands in the same region
+#      as before #537. Falkenstein and Nuremberg follow as failovers.
+#      (PR #537 R2 #2 — reordered so the built-in default doesn't
+#      silently change the region for new installs.)
 #   3. ARM (cax*) deliberately excluded — Hetzner ARM EU has been
 #      chronically constrained and is no longer cheaper (per the
 #      2026-05 note in CLAUDE.md).
 DEFAULT_PREFERENCES = (
+    "cx43:hel1",
     "cx43:fsn1",
     "cx43:nbg1",
-    "cx43:hel1",
+    "ccx33:hel1",
     "ccx33:fsn1",
     "ccx33:nbg1",
-    "ccx33:hel1",
 )
 
 
