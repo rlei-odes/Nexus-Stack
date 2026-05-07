@@ -175,6 +175,31 @@ def test_select_capacity_uses_server_preferences_from_tfvars(
     assert 'server_location    = "hel1"' in rewritten
 
 
+def test_select_capacity_strips_whitespace_in_legacy_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #537 R8 #3: a hand-edited config.tfvars with whitespace
+    INSIDE the quoted value (``server_location = "hel1 "``) used to
+    produce a ServerSpec with location='hel1 ' that never matched
+    the Hetzner availability keys → confusing 'unknown location'
+    error. Now ``_read_single_pair_from_tfvars`` strips before
+    lowercasing, so the lookup succeeds."""
+    path = tmp_path / "config.tfvars"
+    path.write_text(
+        'server_type = " cx43 "\nserver_location = "hel1 "\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"hel1": {"cx43"}},
+    )
+    rc = _select_capacity(["--tfvars", str(path)])
+    assert rc == 0
+
+
 def test_select_capacity_falls_back_to_legacy_single_pair(
     tfvars_with_legacy_pair: Path,
     monkeypatch: pytest.MonkeyPatch,

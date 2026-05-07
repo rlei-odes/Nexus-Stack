@@ -30,11 +30,23 @@ trip is small (a few KB each).
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+# Hetzner identifier shape — server-type names (``cx43``, ``ccx33``,
+# ``cax31``, ``cpx51``) and location names (``fsn1``, ``nbg1``,
+# ``hel1``, ``ash``, ``hil``) are all lowercase alphanumeric with
+# optional dashes (no real-world example uses one but the API spec
+# allows it). This regex is the safety gate at the parser boundary:
+# anything outside this character set could break the downstream
+# tfvars rewrite (a value containing ``"`` would close the HCL
+# string early and effectively inject additional keys; embedded
+# newlines would split the value across multiple HCL lines).
+_HETZNER_IDENT = re.compile(r"^[a-z0-9-]+$")
 
 _API_BASE = "https://api.hetzner.cloud/v1"
 _DEFAULT_TIMEOUT = 30.0
@@ -123,6 +135,19 @@ def parse_preferences(value: str) -> tuple[ServerSpec, ...]:
             raise ValueError(
                 f"server_preferences token has empty type or location: {token!r}",
             )
+        # PR #537 R8 #1: defensive charset gate. ``server_type`` and
+        # ``location`` are interpolated as ``"{value}"`` into HCL by
+        # the downstream tfvars rewrite; a value containing ``"`` or
+        # a newline would break the file (close the HCL string early
+        # and inject extra keys). Hetzner's own identifiers are
+        # lowercase ``[a-z0-9-]+`` so the gate is conservative on
+        # legitimate input.
+        for half_name, half_value in (("type", server_type), ("location", location)):
+            if not _HETZNER_IDENT.fullmatch(half_value):
+                raise ValueError(
+                    f"server_preferences {half_name} has invalid characters "
+                    f"(expected lowercase alphanumeric / dash): {token!r}",
+                )
         key = (server_type, location)
         if key in seen:
             raise ValueError(
