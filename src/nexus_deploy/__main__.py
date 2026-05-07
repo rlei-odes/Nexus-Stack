@@ -2638,7 +2638,11 @@ def _rewrite_tfvars_pair(text: str, selected: _hetzner.ServerSpec) -> str:
             count=1,
         )
     else:
-        text = text.rstrip("\n") + "\n" + new_type_line + "\n"
+        # PR #537 R4 #4: rstrip("\r\n") instead of rstrip("\n") so a
+        # CRLF-line-ending file (rare in this project but possible if
+        # an operator hand-edits config.tfvars on Windows) doesn't
+        # leave a stray ``\r`` before our appended LF.
+        text = text.rstrip("\r\n") + "\n" + new_type_line + "\n"
 
     if _TFVARS_LOC_LINE.search(text):
         text = _TFVARS_LOC_LINE.sub(
@@ -2647,7 +2651,7 @@ def _rewrite_tfvars_pair(text: str, selected: _hetzner.ServerSpec) -> str:
             count=1,
         )
     else:
-        text = text.rstrip("\n") + "\n" + new_loc_line + "\n"
+        text = text.rstrip("\r\n") + "\n" + new_loc_line + "\n"
 
     return text
 
@@ -2657,11 +2661,16 @@ def _select_capacity(args: list[str]) -> int:
 
     Pre-flight step that runs in spin-up.yml BEFORE ``tofu apply``:
     walks an operator-provided preference list of ``<server_type>:
-    <location>`` pairs, queries Hetzner Cloud's ``/v1/datacenters``
-    for live availability, and rewrites ``config.tfvars`` to the
-    first pair that is in stock. Lets a deploy survive a Hetzner
-    capacity crunch by transparently falling through to the next
-    region without operator intervention.
+    <location>`` pairs, queries Hetzner Cloud's API
+    (``/v1/server_types`` to resolve type name → ID, then
+    ``/v1/datacenters`` for the per-DC ``available`` list keyed by
+    those IDs), and rewrites ``config.tfvars`` to the first pair
+    that is in stock. Lets a deploy survive a Hetzner capacity
+    crunch by transparently falling through to the next region
+    without operator intervention. (PR #537 R4 #3 — docstring
+    corrected to mention both endpoints; the previous text only
+    listed ``/v1/datacenters`` which made API-permission debugging
+    harder.)
 
     Preference source priority (first non-empty wins):
 

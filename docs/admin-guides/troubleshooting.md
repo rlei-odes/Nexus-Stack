@@ -126,16 +126,18 @@ or, more generically, a `resource_unavailable` rejection during `tofu apply`.
 
 ### Automatic fallback (default since #536)
 
-The `Select Hetzner capacity` step that runs *before* `Apply infrastructure` queries Hetzner's `/v1/datacenters` API and picks the first available `<server_type>:<location>` pair from a preference list. The default list — `cx43:hel1, cx43:fsn1, cx43:nbg1, ccx33:hel1, ccx33:fsn1, ccx33:nbg1` — covers three EU regions for two server-type classes, so a typical capacity crunch is handled without operator intervention. The order keeps the historical project-default region (`hel1`) first so a fresh install without `SERVER_PREFERENCES` lands in the same datacenter as before this feature was added.
+The `Select Hetzner capacity` step that runs *before* `Apply infrastructure` queries Hetzner's Cloud API (`/v1/server_types` to resolve type-name to internal ID, then `/v1/datacenters` for per-datacenter live availability keyed by those IDs) and picks the first available `<server_type>:<location>` pair from a preference list. The default list — `cx43:hel1, cx43:fsn1, cx43:nbg1, ccx33:hel1, ccx33:fsn1, ccx33:nbg1` — covers three EU regions for two server-type classes, so a typical capacity crunch is handled without operator intervention. The order keeps the historical project-default region (`hel1`) first so a fresh install without `SERVER_PREFERENCES` lands in the same datacenter as before this feature was added.
 
-You can see what the step picked in the workflow log:
+You can see what the step picked in the workflow log. The lines mirror the default preference list above (or whatever override is configured), one entry per pair, in priority order:
 
 ```
-✓ select-capacity: chose cx43:nbg1
-  ✗ 1. cx43:fsn1
-  → 2. cx43:nbg1
-  ✓ 3. cx43:hel1
-  ...
+✓ select-capacity: chose cx43:fsn1
+  ✗ 1. cx43:hel1
+  → 2. cx43:fsn1
+  ✓ 3. cx43:nbg1
+  ✓ 4. ccx33:hel1
+  ✓ 5. ccx33:fsn1
+  ✓ 6. ccx33:nbg1
 ```
 
 `✗` = sold out, `✓` = available, `→` = picked.

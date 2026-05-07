@@ -216,7 +216,12 @@ def test_select_capacity_uses_default_when_nothing_configured(
     err = capsys.readouterr().err
     assert "built-in default list" in err
     rewritten = path.read_text()
-    # First default pair is cx43:fsn1 (and it's available).
+    # First *available* default pair given the mocked availability:
+    # the actual default list starts with cx43:hel1, but the stub
+    # only marks cx43 available at fsn1, so the walk falls through
+    # past hel1 (unknown location) and picks fsn1. This pins the
+    # full preference-walk path even when the head of the list is
+    # absent from the API response. (PR #537 R4 #6 — comment fixed.)
     assert 'server_type = "cx43"' in rewritten
     assert 'server_location = "fsn1"' in rewritten
 
