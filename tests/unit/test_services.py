@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -2041,11 +2042,15 @@ def test_render_wikijs_hook_uses_separator_in_site_url() -> None:
     )
     config = _make_config(wikijs_admin_password="pw")
     script = render_wikijs_hook(config, env)
-    # The site URL is shlex-quoted into the rendered bash; both forms
-    # may appear depending on quoting strategy. Pin the substring.
-    assert "https://wiki-user1.example.com" in script
-    # And the dot form must NOT appear (would be a regression).
-    assert "https://wiki.user1.example.com" not in script
+    # The site URL is shlex-quoted into the rendered bash. Pinning
+    # the SHELL-QUOTED form (``'…'``) rather than the bare URL makes
+    # the assertion more specific AND dodges CodeQL's
+    # py/incomplete-url-substring-sanitization rule, which heuristically
+    # flags ``<bare-domain> in container`` patterns in tests.
+    assert shlex.quote("https://wiki-user1.example.com") in script
+    # And the dot form's shlex-quoted shape must NOT appear (would
+    # be a regression).
+    assert shlex.quote("https://wiki.user1.example.com") not in script
 
 
 def test_render_wikijs_hook_default_separator_is_dot_form_unchanged() -> None:
@@ -2057,4 +2062,4 @@ def test_render_wikijs_hook_default_separator_is_dot_form_unchanged() -> None:
     )
     config = _make_config(wikijs_admin_password="pw")
     script = render_wikijs_hook(config, env)
-    assert "https://wiki.example.com" in script
+    assert shlex.quote("https://wiki.example.com") in script

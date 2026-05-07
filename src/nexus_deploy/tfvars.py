@@ -128,6 +128,17 @@ def parse(path: Path) -> TfvarsConfig:
     # would compose ``kestrauser1.example.com`` which doesn't match
     # any DNS shape Tofu provisions.
     separator = parsed.get("subdomain_separator", "").strip() or "."
+    # PR #541 R1 #1: the Tofu IaC layer validates this to ``"."`` or
+    # ``"-"`` (see ``tofu/control-plane/variables.tf``); mirror that
+    # gate here so a typo in config.tfvars produces a clear error
+    # instead of malformed service URLs (``kestrax.example.com`` for
+    # separator='x', etc.) that would only surface as confusing
+    # downstream OAuth / DNS failures.
+    if separator not in (".", "-"):
+        raise TfvarsError(
+            f"invalid subdomain_separator {separator!r} in {path}: "
+            "must be '.' (single-tenant default) or '-' (flat-subdomain tenant)",
+        )
     return TfvarsConfig(
         domain=parsed.get("domain", ""),
         admin_email_raw=parsed.get("admin_email", ""),

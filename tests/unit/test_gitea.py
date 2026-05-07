@@ -3713,9 +3713,7 @@ def test_cli_dispatcher_routes_gitea_configure(
 def test_woodpecker_oauth_default_separator_dot_form_redirect_uri() -> None:
     """Default separator='.' produces ``https://woodpecker.<domain>/authorize``
     — byte-identical to pre-#540 contract."""
-    responses.add(
-        responses.GET, f"{BASE_URL}/api/v1/user/applications/oauth2", status=200, json=[]
-    )
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/user/applications/oauth2", status=200, json=[])
     captured: dict[str, object] = {}
 
     def _capture(request: Any) -> tuple[int, dict[str, str], str]:
@@ -3745,9 +3743,7 @@ def test_woodpecker_oauth_default_separator_dot_form_redirect_uri() -> None:
 def test_woodpecker_oauth_dash_separator_yields_flat_redirect_uri() -> None:
     """Multi-tenant fork with separator='-' produces a flat-subdomain
     redirect URI matching the DNS Tofu provisions for that tenant."""
-    responses.add(
-        responses.GET, f"{BASE_URL}/api/v1/user/applications/oauth2", status=200, json=[]
-    )
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/user/applications/oauth2", status=200, json=[])
     captured: dict[str, object] = {}
 
     def _capture(request: Any) -> tuple[int, dict[str, str], str]:

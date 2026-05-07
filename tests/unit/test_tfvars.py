@@ -406,3 +406,26 @@ def test_parse_subdomain_separator_with_inline_comment(tmp_path: Path) -> None:
         'domain = "example.com"\nsubdomain_separator = "-" # flat-subdomain tenant\n',
     )
     assert parse(fixture).subdomain_separator == "-"
+
+
+def test_parse_subdomain_separator_invalid_value_raises(tmp_path: Path) -> None:
+    """PR #541 R1 #1: separator must be '.' or '-' (matching the Tofu
+    IaC validation). Any other value raises TfvarsError so the
+    operator sees a clear failure instead of malformed service URLs."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com"\nsubdomain_separator = "x"\n',
+    )
+    with pytest.raises(TfvarsError, match=r"invalid subdomain_separator 'x'"):
+        parse(fixture)
+
+
+def test_parse_subdomain_separator_underscore_rejected(tmp_path: Path) -> None:
+    """Underscore is a tempting choice (looks separator-like) but
+    isn't valid DNS in this layer."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com"\nsubdomain_separator = "_"\n',
+    )
+    with pytest.raises(TfvarsError, match=r"must be '\.'.*'-'"):
+        parse(fixture)

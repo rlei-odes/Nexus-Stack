@@ -914,7 +914,9 @@ def test_pipeline_uses_separator_for_ssh_host_dns(
     # ssh_keygen_cleanup mock was called with the flat-form host name.
     cleanup_mock = setup_mocks["ssh_keygen_cleanup"]
     cleanup_mock.assert_called_once()
-    call_args = cleanup_mock.call_args.args
-    assert "ssh-user1.example.com" in call_args
-    # And NOT the dot form (would be a regression).
-    assert "ssh.user1.example.com" not in call_args
+    # Exact tuple equality (rather than membership) — pinned shape +
+    # also dodges CodeQL's py/incomplete-url-substring-sanitization
+    # rule which heuristically flags ``"<bare-domain>" in container``
+    # patterns even when the container is a fixture-controlled tuple.
+    assert cleanup_mock.call_args.args == ("ssh-user1.example.com", "1.2.3.4")
+    assert cleanup_mock.call_args.args[0] != "ssh.user1.example.com"
