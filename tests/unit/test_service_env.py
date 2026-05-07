@@ -189,8 +189,9 @@ def test_render_env_file_content_in_dict_order() -> None:
 def test_sftpgo_raises_on_empty_admin_password(
     full_config: NexusConfig, full_env: BootstrapEnv
 ) -> None:
-    """R-guard: empty admin password aborts the deploy. Mirrors
-    (see git history) fail-fast."""
+    """R-guard: empty admin password aborts the deploy with a
+    fail-fast ServiceEnvError rather than silently writing an
+    insecure config."""
     config = full_config.model_copy(update={"sftpgo_admin_password": ""})
     with pytest.raises(ServiceEnvError, match="SFTPGO_ADMIN_PASSWORD"):
         _render_sftpgo(config, full_env)

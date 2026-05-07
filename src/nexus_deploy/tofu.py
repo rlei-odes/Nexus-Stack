@@ -5,8 +5,10 @@ with explicit per-call default handling: callers pass ``default=...``
 to opt into the silent-fallback semantic, omit it to require a
 successful read.
 
-Also exports :func:`state_list_ok` for the pre-flight ``tofu state
-list`` check, and :func:`load_r2_credentials` +
+``TofuRunner`` also carries :meth:`TofuRunner.state_list_ok` and
+:meth:`TofuRunner.diagnose_state` for the pre-flight ``tofu state
+list`` check the pipeline runs before any output reads. Outside the
+class, the module exports :func:`load_r2_credentials` +
 :class:`R2Credentials` for parsing ``tofu/.r2-credentials`` (the
 shell-format AWS-creds file the R2 backend expects).
 

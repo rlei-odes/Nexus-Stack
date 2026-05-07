@@ -673,7 +673,6 @@ def test_render_windmill_hook_secures_default_admin_account() -> None:
     """R-security (Step 4): MUST rotate admin@windmill.dev password
     away from the long-lived WINDMILL_SUPERADMIN_SECRET. Without
     this, anyone with the secret could log in as the default admin.
-    Legacy (see git history).
 
     Plus: rotation HTTP status must be CHECKED, not silenced. A
     failed rotation (wrong secret, API error) must surface as
@@ -760,8 +759,8 @@ def test_render_sftpgo_hook_dir_prep_inside_container() -> None:
 
 def test_render_sftpgo_hook_hetzner_folder_gated_on_all_5_fields() -> None:
     """Hetzner virtual folder gated on all 5 HZ_* fields (bucket + server
-    + region + access_key + secret_key) — matches legacy (see git history).
-    A 3-field gate would attempt the POST with empty creds and fail."""
+    + region + access_key + secret_key). A 3-field gate would attempt
+    the POST with empty creds and fail."""
     script = render_sftpgo_hook(_make_config(), _make_env())
     for var in (
         "SFTPGO_HZ_BUCKET",

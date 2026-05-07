@@ -724,7 +724,7 @@ def test_cli_seed_missing_token_returns_2() -> None:
 
 
 def test_cli_seed_missing_root_returns_zero() -> None:
-    """Missing seed dir is non-fatal (mirrors (see git history) early-return)."""
+    """Missing seed dir is non-fatal — early-return with rc=0."""
     rc, _, err = _run_cli(
         ["--repo", "admin/ws", "--root", "/does/not/exist"],
         env={"GITEA_TOKEN": "t"},

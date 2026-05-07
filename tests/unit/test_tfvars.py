@@ -237,7 +237,7 @@ def test_derive_first_comma_entry_used(tmp_path: Path) -> None:
 def test_derive_trims_whitespace_from_emails(tmp_path: Path) -> None:
     """Self-provisioned tfvars commonly have leading spaces inside
     quoted values. Gitea/Windmill/Wiki.js validators reject those, so
-    derive() must trim. Mirrors the legacy bash sed at (see git history)."""
+    derive() trims both halves before further processing."""
     config = TfvarsConfig(
         domain="example.com",
         admin_email_raw="   admin@example.com   ",

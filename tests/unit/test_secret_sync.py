@@ -85,7 +85,10 @@ def test_stack_target_kestra_paths() -> None:
 
 
 def test_stack_target_kestra_begin_marker_matches_legacy() -> None:
-    """Kestra marker matches legacy (see git history) wording byte-for-byte."""
+    """Kestra's BEGIN marker is load-bearing — the in-place sed
+    replacement on the server greps for this exact wording, so any
+    drift would silently break secret-sync runs against existing
+    deploys. Pinned byte-for-byte."""
     assert StackTarget(name="kestra").begin_marker == (
         "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
     )
@@ -715,7 +718,8 @@ def test_render_kestra_snapshot(snapshot: SnapshotAssertion) -> None:
     - KEY_PREFIX=SECRET_, USE_B64=1
     - ENV_FILE=.../kestra/.env (NOT .infisical.env)
     - LEGACY_ENV='' (no separate legacy file)
-    - the begin-marker matches legacy (see git history) byte-for-byte
+    - the BEGIN marker wording is pinned byte-for-byte (see
+      ``test_stack_target_kestra_begin_marker_matches_legacy``)
     """
     script = render_remote_script(
         target=_kestra_target(),

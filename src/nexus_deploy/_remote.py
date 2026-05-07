@@ -7,8 +7,10 @@ which is ALSO subprocess-based (it spawns ``ssh`` per call; see
 two modules differ in ergonomics and intent, not transport:
 ``_remote`` is a thin fire-and-forget pair of free functions used
 by the early-phase setup helpers; ``SSHClient`` carries the
-orchestrator-side conveniences (``run_script`` with stdin,
-``port_forward``, ``shutdown_remote``) that the later phases need.
+orchestrator-side conveniences (``run`` and ``run_script`` with
+stdin, ``rsync_to`` for directory pushes, ``port_forward`` for
+tunnelled local-to-remote port mappings) that the later phases
+need.
 
 Every consumer here uses the system ``ssh`` config alias ``nexus``,
 which the spin-up workflow's "Setup SSH config" step writes. That
