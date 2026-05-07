@@ -2019,3 +2019,42 @@ def test_run_admin_setups_dispatches_bash_and_python_hooks_together() -> None:
     names = {h.name for h in result.hooks}
     assert names == {"portainer", "filestash"}
     assert result.is_success
+
+
+# ---------------------------------------------------------------------------
+# SUBDOMAIN_SEPARATOR — Issue #540 (wiki site_url)
+# ---------------------------------------------------------------------------
+
+
+def test_render_wikijs_hook_uses_separator_in_site_url() -> None:
+    """siteUrl in the rendered GraphQL mutation honors
+    BootstrapEnv.subdomain_separator. With separator='-' the
+    rendered URL is ``wiki-user1.example.com``, not
+    ``wiki.user1.example.com``. Without this fix, Wiki.js would
+    redirect users to a host that doesn't resolve under
+    flat-subdomain tenants."""
+    env = BootstrapEnv(
+        domain="user1.example.com",
+        admin_email="user1@example.com",
+        gitea_user_email="user1@example.com",
+        subdomain_separator="-",
+    )
+    config = _make_config(wikijs_admin_password="pw")
+    script = render_wikijs_hook(config, env)
+    # The site URL is shlex-quoted into the rendered bash; both forms
+    # may appear depending on quoting strategy. Pin the substring.
+    assert "https://wiki-user1.example.com" in script
+    # And the dot form must NOT appear (would be a regression).
+    assert "https://wiki.user1.example.com" not in script
+
+
+def test_render_wikijs_hook_default_separator_is_dot_form_unchanged() -> None:
+    """Default-tenant render is byte-identical to pre-#540."""
+    env = BootstrapEnv(
+        domain="example.com",
+        admin_email="admin@example.com",
+        gitea_user_email="user@example.com",
+    )
+    config = _make_config(wikijs_admin_password="pw")
+    script = render_wikijs_hook(config, env)
+    assert "https://wiki.example.com" in script

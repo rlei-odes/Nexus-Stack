@@ -566,6 +566,7 @@ class Orchestrator:
                     domain=domain,
                     gitea_token=self.state.gitea_token,
                     admin_username=self.config.admin_username or "admin",
+                    subdomain_separator=self.bootstrap_env.subdomain_separator,
                 )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return PhaseResult(

@@ -488,3 +488,47 @@ def test_shlex_quote_used() -> None:
     line = next(line for line in rendered.splitlines() if line.startswith("KESTRA_PASS="))
     # shlex.quote wraps spaces in single quotes
     assert line == f"KESTRA_PASS={shlex.quote('with spaces')}"
+
+
+# ---------------------------------------------------------------------------
+# service_host (Issue #540)
+# ---------------------------------------------------------------------------
+
+
+def test_service_host_default_separator_yields_dot_form() -> None:
+    """Single-tenant default produces ``<prefix>.<domain>``."""
+    from nexus_deploy.config import service_host
+
+    assert service_host("kestra", "example.com") == "kestra.example.com"
+    assert service_host("nocodb", "example.com", ".") == "nocodb.example.com"
+
+
+def test_service_host_dash_separator_yields_flat_form() -> None:
+    """Multi-tenant fork with separator='-' produces flat subdomain."""
+    from nexus_deploy.config import service_host
+
+    assert service_host("kestra", "user1.example.com", "-") == "kestra-user1.example.com"
+    assert service_host("ssh", "user1.example.com", "-") == "ssh-user1.example.com"
+    # The prefix itself is unchanged regardless of separator length:
+    # "ccx33-user1.example.com" stays compact (no operator confusion
+    # over multi-char prefixes).
+    assert service_host("ccx33", "user1.example.com", "-") == "ccx33-user1.example.com"
+
+
+def test_service_host_empty_domain_returns_just_prefix() -> None:
+    """No domain → return prefix alone (defensive — every legitimate
+    caller has a domain by the time URLs are built)."""
+    from nexus_deploy.config import service_host
+
+    assert service_host("kestra", "") == "kestra"
+    assert service_host("kestra", "", "-") == "kestra"
+
+
+def test_service_host_does_not_inject_separator_when_domain_empty() -> None:
+    """Even with separator='-', empty domain must NOT produce
+    ``kestra-`` (that would be a stray dangling separator the
+    downstream URL parser would mis-interpret)."""
+    from nexus_deploy.config import service_host
+
+    assert service_host("kestra", "", "-") == "kestra"
+    assert "kestra-" not in service_host("kestra", "", "-")

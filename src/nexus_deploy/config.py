@@ -316,3 +316,34 @@ class NexusConfig(BaseModel):
                 value = fallback
             lines.append(f"{bash_var}={shlex.quote(value)}")
         return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Service hostname composition (Issue #540)
+# ---------------------------------------------------------------------------
+
+
+def service_host(prefix: str, domain: str, separator: str = ".") -> str:
+    """Compose a service hostname under the configured subdomain separator.
+
+    Standard single-tenant installs use ``separator='.'`` and produce
+    the dot form ``<prefix>.<domain>``. Multi-tenant forks (e.g.
+    Nexus-Stack-for-Education) provision tenants under a shared base
+    domain via flat subdomains: setting ``separator='-'`` on a tenant
+    whose ``DOMAIN`` is ``user1.example.com`` produces
+    ``<prefix>-user1.example.com`` — which matches the DNS records
+    Tofu provisions for that tenant.
+
+    Examples::
+
+        service_host("kestra", "example.com")            # → "kestra.example.com"
+        service_host("kestra", "user1.example.com", "-") # → "kestra-user1.example.com"
+        service_host("ssh",    "example.com")            # → "ssh.example.com"
+
+    Empty / falsy ``domain`` returns just ``prefix`` (the caller is
+    expected to guard against this — every legitimate caller has a
+    domain by the time service URLs are built).
+    """
+    if not domain:
+        return prefix
+    return f"{prefix}{separator}{domain}"

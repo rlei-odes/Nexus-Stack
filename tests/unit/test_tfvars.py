@@ -345,3 +345,64 @@ def test_gitea_identity_frozen() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         identity.admin_email = "other"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# subdomain_separator parsing (Issue #540)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_subdomain_separator_default_is_dot(tmp_path: Path) -> None:
+    """Missing key in config.tfvars → default to '.' (single-tenant
+    standard). Backward-compatible with every existing operator
+    config that pre-dates the feature."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com"\n',
+    )
+    assert parse(fixture).subdomain_separator == "."
+
+
+def test_parse_subdomain_separator_dash(tmp_path: Path) -> None:
+    """Multi-tenant fork: separator='-' parsed verbatim."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "user1.example.com"\nsubdomain_separator = "-"\n',
+    )
+    config = parse(fixture)
+    assert config.domain == "user1.example.com"
+    assert config.subdomain_separator == "-"
+
+
+def test_parse_subdomain_separator_empty_falls_back_to_dot(tmp_path: Path) -> None:
+    """Explicit empty string in tfvars (``subdomain_separator = \"\"``)
+    falls back to '.' — an empty separator would compose
+    ``kestrauser1.example.com`` which doesn't match any provisioned
+    DNS shape."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com"\nsubdomain_separator = ""\n',
+    )
+    assert parse(fixture).subdomain_separator == "."
+
+
+def test_parse_subdomain_separator_whitespace_only_falls_back_to_dot(
+    tmp_path: Path,
+) -> None:
+    """``subdomain_separator = \"  \"`` — whitespace-only also falls
+    back to '.' since strip() reduces it to empty."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com"\nsubdomain_separator = "  "\n',
+    )
+    assert parse(fixture).subdomain_separator == "."
+
+
+def test_parse_subdomain_separator_with_inline_comment(tmp_path: Path) -> None:
+    """Trailing HCL comment after the value still parses (matches the
+    existing comment-handling for domain / admin_email)."""
+    fixture = _write_tfvars(
+        tmp_path / "config.tfvars",
+        'domain = "example.com"\nsubdomain_separator = "-" # flat-subdomain tenant\n',
+    )
+    assert parse(fixture).subdomain_separator == "-"

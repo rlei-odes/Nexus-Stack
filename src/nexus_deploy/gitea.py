@@ -61,7 +61,7 @@ from typing import Literal
 
 import requests
 
-from nexus_deploy.config import NexusConfig
+from nexus_deploy.config import NexusConfig, service_host
 from nexus_deploy.ssh import SSHClient
 
 _CONNECT_TIMEOUT_S: float = 3.0
@@ -1444,6 +1444,7 @@ def run_woodpecker_oauth_setup(
     domain: str,
     gitea_token: str,
     admin_username: str,
+    subdomain_separator: str = ".",
 ) -> tuple[OAuthAppResult | None, str, bool]:
     """End-to-end Woodpecker CI OAuth-app provisioning in Gitea.
 
@@ -1587,7 +1588,7 @@ def run_woodpecker_oauth_setup(
                 )
             rotation_started = True
 
-    redirect_uri = f"https://woodpecker.{domain}/authorize"
+    redirect_uri = f"https://{service_host('woodpecker', domain, subdomain_separator)}/authorize"
     try:
         return (
             client.create_oauth_app(

@@ -1147,6 +1147,10 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
     gitea_token = os.environ.get("GITEA_TOKEN") or ""
     admin_username = os.environ.get("ADMIN_USERNAME") or "admin"
     ssh_host = os.environ.get("GITEA_HOST") or "nexus"
+    # Issue #540: SUBDOMAIN_SEPARATOR threaded through to the redirect-URI
+    # builder. ``"."`` (default) yields ``woodpecker.<domain>/authorize``;
+    # multi-tenant forks set ``"-"`` for ``woodpecker-<domain>/authorize``.
+    subdomain_separator = (os.environ.get("SUBDOMAIN_SEPARATOR") or ".").strip() or "."
 
     missing: list[str] = []
     if not domain:
@@ -1175,6 +1179,7 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
                 domain=domain,
                 gitea_token=gitea_token,
                 admin_username=admin_username,
+                subdomain_separator=subdomain_separator,
             )
     except SSHError as exc:
         print(f"gitea woodpecker-oauth: ssh tunnel failed: {exc}", file=sys.stderr)

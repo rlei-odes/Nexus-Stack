@@ -95,7 +95,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from nexus_deploy import _remote
-from nexus_deploy.config import NexusConfig
+from nexus_deploy.config import NexusConfig, service_host
 from nexus_deploy.infisical import BootstrapEnv
 
 _RESULT_LINE_RE = re.compile(
@@ -916,7 +916,7 @@ def render_wikijs_hook(config: NexusConfig, env: BootstrapEnv) -> str:
         return 'echo "RESULT hook=wikijs status=skipped-not-ready"\n'
     password_q = shlex.quote(password)
     email_q = shlex.quote(email)
-    site_url_q = shlex.quote(f"https://wiki.{domain}")
+    site_url_q = shlex.quote(f"https://{service_host('wiki', domain, env.subdomain_separator)}")
     wait = _render_wait_healthy(
         name="wikijs",
         url="http://localhost:3005/healthz",
