@@ -3702,3 +3702,69 @@ def test_cli_dispatcher_routes_gitea_configure(
     rc = main()
     assert rc == 2  # --bogus rejected
     assert "gitea configure" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# SUBDOMAIN_SEPARATOR — Issue #540 (woodpecker oauth redirect_uri)
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_woodpecker_oauth_default_separator_dot_form_redirect_uri() -> None:
+    """Default separator='.' produces ``https://woodpecker.<domain>/authorize``
+    — byte-identical to pre-#540 contract."""
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/user/applications/oauth2", status=200, json=[])
+    captured: dict[str, object] = {}
+
+    def _capture(request: Any) -> tuple[int, dict[str, str], str]:
+        body = json.loads(request.body or "{}")
+        captured["redirect_uris"] = body.get("redirect_uris")
+        return (
+            201,
+            {},
+            json.dumps({"client_id": "id", "client_secret": "sec"}),
+        )
+
+    responses.add_callback(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        callback=_capture,
+    )
+    run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="example.com",
+        gitea_token="tok",
+        admin_username="admin",
+    )
+    assert captured["redirect_uris"] == ["https://woodpecker.example.com/authorize"]
+
+
+@responses.activate
+def test_woodpecker_oauth_dash_separator_yields_flat_redirect_uri() -> None:
+    """Multi-tenant fork with separator='-' produces a flat-subdomain
+    redirect URI matching the DNS Tofu provisions for that tenant."""
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/user/applications/oauth2", status=200, json=[])
+    captured: dict[str, object] = {}
+
+    def _capture(request: Any) -> tuple[int, dict[str, str], str]:
+        body = json.loads(request.body or "{}")
+        captured["redirect_uris"] = body.get("redirect_uris")
+        return (
+            201,
+            {},
+            json.dumps({"client_id": "id", "client_secret": "sec"}),
+        )
+
+    responses.add_callback(
+        responses.POST,
+        f"{BASE_URL}/api/v1/user/applications/oauth2",
+        callback=_capture,
+    )
+    run_woodpecker_oauth_setup(
+        base_url=BASE_URL,
+        domain="user1.example.com",
+        gitea_token="tok",
+        admin_username="admin",
+        subdomain_separator="-",
+    )
+    assert captured["redirect_uris"] == ["https://woodpecker-user1.example.com/authorize"]

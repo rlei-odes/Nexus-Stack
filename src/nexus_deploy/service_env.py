@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from nexus_deploy.config import NexusConfig
+from nexus_deploy.config import NexusConfig, service_host
 from nexus_deploy.infisical import BootstrapEnv
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def _render_kestra(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
             "KESTRA_ADMIN_USER": e.admin_email or "",
             "KESTRA_ADMIN_PASSWORD": c.kestra_admin_password or "",
             "KESTRA_DB_PASSWORD": c.kestra_db_password or "",
-            "KESTRA_URL": f"https://kestra.{e.domain or ''}",
+            "KESTRA_URL": f"https://{service_host('kestra', e.domain or '', e.subdomain_separator)}",
         },
     )
 
@@ -236,7 +236,7 @@ def _render_cloudbeaver(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     return RenderedEnv(
         env_vars={
             "CB_SERVER_NAME": "Nexus CloudBeaver",
-            "CB_SERVER_URL": f"https://cloudbeaver.{e.domain or ''}",
+            "CB_SERVER_URL": f"https://{service_host('cloudbeaver', e.domain or '', e.subdomain_separator)}",
             "CB_ADMIN_NAME": "nexus-cloudbeaver",
             "CB_ADMIN_PASSWORD": c.cloudbeaver_admin_password or "",
         },
@@ -284,7 +284,8 @@ def _render_redpanda_console(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 def _render_hoppscotch(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     domain = e.domain or ""
     db_pass = c.hoppscotch_db_password or ""
-    base = f"https://hoppscotch.{domain}"
+    host = service_host("hoppscotch", domain, e.subdomain_separator)
+    base = f"https://{host}"
     return RenderedEnv(
         env_vars={
             "DATABASE_URL": (
@@ -300,7 +301,7 @@ def _render_hoppscotch(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
             "VITE_SHORTCODE_BASE_URL": base,
             "VITE_ADMIN_URL": f"{base}/admin",
             "VITE_BACKEND_GQL_URL": f"{base}/backend/graphql",
-            "VITE_BACKEND_WS_URL": f"wss://hoppscotch.{domain}/backend/graphql",
+            "VITE_BACKEND_WS_URL": f"wss://{host}/backend/graphql",
             "VITE_BACKEND_API_URL": f"{base}/backend/v1",
             "VITE_ALLOWED_AUTH_PROVIDERS": "EMAIL",
             "MAILER_USE_CUSTOM_CONFIGS": "true",
@@ -414,7 +415,7 @@ def _render_prefect(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     return RenderedEnv(
         env_vars={
             "PREFECT_DB_PASSWORD": c.prefect_db_password or "",
-            "PREFECT_UI_API_URL": f"https://prefect.{e.domain or ''}/api",
+            "PREFECT_UI_API_URL": f"https://{service_host('prefect', e.domain or '', e.subdomain_separator)}/api",
             "R2_ENDPOINT": c.r2_data_endpoint or "",
             "R2_ACCESS_KEY": c.r2_data_access_key or "",
             "R2_SECRET_KEY": c.r2_data_secret_key or "",
@@ -575,7 +576,14 @@ def _render_lakefs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
             f"postgres://nexus-lakefs:{db_pass}@lakefs-db:5432/lakefs?sslmode=disable"
         ),
         "LAKEFS_AUTH_ENCRYPT_SECRET_KEY": c.lakefs_encrypt_secret or "",
-        "LAKEFS_GATEWAYS_S3_DOMAIN_NAME": f"s3.lakefs.{domain}",
+        # ``s3.`` is the sub-prefix lakefs uses for virtual-host-style
+        # S3 routing; it's prepended to whatever the operator-facing
+        # ``lakefs`` hostname resolves to. For dot-form tenants the
+        # full hostname is ``s3.lakefs.example.com``; for flat-
+        # subdomain tenants it's ``s3.lakefs-user1.example.com``.
+        "LAKEFS_GATEWAYS_S3_DOMAIN_NAME": (
+            f"s3.{service_host('lakefs', domain, e.subdomain_separator)}"
+        ),
         "POSTGRES_PASSWORD": db_pass,
     }
     if has_s3:
@@ -878,7 +886,7 @@ def _render_nocodb(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
             "NC_AUTH_JWT_SECRET": c.nocodb_jwt_secret or "",
             "NC_ADMIN_EMAIL": e.admin_email or "",
             "NC_ADMIN_PASSWORD": c.nocodb_admin_password or "",
-            "NC_PUBLIC_URL": f"https://nocodb.{e.domain or ''}",
+            "NC_PUBLIC_URL": f"https://{service_host('nocodb', e.domain or '', e.subdomain_separator)}",
             "NOCODB_DB_PASSWORD": db_pass,
         },
     )

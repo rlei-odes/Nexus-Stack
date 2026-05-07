@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Literal
 
 from nexus_deploy import _remote
-from nexus_deploy.config import NexusConfig
+from nexus_deploy.config import NexusConfig, service_host
 
 # Server-side Infisical endpoint.
 _INFISICAL_HOST = "localhost"
@@ -77,6 +77,14 @@ class BootstrapEnv:
     woodpecker_gitea_client: str | None = None
     woodpecker_gitea_secret: str | None = None
     ssh_private_key_base64: str | None = None
+    # Issue #540: separator used to compose service hostnames under
+    # DOMAIN. ``"."`` (default) yields ``kestra.example.com``;
+    # multi-tenant forks set ``"-"`` to yield ``kestra-user1.example.com``
+    # which matches the flat-subdomain DNS records Tofu provisions for
+    # that tenant. Always a string (never None) because downstream
+    # f-strings always interpolate it; the tfvars parser normalises
+    # an empty value to ``"."``.
+    subdomain_separator: str = "."
 
 
 @dataclass(frozen=True)
@@ -867,7 +875,8 @@ def compute_folders(config: NexusConfig, env: BootstrapEnv) -> list[FolderSpec]:
     )
     repo_owner = env.gitea_repo_owner or admin_username
     gitea_repo_url = (
-        f"https://git.{env.domain}/{repo_owner}/{repo_name}.git"
+        f"https://{service_host('git', env.domain, env.subdomain_separator)}"
+        f"/{repo_owner}/{repo_name}.git"
         if env.domain and repo_owner and repo_name
         else None
     )

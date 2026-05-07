@@ -42,14 +42,15 @@ from pathlib import Path
 from nexus_deploy import setup as _setup
 from nexus_deploy import tfvars as _tfvars
 from nexus_deploy import tofu as _tofu
-from nexus_deploy.config import ConfigError, NexusConfig
+from nexus_deploy.config import ConfigError, NexusConfig, service_host
 from nexus_deploy.infisical import BootstrapEnv
 from nexus_deploy.orchestrator import Orchestrator, OrchestratorResult
 from nexus_deploy.ssh import SSHClient
 
-# Cloudflare-Tunnel SSH endpoint; built as ``ssh.${DOMAIN}``,
-# matching the shape used by setup_ssh_config.
-_SSH_HOST_DNS_TEMPLATE = "ssh.{domain}"
+# Cloudflare-Tunnel SSH endpoint. Built via :func:`service_host` so
+# multi-tenant forks with ``subdomain_separator='-'`` get the flat
+# form ``ssh-user1.example.com`` instead of ``ssh.user1.example.com``,
+# matching the DNS records Tofu provisions for that tenant.
 
 
 class PipelineError(Exception):
@@ -310,7 +311,7 @@ def run_pipeline(
     enabled_services: list[str] = [str(s) for s in enabled_services_raw]
 
     # 5. SSH known_hosts cleanup — best-effort, never fatal.
-    ssh_host_dns = _SSH_HOST_DNS_TEMPLATE.format(domain=tfvars_config.domain)
+    ssh_host_dns = service_host("ssh", tfvars_config.domain, tfvars_config.subdomain_separator)
     _ssh_keygen_cleanup(ssh_host_dns, server_ip)
 
     # 6-10. Setup chain + orchestrator. Single ExitStack owns the
@@ -369,6 +370,7 @@ def run_pipeline(
             gitea_user_username=identity.gitea_user_username or None,
             om_principal_domain=identity.om_principal_domain or None,
             ssh_private_key_base64=_b64_encode_ssh_key(options.ssh_private_key_content),
+            subdomain_separator=tfvars_config.subdomain_separator,
         )
         gh_mirror_repos_list = (
             [s.strip() for s in (options.gh_mirror_repos or "").split(",") if s.strip()]

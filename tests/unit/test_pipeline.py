@@ -844,3 +844,79 @@ def test_ssh_keygen_cleanup_swallows_timeout(
     monkeypatch.setattr("nexus_deploy.pipeline.subprocess.run", _hang)
     # Must not raise.
     _ssh_keygen_cleanup("ssh.example.com")
+
+
+# ---------------------------------------------------------------------------
+# SUBDOMAIN_SEPARATOR — Issue #540 (SSH host + BootstrapEnv threading)
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_passes_subdomain_separator_to_bootstrap_env(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    mock_orchestrator: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When config.tfvars sets ``subdomain_separator = \"-\"``, the
+    pipeline must thread that into the BootstrapEnv that the
+    Orchestrator sees. Without this, the ``woodpecker-oauth`` phase
+    + every service_env render would silently fall back to the dot
+    form (default field value)."""
+    # Add the separator line to the fixture's config.tfvars.
+    tfvars_path = project_root / "tofu" / "stack" / "config.tfvars"
+    tfvars_path.write_text(
+        tfvars_path.read_text(encoding="utf-8") + 'subdomain_separator = "-"\n',
+        encoding="utf-8",
+    )
+    captured_env: dict[str, Any] = {}
+
+    def _capture_orchestrator(**kwargs: Any) -> MagicMock:
+        captured_env["bootstrap_env"] = kwargs.get("bootstrap_env")
+        return mock_orchestrator
+
+    monkeypatch.setattr("nexus_deploy.pipeline.Orchestrator", _capture_orchestrator)
+    run_pipeline(
+        project_root=project_root,
+        options=PipelineOptions(),
+        tofu_runner=fake_tofu_runner,
+    )
+    bs_env = captured_env["bootstrap_env"]
+    assert bs_env is not None
+    assert bs_env.subdomain_separator == "-"
+
+
+def test_pipeline_uses_separator_for_ssh_host_dns(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    mock_orchestrator: MagicMock,
+) -> None:
+    """SSH host known_hosts cleanup runs against the
+    separator-aware DNS name. Default separator='.' yields
+    ``ssh.example.com`` (verified by the existing fixture's
+    domain field); flat-tenant separator='-' yields
+    ``ssh-user1.example.com`` matching the Cloudflare Tunnel
+    DNS record Tofu provisions for that tenant."""
+    tfvars_path = project_root / "tofu" / "stack" / "config.tfvars"
+    tfvars_path.write_text(
+        'domain = "user1.example.com"\n'
+        'admin_email = "user1@example.com"\n'
+        'user_email = "user1@example.com"\n'
+        'subdomain_separator = "-"\n',
+        encoding="utf-8",
+    )
+    run_pipeline(
+        project_root=project_root,
+        options=PipelineOptions(),
+        tofu_runner=fake_tofu_runner,
+    )
+    # ssh_keygen_cleanup mock was called with the flat-form host name.
+    cleanup_mock = setup_mocks["ssh_keygen_cleanup"]
+    cleanup_mock.assert_called_once()
+    # Exact tuple equality (rather than membership) — pinned shape +
+    # also dodges CodeQL's py/incomplete-url-substring-sanitization
+    # rule which heuristically flags ``"<bare-domain>" in container``
+    # patterns even when the container is a fixture-controlled tuple.
+    assert cleanup_mock.call_args.args == ("ssh-user1.example.com", "1.2.3.4")
+    assert cleanup_mock.call_args.args[0] != "ssh.user1.example.com"

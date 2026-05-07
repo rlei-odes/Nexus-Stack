@@ -49,15 +49,23 @@ class TfvarsError(Exception):
 class TfvarsConfig:
     """Raw values from config.tfvars.
 
-    All three fields default to "" so a missing key in the file
-    parses to an empty string rather than raising. The pipeline's
-    own gates decide which fields are required (e.g. ``domain``
-    must be non-empty; ``user_email`` is optional).
+    All fields default to safe defaults (empty string for the email
+    pair, ``"."`` for the subdomain separator) so a missing key in
+    the file parses cleanly rather than raising. The pipeline's own
+    gates decide which fields are required (e.g. ``domain`` must
+    be non-empty; ``user_email`` is optional).
+
+    ``subdomain_separator`` is the join character used to compose
+    service hostnames under the configured ``DOMAIN``. Single-tenant
+    installs default to ``"."`` and produce ``kestra.example.com``;
+    multi-tenant forks set it to ``"-"`` and produce
+    ``kestra-user1.example.com`` (Issue #540).
     """
 
     domain: str = ""
     admin_email_raw: str = ""
     user_email_raw: str = ""
+    subdomain_separator: str = "."
 
 
 @dataclass(frozen=True)
@@ -89,7 +97,7 @@ class GiteaIdentity:
 # the same shapes correctly because it captured between quotes
 # regardless of trailing text).
 _TFVARS_LINE = re.compile(
-    r"^\s*(?P<key>domain|admin_email|user_email)\s*=\s*"
+    r"^\s*(?P<key>domain|admin_email|user_email|subdomain_separator)\s*=\s*"
     r'"(?P<value>[^"\n\r]*)"\s*'
     r"(?:(?:#|//).*|/\*.*?\*/\s*)?$",
     re.MULTILINE,
@@ -114,10 +122,28 @@ def parse(path: Path) -> TfvarsConfig:
     for match in _TFVARS_LINE.finditer(text):
         parsed[match.group("key")] = match.group("value")
 
+    # ``subdomain_separator`` defaults to ``"."`` (the single-tenant
+    # standard); a missing key keeps that default. An explicit empty
+    # string also falls back to ``"."`` because an empty separator
+    # would compose ``kestrauser1.example.com`` which doesn't match
+    # any DNS shape Tofu provisions.
+    separator = parsed.get("subdomain_separator", "").strip() or "."
+    # PR #541 R1 #1: the Tofu IaC layer validates this to ``"."`` or
+    # ``"-"`` (see ``tofu/control-plane/variables.tf``); mirror that
+    # gate here so a typo in config.tfvars produces a clear error
+    # instead of malformed service URLs (``kestrax.example.com`` for
+    # separator='x', etc.) that would only surface as confusing
+    # downstream OAuth / DNS failures.
+    if separator not in (".", "-"):
+        raise TfvarsError(
+            f"invalid subdomain_separator {separator!r} in {path}: "
+            "must be '.' (single-tenant default) or '-' (flat-subdomain tenant)",
+        )
     return TfvarsConfig(
         domain=parsed.get("domain", ""),
         admin_email_raw=parsed.get("admin_email", ""),
         user_email_raw=parsed.get("user_email", ""),
+        subdomain_separator=separator,
     )
 
 

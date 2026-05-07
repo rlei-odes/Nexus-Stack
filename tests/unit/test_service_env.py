@@ -1060,3 +1060,77 @@ def test_cli_service_env_happy_path(
     out = capsys.readouterr().out
     assert "rendered=1" in out
     assert (tmp_path / "postgres" / ".env").exists()
+
+
+# ---------------------------------------------------------------------------
+# SUBDOMAIN_SEPARATOR — Issue #540
+#
+# Multi-tenant forks (Nexus-Stack-for-Education etc.) provision
+# tenants under a shared base domain via flat subdomains. With
+# ``subdomain_separator='-'`` and ``DOMAIN='user1.example.com'``,
+# the rendered service URLs must compose to ``kestra-user1.example.com``
+# etc. so they match the DNS records Tofu provisions.
+# ---------------------------------------------------------------------------
+
+
+def _flat_env() -> BootstrapEnv:
+    """A BootstrapEnv configured for a flat-subdomain tenant."""
+    return BootstrapEnv(
+        domain="user1.example.com",
+        admin_email="user1@example.com",
+        gitea_user_email="user1@example.com",
+        gitea_user_username="user1",
+        subdomain_separator="-",
+    )
+
+
+def test_separator_dash_kestra_url(full_config: NexusConfig) -> None:
+    """KESTRA_URL composes to ``kestra-user1.example.com`` under
+    flat-subdomain separator. Without the fix, OAuth callbacks /
+    embedded iframe URLs would point at the wrong host."""
+    from nexus_deploy.service_env import _render_kestra
+
+    rendered = _render_kestra(full_config, _flat_env())
+    assert rendered.env_vars["KESTRA_URL"] == "https://kestra-user1.example.com"
+
+
+def test_separator_dash_cloudbeaver_url(full_config: NexusConfig) -> None:
+    from nexus_deploy.service_env import _render_cloudbeaver
+
+    rendered = _render_cloudbeaver(full_config, _flat_env())
+    assert rendered.env_vars["CB_SERVER_URL"] == "https://cloudbeaver-user1.example.com"
+
+
+def test_separator_dash_hoppscotch_urls(full_config: NexusConfig) -> None:
+    """Hoppscotch derives multiple URL fields from a shared `host`;
+    all of them must use the same flat-subdomain form."""
+    from nexus_deploy.service_env import _render_hoppscotch
+
+    rendered = _render_hoppscotch(full_config, _flat_env())
+    expected_host = "hoppscotch-user1.example.com"
+    assert rendered.env_vars["VITE_BASE_URL"] == f"https://{expected_host}"
+    assert rendered.env_vars["REDIRECT_URL"] == f"https://{expected_host}"
+    assert rendered.env_vars["VITE_BACKEND_WS_URL"] == f"wss://{expected_host}/backend/graphql"
+
+
+def test_separator_dash_prefect_url(full_config: NexusConfig) -> None:
+    from nexus_deploy.service_env import _render_prefect
+
+    rendered = _render_prefect(full_config, _flat_env())
+    assert rendered.env_vars["PREFECT_UI_API_URL"] == "https://prefect-user1.example.com/api"
+
+
+def test_separator_dash_nocodb_url(full_config: NexusConfig) -> None:
+    from nexus_deploy.service_env import _render_nocodb
+
+    rendered = _render_nocodb(full_config, _flat_env())
+    assert rendered.env_vars["NC_PUBLIC_URL"] == "https://nocodb-user1.example.com"
+
+
+def test_separator_dash_lakefs_s3_domain(full_config: NexusConfig) -> None:
+    """LakeFS's S3 gateway domain composes ``s3.<lakefs-host>``.
+    With separator='-' the lakefs hostname itself becomes flat;
+    the ``s3.`` sub-prefix stays as-is. Result:
+    ``s3.lakefs-user1.example.com``."""
+    rendered = _render_lakefs(full_config, _flat_env())
+    assert rendered.env_vars["LAKEFS_GATEWAYS_S3_DOMAIN_NAME"] == "s3.lakefs-user1.example.com"
