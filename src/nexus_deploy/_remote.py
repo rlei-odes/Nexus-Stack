@@ -1,12 +1,14 @@
 """Subprocess primitives for talking to the nexus server.
 
 Plain ``subprocess.run`` wrappers around ``ssh nexus <cmd>`` and
-``rsync … nexus:…``. Coexists with :mod:`nexus_deploy.ssh.SSHClient`
-(paramiko-backed, persistent connection, port-forwarding, SFTP):
-SSHClient is preferred for orchestrator phases that need a long-
-lived session or port-forward; ``_remote`` stays for one-shot
-fire-and-forget calls where spawning a fresh ssh process is cheaper
-and clearer than reusing a paramiko connection.
+``rsync … nexus:…``. Coexists with :class:`nexus_deploy.ssh.SSHClient`,
+which is ALSO subprocess-based (it spawns ``ssh`` per call; see
+``ssh.py`` — no paramiko, no persistent connection, no SFTP). The
+two modules differ in ergonomics and intent, not transport:
+``_remote`` is a thin fire-and-forget pair of free functions used
+by the early-phase setup helpers; ``SSHClient`` carries the
+orchestrator-side conveniences (``run_script`` with stdin,
+``port_forward``, ``shutdown_remote``) that the later phases need.
 
 Every consumer here uses the system ``ssh`` config alias ``nexus``,
 which the spin-up workflow's "Setup SSH config" step writes. That
