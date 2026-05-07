@@ -1695,9 +1695,35 @@ class Orchestrator:
                     )
 
                 # Step 2: invoke secret-sync helper (kestra stack).
-                # This delegates to the existing CLI — it handles the
-                # SECRET_<KEY>=<base64> dedup + force-recreate.
-                target = _secret_sync.StackTarget(name="kestra")
+                # The Kestra stack needs four overrides vs. the
+                # Jupyter/Marimo defaults so the rendered SECRET_<key>
+                # block lands where Kestra's EnvVarSecretProvider can
+                # actually find it (Issue #543):
+                #   - env_file_basename=".env" (not .infisical.env;
+                #     Kestra's compose loads .env directly, no separate
+                #     legacy file)
+                #   - legacy_env_file_basename=None (Kestra never had
+                #     a legacy .infisical.env; without this override
+                #     the script wrote SECRETS to .infisical.env and
+                #     the legacy-strip step nuked them on next run)
+                #   - key_prefix="SECRET_" (Kestra's
+                #     ``{{ secret('GITEA_TOKEN') }}`` looks up env var
+                #     ``SECRET_GITEA_TOKEN``)
+                #   - use_base64_values=True (Kestra's
+                #     EnvVarSecretProvider expects base64-encoded
+                #     values for the SECRET_<key> form)
+                #   - force_recreate=True (compose `up -d` alone
+                #     wouldn't restart kestra to re-read .env;
+                #     --force-recreate is the cheapest reload primitive)
+                # Mirrors the construction in __main__._secret_sync.
+                target = _secret_sync.StackTarget(
+                    name="kestra",
+                    key_prefix="SECRET_",
+                    use_base64_values=True,
+                    env_file_basename=".env",
+                    legacy_env_file_basename=None,
+                    force_recreate=True,
+                )
                 sync_result = _secret_sync.run_sync_for_stack(
                     target,
                     project_id=self.project_id,
