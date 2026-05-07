@@ -346,6 +346,26 @@ def test_render_status_marks_selected_with_arrow() -> None:
     ]
 
 
+def test_render_status_marks_unknown_location_with_question() -> None:
+    """PR #537 R7 #2: a preference whose location key is missing from
+    the availability map (almost always an operator typo) is marked
+    ``?`` with a ``(unknown location)`` suffix, NOT ``✗``. ``✗`` is
+    reserved for known-but-empty locations (genuine sold-out)."""
+    prefs = (
+        ServerSpec("cx43", "atlantis"),  # unknown — typo
+        ServerSpec("cx43", "fsn1"),  # known, sold out
+        ServerSpec("ccx33", "fsn1"),  # known, available — picked
+    )
+    availability = {"fsn1": {"ccx33"}}
+    selected = ServerSpec("ccx33", "fsn1")
+    lines = render_status_lines(prefs, availability, selected)
+    assert lines == [
+        "  ? 1. cx43:atlantis (unknown location)",
+        "  ✗ 2. cx43:fsn1",
+        "  → 3. ccx33:fsn1",
+    ]
+
+
 def test_render_status_handles_no_selection() -> None:
     """When everything is out of stock, no ``→`` marker — every
     preference gets ``✗``."""

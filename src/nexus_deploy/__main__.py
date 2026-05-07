@@ -2781,6 +2781,30 @@ def _select_capacity(args: list[str]) -> int:
     status_lines = _hetzner.render_status_lines(preferences, availability, selected)
 
     if selected is None:
+        # PR #537 R7 #1: distinguish "every preference has an unknown
+        # location" (operator typo) from "every preference is genuinely
+        # out of stock" (capacity crunch). The two cases need different
+        # operator actions: fix the typo vs widen / wait. When MIXED
+        # (some unknown + some sold out), the per-pair status block
+        # above already tells the operator which is which via the
+        # ``?`` vs ``✗`` markers, and the generic out-of-stock guidance
+        # still applies as the dominant action.
+        unknown_specs = [s for s in preferences if s.location not in availability]
+        if len(unknown_specs) == len(preferences):
+            sys.stderr.write(
+                "✗ select-capacity: none of the preferred locations are known to Hetzner — "
+                "almost certainly a typo. Per-pair status:\n",
+            )
+            for line in status_lines:
+                sys.stderr.write(line + "\n")
+            unknown_list = ", ".join(str(s) for s in unknown_specs)
+            sys.stderr.write(
+                f"Unknown locations: {unknown_list}. "
+                "Hetzner location names are lowercase like fsn1 / nbg1 / hel1 / ash. "
+                "Check `SERVER_PREFERENCES` (repo variable) or the "
+                "`server_preferences` line in config.tfvars for typos.\n",
+            )
+            return 2
         sys.stderr.write(
             "✗ select-capacity: every preference is out of stock at Hetzner.\n"
             "Per-pair availability:\n",

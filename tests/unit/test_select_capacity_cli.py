@@ -263,6 +263,60 @@ def test_select_capacity_aborts_when_all_unavailable(
     assert 'server_type     = "cx43"' in tfvars_with_legacy_pair.read_text()
 
 
+def test_select_capacity_diagnoses_all_unknown_locations(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PR #537 R7 #1: when every preference targets a location that
+    isn't in Hetzner's response (operator typo), the failure message
+    points at the typo instead of the misleading 'out of stock'
+    guidance. Different operator action: fix the name, not widen
+    the list."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:atlantis, cx43:lemuria")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": {"cx43"}, "hel1": {"cx43"}},
+    )
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "none of the preferred locations are known" in err
+    # The per-pair block uses the ? marker + suffix.
+    assert "? 1. cx43:atlantis (unknown location)" in err
+    assert "? 2. cx43:lemuria (unknown location)" in err
+    # Operator-actionable hint about Hetzner location-name shape.
+    assert "lowercase like fsn1" in err
+
+
+def test_select_capacity_keeps_oos_message_when_only_some_are_unknown(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the list MIXES unknown locations and genuine out-of-stock
+    pairs, the dominant operator action is still 'widen / wait' (the
+    typo entry is one of several, not the only thing wrong). Per-pair
+    block tells the operator which is which via ? vs ✗ markers."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:atlantis, cx43:fsn1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": {"ccx33"}},  # cx43 sold out
+    )
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Falls back to the generic "out of stock" message (mixed case).
+    assert "every preference is out of stock" in err
+    # Per-pair block still differentiates the two cases.
+    assert "? 1. cx43:atlantis (unknown location)" in err
+    assert "✗ 2. cx43:fsn1" in err
+
+
 def test_select_capacity_aborts_on_api_error(
     tfvars_with_legacy_pair: Path,
     monkeypatch: pytest.MonkeyPatch,

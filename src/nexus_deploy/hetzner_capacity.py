@@ -283,13 +283,34 @@ def render_status_lines(
     available-but-not-picked with ``✓``, and unavailable with ``✗``.
     Used by the CLI handler so the operator can see WHY a particular
     pair was chosen (or why all of them failed).
+
+    Markers (PR #537 R7 #2 — split unknown-location from out-of-stock):
+
+    * ``→`` — selected (the pair :func:`select` returned)
+    * ``✓`` — available at this location but not picked (a later
+      preference matched first, or this entry was passed in
+      preference order)
+    * ``✗`` — known location, but the requested type isn't in the
+      ``available`` set (genuinely sold out / not supported there)
+    * ``?`` — location key absent from ``availability`` entirely;
+      almost always an operator typo (e.g. ``cx43:atlantis``).
+      Suffix ``(unknown location)`` is appended so the failure
+      message is actionable without the operator having to know
+      the marker convention.
     """
     lines: list[str] = []
     for idx, spec in enumerate(preferences, start=1):
-        marker = (
-            "→"
-            if spec == selected
-            else ("✓" if spec.server_type in availability.get(spec.location, set()) else "✗")
-        )
-        lines.append(f"  {marker} {idx}. {spec}")
+        if spec == selected:
+            marker = "→"
+            suffix = ""
+        elif spec.location not in availability:
+            marker = "?"
+            suffix = " (unknown location)"
+        elif spec.server_type in availability[spec.location]:
+            marker = "✓"
+            suffix = ""
+        else:
+            marker = "✗"
+            suffix = ""
+        lines.append(f"  {marker} {idx}. {spec}{suffix}")
     return lines
