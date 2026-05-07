@@ -1,33 +1,24 @@
 """Infisical bootstrap — folder creation + per-folder secret upsert.
 
-Replaces deploy.sh:1996-2390 (the ``build_folder`` helper plus its 39
-callers plus the rsync + ssh + curl-loop push, ~395 lines of bash) with
-typed Python. The migration is the strangler-fig of #505 Modul 1.1.
+Canonical surface for pushing the SECRETS_JSON payload into Infisical
+on the server. The flow:
 
-Pre-migration shape (deploy.sh):
-- Local: ``build_folder NAME K V K V …`` writes per-folder JSON files
-  (folder-creation payload + secrets-upsert payload) into
-  ``/tmp/infisical-push``.
-- Empty ``V`` values are silently skipped (preserves operator UI edits
-  per #504); same skip-empty rule applies here in :func:`compute_folders`.
-- ``rsync -aq --delete /tmp/infisical-push/ nexus:/tmp/infisical-push/``.
-- ``ssh nexus "<curl-loop>"`` — POST /api/v2/folders for f-*.json (200
-  + 409 both treated as success), PATCH /api/v4/secrets/batch for
-  s-*.json (counted as OK or FAIL by ``"error"`` substring scan).
-
-Post-migration shape (this module):
 - :func:`compute_folders` — pure data, takes :class:`NexusConfig` +
-  :class:`BootstrapEnv`, returns the list of :class:`FolderSpec` in
-  exact source-order. Skip-empty handled here.
+  :class:`BootstrapEnv` and returns the list of :class:`FolderSpec` in
+  source order. Empty values are silently skipped so operator UI edits
+  in Infisical survive a re-bootstrap (see issue #504).
 - :class:`InfisicalClient` carries project_id / env / token / push_dir.
-- :meth:`InfisicalClient.bootstrap` — writes the same JSON files,
-  rsyncs, runs the same server-side bash loop. Returns
+- :meth:`InfisicalClient.bootstrap` writes per-folder JSON files into
+  ``push_dir``, rsyncs them to the server, and runs a server-side curl
+  loop that POSTs each folder (200 + 409 both treated as success) and
+  PATCHes the corresponding ``secrets/batch`` payload. Returns
   :class:`BootstrapResult` with pushed/failed counts.
+- :func:`provision_admin` — separate helper for one-time admin-account
+  creation, called once after the initial Infisical container start.
 
-Why preserve the exact server-side curl loop? It's already proven in
-production, it batches all calls into one SSH round-trip (matters for
-~80 API calls), and Phase 3's paramiko port-forward replaces it
-wholesale. Faithful migration here, real refactor in Phase 3.
+Batching every API call into one SSH round-trip matters: a full
+bootstrap is ~80 calls, and round-trip latency dominates if each one
+opens its own SSH session.
 """
 
 from __future__ import annotations
@@ -45,18 +36,18 @@ from typing import Literal
 from nexus_deploy import _remote
 from nexus_deploy.config import NexusConfig
 
-# Server-side Infisical endpoint — matches deploy.sh exactly.
+# Server-side Infisical endpoint.
 _INFISICAL_HOST = "localhost"
 _INFISICAL_PORT = 8070
 _FOLDERS_PATH = "/api/v2/folders"
 _SECRETS_BATCH_PATH = "/api/v4/secrets/batch"
 
 # Server-side path where the rsync upload lands and the curl loop reads.
-_REMOTE_PUSH_DIR = "/tmp/infisical-push"  # noqa: S108 — server-side path matched to deploy.sh's location; transient (rm -rf'd by the curl loop's last step)
+_REMOTE_PUSH_DIR = "/tmp/infisical-push"  # noqa: S108 — transient, removed by the curl loop's final cleanup step
 
 # Server-side path where the deploy SSH user can find an
 # operator-managed Infisical token; falls back to the env-supplied
-# token when absent. Mirrors deploy.sh:2284.
+# token when absent.
 _REMOTE_TOKEN_FALLBACK_FILE = "/opt/docker-server/.infisical-token"  # noqa: S105 — file PATH, not a credential value
 
 
@@ -64,17 +55,16 @@ _REMOTE_TOKEN_FALLBACK_FILE = "/opt/docker-server/.infisical-token"  # noqa: S10
 class BootstrapEnv:
     """Configuration values that come from outside ``SECRETS_JSON``.
 
-    deploy.sh's ``build_folder`` calls reference globals that are
-    populated from a mix of sources — config.tfvars (DOMAIN,
-    ADMIN_EMAIL), workflow inputs (SSH_PRIVATE_KEY_CONTENT,
-    WOODPECKER_GITEA_*), other tofu outputs, etc. Rather than reach
-    into ``os.environ`` from inside :func:`compute_folders`, we take
-    them as a typed dataclass so callers can also build folders from
-    fixtures in tests.
+    The folder payloads reference values that come from a mix of
+    sources — config.tfvars (DOMAIN, ADMIN_EMAIL), workflow inputs
+    (SSH_PRIVATE_KEY_CONTENT, WOODPECKER_GITEA_*), other tofu
+    outputs, etc. Rather than reach into ``os.environ`` from inside
+    :func:`compute_folders`, we take them as a typed dataclass so
+    callers can also build folders from fixtures in tests.
 
-    Fields are ``str | None`` so a missing/empty value behaves like
-    deploy.sh's ``${VAR:-}`` — the corresponding key is skipped from
-    the upsert payload via the per-folder skip-empty pass.
+    Fields are ``str | None`` so a missing/empty value causes the
+    corresponding key to be skipped from the upsert payload via the
+    per-folder skip-empty pass.
     """
 
     domain: str | None = None
@@ -140,16 +130,15 @@ class BootstrapResult:
 
 
 # ---------------------------------------------------------------------------
-# Provision-admin (Phase 3 Modul 3.4f, #505) — replaces the bash readiness-
-# probe + admin-bootstrap + project-create + cred-persist block at
-# deploy.sh:792-869. The push-secrets step (BootstrapResult above) is the
-# downstream step that consumes the (token, project_id) this returns.
+# Provision-admin — readiness probe + admin-bootstrap + project-create
+# + credential persistence. Returns the (token, project_id) consumed by
+# the push-secrets step (:class:`BootstrapResult`).
 # ---------------------------------------------------------------------------
 
 
 # Server-side paths where the freshly-minted token + project_id are
 # persisted on first run, so subsequent spin-ups can load them without
-# re-bootstrapping. Mirrors deploy.sh:823-824 + 858-861.
+# re-bootstrapping.
 _REMOTE_TOKEN_PATH = "/opt/docker-server/.infisical-token"  # noqa: S105 — file path
 _REMOTE_PROJECT_ID_PATH = "/opt/docker-server/.infisical-project-id"
 
@@ -173,8 +162,7 @@ class ProvisionResult:
     ``token`` + ``project_id`` are populated and the caller can proceed
     to push secrets via :class:`InfisicalClient`. On every other status
     they are ``None`` and the caller should warn-and-skip the push step
-    (downstream stacks reading from Infisical will degrade gracefully —
-    same behavior as the legacy bash).
+    (downstream stacks reading from Infisical degrade gracefully).
     """
 
     status: ProvisionStatus
@@ -213,7 +201,7 @@ def render_provision_admin_script(
 ) -> str:
     """Render the server-side bash that probes readiness, decides
     init-state, and either loads saved creds or bootstraps a new admin
-    + project. Mirrors deploy.sh:792-869.
+    + project.
 
     Two-stage readiness: docker container Status == "running"
     (``container_wait_seconds`` ceiling) AND HTTP body of
@@ -236,8 +224,7 @@ def render_provision_admin_script(
     All API calls keep the freshly-minted token in env vars / mode-600
     curl --config tmpfile, NEVER in argv. The token IS embedded in the
     RESULT line (base64-encoded) so the runner can extract it; that's
-    the documented eval-handoff contract used by gitea-configure +
-    woodpecker-oauth.
+    the contract used by gitea-configure + woodpecker-oauth.
     """
     email_q = shlex.quote(admin_email)
     pw_q = shlex.quote(admin_password)
@@ -429,7 +416,7 @@ def provision_admin(
 
 
 def _filter_empty(items: Mapping[str, str | None]) -> dict[str, str]:
-    """Skip-empty rule from deploy.sh's build_folder + #504 hardening.
+    """Apply the skip-empty rule (mirrors the operator-edit-preserve hardening from #504).
 
     Drops entries where the value is ``None`` or the empty string. The
     bash form was ``[ -z "$2" ] && shift 2 && continue`` — same
@@ -439,23 +426,20 @@ def _filter_empty(items: Mapping[str, str | None]) -> dict[str, str]:
 
 
 def compute_folders(config: NexusConfig, env: BootstrapEnv) -> list[FolderSpec]:
-    """Mirror of deploy.sh:2042-2335 — 39 ``build_folder`` calls in source order.
+    """Build the ordered list of Infisical folders to push.
 
-    Conditional folders (R2, Hetzner-S3, External-S3, SSH, Woodpecker
-    OAuth) match the bash gates exactly so the resulting Infisical
-    folder set is identical to pre-migration. Order is the same as
-    deploy.sh; reviewers comparing against the legacy block see no
-    re-ordering noise.
+    Each :class:`FolderSpec` corresponds to one logical group of
+    secrets (config, r2-datalake, hetzner-s3, gitea, …). Conditional
+    folders (R2, Hetzner-S3, External-S3, SSH, Woodpecker OAuth) are
+    only emitted when their gating fields are populated, so a partial
+    deployment doesn't push empty folders.
     """
     folders: list[FolderSpec] = []
 
-    # Apply the same fallbacks deploy.sh's jq layer applies BEFORE
-    # build_folder runs, so the resolved values get pushed to Infisical
-    # — not None / empty (which would skip the key entirely). Mirrors
-    # `// "admin"` and the two `EXTERNAL_S3_*={VAR:-default}` lines
-    # at deploy.sh:123, 176-177. The same _FIELDS table lives in
-    # config.py for the bash-eval handoff; we resolve here to keep
-    # Infisical-push parity.
+    # Resolve the same fallbacks the schema in :mod:`config` applies
+    # at dump time, so pushed values match the bash-eval consumers
+    # exactly (admin_username default + EXTERNAL_S3_* explicit
+    # defaults).
     admin_username = config.admin_username or "admin"
     external_s3_label = config.external_s3_label or "External Storage"
     external_s3_region = config.external_s3_region or "auto"
@@ -497,7 +481,6 @@ def compute_folders(config: NexusConfig, env: BootstrapEnv) -> list[FolderSpec]:
         # Fallback chain for canonical HETZNER_S3_BUCKET (used by ad-hoc
         # workloads): prefer _general (workloads bucket by convention),
         # fall back to _lakefs (always populated when LakeFS-aware path runs).
-        # See deploy.sh:2069-2087 for the rationale.
         default_bucket = config.hetzner_s3_bucket_general or config.hetzner_s3_bucket_lakefs or ""
         folders.append(
             FolderSpec(
@@ -965,10 +948,10 @@ class InfisicalClient:
     project_id: str
     env: str
     token: str
-    push_dir: Path = Path("/tmp/infisical-push")  # noqa: S108 - matches deploy.sh's
-    # public location; the same dir on the server is what the curl loop
-    # reads. There's nothing secret in the path itself; the JSON files
-    # inside contain secret values but are removed by the server-side
+    push_dir: Path = Path("/tmp/infisical-push")  # noqa: S108 — public
+    # path; the same dir on the server is what the curl loop reads.
+    # There's nothing secret in the path itself; the JSON files inside
+    # contain secret values but are removed by the server-side
     # `rm -rf` at the end of the bootstrap.
 
     def encode_payloads(self, folders: list[FolderSpec]) -> dict[str, str]:
@@ -980,9 +963,8 @@ class InfisicalClient:
 
         Output uses ``json.dumps(..., separators=(",", ":"),
         sort_keys=False)`` to keep the encoding compact and stable
-        without imposing alphabetical ordering on the secrets list
-        (deploy.sh's jq emitted source-order via the explicit jq
-        filter; we preserve the same convention).
+        while preserving the source-order of the secrets list defined
+        in :func:`compute_folders`.
         """
         out: dict[str, str] = {}
         for spec in folders:
@@ -995,37 +977,20 @@ class InfisicalClient:
         return out
 
     def _build_remote_loop(self) -> str:
-        """Build the server-side bash that POSTs folders + PATCHes secrets.
-
-        Mirrors deploy.sh:2280-2300 byte-for-byte (modulo one
-        difference: the token is shlex-quoted on the way through, since
-        we're now interpolating into a remote bash script generated
-        from Python — see the comment block in ``dump_shell()``).
-        """
+        """Build the server-side bash that POSTs folders + PATCHes secrets."""
         token_quoted = shlex.quote(self.token)
         folders_url = f"http://{_INFISICAL_HOST}:{_INFISICAL_PORT}{_FOLDERS_PATH}"
         secrets_url = f"http://{_INFISICAL_HOST}:{_INFISICAL_PORT}{_SECRETS_BATCH_PATH}"
-        # The `\$f` / `\$TOKEN` etc. escaping is gone here vs deploy.sh —
-        # that escaping was only needed because deploy.sh interpolated
-        # the heredoc through a layer of bash before ssh saw it. We
-        # send raw text directly to ssh, so the inner `$f` expands at
-        # the remote bash, which is what we want.
-        #
         # `printf '%s'` instead of `echo`: bash's built-in `echo` can
         # eat a leading `-n` / `-e` / `-E` as an option flag, blanking
         # the captured TOKEN if a token happens to start with one.
         # Infisical tokens are alphanumeric in practice, but the
         # printf form costs nothing and rules out the edge case.
-        # FAIL-detection: legacy bash counted a PATCH as failed only if
-        # the response body contained the literal substring '"error"'.
-        # That misclassified transport failures (curl: (7) Failed to
-        # connect, DNS errors, timeouts) as OK because curl's stderr
-        # message doesn't contain the JSON-quoted "error" token.
-        # Phase-1 strict-parity would keep that legacy bug; we deviate
-        # here because the fix is minimal (check curl's exit status)
-        # and STRICTLY MORE CORRECT — transport failures now count as
-        # FAIL, never as silent OK. The output format ("OK:FAIL") is
-        # unchanged, so the deploy.sh-side parsing is unaffected.
+        # FAIL-detection: a PATCH counts as failed if either curl's
+        # exit status is non-zero (transport failures: connect refused,
+        # DNS errors, timeouts) or the response body contains the
+        # literal substring '"error"'. Both error classes feed the FAIL
+        # counter, never silently counted as OK.
         return f"""
 TOKEN=$(cat {_REMOTE_TOKEN_FALLBACK_FILE} 2>/dev/null || printf '%s' {token_quoted})
 if [ -z "$TOKEN" ]; then echo '0:0'; exit 0; fi
@@ -1066,9 +1031,8 @@ echo "$OK:$FAIL"
 
         Local payload files (which contain secret values) are removed
         in a ``finally`` block whether the rsync/ssh succeeds, fails,
-        or raises. Mirrors deploy.sh:2370 (`rm -rf "$PUSH_DIR"`); the
-        server-side ``/tmp/infisical-push`` is removed by the curl
-        loop's last step. No secrets-at-rest on either end after a
+        or raises. The server-side ``/tmp/infisical-push`` is removed
+        by the curl loop's last step. No secrets-at-rest on either end after a
         bootstrap call returns.
 
         The remote bash script is fed to ``ssh nexus bash -s`` via
@@ -1132,7 +1096,7 @@ echo "$OK:$FAIL"
 
             # 4. Parse the final `OK:FAIL` line. The server's stdout
             #    may include earlier echoes (warnings from the
-            #    baseline-capture step in deploy.sh); take the last line.
+            #    baseline-capture step); take the last line.
             last_line = completed.stdout.strip().splitlines()[-1] if completed.stdout else "0:0"
             try:
                 ok_str, fail_str = last_line.split(":", 1)

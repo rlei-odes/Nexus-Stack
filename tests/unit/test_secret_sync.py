@@ -1,8 +1,8 @@
-"""Tests for nexus_deploy.secret_sync — Phase 1 Modul 1.2 (#505).
+"""Tests for nexus_deploy.secret_sync.
 
-Eight round-tagged invariant tests (one per deploy.sh hardening round)
+Eight round-tagged invariant tests (one per the caller hardening round)
 plus property tests for the dotenv-escape roundtrip and CLI integration
-covering the rc=0/1/2 dispatch contract that deploy.sh's case-block
+covering the rc=0/1/2 dispatch contract that the caller's case-block
 relies on.
 """
 
@@ -38,7 +38,7 @@ _SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
 
 
 # ---------------------------------------------------------------------------
-# StackTarget — per-stack divergences match deploy.sh's path conventions
+# StackTarget — per-stack divergences match the caller's path conventions
 # ---------------------------------------------------------------------------
 
 
@@ -57,7 +57,7 @@ def test_stack_target_marimo_paths() -> None:
 
 
 def test_stack_target_begin_marker_capitalised() -> None:
-    """Marker comment includes capitalised stack name (mirrors legacy deploy.sh wording)."""
+    """Marker comment includes capitalised stack name (mirrors legacy the caller wording)."""
     assert "Infisical → Jupyter env" in StackTarget(name="jupyter").begin_marker
     assert "Infisical → Marimo env" in StackTarget(name="marimo").begin_marker
 
@@ -85,7 +85,7 @@ def test_stack_target_kestra_paths() -> None:
 
 
 def test_stack_target_kestra_begin_marker_matches_legacy() -> None:
-    """Kestra marker matches legacy deploy.sh:1513 wording byte-for-byte."""
+    """Kestra marker matches legacy (see git history) wording byte-for-byte."""
     assert StackTarget(name="kestra").begin_marker == (
         "# === BEGIN nexus-secret-sync (re-generated each spin-up; do not edit by hand) ==="
     )
@@ -134,13 +134,13 @@ def test_stack_target_jupyter_marimo_defaults_unchanged() -> None:
     ],
 )
 def test_is_safe_envfile_key(key: str, ok: bool) -> None:
-    """Round 5 — POSIX shell-identifier rules. Mirror legacy deploy.sh secret-sync."""
+    """Round 5 — POSIX shell-identifier rules."""
     assert is_safe_envfile_key(key) is ok
 
 
 @given(st.text(min_size=1, max_size=20))
 def test_is_safe_envfile_key_property(text: str) -> None:
-    """Property: result matches the regex deploy.sh uses."""
+    """Property: result matches the regex the caller uses."""
     expected = bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text))
     assert is_safe_envfile_key(text) is expected
 
@@ -151,12 +151,12 @@ def test_has_multiline_round_6() -> None:
     assert has_multiline("plain value") is False
     assert has_multiline("") is False
     # Carriage-return alone is not "multi-line" per the bash check
-    # (deploy.sh's `grep -q $'\n'` only matches \n)
+    # (the caller's `grep -q $'\n'` only matches \n)
     assert has_multiline("with\rcarriage") is False
 
 
 def test_escape_dotenv_value_basic() -> None:
-    """Round 6 escape rules — mirror legacy deploy.sh secret-sync sed."""
+    """Round 6 escape rules — mirror legacy the caller secret-sync sed."""
     assert escape_dotenv_value("plain") == "plain"
     assert escape_dotenv_value('with"quote') == 'with\\"quote'
     assert escape_dotenv_value("with\\backslash") == "with\\\\backslash"
@@ -169,7 +169,7 @@ def test_escape_dotenv_value_basic() -> None:
     # — exclude them at the strategy level. Real Infisical values don't
     # carry lone surrogates either. The exclude list also drops:
     # newlines / CR (filtered upstream by has_multiline), NUL (env-var
-    # values can't carry NUL), $ and backtick (deploy.sh's sed escape
+    # values can't carry NUL), $ and backtick (the caller's sed escape
     # doesn't neutralise either — parity choice, see docstring).
     #
     # ``_SURROGATE_CATEGORY`` is hoisted to a module-level constant
@@ -192,7 +192,7 @@ def test_escape_dotenv_roundtrip_via_bash_eval(value: str) -> None:
     the escaped form back to the original. Excluded:
       - newlines / CR (filtered upstream by has_multiline)
       - NUL (env-var values can't carry NUL)
-      - ``$`` and backtick — deploy.sh's sed escape doesn't neutralise
+      - ``$`` and backtick — the caller's sed escape doesn't neutralise
         them either (a parity choice, not a security claim). Such
         values are vanishingly rare in real Infisical content; if one
         occurs, the resulting ``.infisical.env`` line is bash-evaluated
@@ -275,7 +275,7 @@ def test_round_4_two_stage_jq_validation() -> None:
 
 
 def test_round_5_key_regex_inline() -> None:
-    """Round 5 — exact regex deploy.sh uses, embedded in the rendered bash."""
+    """Round 5 — exact regex the caller uses, embedded in the rendered bash."""
     script = _render_default()
     assert "'^[A-Za-z_][A-Za-z0-9_]*$'" in script
 
@@ -285,7 +285,7 @@ def test_round_6_multiline_warning_does_not_emit_value() -> None:
 
     Critical security invariant: if a secret value happens to contain
     a newline, the warning channel must not echo it (could leak partial
-    secret to the deploy log). deploy.sh's wording was verbatim:
+    secret to the deploy log). the caller's wording was verbatim:
         "  ⚠ Skipping multi-line secret '$KEY' (folder '$FOLDER_LABEL')"
     """
     script = _render_default()
@@ -393,7 +393,7 @@ def test_render_quotes_token_safely() -> None:
     """Adversarial token can't break out of the rendered bash.
 
     A token with a literal single-quote would have escaped the heredoc
-    in deploy.sh's old form (no shlex.quote). Python's shlex.quote
+    in the caller's old form (no shlex.quote). Python's shlex.quote
     closes that — verified by bash-eval'ing the TOKEN-extraction line
     against a pytest tmp canary.
     """
@@ -430,7 +430,7 @@ def test_render_includes_legacy_env_strip() -> None:
 def test_render_jq_missing_path_emits_zero_result() -> None:
     """If jq is missing on the VM, the script emits a zero RESULT and exits 0.
 
-    deploy.sh's pre-flight jq check exists so operators don't get
+    the caller's pre-flight jq check exists so operators don't get
     misleading "all folder fetches failed" messages — they'd debug
     Infisical instead of installing jq.
     """
@@ -445,7 +445,7 @@ def test_render_jq_missing_path_emits_zero_result() -> None:
 
 
 def test_render_marker_strings_match_legacy_format() -> None:
-    """The BEGIN/END markers match deploy.sh's exact wording (sed-grep depends on it)."""
+    """The BEGIN/END markers match the caller's exact wording (sed-grep depends on it)."""
     jup = _render_default(stack="jupyter")
     mar = _render_default(stack="marimo")
     assert "BEGIN nexus-secret-sync (Infisical → Jupyter env" in jup
@@ -654,7 +654,7 @@ def test_run_sync_forwards_remote_warnings_to_local_stderr(
     Operationally critical: when the remote script skips a multi-line
     secret, drops a malformed folder, or fires an outage gate, the
     operator sees the warning in the local workflow log. The legacy
-    deploy.sh heredoc had this for free (no capture); the migration
+    the caller heredoc had this for free (no capture); the migration
     must replicate it explicitly because `_remote.ssh_run_script`
     captures stdout/stderr.
     """
@@ -712,7 +712,7 @@ def test_render_kestra_snapshot(snapshot: SnapshotAssertion) -> None:
     - KEY_PREFIX=SECRET_, USE_B64=1
     - ENV_FILE=.../kestra/.env (NOT .infisical.env)
     - LEGACY_ENV='' (no separate legacy file)
-    - the begin-marker matches legacy deploy.sh:1513 byte-for-byte
+    - the begin-marker matches legacy (see git history) byte-for-byte
     """
     script = render_remote_script(
         target=_kestra_target(),
@@ -757,7 +757,7 @@ def test_render_kestra_writes_to_env_not_infisical_env() -> None:
 def test_render_kestra_skips_legacy_strip_when_no_legacy_file() -> None:
     """Kestra's LEGACY_ENV is empty → the legacy-strip block is gated
     on '[ -n \"$LEGACY_ENV\" ]' so it doesn't try to strip a nonexistent
-    file. Mirrors deploy.sh's lack of a legacy .infisical.env for kestra."""
+    file. Mirrors the caller's lack of a legacy .infisical.env for kestra."""
     script = render_remote_script(
         target=_kestra_target(),
         project_id="p",
@@ -938,7 +938,7 @@ def test_cli_secret_sync_happy_path_returns_0(
 def test_cli_secret_sync_partial_returns_1(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """wrote=True AND failed_folders>0 → rc=1 (deploy.sh warns + continues)."""
+    """wrote=True AND failed_folders>0 → rc=1 (the caller warns + continues)."""
     from nexus_deploy.__main__ import main
 
     out = "RESULT pushed=5 skipped_name=0 skipped_multi=0 failed=2 collisions=0 succeeded=3 wrote=1"
@@ -965,7 +965,7 @@ def test_cli_secret_sync_partial_returns_1(
 def test_cli_secret_sync_outage_gate_returns_0(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """wrote=False from one of the two outage gates → rc=0 (deploy.sh continues)."""
+    """wrote=False from one of the two outage gates → rc=0 (the caller continues)."""
     from nexus_deploy.__main__ import main
 
     out = "RESULT pushed=0 skipped_name=0 skipped_multi=0 failed=3 collisions=0 succeeded=0 wrote=0"
@@ -986,7 +986,7 @@ def test_cli_secret_sync_outage_gate_returns_0(
 def test_cli_secret_sync_transport_failure_returns_2(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ssh/rsync transport error → rc=2 (deploy.sh aborts)."""
+    """ssh/rsync transport error → rc=2 (the caller aborts)."""
     from nexus_deploy.__main__ import main
 
     def failing_script(_s: str, **_kw: object) -> subprocess.CompletedProcess[str]:
@@ -1034,7 +1034,7 @@ def test_cli_secret_sync_no_result_line_returns_0(
 ) -> None:
     """Remote stdout w/o RESULT line → all-zero SyncResult → rc=0 + warning.
 
-    Mirrors deploy.sh's `[ -z "$JUP_PUSHED" ]` "no-result" path: the
+    Mirrors the caller's `[ -z "$JUP_PUSHED" ]` "no-result" path: the
     inner script's stderr already explained why; here we just don't
     abort the deploy.
     """

@@ -1,24 +1,20 @@
-"""Per-stack rsync + disabled-stack cleanup (Phase 3 Modul 3.3, #505).
+"""Per-stack rsync + disabled-stack cleanup.
 
-Replaces ``scripts/deploy.sh`` lines 1401-1444 (~45 LoC bash):
+Two pieces of the deploy pipeline live here:
 
 * Per-stack rsync loop — for every entry in ``$ENABLED_SERVICES``,
   rsync ``stacks/<svc>/`` → ``nexus:/opt/docker-server/stacks/<svc>/``.
-  Missing local stack folders produce a yellow warning and are skipped
-  (deploy.sh ``[ -d "$STACKS_DIR/$service" ]`` check).
+  Missing local stack folders produce a yellow warning and are skipped.
 * Disabled-stack cleanup — server-side bash loop that walks
   ``/opt/docker-server/stacks/*/``, ``docker compose down`` + ``rm -rf``
   any folder NOT in ``$ENABLED_SERVICES``. Idempotent on re-run.
 
-Two transports, mirroring the rest of the migration:
+Two transports:
 
 1. **Local rsync** (one subprocess per service) via
    :func:`_remote.rsync_to_remote`. Each service rsyncs independently
-   so a single failure doesn't abort the rest of the loop — matches
-   deploy.sh's serial loop semantics (a non-zero rsync exit on one
-   stack would have triggered ``set -e`` and aborted the whole script;
-   the migration is STRICTLY-MORE-FORGIVING here, partial-failure
-   continues with a per-service ``failed`` counter).
+   so a single failure doesn't abort the rest of the loop — partial
+   failures continue with a per-service ``failed`` counter.
 2. **Server-side cleanup script** via :func:`_remote.ssh_run_script`
    (stdin) — one ssh round-trip. The list of enabled service names
    is interpolated as a single ``shlex.quote``'d bash string literal
@@ -26,19 +22,15 @@ Two transports, mirroring the rest of the migration:
    hypothetical service name containing regex metachars couldn't
    false-positive against a similar folder name on the server).
 
-Path safety (R5 from prior modules): every service name passes
-``^[A-Za-z0-9._-]+$`` before being interpolated into either the
-rsync remote target OR the server-side bash. A name that fails
-validation is recorded as ``RsyncResult(status='failed', detail='unsafe name')``
-and excluded from the cleanup script's enabled-set, so the cleanup
-loop will (correctly) treat it as disabled and remove any folder
-that happens to match — there is no "safe" interpretation of an
-unsafe name. Operators see the warning and can fix the upstream
+Path safety: every service name passes ``^[A-Za-z0-9._-]+$`` before
+being interpolated into either the rsync remote target OR the
+server-side bash. A name that fails validation is recorded as
+``RsyncResult(status='failed', detail='unsafe name')`` and excluded
+from the cleanup script's enabled-set, so the cleanup loop will
+(correctly) treat it as disabled and remove any folder that happens
+to match — there is no "safe" interpretation of an unsafe name.
+Operators see the warning and can fix the upstream
 ``$ENABLED_SERVICES`` list.
-
-Phase 3 Modul 3.4 (#505 orchestrator) calls into here once the
-rest of the deploy pipeline lives in Python. Until then, deploy.sh
-invokes ``python -m nexus_deploy stack-sync --enabled <csv>``.
 """
 
 from __future__ import annotations
@@ -54,9 +46,9 @@ from typing import Literal
 
 from nexus_deploy import _remote
 
-# Mirrors deploy.sh:20 ``REMOTE_STACKS_DIR`` — the canonical location
-# on the nexus server where every stack's ``docker-compose.yml``
-# lives. Adjacent stacks live as sibling folders under here.
+# Canonical location on the nexus server where every stack's
+# ``docker-compose.yml`` lives. Adjacent stacks are sibling folders
+# under here.
 _REMOTE_STACKS_DIR = "/opt/docker-server/stacks"
 
 # Path-safety regex (R5 invariant): every service name must match
@@ -84,9 +76,9 @@ class RsyncResult:
 
     * ``synced`` — rsync exited 0; the service's stacks/<svc>/ dir
       now matches the server's copy.
-    * ``missing-local`` — local stacks/<svc>/ does NOT exist; deploy.sh
-      yellow-warned and continued. Mirrors the legacy ``[ -d ... ]``
-      branch.
+    * ``missing-local`` — local stacks/<svc>/ does NOT exist; the
+      runner emits a yellow warning and continues with the next
+      service.
     * ``failed`` — rsync exited non-zero (transport problem, permission
       issue, broken pipe), OR the service name failed path-safety.
       ``detail`` carries the rc / reason for the operator log.
@@ -94,10 +86,10 @@ class RsyncResult:
     ``stderr_excerpt`` carries the captured rsync stderr (truncated)
     when status='failed' due to rsync rc≠0. Empty for the other two
     statuses. The CLI surfaces it as an indented block after the
-    per-service ✗ line so operators see WHY the rsync failed (legacy
-    deploy.sh's ``rsync -av`` streamed its stderr directly to the
-    deploy log; ``_remote.rsync_to_remote`` uses ``capture_output=True``
-    so we have to forward it explicitly — Round-2 PR #523 finding).
+    per-service ✗ line so operators see WHY the rsync failed
+    (``_remote.rsync_to_remote`` uses ``capture_output=True``, so
+    forwarding stderr explicitly is what surfaces the diagnostic;
+    PR #523 R2 finding).
     """
 
     service: str
@@ -246,13 +238,11 @@ for stack_dir in "$STACKS_DIR"/*/; do
             echo "  ⚠ docker compose down failed for $name" >&2
             sed 's/^/      /' "$DOWN_STDERR" >&2
             FAILED=$((FAILED+1))
-            # NOTE: we do NOT `continue` here. Legacy deploy.sh used
-            # `docker compose down 2>/dev/null || true` and ran
-            # `rm -rf` regardless — a stuck container shouldn't block
-            # folder removal (next deploy will re-rsync if the stack
-            # is re-enabled). We count the down-failure but still
-            # attempt the removal, matching legacy idempotency.
-            # (Round-1 PR #523 finding.)
+            # NOTE: we do NOT `continue` here. A stuck container
+            # shouldn't block folder removal (the next deploy will
+            # re-rsync if the stack is re-enabled). The down-failure
+            # is counted but the removal still runs, keeping the
+            # cleanup loop idempotent (PR #523 R1 finding).
         fi
         rm -f "$DOWN_STDERR"
     fi
@@ -307,17 +297,16 @@ def rsync_enabled_stacks(
 
     One rsync subprocess per service. A failed rsync produces a
     ``failed`` RsyncResult with the rc in ``detail``; the loop
-    continues for the remaining services (STRICTLY-MORE-FORGIVING
-    than deploy.sh's ``set -e`` abort-on-first-error semantics).
+    continues for the remaining services (partial failures don't
+    abort the whole stack-sync step).
 
     ``rsync_runner`` is a dependency-injection seam for tests.
     Production callers leave it None and get :func:`_remote.rsync_to_remote`,
-    which wraps ``rsync -aq`` with capture_output. ``-aq`` (instead
-    of deploy.sh's ``-av``) is a deliberate divergence: rsync's
-    per-file output for an entire stack tree (n8n's node_modules
-    alone is thousands of files) would dominate the deploy log;
-    capture_output gives us the diagnostic on failure without the
-    happy-path noise.
+    which wraps ``rsync -aq`` with capture_output. ``-aq`` (rather
+    than ``-av``) is deliberate: rsync's per-file output for an
+    entire stack tree (n8n's node_modules alone is thousands of
+    files) would dominate the deploy log; capture_output gives us
+    the diagnostic on failure without the happy-path noise.
     """
     runner = rsync_runner or (lambda local, remote: _remote.rsync_to_remote(local, remote))
     results: list[RsyncResult] = []

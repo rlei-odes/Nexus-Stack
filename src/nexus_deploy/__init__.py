@@ -1,11 +1,9 @@
 """nexus_deploy — Python orchestration for Nexus-Stack deployment.
 
 The single entrypoint is ``python -m nexus_deploy run-pipeline``,
-invoked by ``.github/workflows/spin-up.yml``. Bootstrapped over the
-course of issue #505 (Phase 0 → Phase 4c, completed in PR #535) which
-replaced the legacy ~5.5k-line ``scripts/deploy.sh`` with this
-package — see ``docs/admin-guides/migration-to-python.md`` for the
-historical phase breakdown.
+invoked by ``.github/workflows/spin-up.yml``. See
+``docs/admin-guides/migration-to-python.md`` for historical context
+on how this package came to be.
 """
 
 from importlib.metadata import PackageNotFoundError, version

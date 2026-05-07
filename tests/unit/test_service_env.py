@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.service_env — Phase 3 Modul 3.4c (#505).
+"""Tests for nexus_deploy.service_env.
 
 Snapshot tests for representative services + special-case tests
 for the 6 quirks (SFTPGo fail-fast, Filestash bcrypt+jq+base64,
@@ -161,7 +161,7 @@ def test_empty_treats_none_and_empty_string_alike() -> None:
     assert _empty(None) is True
     assert _empty("") is True
     assert _empty("x") is False
-    assert _empty(" ") is False  # not stripped — matches deploy.sh
+    assert _empty(" ") is False  # not stripped — matches the canonical layout
 
 
 def test_escape_sql_doubles_single_quotes() -> None:
@@ -172,7 +172,7 @@ def test_escape_sql_doubles_single_quotes() -> None:
 
 def test_format_env_line_no_quoting_newline_terminated() -> None:
     assert _format_env_line("KEY", "value") == "KEY=value\n"
-    # Empty value still produces KEY=\n (matches deploy.sh `${VAR:-}`)
+    # Empty value still produces KEY=\n (matches the canonical layout `${VAR:-}`)
     assert _format_env_line("KEY", "") == "KEY=\n"
 
 
@@ -190,7 +190,7 @@ def test_sftpgo_raises_on_empty_admin_password(
     full_config: NexusConfig, full_env: BootstrapEnv
 ) -> None:
     """R-guard: empty admin password aborts the deploy. Mirrors
-    deploy.sh:368-380 fail-fast."""
+    (see git history) fail-fast."""
     config = full_config.model_copy(update={"sftpgo_admin_password": ""})
     with pytest.raises(ServiceEnvError, match="SFTPGO_ADMIN_PASSWORD"):
         _render_sftpgo(config, full_env)

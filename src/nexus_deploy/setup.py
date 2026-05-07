@@ -1,8 +1,6 @@
-"""Server bootstrap helpers (Phase 3 Modul 3.4a, #505).
+"""Server bootstrap helpers run before the orchestrator's main loop.
 
-Replaces the four pre-orchestration bash blocks in
-``scripts/deploy.sh`` (lines 173-459, ~270 LoC) with typed, tested
-Python equivalents:
+Public surface:
 
 * **``configure_ssh``** — render the ``Host nexus`` block in
   ``~/.ssh/config`` with the Cloudflare Access ProxyCommand. Atomic
@@ -18,9 +16,8 @@ Python equivalents:
   attempt nearly always 401s on cold-start deploys.
 * **``wait_for_ssh``** — connectivity loop with exponential timeout
   (5s for first 3 attempts, 10s for next 4, 15s thereafter, max 15
-  retries). Mirrors deploy.sh's ramp; an absolute Python-side
-  timeout would convert "slow Hetzner ARM cold-start" into spurious
-  hard failure.
+  retries). The ramp absorbs slow Hetzner cold-starts without
+  converting them into a spurious hard failure.
 * **``ensure_jq``** — idempotent ``apt-get install -y jq`` on the
   remote. Bootstrap for VMs that pre-date the cloud-init jq install
   (newer VMs have it baked in via ``tofu/stack/main.tf``); near-no-op
@@ -30,26 +27,20 @@ Python equivalents:
   three-stage device discovery (scsi-id → automount inspection →
   ``/dev/sdb`` fallback), idempotent ``/etc/fstab`` entry, and
   ownership setup for Gitea (uid 1000) + Postgres (uid 70) sub-dirs.
-  Empty volume_id skips the entire block (matches deploy.sh's
-  ``[ "$PERSISTENT_VOLUME_ID" != "0" ]`` guard — not every deploy
-  has a persistent-volume).
+  An empty volume_id skips the entire block (not every deploy has a
+  persistent volume attached).
+* **``setup_wetty_ssh_agent``** — provision the SSH key + agent
+  socket inside the Wetty container so browser-launched shells can
+  reach the host without prompting for credentials.
 
-Two transports, consistent with the rest of the migration:
+Two transports are used:
 
 1. Local subprocess (``ssh``) for the readiness probes — same
    pattern as :class:`SSHClient.run` but called pre-tunnel, before
    any persistent SSHClient context exists.
 2. Server-side bash via :func:`SSHClient.run_script` for ``jq``
    install + volume mount, run from a caller-supplied SSHClient
-   that the orchestrator (Modul 3.4b) will provide.
-
-The EXIT-trap setup in deploy.sh (``REMOTE_CLEANUP_PATHS``,
-``RUNNER_CLEANUP_PATHS``) stays in bash for 3.4a — it's referenced
-by other already-migrated modules' deploy.sh wrapper code (kestra,
-gitea-oauth, gitea-mirror) and surviving deploy.sh blocks. Modul
-3.4b (orchestrator.py) replaces the trap with a Python
-``contextlib.ExitStack`` once deploy.sh's role shrinks to a
-five-line wrapper.
+   provided by the orchestrator.
 """
 
 from __future__ import annotations
@@ -269,8 +260,8 @@ def configure_ssh(
     5. Atomic replace via same-dir mktemp + ``os.replace``, mode 0o600.
 
     Raises :class:`SetupError` when ``spec`` carries no Service Token
-    — browser-login is impossible in CI (mirrors deploy.sh's red-box
-    abort at L218-227).
+    — browser-login is impossible in CI, so failing loudly here beats
+    the hung ssh prompt operators would otherwise see.
     """
     if not spec.has_service_token:
         raise SetupError(
@@ -410,17 +401,13 @@ def wait_for_ssh(
 ) -> SSHReadinessResult:
     """Poll ssh-readiness with exponential timeout ramp.
 
-    Timeout schedule mirrors deploy.sh L351-360 exactly: 5s for the
-    first 3 attempts, 10s for attempts 4-7, 15s for the rest.
-    Sleep schedule matches the timeout — operators see the same
-    cadence in CI logs as the legacy script.
-
-    Round-2 PR #524 fix: previous version used ``attempt < 3`` /
-    ``attempt < 7`` which gave 5s to ONLY the first 2 attempts and
-    10s to attempts 3-6 — off-by-one against the legacy bash. The
-    legacy bash bumped TIMEOUT *after* the failed attempt's
-    increment, so RETRY values 1, 2, AND 3 all stayed at 5s before
-    jumping. Fixed with `< 4` / `< 8`.
+    Timeout schedule: 5s for the first 3 attempts, 10s for attempts
+    4-7, 15s for the rest (the sleep between attempts matches the
+    timeout). The ramp absorbs slow Hetzner cold-starts without
+    converting them into a spurious hard failure. PR #524 R2 #1
+    fix: the boundary checks are ``< 4`` / ``< 8`` so retries 1-3
+    all stay at 5s before bumping — a previous version used
+    ``< 3`` / ``< 7`` which bumped one attempt too early.
     """
     runner = probe_runner if probe_runner is not None else _default_ssh_probe
     last_error = ""
@@ -474,9 +461,8 @@ def _render_volume_mount_script(volume_id: str) -> str:
     re-validate, since it's an internal seam.
 
     Three-stage device discovery + idempotent fstab + service-dir
-    chown — same semantics as deploy.sh L408-454 but with a
-    RESULT-line wire format so the Python wrapper can parse the
-    outcome.
+    chown. Emits a RESULT-line wire format so the Python wrapper
+    can parse the outcome.
     """
     vid_q = shlex.quote(volume_id)
     return f"""set -euo pipefail
@@ -568,12 +554,11 @@ def mount_persistent_volume(
     """Mount the Hetzner persistent volume at /mnt/nexus-data.
 
     Empty/zero ``volume_id`` (i.e. no persistent volume configured)
-    short-circuits to ``mounted=False, detail='skipped'`` — matches
-    deploy.sh's ``[ "$PERSISTENT_VOLUME_ID" != "0" ]`` guard.
+    short-circuits to ``mounted=False, detail='skipped'``.
 
     Non-empty volume_id is digits-only validated; non-digit input
-    raises :class:`SetupError` (deploy.sh's tofu output is always
-    numeric, so this is a defence-in-depth check against future
+    raises :class:`SetupError` (Hetzner volume IDs are always
+    numeric; this is a defence-in-depth check against future
     refactor mistakes).
     """
     if not volume_id or volume_id == "0":
@@ -590,9 +575,9 @@ def mount_persistent_volume(
     # ssh.run_script defaults to ``merge_stderr=True``, so they land
     # on completed.stdout interleaved with the RESULT line. We split
     # them: the RESULT wire-format line is parsed by Python below,
-    # everything else gets forwarded to local stderr (Modul-1.2
-    # Round-4 pattern; docstring corrected in Round-3 PR #524 since
-    # "stderr" was misleading — the actual fd is merged stdout).
+    # everything else gets forwarded to local stderr (the docstring
+    # was corrected in PR #524 R3 — the actual fd is merged stdout,
+    # not stderr).
     for line in completed.stdout.splitlines():
         if not line.startswith("RESULT "):
             sys.stderr.write(line + "\n")
@@ -613,10 +598,9 @@ def mount_persistent_volume(
 
 
 # ---------------------------------------------------------------------------
-# Wetty SSH-Agent setup (Phase 3 Modul 3.4f, #505) — replaces
-# deploy.sh:439-540, the ``[5.5/7]`` block that bootstraps the SSH key
-# pair + agent socket Wetty needs to log into the host as the same
-# user that runs the docker daemon.
+# Wetty SSH-Agent setup — bootstraps the SSH key pair + agent socket
+# Wetty needs to log into the host as the same user that runs the
+# docker daemon.
 # ---------------------------------------------------------------------------
 
 
@@ -640,7 +624,7 @@ def render_wetty_agent_script(
 ) -> str:
     """Render the server-side bash that idempotently bootstraps the
     ed25519 key pair, ssh-agent socket, and SSH_AUTH_SOCK injection
-    Wetty needs to log into the host. Mirrors deploy.sh:445-538.
+    Wetty needs to log into the host.
 
     The script does six numbered steps; only five of them produce a
     0/1 flag in the final RESULT line (step 1 is a precondition that

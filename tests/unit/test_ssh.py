@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.ssh — Phase 3 Modul 3.1 (#505).
+"""Tests for nexus_deploy.ssh.
 
 Mocks subprocess + socket for deterministic unit coverage. The real
 end-to-end path (against a live nexus host with Cloudflare Access

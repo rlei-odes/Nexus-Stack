@@ -1,10 +1,9 @@
 """Smoke tests — proves the package imports and CI runs.
 
-Kept after the Phase 4c migration completed (#535) because they
-remain the cheapest signal for "the toolchain is actually wired
-up" — a refactor that breaks importability or silently regresses
-the no-args / --version CLI shape would surface here before the
-heavier per-module tests run.
+Cheapest signal for "the toolchain is actually wired up" — a
+refactor that breaks importability or silently regresses the
+no-args / --version CLI shape surfaces here before the heavier
+per-module tests run.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-"""Tests for nexus_deploy.gitea — Phase 2 Modul 2.2e (#505).
+"""Tests for nexus_deploy.gitea.
 
-Covers the 8 named regression tests (R1-R8) per Appendix D plus
+Covers the 8 named regression tests (R1-R8) plus
 orthogonal CLI/branch tests:
 
 - R1 column-exact awk match on user existence (PR #464 bug class)
@@ -470,7 +470,7 @@ def test_round_4_mint_token_returns_sha1_on_success() -> None:
 def test_round_4_mint_token_idempotent_delete_first() -> None:
     """Token already exists → CLI delete succeeds → CLI generate succeeds.
 
-    The legacy deploy.sh delete-then-create pattern is preserved via
+    The legacy the caller delete-then-create pattern is preserved via
     the unconditional delete in mint_token. The rendered delete script
     ends in ``|| true``, so ``ssh.run_script`` always sees rc=0
     regardless of whether the inner docker-exec found a token to
@@ -1379,7 +1379,7 @@ def test_round_8_cli_omits_token_line_when_token_none(
 ) -> None:
     """Token=None → only RESTART_SERVICES= on stdout, NO GITEA_TOKEN= line.
 
-    deploy.sh must not see a stale token from a previous deploy
+    the caller must not see a stale token from a previous deploy
     leaking via empty-string assignment.
     """
     fake_result = GiteaResult(
@@ -1426,7 +1426,7 @@ def test_round_8_cli_omits_token_line_when_token_none(
 
 
 # ---------------------------------------------------------------------------
-# OAuth2 application management (Modul 2.2f Woodpecker integration)
+# OAuth2 application management (Woodpecker integration)
 # ---------------------------------------------------------------------------
 
 
@@ -1680,7 +1680,7 @@ def test_woodpecker_oauth_rotation_started_when_create_fails_after_delete() -> N
 
     The orchestrator must signal ``rotation_started=True`` so the CLI
     handler can route to rc=2 (abort) instead of rc=1 (warn). Without
-    this distinction, deploy.sh would warn-and-continue with stale
+    this distinction, the caller would warn-and-continue with stale
     creds in Woodpecker's .env while Gitea has already invalidated
     the live OAuth pair — login outage. (Copilot R2)
     """
@@ -1789,7 +1789,7 @@ def test_woodpecker_oauth_aborts_on_delete_transport_error() -> None:
     Timeout on the DELETE, Gitea may have actually processed the
     request before the response was lost. Treating the transport
     error as a pre-rotation failure (rotation_started=False, rc=1)
-    would let deploy.sh continue with a possibly-invalidated
+    would let the caller continue with a possibly-invalidated
     OAuth pair active in Woodpecker's .env.
     """
     responses.add(
@@ -1947,7 +1947,7 @@ def test_woodpecker_oauth_aborts_on_definitive_delete_rejection() -> None:
     Copilot R4 refinement: distinguishes a definitive 403 (server
     state known: app still alive) from a transport timeout (server
     state unknown). The 403 path returns rotation_started=False so
-    deploy.sh can warn-and-continue with the existing OAuth pair
+    the caller can warn-and-continue with the existing OAuth pair
     (still consistent with Gitea since the delete didn't run); the
     timeout path returns rotation_started=True forcing rc=2 abort.
     """
@@ -2184,7 +2184,7 @@ def test_cli_woodpecker_oauth_returns_rc_1_on_failure_with_diagnostic(
     rc = _gitea_woodpecker_oauth([])
     assert rc == 1
     captured = capsys.readouterr()
-    # No eval-able stdout on failure — deploy.sh's existing .env values
+    # No eval-able stdout on failure — the caller's existing .env values
     # stay untouched.
     assert "WOODPECKER_GITEA_CLIENT" not in captured.out
     assert "WOODPECKER_GITEA_SECRET" not in captured.out
@@ -2200,7 +2200,7 @@ def test_cli_woodpecker_oauth_returns_rc_2_on_rotation_half_complete(
 ) -> None:
     """Rotation started + create failed → rc=2 (abort), with diagnostic.
 
-    deploy.sh treats rc=2 as red-abort; rc=1 as yellow-warn-continue.
+    the caller treats rc=2 as red-abort; rc=1 as yellow-warn-continue.
     A half-complete rotation (Gitea has invalidated the old creds,
     Python couldn't issue new ones) MUST abort or Woodpecker keeps
     running with stale creds and 401s on every login. (Copilot R2)
@@ -2228,7 +2228,7 @@ def test_cli_woodpecker_oauth_eval_handoff_safe_with_shell_meta(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Pin the shlex.quote contract: client_id/secret containing shell
-    metacharacters must be safely quoted in stdout so deploy.sh's
+    metacharacters must be safely quoted in stdout so the caller's
     ``eval`` doesn't execute them. Without shlex.quote a value like
     ``foo;rm -rf /`` would run a command on eval. (Copilot R2)
 
@@ -2352,7 +2352,7 @@ def test_cli_woodpecker_oauth_unexpected_exception_returns_rc_2(
 
 
 # ---------------------------------------------------------------------------
-# Mirror-mode helpers (Modul 2.2f part 2)
+# Mirror-mode helpers
 # ---------------------------------------------------------------------------
 
 
@@ -2537,7 +2537,7 @@ def test_merge_upstream_409_already_up_to_date() -> None:
 @responses.activate
 def test_merge_upstream_handles_non_main_branch() -> None:
     """merge-upstream supports any branch — `master`-default upstreams
-    were broken when deploy.sh hardcoded `main`. Verify the body
+    were broken when the caller hardcoded `main`. Verify the body
     branch is whatever caller passes.
     """
     responses.add(
@@ -3343,7 +3343,7 @@ def test_cli_mirror_setup_emits_fork_name_and_owner_on_success(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Happy path stdout: FORK_NAME=<name> + GITEA_REPO_OWNER=<user>
-    eval-able. Required by deploy.sh's seed_workspace_files post-eval.
+    eval-able. Required by the caller's seed_workspace_files post-eval.
     """
     from nexus_deploy.gitea import ForkResult, MirrorSetupResult
 
@@ -3376,7 +3376,7 @@ def test_cli_mirror_setup_emits_fork_name_and_owner_on_success(
 def test_cli_mirror_setup_omits_stdout_when_no_fork(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """No fork (no user, or fork failed) → empty stdout. deploy.sh's
+    """No fork (no user, or fork failed) → empty stdout. the caller's
     seed wrapper falls back to its existing $REPO_NAME / $GITEA_REPO_OWNER.
     """
     from nexus_deploy.gitea import MirrorSetupResult

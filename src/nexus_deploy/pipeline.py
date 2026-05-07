@@ -1,9 +1,8 @@
-"""Top-level deploy pipeline (Phase 4c, #505).
+"""Top-level deploy pipeline.
 
-Replaces ``scripts/deploy.sh`` entirely. The orchestrator's
-``run_pre_bootstrap`` + ``run_all`` already cover the per-stack /
-per-service phases; this module covers everything that previously
-sat above and around them in deploy.sh:
+The orchestrator's ``run_pre_bootstrap`` + ``run_all`` cover the
+per-stack / per-service phases; this module covers everything that
+sits above and around them:
 
 1. R2 credentials load + ``os.environ`` injection
 2. ``tofu state list`` pre-flight
@@ -48,8 +47,8 @@ from nexus_deploy.infisical import BootstrapEnv
 from nexus_deploy.orchestrator import Orchestrator, OrchestratorResult
 from nexus_deploy.ssh import SSHClient
 
-# Cloudflare-Tunnel SSH endpoint; the legacy bash builds it as
-# ``ssh.${DOMAIN}``. Same shape used by setup_ssh_config.
+# Cloudflare-Tunnel SSH endpoint; built as ``ssh.${DOMAIN}``,
+# matching the shape used by setup_ssh_config.
 _SSH_HOST_DNS_TEMPLATE = "ssh.{domain}"
 
 
@@ -83,8 +82,8 @@ class PipelineOptions:
 
     Bundled into a frozen dataclass so callers can construct
     deterministic test fixtures and so the function signature stays
-    short. ``infisical_env`` defaults to "dev" — the legacy bash
-    treats anything else as opt-in.
+    short. ``infisical_env`` defaults to "dev" — anything else is
+    opt-in.
     """
 
     ssh_private_key_content: str | None = None
@@ -103,11 +102,10 @@ class PipelineOptions:
 def _ssh_keygen_cleanup(*targets: str) -> None:
     """Run ``ssh-keygen -R <target>`` for each non-empty target.
 
-    Mirrors deploy.sh:165-166. Failures are silent (the legacy bash
-    used ``|| true``): if the entry doesn't exist in known_hosts,
-    ssh-keygen exits non-zero, but that's expected on a fresh runner.
-    Captured output is discarded — operators don't need to see the
-    "Host added/removed" diagnostic for this prep step.
+    Failures are silent: if the entry doesn't exist in known_hosts,
+    ssh-keygen exits non-zero, but that's expected on a fresh
+    runner. Captured output is discarded — operators don't need to
+    see the "Host added/removed" diagnostic for this prep step.
 
     PR #535 R2 #1: also suppresses ``TimeoutExpired`` so a hung
     ssh-keygen (the timeout is a defence against an unkillable child,
@@ -160,20 +158,18 @@ def _docker_hub_login(host: str, dockerhub_user: str, dockerhub_token: str) -> N
 def _b64_encode_ssh_key(content: str | None) -> str:
     """Base64-encode the SSH private key for the BootstrapEnv.
 
-    Legacy bash (deploy.sh:404-408) used ``echo "$X" | base64`` which
-    appends a trailing newline before the pipe — so the legacy bytes
-    are ``base64(<key>+\\n)``. We match that exactly: empty/None
-    input returns empty string (preventing
-    ``echo "" | base64`` → ``Cg==`` → BootstrapEnv treating it as a
-    populated key). Non-empty: encode + strip trailing newline from
-    the base64 output (``base64`` itself wraps).
+    Encodes ``base64(<key>+\\n)`` — the trailing newline matches the
+    on-disk format produced by ``echo "$X" | base64`` so consumers
+    don't need to special-case "with-newline" vs "without-newline".
+    Empty/None input returns the empty string (preventing a stray
+    ``Cg==`` from being treated as a populated key).
     """
     import base64
 
     if not content:
         return ""
-    # Match legacy bash semantic: append trailing newline before encoding.
-    # ``echo "$X"`` adds the newline; ``printf '%s' "$X"`` would not.
+    # Append trailing newline before encoding for compatibility with
+    # the on-disk format produced by ``echo "$X" | base64``.
     encoded = base64.b64encode((content + "\n").encode("utf-8"))
     return encoded.decode("ascii").replace("\n", "")
 
@@ -427,9 +423,10 @@ def run_pipeline(
 
 
 def format_done_banner(result: PipelineResult) -> str:
-    """Render the post-deploy banner that the legacy bash echoed at
-    deploy.sh:449-469. Returns the banner as a single string for
-    the CLI handler to print to stdout.
+    """Render the post-deploy banner.
+
+    Returns the banner as a single string for the CLI handler to
+    print to stdout.
     """
     lines: list[str] = [
         "",

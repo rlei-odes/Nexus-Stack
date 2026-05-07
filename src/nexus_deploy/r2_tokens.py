@@ -1,8 +1,11 @@
-"""Cloudflare R2 user-token inventory + cleanup (Phase 3 Modul 3.4f, #530).
+"""Cloudflare R2 user-token inventory + cleanup.
 
-Replaces the legacy ad-hoc shell-out that listed and deleted Cloudflare
-user API tokens directly with a typed Python equivalent. Two reasons
-this lives here as a proper module instead of a one-off bash script:
+Audits and reconciles Cloudflare R2 user API tokens — the
+:func:`build_inventory` helper paginates ``/user/tokens`` and
+returns a typed view of the account's tokens; :func:`cleanup_orphan_tokens`
+deletes orphan ``nexus-r2-*`` tokens left behind by earlier
+destroy/setup cycles. Two reasons this lives here as a proper module
+instead of a one-off bash script (issue #530):
 
 1. The existing R2-token bug (`init-r2-state.sh` losing tokens past
    page 1 of the unpaginated `/user/tokens` listing) was caused by

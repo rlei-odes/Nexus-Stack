@@ -1,14 +1,11 @@
-"""Per-service ``.env`` file generation (Phase 3 Modul 3.4c, #505).
+"""Per-service ``.env`` file generation.
 
-Replaces ``scripts/deploy.sh`` lines 233-1170 (~937 LoC) with typed
-Python rendering. The legacy bash block had ~30 service-specific
-heredocs reading ``$SECRETS_JSON``-derived bash variables, with
-several quirks (SFTPGo fail-fast, Filestash bcrypt+jq, pg-ducklake
-SQL-escape, SeaweedFS/Garage separate config files, LakeFS 2-paths,
-Gitea-append-block for 5 services). Each becomes an :class:`EnvSpec`
-with a pure-Python render-function — pure-logic, snapshot-testable,
-no subprocess unless the legacy version genuinely needed an external
-binary (``htpasswd -nbB`` for Filestash bcrypt is the only such case).
+~30 service-specific renderers turn :class:`NexusConfig` +
+:class:`BootstrapEnv` into the per-service ``stacks/<svc>/.env``
+files (plus the occasional sidecar config — ``garage.toml``,
+``s3.json``, the pg-ducklake bootstrap SQL, etc.). Each renderer is a
+pure function with snapshot-tested output; the only subprocess shells
+out to ``htpasswd -nbB`` for Filestash's bcrypt admin password.
 
 Architecture:
 
@@ -16,9 +13,8 @@ Architecture:
   render function. The render function takes :class:`NexusConfig`
   + :class:`BootstrapEnv` and returns :class:`RenderedEnv` with the
   KEY=value dict plus optional sidecar files (SQL, JSON, TOML).
-* Specs are listed in :data:`_SPECS` in the same order deploy.sh
-  produces them, so per-stack snapshot diffs against the legacy
-  output remain stable.
+* Specs are listed in :data:`_SPECS` in a stable order so per-stack
+  snapshot diffs stay readable.
 * :func:`render_all_env_files` iterates specs, calls render, writes
   each ``.env`` (and its sidecar files) atomically via
   ``tempfile.mkstemp`` + ``os.replace`` — same pattern as
@@ -160,15 +156,15 @@ def _empty(value: str | None) -> bool:
 
 def _escape_sql(value: str) -> str:
     """SQL-escape a value for a single-quoted string literal —
-    doubles every single quote. Mirrors deploy.sh's ``escape_sql()``
-    helper (line 23) used for pg-ducklake's S3-secret bootstrap."""
+    doubles every single quote. Used for pg-ducklake's S3-secret
+    bootstrap."""
     return value.replace("'", "''")
 
 
 def _bcrypt_password(plaintext: str) -> str:
     """bcrypt-hash a password via the system ``htpasswd -nbBC 10``
-    binary. Mirrors deploy.sh:756. ``htpasswd`` is provided by
-    ``apache2-utils`` on the deploy runner; the binary path is not
+    binary. ``htpasswd`` is provided by ``apache2-utils`` on the
+    deploy runner; the binary path is not
     parameterised because every CI runner that runs this code has
     apache2-utils installed.
 
@@ -192,18 +188,17 @@ def _bcrypt_password(plaintext: str) -> str:
 # Per-service render functions
 # ---------------------------------------------------------------------------
 #
-# Order mirrors deploy.sh lines 233-1170. Each returns a RenderedEnv
-# (or RenderedEnv(skip_reason=...) when a guard fails).
+# Each returns a RenderedEnv (or RenderedEnv(skip_reason=...) when a
+# guard fails).
 #
 # Convention: a config field that's None or "" produces an empty
-# string in the rendered .env line — same as deploy.sh's ``${VAR:-}``
-# expansion. Tests pin this via per-stack snapshots.
+# string in the rendered .env line — same as the bash ``${VAR:-}``
+# expansion semantic. Tests pin this via per-stack snapshots.
 
 
 def _render_infisical(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """Infisical compose substitutes ENCRYPTION_KEY / AUTH_SECRET /
-    POSTGRES_PASSWORD (no INFISICAL_ prefix). Matches legacy
-    deploy.sh:520-525."""
+    POSTGRES_PASSWORD (no INFISICAL_ prefix)."""
     return RenderedEnv(
         env_vars={
             "ENCRYPTION_KEY": c.infisical_encryption_key or "",
@@ -264,10 +259,8 @@ def _render_minio(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 def _render_sftpgo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """Fail-fast: empty admin OR user password aborts the deploy.
 
-    Mirrors deploy.sh:368-380. The legacy block exits 1 with a red
-    banner. Python equivalent raises :class:`ServiceEnvError` so the
-    CLI maps to rc=2. Mode 0o600 because the file holds the admin
-    credential in cleartext.
+    Raises :class:`ServiceEnvError` so the CLI maps to rc=2. Mode
+    0o600 because the file holds the admin credential in cleartext.
     """
     if _empty(c.sftpgo_admin_password) or _empty(c.sftpgo_user_password):
         raise ServiceEnvError(
@@ -282,8 +275,8 @@ def _render_sftpgo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_redpanda_console(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """Legacy used REDPANDA_ADMIN_PASS (not _PASSWORD). Mirrors
-    deploy.sh:649 — keep parity so external tooling/docs that read
+    """The env var is REDPANDA_ADMIN_PASS (not _PASSWORD) — kept
+    that way so external tooling/docs that read
     stacks/redpanda-console/.env see the same key."""
     return RenderedEnv(env_vars={"REDPANDA_ADMIN_PASS": c.redpanda_admin_password or ""})
 
@@ -334,7 +327,7 @@ def _render_postgres(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_pg_ducklake(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """Two-path bootstrap SQL emission. Mirrors deploy.sh:714-770.
+    """Two-path bootstrap SQL emission.
 
     - **S3 path** (all 5 Hetzner vars present incl. region): emit
       ``duckdb.drop_secret('ducklake_s3')`` (idempotent, wrapped in
@@ -343,15 +336,14 @@ def _render_pg_ducklake(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
       + ``SELECT pg_reload_conf();``.
     - **Local fallback** (any S3 var missing): emit ``ALTER SYSTEM
       SET ducklake.default_table_path = '/var/lib/ducklake/';
-      SELECT pg_reload_conf();`` only — no drop_secret, since the
-      legacy fallback didn't include one either.
+      SELECT pg_reload_conf();`` only — no drop_secret on the
+      fallback path.
 
     The SQL goes into ``stacks/pg-ducklake/init/00-ducklake-bootstrap.sql``
-    as a sidecar — pg-ducklake's container runs ``init/`` SQL files
-    on first start; deploy.sh additionally re-applies it via ``docker
-    exec ... psql -f`` after every spin-up to handle credential
-    rotation (that re-apply stays in deploy.sh, this module only
-    writes the file).
+    as a sidecar. pg-ducklake's container runs ``init/`` SQL files
+    on first start; the per-spin-up re-apply for credential rotation
+    is handled by the pg-ducklake admin-setup hook in
+    :mod:`nexus_deploy.services`.
     """
     has_s3 = (
         bool(c.hetzner_s3_server)
@@ -362,7 +354,7 @@ def _render_pg_ducklake(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     has_s3 = has_s3 and bool(c.hetzner_s3_region)
     if has_s3:
         bucket_sql = _escape_sql(c.hetzner_s3_bucket_pgducklake or "")
-        sql = f"""-- Auto-generated by nexus_deploy.service_env (was deploy.sh)
+        sql = f"""-- Auto-generated by nexus_deploy.service_env.
 -- Re-applied via 'docker exec ... psql -f' after every spin-up
 -- to handle credential rotation.
 
@@ -389,7 +381,7 @@ ALTER SYSTEM SET ducklake.default_table_path = 's3://{bucket_sql}/';
 SELECT pg_reload_conf();
 """
     else:
-        sql = """-- Auto-generated by nexus_deploy.service_env (was deploy.sh)
+        sql = """-- Auto-generated by nexus_deploy.service_env.
 -- No Hetzner Object Storage configured - using local volume fallback
 ALTER SYSTEM SET ducklake.default_table_path = '/var/lib/ducklake/';
 SELECT pg_reload_conf();
@@ -454,11 +446,11 @@ def _render_superset(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_openmetadata(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """OpenMetadata admin password is NOT written to .env — the legacy
-    bash didn't either (deploy.sh:824-830). It's pushed to Infisical
-    (key ``OPENMETADATA_PASSWORD``) and applied to the running stack
-    via REST in :func:`services.run_admin_setups`. Writing it here
-    would only widen the on-disk secret-exposure surface."""
+    """OpenMetadata admin password is NOT written to .env. It's
+    pushed to Infisical (key ``OPENMETADATA_PASSWORD``) and applied
+    to the running stack via REST in :func:`services.run_admin_setups`.
+    Writing it here would only widen the on-disk secret-exposure
+    surface."""
     return RenderedEnv(
         env_vars={
             "OPENMETADATA_DB_PASSWORD": c.openmetadata_db_password or "",
@@ -505,8 +497,7 @@ def _render_rustfs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_seaweedfs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """SeaweedFS: .env + s3.json sidecar with admin identity.
-    Mirrors deploy.sh:646-672."""
+    """SeaweedFS: .env + s3.json sidecar with admin identity."""
     s3_json = json.dumps(
         {
             "identities": [
@@ -535,11 +526,11 @@ def _render_seaweedfs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 def _render_garage(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """Garage: .env (admin token only) + garage.toml sidecar with
-    full configuration. Mirrors deploy.sh:914-934 (root_domain
-    ``.s3.garage.localhost`` / ``.web.garage.localhost`` matches the
-    legacy bash output exactly — do NOT change without auditing
-    the Garage CLI's bucket-resolution behavior)."""
-    toml = f"""# Auto-generated by nexus_deploy.service_env (was deploy.sh).
+    full configuration. The ``root_domain`` values
+    (``.s3.garage.localhost`` / ``.web.garage.localhost``) are pinned
+    by Garage's CLI bucket-resolution logic — do NOT change without
+    auditing that behaviour."""
+    toml = f"""# Auto-generated by nexus_deploy.service_env.
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 db_engine = "lmdb"
@@ -569,7 +560,7 @@ admin_token = "{c.garage_admin_token or ""}"
 
 def _render_lakefs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """Two-path: Hetzner S3 backend if all 4 S3 vars set, else local
-    blockstore. Mirrors deploy.sh:707-748."""
+    blockstore."""
     has_s3 = (
         bool(c.hetzner_s3_server)
         and bool(c.hetzner_s3_region)
@@ -602,7 +593,7 @@ def _render_lakefs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
             "LAKEFS_BLOCKSTORE_TYPE": "local",
             "LAKEFS_BLOCKSTORE_LOCAL_PATH": "/data",
         }
-    # Order matters for snapshot stability — match deploy.sh's order.
+    # Order matters for snapshot stability.
     ordered: dict[str, str] = {}
     ordered["LAKEFS_DATABASE_TYPE"] = common["LAKEFS_DATABASE_TYPE"]
     ordered["LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING"] = common[
@@ -618,7 +609,7 @@ def _render_lakefs(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 def _render_filestash(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     """Filestash: bcrypt admin password + conditional CONFIG_JSON
-    base64. Mirrors deploy.sh:1004-1090.
+    base64.
 
     Special handling:
     - If admin password is set, run ``htpasswd -nbBC 10`` to generate
@@ -727,12 +718,13 @@ def _render_filestash(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_woodpecker(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """Guard: skip if WOODPECKER_AGENT_SECRET is empty. Mirrors
-    deploy.sh:1099-1110. Gitea OAuth client+secret start as empty
-    placeholders (compose substitutes ``${WOODPECKER_GITEA_CLIENT}``
-    without ``:-``, so the keys MUST exist in .env even before the
-    OAuth phase populates them). deploy.sh appends the real values
-    after orchestrator.run-all via a separate ``cat >>`` block."""
+    """Guard: skip if WOODPECKER_AGENT_SECRET is empty.
+
+    Gitea OAuth client+secret start as empty placeholders (compose
+    substitutes ``${WOODPECKER_GITEA_CLIENT}`` without ``:-``, so
+    the keys MUST exist in .env even before the OAuth phase
+    populates them). The real values are appended later by the
+    ``_phase_woodpecker_apply`` orchestrator phase."""
     if _empty(c.woodpecker_agent_secret):
         return RenderedEnv(skip_reason="WOODPECKER_AGENT_SECRET empty")
     return RenderedEnv(
@@ -747,8 +739,7 @@ def _render_woodpecker(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_spark(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """Spark: optional Hetzner S3 + worker config defaults. Mirrors
-    deploy.sh:879-891."""
+    """Spark: optional Hetzner S3 + worker config defaults."""
     s3_endpoint = f"https://{c.hetzner_s3_server}" if c.hetzner_s3_server else ""
     return RenderedEnv(
         env_vars={
@@ -784,8 +775,8 @@ def _render_dinky(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_jupyter(c: NexusConfig, e: BootstrapEnv, *, spark_enabled: bool) -> RenderedEnv:
-    """Jupyter: SPARK_MASTER conditional on whether spark stack is
-    enabled. Mirrors deploy.sh:918-935.
+    """Jupyter: SPARK_MASTER conditional on whether the spark stack
+    is enabled.
 
     The ``spark_enabled`` arg is injected by :func:`render_all_env_files`
     so the render function stays pure (no global state)."""
@@ -836,8 +827,8 @@ def _render_marimo(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 def _render_s3manager(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
-    """s3manager consumes generic ACCESS_KEY_ID/SECRET_ACCESS_KEY/REGION/
-    ENDPOINT (not Hetzner-prefixed). Mirrors deploy.sh:1170-1178."""
+    """s3manager consumes generic ACCESS_KEY_ID / SECRET_ACCESS_KEY /
+    REGION / ENDPOINT (not Hetzner-prefixed)."""
     return RenderedEnv(
         env_vars={
             "ACCESS_KEY_ID": c.hetzner_s3_access_key or "",
@@ -912,7 +903,7 @@ def _render_dify(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
 
 
 # ---------------------------------------------------------------------------
-# Spec table — order mirrors deploy.sh
+# Spec table — order is stable across releases for snapshot diffs.
 # ---------------------------------------------------------------------------
 
 
@@ -974,13 +965,12 @@ _SPECS: tuple[EnvSpec, ...] = (
 
 
 def _format_env_line(key: str, value: str) -> str:
-    """Render a single ``KEY=value`` line, matching deploy.sh's
-    heredoc behavior: no quoting, value as-is, newline-terminated.
+    """Render a single ``KEY=value`` line: no quoting, value as-is,
+    newline-terminated.
 
-    Values containing newlines or shell meta-characters would be
-    problematic in legacy bash too — those are caught at the
-    NexusConfig validation layer (random_password resources don't
-    produce newlines).
+    Values containing newlines or shell meta-characters are caught
+    at the NexusConfig validation layer (random_password resources
+    don't produce newlines, so the unquoted form is safe).
     """
     return f"{key}={value}\n"
 
@@ -1090,13 +1080,10 @@ def render_all_env_files(
 # meltano / prefect when Gitea is enabled).
 # ---------------------------------------------------------------------------
 
-# Marker pair for idempotent strip+append. Same shape as legacy
-# deploy.sh sed pattern.
-# Block markers MUST match the legacy deploy.sh strings byte-for-byte —
-# upgrading from a deploy.sh-only version of Nexus-Stack to this CLI
-# relies on _strip_gitea_block() finding (and removing) any block
-# previously written by deploy.sh:1384/1394 before appending the new
-# one. Diverging markers would cause re-runs to stack a second block.
+# Marker pair for idempotent strip+append. Block markers are pinned
+# strings: ``_strip_gitea_block()`` finds (and removes) any block a
+# previous run wrote before appending the new one. Diverging markers
+# would cause re-runs to stack a second block.
 _GITEA_BLOCK_BEGIN = "# >>> Gitea workspace repo (auto-generated, do not edit)"
 _GITEA_BLOCK_END = "# <<< Gitea workspace repo"
 
@@ -1114,11 +1101,10 @@ _GITEA_APPEND_TARGETS: tuple[str, ...] = (
 class GiteaWorkspaceConfig:
     """Inputs for the Gitea workspace block append.
 
-    Captures the result of deploy.sh's repo-name + credentials
-    derivation logic at lines 995-1167. The orchestrator computes
-    these BEFORE calling :func:`append_gitea_workspace_block` since
-    it depends on mirror-mode + user-vs-admin selection that the
-    bash side already does.
+    Captures the result of the workspace-coords + credentials
+    derivation. The orchestrator computes these BEFORE calling
+    :func:`append_gitea_workspace_block` since they depend on
+    mirror-mode + user-vs-admin selection.
     """
 
     gitea_repo_url: str
@@ -1127,10 +1113,10 @@ class GiteaWorkspaceConfig:
     git_author_name: str
     git_author_email: str
     repo_name: str
-    # Default branch of the workspace repo, derived by deploy.sh from
-    # the mirrored upstream's default-branch detection
-    # (scripts/deploy.sh:326-357). Stays "main" for non-mirrored
-    # workspaces. Used by stacks whose runtime needs to know the
+    # Default branch of the workspace repo. Derived from the
+    # mirrored upstream's default-branch detection in
+    # :mod:`nexus_deploy.workspace_coords` (stays "main" for
+    # non-mirrored workspaces). Used by stacks whose runtime needs the
     # explicit branch — e.g. the Prefect manifest's `pull:` step
     # which calls `git_clone(repository=..., branch=$WORKSPACE_BRANCH)`.
     # Fresh installs still get a working clone via the env-var

@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.workspace_coords — Phase 4b1 (#505).
+"""Tests for nexus_deploy.workspace_coords.
 
 Pure-logic test surface. Three repo-derivation branches + the
 optional GitHub API default-branch detection. The HTTP runner is
@@ -49,7 +49,7 @@ def test_sanitize_username_replaces_non_alphanumeric() -> None:
 
 
 def test_sanitize_username_keeps_unicode_letters_collapsed() -> None:
-    """Mirrors deploy.sh's ``${var//[^a-zA-Z0-9]/_}`` exactly — non-ASCII
+    """Mirrors the caller's ``${var//[^a-zA-Z0-9]/_}`` exactly — non-ASCII
     letters DO get sanitized. Unicode-aware would be a behaviour change."""
     assert _sanitize_username("müller") == "m_ller"
 
@@ -196,7 +196,7 @@ def test_git_identity_uses_user_when_both_email_and_pass_set() -> None:
 
 def test_git_identity_falls_back_to_admin_when_user_pass_missing() -> None:
     """Even with email set, missing password forces admin identity —
-    matches deploy.sh's ``[ -n "$GITEA_USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]``."""
+    matches the canonical layout's ``[ -n "$GITEA_USER_EMAIL" ] && [ -n "$GITEA_USER_PASS" ]``."""
     inputs = WorkspaceInputs(
         domain="example.com",
         admin_username="admin",

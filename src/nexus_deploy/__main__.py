@@ -1,23 +1,19 @@
 """Entry point for `python -m nexus_deploy ...` invocations.
 
-Subcommand dispatcher. Subcommands land here as their modules ship.
-Currently:
-- ``config dump-shell`` (#505 Modul 1.3)
-- ``infisical bootstrap`` (#505 Modul 1.1)
-- ``secret-sync --stack <jupyter|marimo>`` (#505 Modul 1.2)
+Subcommand dispatcher. Subcommands:
+
+- ``run-pipeline`` — the canonical end-to-end deploy entry point
+- ``config dump-shell``
+- ``infisical bootstrap`` / ``infisical provision-admin``
+- ``secret-sync --stack <jupyter|marimo|kestra>``
 - ``seed --repo <owner>/<name> [--root PATH] [--prefix nexus_seeds/]``
-  (#505 Modul 2.1)
-- ``compose up --enabled <comma-list>`` (#505 Modul 2.2a)
-- ``services configure --enabled <comma-list>`` (#505 Modul 2.2b/c/d)
-- ``kestra register-system-flows`` (#505 Modul 2.3)
-- ``gitea configure`` (#505 Modul 2.2e)
-- ``gitea woodpecker-oauth`` (#505 Modul 2.2f)
-- ``gitea mirror-setup`` (#505 Modul 2.2f part 2)
-- ``stack-sync --enabled <comma-list>`` (#505 Modul 3.3)
-- ``setup ssh-config`` (#505 Modul 3.4a)
-- ``setup wait-ssh`` (#505 Modul 3.4a)
-- ``setup ensure-jq`` (#505 Modul 3.4a)
-- ``setup mount-volume`` (#505 Modul 3.4a)
+- ``compose up --enabled <comma-list>``
+- ``services configure --enabled <comma-list>``
+- ``kestra register-system-flows``
+- ``gitea configure`` / ``gitea woodpecker-oauth`` / ``gitea mirror-setup``
+- ``stack-sync --enabled <comma-list>``
+- ``setup ssh-config`` / ``setup wait-ssh`` / ``setup ensure-jq`` /
+  ``setup mount-volume``
 """
 
 from __future__ import annotations
@@ -83,9 +79,9 @@ def _config_dump_shell(args: list[str]) -> int:
     Two input modes:
     - ``--tofu-dir PATH`` (default ``tofu/stack``): runs ``tofu output
       -json secrets`` inside that directory.
-    - ``--stdin``: reads the SECRETS_JSON payload from stdin. Used by
-      deploy.sh's strangler-fig handoff so the existing tofu call +
-      empty-check stays in bash and we don't run tofu twice.
+    - ``--stdin``: reads the SECRETS_JSON payload from stdin. Useful
+      when the caller has already invoked ``tofu output`` and wants
+      to avoid running it twice.
 
     Writes shell-eval-able ``VAR=value`` lines to stdout. Consumed via
     ``eval "$(... | python -m nexus_deploy config dump-shell --stdin)"``.
@@ -134,30 +130,28 @@ def _infisical_bootstrap(args: list[str]) -> int:
     fields (DOMAIN, ADMIN_EMAIL, GITEA_*, OM_PRINCIPAL_DOMAIN,
     WOODPECKER_*, SSH_KEY_BASE64) from environment variables,
     plus PROJECT_ID + INFISICAL_TOKEN + INFISICAL_ENV from environment
-    variables. Computes the 39 folders, writes payloads, runs the
-    server-side curl loop. Mirrors the legacy deploy.sh build_folder
-    block (removed in #509).
+    variables. Computes the folders, writes payloads, runs the
+    server-side curl loop.
 
     Note on env-var naming: the BootstrapEnv field is
-    ``ssh_private_key_base64`` but the env var on the deploy.sh side
-    is the bash-style ``SSH_KEY_BASE64`` (computed from
+    ``ssh_private_key_base64`` but the env var seen on the caller
+    side is ``SSH_KEY_BASE64`` (computed from
     ``SSH_PRIVATE_KEY_CONTENT`` via ``base64 | tr -d '\n'``). The
-    asymmetry mirrors the legacy bash naming so deploy.sh's existing
-    env-passing pattern doesn't need to be renamed in this PR.
+    asymmetry preserves the original env-passing convention so
+    callers don't need to rename their existing env wiring.
 
     Required env: ``PROJECT_ID``, ``INFISICAL_TOKEN``.
     Optional env: ``INFISICAL_ENV`` (default ``dev``), the BootstrapEnv
     fields above, ``PUSH_DIR`` (default ``/tmp/infisical-push``).
 
-    Exit codes (deploy.sh distinguishes the three so it can decide
-    whether to abort):
+    Exit codes (the three are distinct so callers can decide whether
+    to abort):
     - 0: success, all folders pushed
     - 1: bootstrap completed but some folders reported errors
-         (deploy.sh-side: warn-and-continue; the operator can fix
-         partial pushes via the UI without aborting the rest of the
-         spin-up)
+         (warn-and-continue; the operator can fix partial pushes via
+         the UI without aborting the rest of the spin-up)
     - 2: hard failure — input validation, transport (rsync/ssh),
-         unexpected exception. deploy.sh-side: abort.
+         unexpected exception. Caller should abort.
     """
     if args:
         print(f"infisical bootstrap: unexpected arg {args[0]!r}", file=sys.stderr)
@@ -199,7 +193,7 @@ def _infisical_bootstrap(args: list[str]) -> int:
         result = client.bootstrap(folders)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         # Hard failure: rsync/ssh exited non-zero, hit the timeout, or
-        # the binary wasn't on PATH. deploy.sh sees rc=2 and aborts.
+        # the binary wasn't on PATH. Caller sees rc=2 and aborts.
         # Avoid printing exc.cmd because TimeoutExpired/CalledProcessError
         # carry the full argv — we don't want the token (if it ever
         # leaked into argv via a future bug) to land in the workflow log.
@@ -212,8 +206,8 @@ def _infisical_bootstrap(args: list[str]) -> int:
         # Anything else is a programming error in compute_folders/
         # bootstrap (KeyError, ValidationError, AttributeError, …).
         # Python's default exit code for an unhandled exception is 1,
-        # which deploy.sh's rc-dispatch treats as "partial push" —
-        # exactly what this catch prevents. Force rc=2 so deploy.sh
+        # which the caller's rc-dispatch treats as "partial push" —
+        # exactly what this catch prevents. Force rc=2 so the caller
         # aborts instead of continuing past a broken bootstrap.
         # We print only the exception CLASS name; ``str(exc)`` and
         # ``repr(exc)`` can carry attribute values that might include
@@ -237,9 +231,7 @@ def _infisical_bootstrap(args: list[str]) -> int:
 def _infisical_provision_admin(args: list[str]) -> int:
     """`nexus-deploy infisical provision-admin`.
 
-    Replaces the bash readiness-probe + admin-bootstrap + project-create
-    + cred-persist block at deploy.sh:792-869. Renders + runs a server-
-    side bash script via SSH that:
+    Renders + runs a server-side bash script via SSH that:
 
     1. Waits for Infisical to be ready (60s container + 120s HTTP).
     2. Detects whether Infisical is already initialized.
@@ -250,12 +242,12 @@ def _infisical_provision_admin(args: list[str]) -> int:
 
     Required env: ``ADMIN_EMAIL`` + ``INFISICAL_PASS``.
 
-    Stdout (eval-able by deploy.sh):
+    Stdout (eval-able by callers):
     - ``INFISICAL_TOKEN=<token>``
     - ``PROJECT_ID=<workspace-id>``
 
     Both lines are always emitted (even on the not-ready / failure
-    paths, with empty values) so deploy.sh's eval doesn't leak stale
+    paths, with empty values) so an ``eval`` doesn't leak stale
     values from a previous run.
 
     Exit codes:
@@ -263,9 +255,9 @@ def _infisical_provision_admin(args: list[str]) -> int:
       (token, project_id) populated, downstream push can proceed.
     - 1: ``not-ready`` / ``loaded-existing-missing-creds`` /
       ``already-bootstrapped-no-saved-creds`` /
-      ``bootstrap-failed`` / ``project-create-failed`` — soft fail,
-      deploy.sh warns and continues without pushing secrets.
-    - 2: bad args, transport, unexpected error — deploy.sh aborts.
+      ``bootstrap-failed`` / ``project-create-failed`` — soft fail;
+      caller warns and continues without pushing secrets.
+    - 2: bad args, transport, unexpected error — caller aborts.
     """
     if args:
         print(f"infisical provision-admin: unexpected arg {args[0]!r}", file=sys.stderr)
@@ -298,9 +290,9 @@ def _infisical_provision_admin(args: list[str]) -> int:
         )
         return 2
 
-    # Always emit the two values (even empty) — deploy.sh's eval relies
-    # on the assignment to clear any stale value left over from prior
-    # runs. shlex.quote handles the empty-string + edge cases.
+    # Always emit the two values (even empty) — callers eval the
+    # assignment to clear any stale value left over from prior runs.
+    # shlex.quote handles the empty-string + edge cases.
     import shlex as _shlex
 
     sys.stdout.write(f"INFISICAL_TOKEN={_shlex.quote(result.token or '')}\n")
@@ -314,8 +306,8 @@ def _infisical_provision_admin(args: list[str]) -> int:
     # (token AND project_id both populated). A `loaded-existing` /
     # `freshly-bootstrapped` status with a dropped token (e.g.
     # malformed-base64 → parse_provision_result returned None for
-    # token) MUST be reported as soft-fail so deploy.sh doesn't print
-    # "✓ Infisical provisioned" while emitting empty
+    # token) MUST be reported as soft-fail so the caller doesn't
+    # print "✓ Infisical provisioned" while emitting empty
     # INFISICAL_TOKEN= / PROJECT_ID= lines that downstream eval'd
     # consumers would treat as legitimate. Caught in #530 R2.
     if result.status in ("loaded-existing", "freshly-bootstrapped") and result.has_credentials:
@@ -332,30 +324,28 @@ def _secret_sync(args: list[str]) -> int:
     Fetches Infisical secrets, filters/escapes them, and writes the
     result to ``/opt/docker-server/stacks/<stack>/.infisical.env`` on
     the server. On change, restarts the stack via ``docker compose
-    up -d <stack>``. Mirrors the two legacy deploy.sh secret-sync
-    heredocs (one per stack, removed in #510) — both were byte-identical
-    apart from stack-name + paths, so the migration collapses them
-    to one rendering layer parametrised by :class:`StackTarget`.
+    up -d <stack>``. One :class:`StackTarget` parametrises each stack's
+    output format (jupyter/marimo write plain dotenv lines; kestra
+    writes ``SECRET_<KEY>=<base64>`` lines into ``.env`` directly).
 
     Required env: ``PROJECT_ID``, ``INFISICAL_TOKEN``.
     Optional env: ``INFISICAL_ENV`` (default ``dev``), ``GITEA_TOKEN``
     (special-case append — auto-generated post-Gitea-bootstrap, not
     in Infisical at sync time).
 
-    Exit codes (deploy.sh's case-block dispatches):
+    Exit codes:
     - 0: success, OR sync correctly chose not to write (one of the
          two outage gates fired — operator sees a stderr warning,
-         existing file untouched, deploy.sh continues), OR the remote
-         script produced no parseable RESULT line (treated as a soft
-         no-op: matches deploy.sh's pre-migration `[ -z "$JUP_PUSHED" ]`
-         warn-and-continue branch; the inner script's own stderr is
-         already in the workflow log for diagnosis)
+         existing file untouched), OR the remote script produced no
+         parseable RESULT line (treated as a soft no-op; the inner
+         script's own stderr is already in the workflow log for
+         diagnosis)
     - 1: partial — file written but at least one folder fetch failed
-         (deploy.sh-side: warn-and-continue; the operator can fix the
-         offending folder via the Infisical UI without aborting)
+         (warn-and-continue; the operator can fix the offending
+         folder via the Infisical UI without aborting)
     - 2: hard failure — invalid `--stack`, missing required env,
-         transport (ssh) failure, unexpected exception. deploy.sh-side:
-         abort.
+         transport (ssh) failure, unexpected exception. Caller
+         should abort.
     """
     stack: str | None = None
     i = 0
@@ -424,9 +414,9 @@ def _secret_sync(args: list[str]) -> int:
         return 2
     except Exception as exc:
         # Programming errors (KeyError, AttributeError, etc.) — Python's
-        # default rc=1 would collide with the partial-failure semantic
-        # in deploy.sh, so force rc=2. Class name only — no str/repr,
-        # which could embed secret-bearing values.
+        # default rc=1 would collide with the partial-failure semantic,
+        # so force rc=2. Class name only — no str/repr, which could
+        # embed secret-bearing values.
         print(
             f"secret-sync: unexpected error ({type(exc).__name__})",
             file=sys.stderr,
@@ -436,9 +426,8 @@ def _secret_sync(args: list[str]) -> int:
     # All-zero counters with wrote=False: either the remote script
     # printed no parseable RESULT line, OR it took the legitimate
     # jq-missing path (which intentionally emits an all-zero RESULT).
-    # Both are warn-and-continue (rc=0), mirroring deploy.sh's
-    # pre-migration `[ -z "$JUP_PUSHED" ]` branch — the inner script
-    # already printed its own warning to stderr (workflow log).
+    # Both are warn-and-continue (rc=0); the inner script already
+    # printed its own warning to stderr (workflow log).
     # Distinguishing them would require a dedicated sentinel; not
     # worth the wire-format churn given both demand the same response.
     if (
@@ -484,23 +473,21 @@ def _seed(args: list[str]) -> int:
     Walks the local seed tree (default ``examples/workspace-seeds/``),
     base64-encodes each file, rsyncs the JSON payloads to the server,
     and POSTs each one to Gitea's Contents API under the prefix
-    (default ``nexus_seeds/``). Mirrors the legacy
-    ``seed_workspace_files`` deploy.sh function (removed in #505 Modul
-    2.1) which had two call-sites — non-mirror mode (admin-owned repo)
-    and mirror+user mode (user's fork). Both call-sites now invoke
-    this CLI with the appropriate ``--repo`` arg.
+    (default ``nexus_seeds/``). Two call-sites use this: non-mirror
+    mode (admin-owned repo) and mirror+user mode (user's fork). Each
+    invokes this CLI with the appropriate ``--repo`` arg.
 
     Required env: ``GITEA_TOKEN``.
 
-    Exit codes (deploy.sh's case-block dispatches):
+    Exit codes:
     - 0: all seeds either created (HTTP 201/200) or correctly skipped
          (HTTP 422 = file already exists, user edits persist — #501
          contract).
     - 1: partial — some files failed but at least one succeeded.
-         deploy.sh-side: yellow warning, continue.
+         Yellow warning, continue.
     - 2: hard failure — bad ``--repo`` format, missing token, transport
          (ssh/rsync) failure, no parseable RESULT line, unexpected
-         exception. deploy.sh-side: abort.
+         exception. Caller should abort.
     """
     repo: str | None = None
     root_arg: str | None = None
@@ -585,7 +572,8 @@ def _seed(args: list[str]) -> int:
             f"seed: root {root!s} is not a directory (skipping with rc=0)",
             file=sys.stderr,
         )
-        # Mirror deploy.sh:3340 — missing seed dir is non-fatal.
+        # Missing seed dir is non-fatal — a deployment without
+        # bundled examples is a valid configuration.
         return 0
 
     try:
@@ -623,22 +611,21 @@ def _compose_up(args: list[str]) -> int:
 
     Renders the parallel ``docker compose up -d --build`` loop for
     every enabled service, runs it server-side via ssh, parses the
-    RESULT line. Replaces the legacy 130-line ssh heredoc in
-    ``scripts/deploy.sh`` (the [6/7] step). Per-service admin-setup
-    hooks (Wikijs, Dify, etc.) are scoped to Modul 2.2b.
+    RESULT line. Per-service admin-setup hooks (Wikijs, Dify, etc.)
+    live in :mod:`nexus_deploy.services`.
 
-    The comma-list maps directly to deploy.sh's ``$ENABLED_SERVICES``;
-    callers pass it as-is. Virtual-service expansion + parent-stack
-    deduplication + deferred-services skipping happen inside the
-    compose_runner module.
+    The comma-list is the same ``ENABLED_SERVICES`` set the rest of
+    the pipeline consumes; callers pass it as-is. Virtual-service
+    expansion + parent-stack deduplication + deferred-services
+    skipping happen inside the compose_runner module.
 
     Exit codes:
     - 0: all enabled services started + verified running.
     - 1: at least one service failed but at least one succeeded
-         (deploy.sh continues — the operator sees the per-service
+         (caller continues — the operator sees the per-service
          ✗ line for diagnosis).
     - 2: hard failure — invalid args, transport (ssh) failure, no
-         parseable RESULT line. deploy.sh aborts.
+         parseable RESULT line. Caller should abort.
     """
     if not args or args[0] != "up":
         print("compose: only 'up' subcommand is supported", file=sys.stderr)
@@ -666,8 +653,7 @@ def _compose_up(args: list[str]) -> int:
 
     enabled = [s.strip() for s in enabled_str.split(",") if s.strip()]
     if not enabled:
-        # Empty list = nothing to do = success (mirrors deploy.sh's
-        # behaviour when ENABLED_SERVICES is empty).
+        # Empty list = nothing to do = success.
         print("compose up: no services enabled, nothing to do")
         return 0
 
@@ -698,20 +684,17 @@ def _services_configure(args: list[str]) -> int:
     ADMIN_EMAIL, etc.) from environment variables — same handoff
     pattern as ``infisical bootstrap``.
 
-    Currently shipped:
-    - Modul 2.2b — Portainer, n8n, Metabase, LakeFS, OpenMetadata
-    - Modul 2.2c — RedPanda, Superset
-    - Modul 2.2d — Filestash (python-side JSON mutation)
-    Remaining admin-setup hooks (Gitea, SFTPGo, Garage, Windmill,
-    Wikijs, Dify) ship in follow-up modules.
+    Currently shipped: Portainer, n8n, Metabase, LakeFS, OpenMetadata,
+    RedPanda, Superset, Filestash (python-side JSON mutation).
+    Additional hooks land here as new services need configuration.
 
     Exit codes:
     - 0: all enabled+supported hooks ended in configured /
          already-configured / skipped-not-ready states (no failures).
     - 1: at least one hook reported status=failed but at least one
-         succeeded. deploy.sh: yellow warning, continue.
+         succeeded. Yellow warning, continue.
     - 2: bad args, transport (ssh) failure, or unexpected exception.
-         deploy.sh: red, abort.
+         Caller should abort.
     """
     if not args or args[0] != "configure":
         print("services: only 'configure' subcommand is supported", file=sys.stderr)
@@ -821,10 +804,10 @@ def _kestra_register_system_flows(args: list[str]) -> int:
     - 0: both flows registered (or already-up-to-date) AND the
          onboarding execute settled in SUCCESS within timeout.
     - 1: at least one flow registration / execution did NOT succeed
-         (deploy.sh: yellow warning, continue — the cron tick will
-         catch user flows later).
+         (yellow warning, continue — the cron tick will catch user
+         flows later).
     - 2: bad args, ssh tunnel setup failure, or unexpected exception
-         (deploy.sh: red, abort).
+         (caller should abort).
     """
     if args:
         print(f"kestra register-system-flows: unknown args {args!r}", file=sys.stderr)
@@ -859,9 +842,9 @@ def _kestra_register_system_flows(args: list[str]) -> int:
         return 2
 
     if not config.kestra_admin_password:
-        # Round-2 fix: previously rc=0 (mapped to green "registered"
-        # banner in deploy.sh, misleading). rc=1 routes to the yellow-
-        # warning branch — accurate signal that nothing was registered.
+        # Round-2 fix: rc=1 routes to the yellow-warning branch —
+        # accurate signal that nothing was registered. (Previously
+        # rc=0 mis-read as a successful registration.)
         print(
             "kestra register-system-flows: KESTRA_PASS missing from SECRETS_JSON — "
             "skipping (Kestra basic-auth would 401 on every call)",
@@ -915,7 +898,6 @@ def _kestra_register_system_flows(args: list[str]) -> int:
         sys.stderr.write(f"  • {flow.name}: {flow.status} ({flow.detail})\n")
     if result.execution_state is not None:
         # Round-2 fix: per-state actionable warning instead of bare enum.
-        # Mirrors the hint deploy.sh L3464/L3489/L3493/L3496 used to print.
         hint = _kestra_execution_hint(result.execution_state)
         sys.stderr.write(
             f"  • system.flow-sync onboarding execution: {result.execution_state}"
@@ -946,7 +928,7 @@ def _gitea_configure(args: list[str]) -> int:
     configure flow (DB password sync, admin/user create-or-sync with
     legacy email-collision PATCH, API token create with retry-via-
     delete, workspace repo + collaborator), emits stdout in
-    eval-able shell form so deploy.sh can capture the token via:
+    eval-able shell form so the caller can capture the token via:
 
     .. code-block:: bash
 
@@ -969,15 +951,14 @@ def _gitea_configure(args: list[str]) -> int:
       legacy email-collision PATCH check on the admin row. The user is
       created/synced ONLY when both this AND ``GITEA_USER_PASS`` are set
       — if either is missing the user-create/sync branch is silently
-      skipped (mirrors deploy.sh L2617's `[ -n "$GITEA_USER_EMAIL" ] &&
-      [ -n "$GITEA_USER_PASS" ]` guard).
+      skipped.
     - ``GITEA_USER_PASS`` (optional) — see ``GITEA_USER_EMAIL`` above
     - ``REPO_NAME`` — workspace repo name (e.g. nexus-<slug>-gitea)
     - ``GITEA_REPO_OWNER`` — owner of the workspace repo
     - ``ENABLED_SERVICES`` — comma-or-space list driving the
       RESTART_SERVICES intersection
     - ``GH_MIRROR_REPOS`` (optional) — if non-empty, skip repo+collab
-      (deferred to Modul 2.2f mirror-mode)
+      (mirror mode handles repo creation differently)
     - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
 
     Exit codes:
@@ -1024,9 +1005,9 @@ def _gitea_configure(args: list[str]) -> int:
 
     if not config.gitea_admin_password:
         # Required for both the CLI sync_password and REST basic-auth
-        # paths. Without it everything 401s; emit rc=1 so deploy.sh
-        # routes to yellow warning, NOT rc=0 (which would be a silent
-        # green pass — same bug class as kestra round-2).
+        # paths. Without it everything 401s; emit rc=1 so the caller
+        # routes to yellow warning, NOT rc=0 (a silent green pass
+        # would be the wrong signal here).
         print(
             "gitea configure: GITEA_ADMIN_PASS missing from SECRETS_JSON — "
             "skipping (basic-auth would 401 on every call)",
@@ -1100,11 +1081,11 @@ def _gitea_configure(args: list[str]) -> int:
         sys.stderr.write(f"  • token: NOT minted (downstream skipped){detail}\n")
 
     # Eval-able stdout. RESTART_SERVICES is always emitted (even
-    # empty) so deploy.sh's ``eval`` doesn't leave a stale value
+    # empty) so the caller's ``eval`` doesn't leave a stale value
     # from a previous run in the variable. ``shlex.quote`` on every
     # value — Gitea sha1 tokens are 40 hex chars in practice (no
     # special chars), but the explicit quote contract makes
-    # injection-safety unambiguous, same as config dump-shell (#508).
+    # injection-safety unambiguous (same convention as #508).
     import shlex as _shlex
 
     if result.token is not None:
@@ -1119,21 +1100,20 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
 
     Provisions Gitea's "Woodpecker CI" OAuth2 application. Idempotent
     re-run: deletes any existing app of that name, then creates fresh
-    so deploy.sh sees a known-fresh client_secret on every spin-up
+    so callers see a known-fresh client_secret on every spin-up
     (Gitea has no rotate-secret API).
 
     Required env:
 
     - ``DOMAIN`` — used to build redirect URI ``https://woodpecker.<domain>/authorize``
     - ``GITEA_TOKEN`` — token-bearer auth for the admin user
-      (eval-captured by deploy.sh from the prior ``gitea configure``
-      invocation, see Modul 2.2e)
+      (eval-captured from the prior ``gitea configure`` invocation)
 
     Optional env:
 
     - ``ADMIN_USERNAME`` — admin username, path-validated (default
       ``admin``). Mirrors :class:`NexusConfig`'s ``admin_username``
-      default so the CLI works without the deploy.sh env-passing
+      default so the CLI works without an explicit env-passing
       layer when invoked manually.
     - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
 
@@ -1143,7 +1123,7 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
     - ``WOODPECKER_GITEA_SECRET=<secret>``
 
     Both lines emitted only when the create succeeds. On failure
-    (rc=1), only a stderr diagnostic is emitted; deploy.sh's eval
+    (rc=1), only a stderr diagnostic is emitted; the caller's eval
     sees nothing new and the existing ``.env`` values stay (which
     will be either empty on first run or stale from a prior run).
 
@@ -1235,7 +1215,7 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
         # rc=1 (yellow warn, deploy continues), Woodpecker would
         # keep running with the now-stale secret in its .env and
         # 401 on every Gitea login until the next deploy succeeds.
-        # rc=2 routes to deploy.sh's red-abort branch. (Copilot R2)
+        # rc=2 routes the caller to its red-abort branch. (Copilot R2)
         if rotation_started:
             sys.stderr.write(
                 "  • rotation half-complete — old creds invalidated, "
@@ -1248,16 +1228,16 @@ def _gitea_woodpecker_oauth(args: list[str]) -> int:
 
     import shlex as _shlex
 
-    # Eval-able stdout handoff to deploy.sh — same intentional pattern
-    # as ``GITEA_TOKEN=`` in :func:`_gitea_configure`. ``shlex.quote``
+    # Eval-able stdout handoff — same intentional pattern as
+    # ``GITEA_TOKEN=`` in :func:`_gitea_configure`. ``shlex.quote``
     # guarantees the value can't break out of the assignment if it
-    # ever contains shell metacharacters; deploy.sh writes the
+    # ever contains shell metacharacters; the caller writes the
     # eval'd values into Woodpecker's ``.env`` (mode 600) before
     # ``docker compose up -d``. CodeQL flags the secret-bearing line
     # because ``client_secret`` matches its sensitive-name classifier;
     # alert dismissed as "won't fix" — the eval-handoff is the
     # documented contract, mitigated by tempfile mode 600 +
-    # ``$RUNNER_CLEANUP_PATHS`` trap-driven cleanup on deploy.sh side.
+    # trap-driven cleanup of the captured stdout file.
     sys.stdout.write(f"WOODPECKER_GITEA_CLIENT={_shlex.quote(result.client_id)}\n")
     sys.stdout.write(f"WOODPECKER_GITEA_SECRET={_shlex.quote(result.client_secret)}\n")
     return 0
@@ -1267,8 +1247,7 @@ def _gitea_mirror_setup(args: list[str]) -> int:
     """`nexus-deploy gitea mirror-setup`.
 
     Provisions GH_MIRROR_REPOS as Gitea pull-mirrors plus per-user
-    forks (Modul 2.2f part 2). Mirrors deploy.sh's mirror-loop block
-    (L3224-3412 pre-migration); per-mirror operations:
+    forks. Per-mirror operations:
 
     1. Migrate (clone-mirror via Gitea's /api/v1/repos/migrate +
        GitHub PAT) — idempotent: already_exists is soft-success
@@ -1299,15 +1278,15 @@ def _gitea_mirror_setup(args: list[str]) -> int:
 
     - ``ADMIN_USERNAME`` — admin username, path-validated (default
       ``admin``). Mirrors :class:`NexusConfig`'s ``admin_username``
-      default so the CLI works without the deploy.sh env-passing
-      layer when invoked manually. (Same default as
+      default so the CLI works without an explicit env-passing layer
+      when invoked manually. (Same default as
       ``gitea woodpecker-oauth`` — Copilot R1 consistency fix.)
     - ``GITEA_USER_USERNAME`` — Gitea username for the per-user fork.
       If unset, the fork step is skipped (mirrors-only mode);
       ``GITEA_ADMIN_PASS`` becomes optional in this case.
     - ``WORKSPACE_BRANCH`` — branch for the merge-upstream step
-      (default ``main``). deploy.sh resolves this from the GitHub
-      API ahead of time and exports it.
+      (default ``main``). The orchestrator resolves this from the
+      GitHub API ahead of time and exports it.
     - ``GITEA_HOST`` — SSH host alias (default ``nexus``)
 
     **stdout** (eval-able, only when fork was created/exists):
@@ -1315,17 +1294,15 @@ def _gitea_mirror_setup(args: list[str]) -> int:
     - ``FORK_NAME=<name>``
     - ``GITEA_REPO_OWNER=<user>``
 
-    These two are consumed by deploy.sh's existing
-    ``seed_workspace_files`` wrapper (already migrated, #512) so the
-    seed POST hits the user's fork rather than the per-iteration
-    mirror name. When no fork was created/exists, no stdout output
-    is emitted.
+    These two are consumed by the seed phase so the seed POST hits
+    the user's fork rather than the per-iteration mirror name.
+    When no fork was created/exists, no stdout output is emitted.
 
     Exit codes:
 
     - 0: every mirror succeeded (created or already_exists), fork
       (if attempted) succeeded too
-    - 1: at least one mirror failed OR fork failed. Deploy.sh keeps
+    - 1: at least one mirror failed OR fork failed. Caller keeps
       going (next spin-up retries; mirrors are idempotent).
     - 2: bad args / missing required env / SSH tunnel / unexpected
       exception. Abort.
@@ -1436,10 +1413,9 @@ def _gitea_mirror_setup(args: list[str]) -> int:
         sys.stderr.write("  • fork merge-upstream attempted\n")
 
     # Eval-able stdout: emit FORK_NAME + GITEA_REPO_OWNER iff the
-    # fork is in a usable state. seed_workspace_files (deploy.sh side)
-    # uses these to point its seed POST at the user's fork rather
-    # than the most recently-mutated $REPO_NAME from the legacy
-    # mirror loop.
+    # fork is in a usable state. The seed phase reads these to point
+    # its POST at the user's fork rather than at any iteration's
+    # mirror name.
     import shlex as _shlex
 
     if result.fork is not None and result.fork.status in ("created", "already_exists"):
@@ -1452,14 +1428,10 @@ def _gitea_mirror_setup(args: list[str]) -> int:
 def _stack_sync(args: list[str]) -> int:
     """`nexus-deploy stack-sync --enabled <comma-list> [--stacks-dir PATH]`.
 
-    Replaces deploy.sh L1401-1444 (#505 Modul 3.3): per-stack rsync of
-    ``stacks/<svc>/`` → ``nexus:/opt/docker-server/stacks/<svc>/``,
-    plus disabled-stack cleanup (server-side ``docker compose down``
-    + ``rm -rf`` for any folder NOT in the enabled list).
-
-    The comma-list maps directly to deploy.sh's ``$ENABLED_SERVICES``
-    (``tr '\\n ' ',,'`` already happens on the bash side, same wire-
-    format as compose_runner).
+    Per-stack rsync of ``stacks/<svc>/`` →
+    ``nexus:/opt/docker-server/stacks/<svc>/``, plus disabled-stack
+    cleanup (server-side ``docker compose down`` + ``rm -rf`` for any
+    folder NOT in the enabled list).
 
     Optional ``--stacks-dir`` defaults to ``stacks`` relative to the
     repo root — exposed for tests. Production callers leave it off.
@@ -1467,14 +1439,13 @@ def _stack_sync(args: list[str]) -> int:
     Exit codes:
 
     - 0: every enabled service was either rsynced successfully or
-      reported missing-local (deploy.sh's pre-migration warning
-      branch, kept as soft-success); the cleanup script ran and
-      returned RESULT with failed=0.
+      reported missing-local (kept as soft-success); the cleanup
+      script ran and returned RESULT with failed=0.
     - 1: at least one rsync failed OR the cleanup loop reported
-      ``failed > 0``, but at least one operation succeeded. deploy.sh:
-      yellow warning, continue.
+      ``failed > 0``, but at least one operation succeeded.
+      Yellow warning, continue.
     - 2: bad args, transport (ssh/rsync) failure, no parseable RESULT
-      line, or unexpected exception. deploy.sh: red, abort.
+      line, or unexpected exception. Caller should abort.
     """
     enabled_str: str | None = None
     stacks_dir_arg: str | None = None
@@ -1507,9 +1478,9 @@ def _stack_sync(args: list[str]) -> int:
     if not enabled:
         # Empty list: nothing to rsync, but the cleanup loop still
         # has work — every existing folder on the server is "not in
-        # the enabled list" and gets removed. That matches deploy.sh's
-        # behaviour: a deploy with zero enabled services would tear
-        # down every stack on the server.
+        # the enabled list" and gets removed. A deploy with zero
+        # enabled services therefore tears down every stack on the
+        # server, which is the correct semantics.
         pass
 
     stacks_dir = Path(stacks_dir_arg) if stacks_dir_arg else Path("stacks")
@@ -1583,9 +1554,8 @@ def _stack_sync(args: list[str]) -> int:
 def _setup_ssh_config(args: list[str]) -> int:
     """`nexus-deploy setup ssh-config`.
 
-    Replaces deploy.sh L173-231 (#505 Modul 3.4a). Renders the
-    ``Host nexus`` block in ``~/.ssh/config`` with the Cloudflare
-    Access ProxyCommand. Atomic write, mode 0o600.
+    Renders the ``Host nexus`` block in ``~/.ssh/config`` with the
+    Cloudflare Access ProxyCommand. Atomic write, mode 0o600.
 
     Required env: ``SSH_HOST`` (the tunnel hostname),
     ``CF_ACCESS_CLIENT_ID``, ``CF_ACCESS_CLIENT_SECRET``.
@@ -1635,8 +1605,7 @@ def _setup_ssh_config(args: list[str]) -> int:
 def _setup_wait_ssh(args: list[str]) -> int:
     """`nexus-deploy setup wait-ssh`.
 
-    Replaces deploy.sh L236-377 (#505 Modul 3.4a). Polls
-    Cloudflare-Access-tunneled SSH until the host accepts a
+    Polls Cloudflare-Access-tunneled SSH until the host accepts a
     ``BatchMode=yes`` connection.
 
     When ``CF_ACCESS_CLIENT_ID`` + ``CF_ACCESS_CLIENT_SECRET`` are
@@ -1693,9 +1662,8 @@ def _setup_wait_ssh(args: list[str]) -> int:
 def _setup_ensure_jq(args: list[str]) -> int:
     """`nexus-deploy setup ensure-jq`.
 
-    Replaces deploy.sh L391-398 (#505 Modul 3.4a). Idempotent
-    ``apt-get install -y jq`` on the remote — bootstrap for VMs
-    that pre-date the cloud-init jq install.
+    Idempotent ``apt-get install -y jq`` on the remote — bootstrap
+    for VMs that pre-date the cloud-init jq install.
 
     Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``).
 
@@ -1750,10 +1718,9 @@ def _setup_ensure_jq(args: list[str]) -> int:
 def _setup_mount_volume(args: list[str]) -> int:
     """`nexus-deploy setup mount-volume`.
 
-    Replaces deploy.sh L403-459 (#505 Modul 3.4a). Mounts the
-    Hetzner persistent volume at ``/mnt/nexus-data`` with three-stage
-    device discovery (scsi-id → automount → /dev/sdb fallback) and
-    idempotent fstab entry.
+    Mounts the Hetzner persistent volume at ``/mnt/nexus-data`` with
+    three-stage device discovery (scsi-id → automount → /dev/sdb
+    fallback) and idempotent fstab entry.
 
     Required env: ``PERSISTENT_VOLUME_ID`` (Hetzner volume ID, or
     ``0`` / empty to skip).
@@ -1825,8 +1792,7 @@ def _setup_mount_volume(args: list[str]) -> int:
 def _setup_wetty_ssh_agent(args: list[str]) -> int:
     """`nexus-deploy setup wetty-ssh-agent`.
 
-    Replaces deploy.sh:439-540 (the ``[5.5/7]`` block). Renders +
-    runs a server-side bash that:
+    Renders + runs a server-side bash that:
 
     1. ssh-keygen the wetty key pair (idempotent — only if absent).
     2. Append the public key to ``authorized_keys`` (idempotent).
@@ -1906,8 +1872,9 @@ def _setup_wetty_ssh_agent(args: list[str]) -> int:
     # auth_sock_written=0 means render_wetty_agent_script's fail-fast
     # paths fired (ssh-agent unresponsive OR sed/printf to .env failed).
     # Surface as rc=1 so the workflow log shows the soft-fail signal —
-    # deploy.sh continues since Wetty is non-critical but the operator
-    # sees that the agent socket isn't actually plumbed through.
+    # the caller continues since Wetty is non-critical, but the
+    # operator sees that the agent socket isn't actually plumbed
+    # through.
     if not result.auth_sock_written:
         print(
             "setup wetty-ssh-agent: soft-fail — SSH_AUTH_SOCK not written "
@@ -1946,8 +1913,7 @@ def _setup(args: list[str]) -> int:
 def _service_env(args: list[str]) -> int:
     """`nexus-deploy service-env --enabled <csv> [--stacks-dir PATH]`.
 
-    Replaces deploy.sh L233-1170 (#505 Modul 3.4c). Reads
-    ``SECRETS_JSON`` from stdin + ``BootstrapEnv`` fields from
+    Reads ``SECRETS_JSON`` from stdin + ``BootstrapEnv`` fields from
     environment variables, renders the per-service ``.env`` files
     for every enabled service, optionally appends the Gitea
     workspace block to git-integrated stacks (jupyter / marimo /
@@ -2049,26 +2015,26 @@ def _service_env(args: list[str]) -> int:
         else:
             sys.stderr.write(f"  ✗ {r.service}: {r.detail}\n")
 
-    # Optional: append Gitea workspace block. Driven by env-vars
-    # — deploy.sh's bash side derives these from mirror/non-mirror
-    # logic; we just consume them when present.
+    # Optional: append Gitea workspace block. Driven by env-vars —
+    # the orchestrator derives these from mirror/non-mirror logic;
+    # we just consume them when present.
     gitea_repo_url = os.environ.get("GITEA_REPO_URL") or ""
     gitea_username = os.environ.get("GITEA_USERNAME") or ""
     gitea_password = os.environ.get("GITEA_PASSWORD") or ""
     git_author_name = os.environ.get("GIT_AUTHOR_NAME") or ""
     git_author_email = os.environ.get("GIT_AUTHOR_EMAIL") or ""
     repo_name = os.environ.get("REPO_NAME") or ""
-    # WORKSPACE_BRANCH is OPTIONAL — defaults to 'main' when unset
-    # (deploy.sh-only path: the bash detects the upstream's default
-    # branch and exports this var; non-mirrored stacks just stay on
-    # 'main'). Direct-CLI invocation without it gets the same default.
+    # WORKSPACE_BRANCH is OPTIONAL — defaults to 'main' when unset.
+    # The orchestrator detects the upstream's default branch in
+    # mirror mode and exports it; non-mirrored stacks just stay on
+    # 'main'. Direct-CLI invocation without it gets the same default.
     workspace_branch = os.environ.get("WORKSPACE_BRANCH") or "main"
     # Require the full set of workspace coords before appending the
     # block — a partial set would write a broken .env (empty
     # PASSWORD or author fields) that's harder to diagnose than a
-    # missing block. deploy.sh's bash derives all six in lockstep,
-    # so requiring all of them here just hardens against direct
-    # CLI invocation with partial env-vars.
+    # missing block. The orchestrator derives all six in lockstep,
+    # so this is mostly a defence-in-depth check against direct CLI
+    # invocation with partial env-vars.
     workspace_coords_complete = all(
         (
             gitea_repo_url,
@@ -2106,9 +2072,9 @@ def _service_env(args: list[str]) -> int:
 def _firewall_configure(args: list[str]) -> int:
     """`nexus-deploy firewall configure --domain <DOMAIN>`.
 
-    Replaces the ~130-LoC bash block in deploy.sh ('Generate Docker
-    Compose override files for firewall TCP port exposure') with a
-    Python equivalent backed by :mod:`nexus_deploy.firewall`.
+    Generates the per-service docker-compose firewall overrides used
+    to expose TCP ports through the Cloudflare Tunnel, backed by
+    :mod:`nexus_deploy.firewall`.
 
     Reads ``firewall_rules`` JSON from stdin (the Tofu output) and
     writes per-service ``stacks/<svc>/docker-compose.firewall.yml``
@@ -2120,7 +2086,7 @@ def _firewall_configure(args: list[str]) -> int:
          was skipped, OR zero-entry mode with no stale-cleanup
          failures.
     - 1: state is inconsistent with what Tofu requested. Several
-         distinct conditions all surface as rc=1 because deploy.sh
+         distinct conditions all surface as rc=1 because the caller
          treats this exit code as a single 'abort, state is
          inconsistent' branch:
          - At least one per-file write failed but at least one
@@ -2137,7 +2103,7 @@ def _firewall_configure(args: list[str]) -> int:
            port THIS run.
     - 2: hard error — bad args / unparseable JSON / missing RedPanda
          template file / missing --domain when RedPanda has ports.
-         deploy.sh aborts.
+         Caller should abort.
     """
     from .firewall import configure as fw_configure
 
@@ -2162,7 +2128,7 @@ def _firewall_configure(args: list[str]) -> int:
             return 2
 
     if project_root is None:
-        # Default to current working directory — deploy.sh invokes from
+        # Default to current working directory — callers invoke from
         # the repo root, where ``stacks/<svc>/...`` is a direct child.
         project_root = Path.cwd()
     if domain is None:
@@ -2228,8 +2194,8 @@ def _firewall_configure(args: list[str]) -> int:
         # but the deployed firewall state may not match what Tofu
         # CURRENTLY requests if the operator changed the port for
         # this stack. Surfacing as soft-fail (not rc=2 hard abort)
-        # so deploy.sh can decide; deploy.sh treats rc=1 as 'state
-        # inconsistent with Tofu, abort'.
+        # so the caller can decide; rc=1 is the 'state inconsistent
+        # with Tofu, abort' signal.
         sys.stderr.write(
             f"firewall configure: {len(gen.skipped)} service(s) skipped — "
             f"deployed firewall state may not match Tofu; surface as rc=1 "
@@ -2251,7 +2217,7 @@ def _r2_tokens(args: list[str]) -> int:
 
     - ``list``: dry-run inventory. Prints account-wide token total +
       remaining slots + the matched ``nexus-r2-*`` subset. Always
-      exit 0; deploy.sh / cron can scrape the output.
+      exit 0; cron / scripts can scrape the output.
     - ``cleanup --name <name>``: delete every token whose name equals
       <name>. Used by re-setup to ensure no orphan exists before
       ``init-r2-state.sh`` mints a fresh token.
@@ -2270,8 +2236,8 @@ def _r2_tokens(args: list[str]) -> int:
          per-token attempts). Backed by ``CleanupResult.is_success``.
     - 1: ``cleanup`` completed but at least one per-token delete
          failed (the loop continues — every attempt is reported in
-         stdout — but the rc reflects the partial-failure so callers
-         like deploy.sh / a follow-up cron run can re-attempt).
+         stdout — but the rc reflects the partial-failure so a
+         follow-up cron run can re-attempt).
     - 2: bad args / missing env / network error / API listing failed
          / safety guard hit (e.g. ``--prefix`` doesn't start with
          ``nexus-r2-``).
@@ -2404,12 +2370,11 @@ def _r2_tokens(args: list[str]) -> int:
 def _run_all(args: list[str]) -> int:
     """`nexus-deploy run-all`.
 
-    Replaces deploy.sh's eval-handoff dance (#505 Modul 3.4b) — calls
-    all migrated module functions in sequence with in-process state
-    handoff, then emits 3 values to stdout (eval-able by surviving
-    deploy.sh bash):
+    Calls every module function in sequence with in-process state
+    handoff, then emits 3 values to stdout for the surviving shell
+    glue to ``eval``:
 
-    - ``RESTART_SERVICES=<csv>`` — bash compose-restart loop
+    - ``RESTART_SERVICES=<csv>`` — compose-restart loop input
     - ``WOODPECKER_GITEA_CLIENT=<id>`` — written into stacks/woodpecker/.env
     - ``WOODPECKER_GITEA_SECRET=<secret>`` — written into stacks/woodpecker/.env
 
@@ -2467,7 +2432,9 @@ def _run_all(args: list[str]) -> int:
     ssh_host = os.environ.get("SSH_HOST_ALIAS") or "nexus"
     infisical_env = os.environ.get("INFISICAL_ENV") or "dev"
     gh_mirror_repos = [s.strip() for s in gh_mirror_repos_csv.split(",") if s.strip()]
-    # Phase 4b2 (#505) — additions for new post-bootstrap phases:
+    # Inputs for the post-bootstrap phases (compose-restart,
+    # kestra-secret-sync, woodpecker-apply, mirror-seed-rerun,
+    # mirror-finalize):
     admin_username = os.environ.get("ADMIN_USERNAME") or ""
     woodpecker_agent_secret = os.environ.get("WOODPECKER_AGENT_SECRET") or None
 
@@ -2534,7 +2501,7 @@ def _run_all(args: list[str]) -> int:
         detail = f" — {phase.detail}" if phase.detail else ""
         sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
 
-    # Eval-able stdout: 3 values for the surviving deploy.sh bash.
+    # Eval-able stdout: 3 values for the surviving shell glue.
     import shlex as _shlex
 
     # Always emit all 3 lines so a previous run's shell vars don't
@@ -2843,8 +2810,7 @@ def _select_capacity(args: list[str]) -> int:
 def _run_pipeline(args: list[str]) -> int:
     """`nexus-deploy run-pipeline`.
 
-    Phase 4c (#505) — top-level deploy entrypoint that REPLACES
-    ``scripts/deploy.sh``. Calls
+    Top-level deploy entrypoint. Calls
     :func:`nexus_deploy.pipeline.run_pipeline` which orchestrates:
 
     - R2 credentials env-injection from ``tofu/.r2-credentials``
@@ -2963,15 +2929,15 @@ def _run_pipeline(args: list[str]) -> int:
     sys.stdout.write(_pipeline.format_done_banner(result))
 
     # Exit-code dispatch: a successful deploy returns 0 — even when
-    # one or more phases produced ``status='partial'``. The original
-    # per-CLI handlers (run-all / run-pre-bootstrap, called from the
-    # legacy deploy.sh) returned rc=1 for partial because deploy.sh
-    # absorbed it (``case 0|1) continue ;;``). ``run-pipeline`` is now
-    # the top-level CLI invoked directly by spin-up.yml's bash with
-    # ``set -e``, so a non-zero exit fails the workflow step. Partial
-    # is a "warn and continue" semantic surfaced via stderr per-phase
-    # log; only actual hard failures (PipelineError, raised above)
-    # get the rc=2 treatment.
+    # one or more phases produced ``status='partial'``. The
+    # individual ``run-all`` / ``run-pre-bootstrap`` handlers return
+    # rc=1 for partial when called as standalone subcommands so
+    # callers can branch on it. ``run-pipeline`` is the top-level
+    # CLI invoked directly by spin-up.yml's bash with ``set -e``, so
+    # a non-zero exit fails the workflow step. Partial is a "warn
+    # and continue" semantic surfaced via the per-phase stderr log;
+    # only actual hard failures (PipelineError, raised above) get
+    # the rc=2 treatment.
     has_partial = result.pre_bootstrap.has_partial or result.run_all.has_partial
     if has_partial:
         sys.stderr.write(
@@ -2984,35 +2950,33 @@ def _run_pipeline(args: list[str]) -> int:
 def _run_pre_bootstrap(args: list[str]) -> int:
     """`nexus-deploy run-pre-bootstrap`.
 
-    Phase 4a (#505) — runs the pre-bootstrap pipeline (service-env →
-    firewall-configure → stack-sync → compose-up → infisical-provision)
-    in a single Python invocation, replacing the per-CLI calls in
-    deploy.sh's [3/7]-[7/7-start] section. (Phase order corrected in
-    PR #532 R5 #1 so firewall overrides are part of what stack-sync
-    rsyncs to the server.)
+    Runs the pre-bootstrap pipeline (service-env →
+    firewall-configure → stack-sync → compose-up →
+    infisical-provision) in a single Python invocation. (Phase
+    order: PR #532 R5 #1 fixed an issue where firewall overrides
+    were rendered after stack-sync ran, so they never made it onto
+    the server.)
 
     Reads ``SECRETS_JSON`` from stdin (Tofu output). Reads workspace
-    coords + firewall_rules + admin password from env vars (deploy.sh
-    derives them in bash and exports them).
+    coords + firewall_rules + admin password from env vars.
 
-    On rc=0 emits eval-able stdout for deploy.sh's surviving glue:
+    On rc=0 emits eval-able stdout for the caller:
     ``INFISICAL_TOKEN=<token>`` + ``PROJECT_ID=<id>`` (the two values
-    that downstream non-migrated bash blocks still need). Empty values
-    on rc=1 (provision soft-fail) so eval clears any stale value.
+    downstream phases need). Empty values on rc=1 (provision
+    soft-fail) so ``eval`` clears any stale value.
 
     SECURITY: stdout carries an Infisical bearer token. The CALLER
     MUST redirect stdout to a file (or pipe through ``eval``) so the
     token doesn't end up in workflow logs / terminal scrollback. The
-    established deploy.sh pattern is::
+    typical pattern is::
 
-        OUT=$(mktemp); echo "$OUT" >> "$RUNNER_CLEANUP_PATHS"
+        OUT=$(mktemp); trap 'rm -f "$OUT"' EXIT
         run-pre-bootstrap > "$OUT" || RC=$?
         eval "$(cat "$OUT")"
 
-    The mktemp tempfile is auto-cleaned by the global EXIT trap.
     DON'T invoke this command interactively without a redirection.
-    Same eval-pattern + redirection conventions as the legacy
-    ``infisical provision-admin`` CLI (#530).
+    Same eval-pattern + redirection conventions as
+    ``infisical provision-admin``.
 
     Required env: ``ADMIN_EMAIL``, ``ENABLED_SERVICES``, ``DOMAIN``,
     ``ADMIN_USERNAME``, ``INFISICAL_PASS``, ``FIREWALL_RULES_JSON`` —
@@ -3022,9 +2986,9 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     override files. Operators MUST pass an explicit ``"{}"`` to opt
     into zero-entry mode.
 
-    Optional env: ``REPO_NAME``, ``GITEA_REPO_OWNER`` (Phase 4b1: now
-    derived by ``_phase_workspace_coords``; can be pre-seeded for
-    tests), ``WORKSPACE_BRANCH`` (default ``main``),
+    Optional env: ``REPO_NAME``, ``GITEA_REPO_OWNER`` (now derived
+    by ``_phase_workspace_coords``; can be pre-seeded for tests),
+    ``WORKSPACE_BRANCH`` (default ``main``),
     ``GITEA_USER_USERNAME``, ``GITEA_USER_EMAIL``, ``GITEA_USER_PASS``,
     ``GITEA_ADMIN_PASS``, ``USER_EMAIL`` (passed into global-env's
     stacks/.env), ``GH_MIRROR_REPOS`` (csv), ``GH_MIRROR_TOKEN``
@@ -3037,10 +3001,10 @@ def _run_pre_bootstrap(args: list[str]) -> int:
 
     Exit codes:
     - 0: every phase ok or skipped.
-    - 1: at least one phase produced status='partial' (deploy.sh
+    - 1: at least one phase produced status='partial' (caller
          continues — operator sees the per-phase log).
     - 2: at least one phase failed (orchestrator aborted; subsequent
-         deploy.sh steps that depend on Infisical/etc must abort too).
+         steps that depend on Infisical/etc must abort too).
     """
     if args:
         print(f"run-pre-bootstrap: unknown args {args!r}", file=sys.stderr)
@@ -3058,7 +3022,7 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     # existing override files on disk. Operators must pass "{}" explicitly
     # to opt into zero-entry mode.
     firewall_json = os.environ.get("FIREWALL_RULES_JSON") or ""
-    # Phase 4b1 (#505) — additions for new pre-bootstrap phases:
+    # Inputs for the workspace-coords + firewall-sync + global-env phases:
     admin_username = os.environ.get("ADMIN_USERNAME") or ""
     user_email = os.environ.get("USER_EMAIL") or ""
     gitea_admin_pass = os.environ.get("GITEA_ADMIN_PASS") or None
@@ -3073,7 +3037,7 @@ def _run_pre_bootstrap(args: list[str]) -> int:
     # the (name) projection — not the (val) — gets emitted to stderr.
     # Caught in PR #532 R1 #1 (CodeQL false positive).
     #
-    # REPO_NAME + GITEA_REPO_OWNER are NO LONGER required (Phase 4b1):
+    # REPO_NAME + GITEA_REPO_OWNER are NOT required:
     # _phase_workspace_coords derives them from raw inputs. They can
     # still be passed for back-compat / pre-seeding (e.g. tests).
     required_env = (
@@ -3135,7 +3099,7 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         firewall_json=firewall_json,
         project_root=project_root,
         admin_password_infisical=admin_password_infisical,
-        # Phase 4b1 additions:
+        # workspace-coords + global-env inputs:
         admin_username=admin_username,
         user_email=user_email,
         gitea_admin_pass=gitea_admin_pass,
@@ -3163,14 +3127,11 @@ def _run_pre_bootstrap(args: list[str]) -> int:
         detail = f" — {phase.detail}" if phase.detail else ""
         sys.stderr.write(f"  {marker} {phase.name}: {phase.status}{detail}\n")
 
-    # Eval-able stdout: 5 values for deploy.sh's surviving glue. Always
-    # emit (with empty values when not populated) so eval clears stale
-    # shell vars from prior runs.
-    #
-    # Phase 4b1 (#505) — added 3 workspace-coords emissions
-    # (REPO_NAME, GITEA_REPO_OWNER, WORKSPACE_BRANCH) since the
-    # workspace-coords phase now derives them in Python, replacing the
-    # bash-side derivation that previously fed run-all directly.
+    # Eval-able stdout: 5 values for the caller. Always emit (with
+    # empty values when not populated) so ``eval`` clears stale
+    # shell vars from prior runs. The 3 workspace-coords lines
+    # (REPO_NAME, GITEA_REPO_OWNER, WORKSPACE_BRANCH) come from the
+    # workspace-coords phase.
     import shlex as _shlex
 
     sys.stdout.write(
@@ -3205,8 +3166,7 @@ def _allocate_free_port() -> int:
     close and ssh-rebind is microseconds; for production-deploy-
     frequency that's fine. If a future contributor needs zero-race,
     paramiko's port-forward has a callback API but we explicitly chose
-    subprocess + system ssh in Modul 3.1, so this is the right
-    primitive for now.
+    subprocess + system ssh, so this is the right primitive.
 
     Note: IPv4-only by design. ``ssh.SSHClient.port_forward`` matches
     by passing the explicit ``127.0.0.1:`` bind address — without it,
@@ -3225,9 +3185,7 @@ def _allocate_free_port() -> int:
 
 
 # Hints emitted alongside execution_state in stderr — actionable
-# replacements for the bare-enum output. Mirrors deploy.sh's
-# per-case warnings (L3464 cron-tick / L3489 seed-not-visible /
-# L3493 open-execution-in-UI / L3496 didn't-complete).
+# replacements for the bare-enum output, one warning per case.
 _KESTRA_EXECUTION_HINTS: dict[str, str] = {
     "SUCCESS": "",
     "FAILED": "open the execution in the Kestra UI for the error log",
@@ -3248,14 +3206,8 @@ def _kestra_execution_hint(state: str) -> str:
 
 
 def main() -> int:
-    """Subcommand dispatcher. Shipped subcommands by phase:
-
-    - Phase 1: ``config dump-shell``, ``infisical bootstrap``,
-      ``secret-sync``
-    - Phase 2: ``seed``, ``compose up``, ``services configure``,
-      ``kestra register-system-flows``
-
-    More land as the migration progresses; see #505.
+    """Subcommand dispatcher. See the module docstring for the full
+    list of subcommands.
     """
     args = sys.argv[1:]
     if args == ["--version"]:
@@ -3327,7 +3279,7 @@ def main() -> int:
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
-        "run-pre-bootstrap (Phase 4b1: workspace-coords → service-env → firewall-configure → "
+        "run-pre-bootstrap (workspace-coords → service-env → firewall-configure → "
         "stack-sync → firewall-sync → global-env → compose-up → infisical-provision; reads "
         "SECRETS_JSON from stdin + env vars incl. INFISICAL_PASS, FIREWALL_RULES_JSON, "
         "ADMIN_USERNAME, IMAGE_VERSIONS_JSON; emits eval-able stdout: INFISICAL_TOKEN + "
@@ -3336,8 +3288,8 @@ def main() -> int:
         "check; reads HCLOUD_TOKEN + optional SERVER_PREFERENCES env, walks "
         "<type>:<location> preference list, rewrites server_type+server_location "
         "in PATH to first available pair; rc=2 if every preference is out of stock), "
-        "run-pipeline (Phase 4c top-level entry — replaces scripts/deploy.sh; "
-        "reads tofu state + config.tfvars; optional env: SSH_PRIVATE_KEY_CONTENT, "
+        "run-pipeline (top-level deploy entry; reads tofu state + "
+        "config.tfvars; optional env: SSH_PRIVATE_KEY_CONTENT, "
         "GH_MIRROR_TOKEN, GH_MIRROR_REPOS, DOCKERHUB_USER, DOCKERHUB_TOKEN, "
         "INFISICAL_ENV, PROJECT_ROOT), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "

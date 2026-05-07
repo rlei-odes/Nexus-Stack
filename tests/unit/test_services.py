@@ -1,7 +1,7 @@
-"""Tests for nexus_deploy.services — Phase 2 Modul 2.2b (#505).
+"""Tests for nexus_deploy.services.
 
-Eight round-tagged invariant tests (one per deploy.sh hardening round)
-plus per-spec snapshots, exec'd-bash regression tests for the JSON
+Eight round-tagged invariant tests (one per hardening round) plus
+per-spec snapshots, exec'd-bash regression tests for the JSON
 build + idempotent-skip dispatch, and CLI integration covering rc=0/1/2.
 """
 
@@ -58,11 +58,12 @@ from nexus_deploy.services import (
 
 def _make_config(**overrides: Any) -> NexusConfig:
     """Build a NexusConfig with minimal credentials for every admin-setup
-    hook that consumes them — Modul 2.2b/c/d (Portainer, n8n, Metabase,
-    LakeFS, OpenMetadata, RedPanda, Superset, Filestash) plus Modul 3.4d
-    (Wiki.js, Dify, Windmill, SFTPGo with R2 vfs). Uptime Kuma + Garage
-    don't need credentials in this fixture (Uptime Kuma is warn-only;
-    Garage's admin token comes via .env, not via the rendered hook)."""
+    hook that consumes them: REST hooks (Portainer, n8n, Metabase,
+    LakeFS, OpenMetadata), docker-exec hooks (RedPanda, Superset),
+    Filestash, plus Wiki.js / Dify / Windmill / SFTPGo (with R2 vfs).
+    Uptime Kuma + Garage don't need credentials in this fixture
+    (Uptime Kuma is warn-only; Garage's admin token comes via .env,
+    not via the rendered hook)."""
     defaults: dict[str, Any] = {
         "admin_username": "admin",
         "portainer_admin_password": "p-pass",
@@ -74,10 +75,10 @@ def _make_config(**overrides: Any) -> NexusConfig:
         "lakefs_admin_secret_key": "secret-lakefs-key",
         "openmetadata_admin_password": "om-pass-Complex1!",
         "hetzner_s3_bucket_lakefs": "my-bucket",
-        # Modul 2.2c
+        # docker-exec hooks
         "redpanda_admin_password": "rp-pass",
         "superset_admin_password": "su-pass",
-        # Modul 3.4d
+        # additional admin-setup hooks
         "wikijs_admin_password": "wiki-pass",
         "dify_admin_password": "dify-pass",
         "windmill_admin_password": "wm-admin-pass",
@@ -103,28 +104,28 @@ def _make_env(admin_email: str = "ops@example.com") -> BootstrapEnv:
 
 
 def test_supported_hooks_contains_all_specs() -> None:
-    """Modul 2.2b (5 REST) + 2.2c (2 docker-exec) + 2.2d (Filestash, python)
-    + 3.4d (6 remaining admin-setups)."""
+    """5 REST hooks + 2 docker-exec hooks + Filestash (python) +
+    6 additional admin-setups."""
     assert set(supported_hooks()) == {
-        # 2.2b — REST first-init
+        # REST first-init
         "portainer",
         "n8n",
         "metabase",
         "lakefs",
         "openmetadata",
-        # 2.2c — docker-exec CLI
+        # docker-exec CLI
         "redpanda",
         "superset",
-        # 2.2d — python-side mutation
+        # python-side mutation
         "filestash",
-        # 3.4d — remaining admin-setups
+        # additional admin-setups
         "uptime-kuma",
         "garage",
         "wikijs",
         "dify",
         "windmill",
         "sftpgo",
-        # 3.4f — pg-ducklake bootstrap-SQL re-apply
+        # pg-ducklake bootstrap-SQL re-apply
         "pg-ducklake",
     }
 
@@ -196,7 +197,7 @@ def test_render_metabase_hook_uses_admin_email() -> None:
 
 
 def test_render_lakefs_hook_picks_hetzner_when_both_bucket_and_server_set() -> None:
-    """Storage namespace selection mirrors legacy deploy.sh — BOTH
+    """Storage namespace selection mirrors legacy the caller — BOTH
     `hetzner_s3_bucket_lakefs` AND `hetzner_s3_server` must be set
     to land in the s3:// namespace.
 
@@ -230,7 +231,7 @@ def test_render_lakefs_hook_falls_back_to_local_when_no_hetzner() -> None:
 def test_render_lakefs_hook_falls_back_when_only_bucket_set_no_server() -> None:
     """Round-7 finding: bucket alone is NOT enough — endpoint is also
     required. Without the server, lakefs has no way to read/write S3.
-    The legacy deploy.sh required BOTH; we must too."""
+    The legacy the caller required BOTH; we must too."""
     config = _make_config(hetzner_s3_bucket_lakefs="b1", hetzner_s3_server="")
     script = render_lakefs_hook(config, _make_env())
     # Both fields are present in the rendered script (their values
@@ -251,7 +252,7 @@ def test_render_openmetadata_hook_3_step_flow() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Modul 2.2c — docker-exec hooks (RedPanda, Superset)
+# docker-exec hooks (RedPanda, Superset)
 # ---------------------------------------------------------------------------
 
 
@@ -276,7 +277,7 @@ def test_render_redpanda_hook_skips_when_password_empty() -> None:
 def test_render_redpanda_hook_password_via_stdin_not_argv() -> None:
     """R4 — RedPanda password reaches docker exec via stdin, NOT
     via ``-e RPK_PASS=value`` (which would put it in docker's argv
-    on the host). Mirrors the legacy deploy.sh acknowledged-leak
+    on the host). Mirrors the legacy the caller acknowledged-leak
     pattern but strictly more correct.
     """
     canary = "RP-CANARY-X1Y2Z3"
@@ -317,7 +318,7 @@ def test_render_redpanda_hook_uses_curl_dash_f_for_status_check() -> None:
 
 
 def test_render_redpanda_hook_password_rotation_via_create_first_then_delete() -> None:
-    """Round-1 + round-2 findings: legacy deploy.sh never sync'd the
+    """Round-1 + round-2 findings: legacy the caller never sync'd the
     password on a second run — Infisical rotation silently broke
     clients. STRICTLY-MORE-CORRECT divergence: try-create-first;
     only delete + recreate IF create reports "already exists" (the
@@ -344,7 +345,7 @@ def test_render_redpanda_hook_password_rotation_via_create_first_then_delete() -
 
 
 def test_render_redpanda_hook_cluster_config_set_failure_propagates() -> None:
-    """Round-1 finding: legacy deploy.sh swallowed `rpk cluster config
+    """Round-1 finding: legacy the caller swallowed `rpk cluster config
     set superusers` failures — could mark hook `configured` while the
     user had no permissions. Now: capture the result, fail loudly.
     """
@@ -441,7 +442,7 @@ def test_render_superset_hook_email_via_dash_e_not_argv() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Modul 3.4d — Uptime Kuma, Garage, Wiki.js, Dify, Windmill, SFTPGo
+# Uptime Kuma, Garage, Wiki.js, Dify, Windmill, SFTPGo
 # ---------------------------------------------------------------------------
 
 
@@ -475,7 +476,7 @@ def test_render_garage_hook_idempotency_branches() -> None:
 def test_render_garage_hook_layout_show_failure_reports_failed() -> None:
     """R-exit-status: layout-show exit status is captured separately
     so a Docker-daemon / container-missing failure reports `failed`,
-    not false-positive `already-configured`. Legacy deploy.sh used
+    not false-positive `already-configured`. Legacy the caller used
     `|| echo ""` here which silently swallowed real failures."""
     script = render_garage_hook(_make_config(), _make_env())
     # LAYOUT_RC captured separately, gated before the grep
@@ -670,7 +671,7 @@ def test_render_windmill_hook_secures_default_admin_account() -> None:
     """R-security (Step 4): MUST rotate admin@windmill.dev password
     away from the long-lived WINDMILL_SUPERADMIN_SECRET. Without
     this, anyone with the secret could log in as the default admin.
-    Legacy deploy.sh:2456-2459.
+    Legacy (see git history).
 
     Plus: rotation HTTP status must be CHECKED, not silenced. A
     failed rotation (wrong secret, API error) must surface as
@@ -757,7 +758,7 @@ def test_render_sftpgo_hook_dir_prep_inside_container() -> None:
 
 def test_render_sftpgo_hook_hetzner_folder_gated_on_all_5_fields() -> None:
     """Hetzner virtual folder gated on all 5 HZ_* fields (bucket + server
-    + region + access_key + secret_key) — matches legacy deploy.sh:1206.
+    + region + access_key + secret_key) — matches legacy (see git history).
     A 3-field gate would attempt the POST with empty creds and fail."""
     script = render_sftpgo_hook(_make_config(), _make_env())
     for var in (
@@ -946,8 +947,8 @@ def test_no_credential_leaks_into_subprocess_argv_per_hook(
     Round-2 PR #514: caught Portainer + n8n curl-argv leaks.
     Round-5 PR #514: caught the SAME class on jq's argv (``jq -n
     --arg pw <secret>`` puts secret in jq's argv).
-    Modul 2.2c: docker-exec hooks add a third leak surface
-    (``docker exec -e VAR=value`` or ``docker exec ... cmd $secret``).
+    docker-exec hooks add a third leak surface (``docker exec -e
+    VAR=value`` or ``docker exec ... cmd $secret``).
 
     Bash builtins (printf, env-var assignments via ``VAR=value cmd``)
     don't fork — values can safely appear on those lines without
@@ -1102,8 +1103,8 @@ def test_round_7_hook_execution_order_matches_enabled_arg() -> None:
     ``enabled_hooks`` argument order, NOT registry order.
 
     Operators rely on this for log debug + the integration with
-    deploy.sh's [7/7] sequence — the CLI passes the comma-list as
-    typed, and deploy.sh's $ENABLED_SERVICES is built from
+    the caller's [7/7] sequence — the CLI passes the comma-list as
+    typed, and the caller's $ENABLED_SERVICES is built from
     services.yaml in source order via tofu output.
     """
     script = render_remote_script(
@@ -1476,7 +1477,7 @@ def test_services_configure_cli_rc2_on_transport_failure(
 
 
 # ---------------------------------------------------------------------------
-# Modul 2.2d — Filestash (Python-side JSON mutation)
+# Filestash (Python-side JSON mutation)
 # ---------------------------------------------------------------------------
 
 
@@ -1570,7 +1571,7 @@ def test_filestash_no_s3_returns_no_predicates() -> None:
 
 
 def test_filestash_connections_order_r2_then_hetzner_then_external() -> None:
-    """deploy.sh's iteration order: R2 first, Hetzner second, External third."""
+    """the caller's iteration order: R2 first, Hetzner second, External third."""
     conns = _filestash_s3_connections(_config_all_three())
     labels = [c["label"] for c in conns]
     assert labels == ["R2 Datalake", "Hetzner Storage", "Acme S3"]
@@ -1582,7 +1583,7 @@ def test_filestash_connections_only_r2() -> None:
 
 
 def test_filestash_external_label_default_when_unset() -> None:
-    """external_s3_label defaults to 'External Storage' (deploy.sh fallback)."""
+    """external_s3_label defaults to 'External Storage' (the caller fallback)."""
     cfg = NexusConfig.from_secrets_json(
         json.dumps(
             {
@@ -1622,7 +1623,7 @@ def test_filestash_params_external_only() -> None:
 
 
 def test_filestash_params_hetzner_endpoint_prefixed_with_https() -> None:
-    """deploy.sh stores HETZNER_S3_SERVER bare; Filestash needs full URL."""
+    """the caller stores HETZNER_S3_SERVER bare; Filestash needs full URL."""
     params = _filestash_s3_params(_config_with_hetzner())
     assert params["Hetzner Storage"]["endpoint"] == "https://hetzner-s3-fake-host"
 
@@ -1651,7 +1652,7 @@ def test_filestash_mutate_does_not_double_strip() -> None:
 
 
 def test_filestash_mutate_force_ssl_set_to_true_when_null() -> None:
-    """deploy.sh: 'force_ssl': null → 'force_ssl': true."""
+    """the caller: 'force_ssl': null → 'force_ssl': true."""
     pre = {"general": {"host": "x.example.com", "force_ssl": None}}
     post = _filestash_mutate_config(pre, config=_config_no_s3())
     assert post["general"]["force_ssl"] is True

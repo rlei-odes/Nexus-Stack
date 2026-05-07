@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.compose_restart — Phase 4b2 (#505).
+"""Tests for nexus_deploy.compose_restart.
 
 Covers:
 - Empty input short-circuit (no ssh round-trip, RESULT 0/0)

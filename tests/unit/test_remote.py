@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy._remote — Phase 1 SSH/rsync primitives (#505)."""
+"""Tests for nexus_deploy._remote."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def test_ssh_run_no_check_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_rsync_to_remote_appends_trailing_slash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``Path('/foo')`` becomes ``/foo/`` to match deploy.sh's contents-only rsync."""
+    """``Path('/foo')`` becomes ``/foo/`` to match the caller's contents-only rsync."""
     captured: dict[str, Any] = {}
 
     def fake_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:

@@ -1,7 +1,7 @@
-"""Tests for nexus_deploy.compose_runner — Phase 2 Modul 2.2a (#505).
+"""Tests for nexus_deploy.compose_runner.
 
-Eight round-tagged invariant tests (one per deploy.sh hardening round)
-plus virtual-service expansion tests, exec'd-bash regression tests for
+Eight round-tagged invariant tests (one per hardening round) plus
+virtual-service expansion tests, exec'd-bash regression tests for
 the parallel-deploy semantics, and CLI integration covering rc=0/1/2.
 """
 
@@ -64,7 +64,7 @@ def test_round_5_parent_skipped_in_leaves_when_already_added() -> None:
 
 
 def test_round_6_deferred_services_skipped() -> None:
-    """R6 — woodpecker is deferred (started later in deploy.sh)."""
+    """R6 — woodpecker is deferred (started later in the caller)."""
     parents, leaves = expand_targets(["jupyter", "woodpecker", "gitea"])
     assert parents == []
     assert "woodpecker" not in leaves
@@ -210,13 +210,11 @@ def test_render_handles_empty_lists() -> None:
     assert 'echo "RESULT started=$STARTED failed=$FAILED"' in script
 
 
-def test_render_missing_parent_compose_counted_as_failed_strict_divergence() -> None:
-    """DELIBERATE divergence from legacy deploy.sh: a missing
-    parent docker-compose.yml is counted as failed (legacy bash
-    silently skipped). Documented in the rendered-script comment;
-    this test pins the divergence so a future round-trip back to
-    legacy semantics requires touching the test (forcing reviewer
-    awareness)."""
+def test_render_missing_parent_compose_counted_as_failed() -> None:
+    """A missing parent docker-compose.yml is counted as failed in
+    BOTH the parent and leaf branches (so the cleanup loop is
+    idempotent and an unmatched virtual service surfaces as a real
+    failure rather than being silently skipped)."""
     script = render_remote_script(parents=["seaweedfs"], leaves=[])
     # The conditional + FAILED increment must be present
     assert 'if [ -f "$STACKS_DIR/$svc/docker-compose.yml" ]' in script
@@ -225,15 +223,12 @@ def test_render_missing_parent_compose_counted_as_failed_strict_divergence() -> 
     # → the loop appears twice (one per branch); count via the
     # specific FAILED+=1 pattern. We expect two occurrences.
     assert script.count("FAILED=$((FAILED+1))") >= 2
-    # The DELIBERATE DIVERGENCE comment must be present so a
-    # reviewer flipping the behaviour back to legacy sees the rationale
-    assert "DELIBERATE DIVERGENCE" in script
 
 
 def test_render_special_chars_in_service_name_quoted() -> None:
     """shlex.quote protects against future stack names with special chars.
 
-    Realistically deploy.sh's STACK_PARENTS map is hardcoded to
+    Realistically the caller's STACK_PARENTS map is hardcoded to
     safe ASCII names, but defence in depth: a future contributor
     adding 'foo bar' would not break the rendered bash.
     """
@@ -385,8 +380,8 @@ def test_cli_compose_up_empty_enabled_returns_zero() -> None:
 def test_run_compose_up_filters_empty_csv_entries() -> None:
     """expand_targets handles empty / duplicate inputs cleanly.
 
-    Regression-test the PARSER side of the round-1 deploy.sh bug:
-    deploy.sh's `tr '\\n ' ',,'` may produce empty entries between
+    Regression-test the PARSER side of the round-1 the caller bug:
+    the caller's `tr '\\n ' ',,'` may produce empty entries between
     consecutive separators or at trailing position. The CLI's
     list-comprehension filter `[s.strip() for s in ... if s.strip()]`
     drops them; expand_targets' dedupe handles repeats. Result: a

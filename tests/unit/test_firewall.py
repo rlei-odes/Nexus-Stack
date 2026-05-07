@@ -1,4 +1,4 @@
-"""Tests for nexus_deploy.firewall — Phase 3 Modul 3.4e (#505).
+"""Tests for nexus_deploy.firewall.
 
 Covers:
 - ``parse_firewall_rules`` shape contract (suffix-strip, empty/null,
@@ -869,7 +869,7 @@ def test_cli_firewall_configure_skipped_service_returns_1(
     return rc=1 — NOT rc=0. Existing override stays on disk (per the
     R5 #1 safety invariant) but the deployed firewall state may not
     match Tofu if the operator changed the port for that stack.
-    Surfacing as rc=1 is the only way deploy.sh can decide to abort
+    Surfacing as rc=1 is the only way the caller can decide to abort
     rather than finishing green on a stale override."""
     from nexus_deploy.__main__ import _firewall_configure
 

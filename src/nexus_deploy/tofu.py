@@ -1,19 +1,18 @@
-"""OpenTofu CLI wrapper for nexus_deploy (Phase 3 Modul 3.2, #505).
+"""OpenTofu CLI wrapper for nexus_deploy.
 
-Thin typed wrapper around ``tofu output``. Replaces deploy.sh's
-ad-hoc ``$(cd "$TOFU_DIR" && tofu output -json X 2>/dev/null || echo
-"{}")`` pattern (8 call-sites in deploy.sh) with a single class whose
-fallback behavior is explicit per-call.
+:class:`TofuRunner` is a thin typed wrapper around ``tofu output``
+with explicit per-call default handling: callers pass ``default=...``
+to opt into the silent-fallback semantic, omit it to require a
+successful read.
 
-Phase 4c (#505) extension: adds :func:`state_list_ok` for the
-pre-flight check that replaces deploy.sh's ``tofu state list >/dev/
-null 2>&1`` guard, and :func:`load_r2_credentials` +
+Also exports :func:`state_list_ok` for the pre-flight ``tofu state
+list`` check, and :func:`load_r2_credentials` +
 :class:`R2Credentials` for parsing ``tofu/.r2-credentials`` (the
 shell-format AWS-creds file the R2 backend expects).
 
-``tofu apply`` is intentionally NOT wrapped here — that lands with the
-orchestrator (Modul 3.4) so the streaming-output and per-stage logging
-concerns live next to where they're consumed.
+``tofu apply`` is intentionally NOT wrapped here — that runs in the
+orchestrator's pre-bootstrap pipeline so streaming-output and
+per-stage logging concerns live next to where they're consumed.
 """
 
 from __future__ import annotations
@@ -40,9 +39,9 @@ class TofuError(Exception):
 class TofuRunner:
     """Run ``tofu output`` in a fixed working directory.
 
-    The default ``tofu_dir`` matches deploy.sh's ``$TOFU_DIR``
-    (``tofu/stack``). Pass an explicit path for tests or when wrapping
-    the secondary ``tofu/control-plane`` state.
+    The default ``tofu_dir`` is ``tofu/stack`` (the canonical state
+    directory). Pass an explicit path for tests or when wrapping the
+    secondary ``tofu/control-plane`` state.
     """
 
     def __init__(self, tofu_dir: Path = Path("tofu/stack")) -> None:
@@ -56,10 +55,9 @@ class TofuRunner:
     def output_raw(self, name: str, *, default: Any = _MISSING) -> str:
         """``tofu output -raw <name>``.
 
-        Mirror of deploy.sh's ``tofu output -raw <name> 2>/dev/null ||
-        echo "<fallback>"`` pattern. Pass ``default=""`` for the silent
-        fallback semantic; omit it to make a missing/erroring output
-        raise :class:`TofuError`.
+        Pass ``default=""`` for the silent-fallback semantic; omit
+        ``default`` to make a missing/erroring output raise
+        :class:`TofuError`.
         """
         try:
             completed = subprocess.run(
@@ -73,10 +71,11 @@ class TofuRunner:
             if default is _MISSING:
                 raise TofuError(f"tofu output -raw {name} failed in {self.tofu_dir}") from exc
             return str(default)
-        # Strip trailing newlines to match deploy.sh's $(...) command-substitution
-        # semantic. POSIX command substitution removes ALL trailing newlines, so
-        # `SERVER_IP=$(tofu output -raw server_ip)` lands without the `\n`. Returning
-        # raw stdout would diverge subtly: `f"http://{server_ip}/api"` becomes
+        # Strip trailing newlines to match the POSIX $(...) command-
+        # substitution semantic that callers expect: $() removes ALL
+        # trailing newlines, so `SERVER_IP=$(tofu output -raw server_ip)`
+        # lands without the `\n`. Returning raw stdout would diverge
+        # subtly: `f"http://{server_ip}/api"` becomes
         # `"http://1.2.3.4\n/api"` — silent breakage downstream.
         return completed.stdout.rstrip("\n")
 

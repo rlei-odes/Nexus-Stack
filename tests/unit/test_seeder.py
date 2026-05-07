@@ -1,6 +1,6 @@
-"""Tests for nexus_deploy.seeder — Phase 2 Modul 2.1 (#505).
+"""Tests for nexus_deploy.seeder.
 
-Eight round-tagged invariant tests (one per deploy.sh hardening round)
+Eight round-tagged invariant tests (one per the caller hardening round)
 plus path-safety property tests, exec'd-bash regression tests for HTTP
 dispatch (Modul-2.0 lessons), and CLI integration covering rc=0/1/2.
 """
@@ -61,7 +61,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "workspace_
     ],
 )
 def test_is_safe_repo_path_parameterized(path: str, ok: bool) -> None:
-    """R5 — repo-path safety regex matches deploy.sh:3384.
+    """R5 — repo-path safety regex matches the canonical layout:3384.
 
     This test only covers the char-level regex. Structural escape
     protection (``..`` segments, leading ``/``, empty segments) is
@@ -81,7 +81,7 @@ def test_is_safe_repo_path_property(text: str) -> None:
 
 
 def test_url_encode_path_per_segment() -> None:
-    """Mirror deploy.sh:3391 — per-segment ``jq @uri`` encoding."""
+    """— per-segment ``jq @uri`` encoding."""
     assert _url_encode_path("nexus_seeds/foo.yaml") == "nexus_seeds/foo.yaml"
     # Slash separator preserved, but special chars in segments are encoded
     assert (
@@ -141,7 +141,7 @@ def test_round_5_path_safety_rejects_dotdot_escape(tmp_path: Path) -> None:
 
 
 def test_round_6_symlinks_skipped(tmp_path: Path) -> None:
-    """R6 — symlinks are skipped, mirrors deploy.sh's ``find -type f``."""
+    """R6 — symlinks are skipped, mirrors the caller's ``find -type f``."""
     seed_root = tmp_path / "seeds"
     seed_root.mkdir()
     real = seed_root / "real.txt"
@@ -170,8 +170,8 @@ def test_round_7_deterministic_ordering() -> None:
 def test_list_seed_files_unsafe_filename_dropped(tmp_path: Path) -> None:
     """Files whose computed repo_path violates _VALID_REPO_PATH_RE are dropped.
 
-    Mirrors deploy.sh's ``Skipping seed with unsafe path`` branch
-    (line 3385) — though deploy.sh counts it as failed, we drop
+    Mirrors the caller's ``Skipping seed with unsafe path`` branch
+    (line 3385) — though the caller counts it as failed, we drop
     silently here and rely on the operator noticing the file count
     mismatch. Future enhancement: surface a warning + count.
     """
@@ -411,7 +411,7 @@ def test_round_8_token_never_leaks_on_runtime_failure(
     PRINTS contains the token. The exception object itself may still
     carry exc.cmd unfiltered — the CLI wrapper (``_seed`` in __main__)
     is responsible for rendering exceptions safely (``type(exc).__name__``
-    only). Same approach as Modul 1.2 round-8.
+    only). Same approach as the secret-sync R8 invariant.
 
     Previously this test populated a private list that was never
     written to, so the assertion was vacuously true (Copilot finding).
@@ -688,7 +688,7 @@ def test_run_seed_writes_payloads_to_push_dir(tmp_path: Path) -> None:
 def _run_cli(args: list[str], env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """Run `python -m nexus_deploy seed ...` in a subprocess.
 
-    Subprocess invocation mirrors how deploy.sh calls the CLI; coverage
+    Subprocess invocation mirrors how the caller calls the CLI; coverage
     is reported on the subprocess via pytest-cov auto-instrumentation
     (see pyproject.toml [tool.coverage]).
     """
@@ -723,7 +723,7 @@ def test_cli_seed_missing_token_returns_2() -> None:
 
 
 def test_cli_seed_missing_root_returns_zero() -> None:
-    """Missing seed dir is non-fatal (mirrors deploy.sh:3340 early-return)."""
+    """Missing seed dir is non-fatal (mirrors (see git history) early-return)."""
     rc, _, err = _run_cli(
         ["--repo", "admin/ws", "--root", "/does/not/exist"],
         env={"GITEA_TOKEN": "t"},

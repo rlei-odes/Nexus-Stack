@@ -1,17 +1,16 @@
-"""Workspace-repo seed-loop (Phase 2 Modul 2.1, #505).
+"""Workspace-repo seed-loop.
 
-Replaces ``seed_workspace_files()`` in ``scripts/deploy.sh`` (the legacy
-function walked ``examples/workspace-seeds/`` and POSTed each file to
-the Gitea Contents API under the ``nexus_seeds/<path>`` prefix in the
-user's workspace repo). Two call-sites in deploy.sh — non-mirror mode
-(admin-owned repo) and mirror+user mode (user's fork) — collapse into
-one CLI invocation with a ``--repo <owner>/<name>`` arg.
+Walks ``examples/workspace-seeds/`` and POSTs each file to the Gitea
+Contents API under the ``nexus_seeds/<path>`` prefix in the user's
+workspace repo. Two callers (non-mirror mode → admin-owned repo,
+mirror+user mode → user's fork) hit one CLI invocation parameterised
+by ``--repo <owner>/<name>``.
 
-Why server-side curl loop (consistent with infisical.py + secret_sync.py):
-the rendered bash runs over rsync'd JSON payloads, so the Gitea token
-transits via a remote ``--config`` tmpfile (NOT argv) and never reaches
-``ps`` / CI logs / exception messages. Phase 3 (#505 Modul 3.1) replaces
-the bash rendering wholesale with paramiko + local ``requests`` calls.
+Server-side curl loop (consistent with :mod:`infisical` +
+:mod:`secret_sync`): the rendered bash runs over rsync'd JSON
+payloads, so the Gitea token transits via a remote ``--config``
+tmpfile (NOT argv) and never reaches ``ps`` / CI logs / exception
+messages.
 
 Eight rounds of hardening preserved (one regression test per round in
 ``tests/unit/test_seeder.py``):
@@ -24,7 +23,7 @@ R3. EXIT trap cleans push-dir + curl-config tmpfile, with ``[ -n ]``
 R4. HTTP-code dispatch (200/201 → created, 422 → skipped, else →
     failed), exec'd-bash regression test (Modul-2.0 lessons).
 R5. ``Path.resolve()`` rejects ``..``-escape from ``root``.
-R6. Symlinks skipped (mirrors deploy.sh's ``find -type f``).
+R6. Symlinks skipped (regular files only).
 R7. File ordering deterministic (operators rely on it for log debug).
 R8. Token never in stdout / stderr / exception messages.
 """
@@ -44,10 +43,10 @@ from urllib.parse import quote
 
 from nexus_deploy import _remote
 
-# Server-side Gitea endpoint (port 3200, NOT 3000 — deploy.sh uses 3200
-# because Gitea's docker-compose maps that). Same hostname/port as the
-# legacy bash. Hardcoded: this is the convention enforced by the gitea
-# stack's compose file, not a per-environment knob.
+# Server-side Gitea endpoint (port 3200, NOT 3000 — Gitea's
+# docker-compose maps the host port to 3200). Hardcoded: this is the
+# convention enforced by the gitea stack's compose file, not a
+# per-environment knob.
 _GITEA_BASE_URL = "http://localhost:3200"
 
 # Server-side path where rsync uploads the payload tree and the curl
@@ -55,17 +54,17 @@ _GITEA_BASE_URL = "http://localhost:3200"
 # infisical.py's _REMOTE_PUSH_DIR convention.
 _REMOTE_PUSH_DIR = "/tmp/seed-push"  # noqa: S108 — server path, not credential
 
-# Path-safety regex from deploy.sh:3384. Restricts file paths to a
-# safe filesystem subset (ASCII alphanumerics + dot/dash/underscore/
-# slash). Any character outside this set causes the file to be
+# Path-safety regex. Restricts file paths to a safe filesystem subset
+# (ASCII alphanumerics + dot/dash/underscore/slash). Any character
+# outside this set causes the file to be
 # dropped from the SeedFile list with a stderr warning — it does NOT
 # reach the remote loop and therefore does NOT show up in the remote
 # RESULT failed= count. Defence in depth against shell-injection via
 # filenames AND against directory-traversal.
 _VALID_REPO_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
-# RESULT-line format. Same wire-format shape as Modul 1.2's secret-sync
-# (``RESULT key=value key=value ...``) so the parser can stay simple.
+# RESULT-line format. Same wire-format shape as the secret-sync
+# runner (``RESULT key=value key=value ...``) so the parser can stay simple.
 _RESULT_PATTERN = re.compile(
     r"^RESULT created=(?P<created>\d+) "
     r"skipped=(?P<skipped>\d+) "
@@ -129,17 +128,17 @@ class SeedResult:
 
 
 def _is_safe_repo_path(path: str) -> bool:
-    """Mirror deploy.sh:3384 — restrict to safe ASCII filename subset."""
+    """Restrict repo paths to a safe ASCII filename subset."""
     return bool(_VALID_REPO_PATH_RE.fullmatch(path))
 
 
 def _url_encode_path(path: str) -> str:
     """URL-encode each path segment, then join with ``/``.
 
-    Mirrors deploy.sh:3391 (``jq @uri`` per segment). A full
-    ``urllib.parse.quote(path)`` would NOT escape the segment
-    delimiters, but it also wouldn't produce the same encoding as
-    ``jq @uri`` for edge-cases. Per-segment is the safer convention.
+    A full ``urllib.parse.quote(path)`` would NOT escape the segment
+    delimiters, and would not produce the same encoding as
+    ``jq @uri`` for edge-cases. Per-segment encoding is the safer
+    convention.
     """
     return "/".join(quote(seg, safe="") for seg in path.split("/"))
 
@@ -147,21 +146,18 @@ def _url_encode_path(path: str) -> str:
 def list_seed_files(root: Path, prefix: str = "nexus_seeds/") -> list[SeedFile]:
     """Walk ``root`` recursively, return SeedFiles sorted by ``repo_path``.
 
-    Behaviour mirrors deploy.sh's ``find -type f``:
+    Behaviour:
     - Symlinks are skipped (``Path.is_file()`` follows symlinks but we
       filter via ``Path.is_symlink()`` upfront — see R6).
-    - Hidden files (starting with ``.``) are NOT excluded by default;
-      deploy.sh's ``find`` includes them too (``.gitkeep`` is
-      intentionally seeded).
+    - Hidden files (starting with ``.``) are NOT excluded by default
+      — ``.gitkeep`` is intentionally seeded.
     - ``..``-escape rejection via ``Path.resolve()`` comparison (R5).
     - Files whose computed ``repo_path`` violates
       ``_VALID_REPO_PATH_RE`` are dropped with a stderr warning. They
       do NOT appear in the SeedFile list and therefore don't show up
       in the remote ``RESULT failed=`` count — operators should
       cross-reference the warning lines if the deploy log shows fewer
-      ``created`` than expected. (deploy.sh:3385 counted these as
-      failed; we surface them via stderr instead, which the workflow
-      log shows alongside the bash warnings.)
+      ``created`` than expected.
 
     Output is sorted by ``repo_path`` for deterministic ordering (R7).
     """
@@ -245,7 +241,7 @@ def render_remote_loop(*, token: str, repo_owner: str, repo_name: str) -> str:
 
     All inputs are shlex-quoted; token reaches the server only via the
     rendered bash (sent via ssh stdin) and lands in a remote
-    ``--config`` tmpfile (NOT argv). Mirrors infisical.py's pattern.
+    ``--config`` tmpfile (NOT argv).
 
     Loop:
       1. Write Authorization header to a tmpfile, chmod 600.
@@ -263,17 +259,14 @@ def render_remote_loop(*, token: str, repo_owner: str, repo_name: str) -> str:
     base_url_q = shlex.quote(_GITEA_BASE_URL)
     push_dir_q = shlex.quote(_REMOTE_PUSH_DIR)
 
-    # The rendered bash mirrors deploy.sh:3337-3449's flow (curl with
-    # --config, per-file POST, 200|201/422/other dispatch). Differences
-    # from the legacy form:
+    # The rendered bash uses curl --config + per-file POST + a
+    # 200|201/422/other dispatch:
     #   - File walk + base64 + JSON build run in Python (locally),
     #     payloads arrive via rsync. The bash only loops + POSTs.
     #   - Token is shlex-quoted into the rendered bash (sent via ssh
-    #     stdin), then written to a remote --config tmpfile. Same end
-    #     state as deploy.sh's heredoc-into-mktemp; different transit.
-    #   - HTTP-code dispatch is via bash `case`, not the deploy.sh
-    #     style. The bash semantics are pinned by an exec'd-bash
-    #     regression test (R4) per Modul-2.0 lessons.
+    #     stdin), then written to a remote --config tmpfile.
+    #   - HTTP-code dispatch is via bash `case`. Semantics pinned by
+    #     an exec'd-bash regression test (R4).
     return f"""set -euo pipefail
 
 TOKEN={token_q}

@@ -21,13 +21,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-# No subprocess timeout by default — strict parity with deploy.sh,
-# which never wrapped ssh/rsync calls in `timeout`. A slow Hetzner
-# control-plane spin-up (creds rotation, first cold start, big rsync
-# diff) can legitimately take several minutes; a Python-side cap
-# would convert "slow" into a hard failure with TimeoutExpired even
-# though the underlying op would have completed. Callers that DO
-# want a cap pass `timeout=<seconds>` explicitly.
+# No subprocess timeout by default. A slow Hetzner control-plane
+# spin-up (creds rotation, first cold start, big rsync diff) can
+# legitimately take several minutes; a Python-side cap would convert
+# "slow" into a hard failure with TimeoutExpired even though the
+# underlying op would have completed. Callers that DO want a cap
+# pass `timeout=<seconds>` explicitly.
 _DEFAULT_TIMEOUT_S: float | None = None
 
 
@@ -47,8 +46,8 @@ def ssh_run(
         ssh nexus "<cmd>" 2>&1   # bash equivalent of the default
 
     With ``merge_stderr=True`` (default) stderr is folded into stdout
-    in the returned ``CompletedProcess`` — parity with deploy.sh's
-    ``ssh nexus "..." 2>&1`` pattern. With ``merge_stderr=False``
+    in the returned ``CompletedProcess`` (the ``ssh nexus "..." 2>&1``
+    equivalent). With ``merge_stderr=False``
     stdout and stderr are captured into separate fields on the
     CompletedProcess. Either way the streams are captured (we don't
     let them flow to the local terminal — long stderr tails on a
@@ -119,8 +118,7 @@ def rsync_to_remote(
     ``remote`` follows rsync syntax (e.g. ``"nexus:/tmp/infisical-push/"``);
     the alias resolves through the same ssh config as ``ssh_run``. The
     trailing slash on ``local`` is auto-appended so rsync uploads the
-    directory's CONTENTS, matching deploy.sh's
-    ``rsync -aq --delete "$PUSH_DIR/" "nexus:/tmp/infisical-push/"``.
+    directory's CONTENTS rather than the directory itself.
 
     ``delete=True`` clears destination paths that don't exist locally —
     used when the local dir is the canonical source-of-truth for that

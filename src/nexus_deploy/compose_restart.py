@@ -1,40 +1,26 @@
-"""Per-service ``docker compose restart`` loop (Phase 4b2, #505).
+"""Per-service ``docker compose restart`` loop.
 
-Replaces three small bash blocks in scripts/deploy.sh that all share
-the same shape — ssh-loop ``cd $REMOTE_STACKS_DIR/$SVC && docker
-compose restart`` over a list of service names:
+Server-side ssh-loop ``cd $REMOTE_STACKS_DIR/$SVC && docker compose
+restart`` over a list of service names. Used by two orchestrator
+phases:
 
-1. **Post-Gitea git-restart** (lines 962-967): after gitea-configure
-   syncs DB passwords, the migrated CLI emits ``RESTART_SERVICES=`` and
-   the bash loops over them.
-2. **Mirror-mode git-restart** (lines 1431-1446): after mirror sync +
-   fork population, jupyter / marimo / code-server / meltano / prefect
-   get restarted to pick up the latest fork content.
-3. **Kestra force-recreate** (referenced by secret-sync's CLI but the
-   force-recreate itself happens server-side inside the Kestra
-   secret-sync helper — out of scope for THIS module; documented for
-   completeness).
+* ``_phase_compose_restart`` — post-gitea git-restart of services
+  that integrate with Gitea (consumes ``state.restart_services``)
+* ``_phase_mirror_finalize`` — mirror-mode git-restart loop that
+  picks up the latest fork content for jupyter / marimo /
+  code-server / meltano / prefect
 
-Decided NOT to fold into ``compose_runner.run_compose_up``: that
-module's single responsibility is the parallel compose-up + docker-ps
-verification. A sequential restart loop is a different lifecycle
-operation; mixing them would dilute compose_runner's contract.
-
-Three orchestrator phases consume this:
-
-* ``_phase_compose_restart`` — post-gitea git-restart (state.restart_services)
-* ``_phase_mirror_finalize`` — mirror-mode git-restart loop
-
-The Kestra force-recreate stays in ``secret_sync.py``'s render — it's
-already in the per-stack restart logic of the existing CLI.
+Kept separate from :mod:`compose_runner`: that module's single
+responsibility is the parallel compose-up + docker-ps verification;
+a sequential restart loop is a different lifecycle operation.
 
 Exit-code semantics mirror ``compose_runner``:
 
 * RESULT line shape: ``RESULT restarted=N failed=M``
 * Empty input → noop, RESULT 0/0 (skip the ssh round-trip entirely)
 * Per-service failure adds 1 to ``failed`` but doesn't abort the loop
-  (deploy.sh's legacy bash ``|| true`` semantics — restart failures
-  are non-blocking; the operator sees the warning in stderr)
+  (restart failures are non-blocking; the operator sees the warning
+  in stderr)
 * Transport / parse failure → :class:`RestartResult` with
   ``failed=len(services)``, mirroring compose_runner's defensive
   fall-through pattern.
@@ -50,9 +36,9 @@ from dataclasses import dataclass
 
 from . import _remote
 
-# Server-side stacks dir (mirror of deploy.sh's REMOTE_STACKS_DIR).
-# Same constant as compose_runner — keeping a local copy avoids cross-
-# module coupling for what is conceptually a deployment constant.
+# Server-side stacks dir. Same constant as compose_runner — kept as a
+# local copy to avoid cross-module coupling for what is conceptually
+# a deployment constant.
 _REMOTE_STACKS_DIR = "/opt/docker-server/stacks"
 
 # RESULT-line shape — same wire-format family as compose_runner /

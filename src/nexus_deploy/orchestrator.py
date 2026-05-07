@@ -1,22 +1,19 @@
-"""Top-level orchestrator (Phase 3 Modul 3.4b, #505).
+"""Top-level orchestrator for the deploy pipeline.
 
-Replaces the bash eval-handoff dance in ``scripts/deploy.sh`` with
-a single Python entrypoint that calls all already-migrated module
-functions in sequence and handles state-passing in-process. Three
-separate ``mktemp`` + ``eval`` rituals (gitea-configure, woodpecker-
-oauth, mirror-setup) collapse into one ``OrchestratorState`` object
-mutated as phases run; only three values still need to escape back
-to bash for the surviving non-migrated logic (compose-restart loop
-+ Woodpecker .env write):
+Single Python entrypoint that calls every module function in
+sequence and handles state-passing in-process via one
+:class:`OrchestratorState` mutated as phases run. Three values
+still need to escape to bash for the surviving compose-restart +
+Woodpecker .env write logic:
 
-* ``RESTART_SERVICES``  — bash compose-restart loop reads this
+* ``RESTART_SERVICES``  — compose-restart loop reads this
 * ``WOODPECKER_GITEA_CLIENT`` — written into stacks/woodpecker/.env
 * ``WOODPECKER_GITEA_SECRET`` — written into stacks/woodpecker/.env
 
 Other state (``GITEA_TOKEN``, ``FORK_NAME``, ``FORK_OWNER``) is
 consumed entirely inside the orchestrator and never exits Python.
 
-Phase order (deterministic, mirrors deploy.sh):
+Phase order (deterministic):
 
 1. infisical bootstrap            (push all secret folders to Infisical)
 2. services configure             (REST + exec admin-setup hooks)
@@ -32,7 +29,7 @@ Each phase produces a :class:`PhaseResult`. A phase with status="failed"
 aborts the orchestrator (early exit, downstream phases skipped). A
 phase with status="partial" continues — operator gets a yellow
 warning, downstream phases still run. Same rc=0/1/2 dispatch as
-all other migrated CLIs.
+all other CLIs in the package.
 
 ``contextlib.ExitStack`` manages the SSH client lifetime in
 :meth:`Orchestrator.run_all`. Each phase that needs an HTTP
@@ -87,8 +84,8 @@ class OrchestratorState:
 
     The ``restart_services`` + ``woodpecker_*`` fields are
     additionally emitted to stdout at the end so the surviving
-    bash logic in deploy.sh can consume them. ``gitea_token`` /
-    ``fork_*`` stay in-process.
+    shell glue (compose-restart loop + Woodpecker .env writer)
+    can consume them. ``gitea_token`` / ``fork_*`` stay in-process.
     """
 
     gitea_token: str | None = None
@@ -97,30 +94,29 @@ class OrchestratorState:
     woodpecker_client_secret: str | None = None
     fork_name: str | None = None
     fork_owner: str | None = None
-    # Phase 4a (#505): infisical_token + project_id are now POPULATED by
-    # _phase_infisical_provision (running BEFORE _phase_infisical_bootstrap)
-    # instead of being inherited as orchestrator inputs. Pre-bootstrap
-    # callers don't need to pass them in the constructor.
+    # infisical_token + project_id are POPULATED by
+    # _phase_infisical_provision (running BEFORE _phase_infisical_bootstrap),
+    # so pre-bootstrap callers don't need to pass them in the
+    # constructor.
     #
     # Note: post-bootstrap phases currently gate on the
     # ``self.infisical_token`` / ``self.project_id`` orchestrator fields,
     # not on these state mirrors. ``_phase_infisical_provision`` writes
     # to BOTH (state + self.field) so a single full-pipeline run sees
     # the values everywhere. State stays as the canonical record for
-    # the CLI's stdout emission. Caught in PR #532 R2 #5.
+    # the CLI's stdout emission (PR #532 R2 #5).
     infisical_token: str | None = None
     project_id: str | None = None
 
-    # Phase 4b1 (#505) — workspace-coords slots populated by
-    # _phase_workspace_coords. Replace the bash-derived REPO_NAME /
-    # GITEA_REPO_OWNER / WORKSPACE_BRANCH etc. that previously lived in
-    # deploy.sh:295-373. Same dual-write pattern as infisical_token /
-    # project_id: the phase writes to BOTH state.* (for stdout emission
-    # to the surviving deploy.sh glue) AND self.* on the orchestrator
-    # (for downstream phases that gate on the orchestrator fields).
+    # workspace-coords slots populated by _phase_workspace_coords —
+    # repo_name / gitea_repo_owner / workspace_branch / Gitea git
+    # identity. Same dual-write pattern as infisical_token /
+    # project_id: the phase writes to BOTH state.* (for stdout
+    # emission) AND self.* on the orchestrator (for downstream
+    # phases that gate on the orchestrator fields).
     # _phase_mirror_setup later mutates state.repo_name +
-    # state.gitea_repo_owner to point at the user's fork (so the mirror-
-    # seed-rerun + git-restart phases hit the right repo).
+    # state.gitea_repo_owner to point at the user's fork (so the
+    # mirror-seed-rerun + git-restart phases hit the right repo).
     repo_name: str | None = None
     gitea_repo_owner: str | None = None
     gitea_repo_url: str | None = None
@@ -185,12 +181,11 @@ class Orchestrator:
     config: NexusConfig
     bootstrap_env: BootstrapEnv
     enabled_services: list[str]
-    # Phase 4b1 (#505): repo_name / gitea_repo_owner / workspace_branch
-    # are now POPULATED by _phase_workspace_coords during run_pre_bootstrap
-    # (was: required constructor inputs derived in bash). Kept as
+    # repo_name / gitea_repo_owner / workspace_branch are POPULATED
+    # by _phase_workspace_coords during run_pre_bootstrap. Kept as
     # constructor fields so post-bootstrap-only callers (run_all
     # without run_pre_bootstrap) can still pre-seed them — same
-    # back-compat shape as infisical_token / project_id (4a).
+    # back-compat shape as infisical_token / project_id.
     repo_name: str = ""
     gitea_repo_owner: str = ""
     workspace_branch: str = "main"
@@ -204,28 +199,27 @@ class Orchestrator:
     infisical_token: str | None = None
     infisical_env: str = "dev"
 
-    # Phase 4a (#505) — additions for the pre-bootstrap pipeline.
-    # All optional to keep back-compat with existing post-bootstrap-only
-    # callers (run_all). When unset, phases that need them surface as
-    # status='skipped' with a clear detail.
+    # Pre-bootstrap pipeline inputs. All optional to keep back-compat
+    # with post-bootstrap-only callers (run_all). When unset, phases
+    # that need them surface as status='skipped' with a clear detail.
     cf_client_id: str | None = None  # Cloudflare Access Service Token id
     cf_client_secret: str | None = None  # Cloudflare Access Service Token secret
     persistent_volume_id: str = "0"  # Hetzner Cloud volume id; "0" = no volume
     # Repository checkout root on the runner — phases derive
     # ``project_root / "stacks"`` for per-service compose/.env paths.
-    # Renamed from ``stacks_dir`` in PR #532 R2 #1: deploy.sh defines
-    # ``STACKS_DIR=$PROJECT_ROOT/stacks`` (the actual stacks dir), so
-    # wiring that env var into a field of the same name and then
-    # appending ``/"stacks"`` produced a broken ``.../stacks/stacks/...``
-    # path. The CLI handler now reads ``PROJECT_ROOT`` instead.
+    # Renamed from ``stacks_dir`` in PR #532 R2 #1: STACKS_DIR is
+    # ``PROJECT_ROOT/stacks`` (the actual stacks dir), so wiring that
+    # env var into a field of the same name and then appending
+    # ``/"stacks"`` produced a broken ``.../stacks/stacks/...`` path.
+    # The CLI handler now reads ``PROJECT_ROOT`` instead.
     project_root: Path = field(default_factory=lambda: Path.cwd())
     firewall_json: str = "{}"  # raw `tofu output -json firewall_rules` body
     domain: str = ""  # for firewall RedPanda rendering
     admin_password_infisical: str | None = None  # for infisical provision-admin
 
-    # Phase 4b1 (#505) — additions for workspace-coords + global-env.
-    # All optional; phases skip with status='partial'/'skipped' when
-    # their required inputs are missing.
+    # workspace-coords + global-env inputs. All optional; phases skip
+    # with status='partial'/'skipped' when their required inputs are
+    # missing.
     admin_username: str = ""  # for workspace-coords admin-fallback
     user_email: str = ""  # passed into global-env's stacks/.env
     gitea_admin_pass: str | None = None  # for workspace-coords git_pass fallback
@@ -251,9 +245,7 @@ class Orchestrator:
         self.results = []
         with contextlib.ExitStack() as stack:
             ssh = stack.enter_context(SSHClient(self.ssh_host))
-            # Phase 4b2 (#505) — extended from 9 to 14 phases. New phases
-            # interleave with the existing ones to honor state-handoff
-            # dependencies:
+            # Phases interleave to honor state-handoff dependencies:
             #   - compose-restart consumes state.restart_services from gitea
             #   - kestra-secret-sync runs BEFORE kestra-register
             #   - woodpecker-apply consumes state.woodpecker_* from oauth
@@ -263,15 +255,15 @@ class Orchestrator:
                 self._phase_infisical_bootstrap,
                 self._phase_services_configure,
                 self._phase_gitea_configure,
-                self._phase_compose_restart,  # NEW (4b2)
-                self._phase_kestra_secret_sync,  # NEW (4b2)
+                self._phase_compose_restart,
+                self._phase_kestra_secret_sync,
                 self._phase_kestra_register,
-                self._phase_seed,  # MODIFY: skips in mirror mode (4b2)
+                self._phase_seed,  # skipped in mirror mode
                 self._phase_woodpecker_oauth,
-                self._phase_woodpecker_apply,  # NEW (4b2)
+                self._phase_woodpecker_apply,
                 self._phase_mirror_setup,
-                self._phase_mirror_seed_rerun,  # NEW (4b2)
-                self._phase_mirror_finalize,  # NEW (4b2)
+                self._phase_mirror_seed_rerun,
+                self._phase_mirror_finalize,
                 self._phase_secret_sync_jupyter,
                 self._phase_secret_sync_marimo,
             ]
@@ -428,13 +420,11 @@ class Orchestrator:
         In mirror mode this phase MUST skip — seeding the read-only
         ``mirror-readonly-<repo>`` returns HTTP 423 (Gitea pull-mirror
         lock). Re-seeding against the user's fork happens later via
-        ``_phase_mirror_seed_rerun`` (Phase 4b2, #505), after
-        ``_phase_mirror_setup`` populates ``state.fork_*``.
+        ``_phase_mirror_seed_rerun``, after ``_phase_mirror_setup``
+        populates ``state.fork_*``.
         """
-        # Phase 4b2 (#505) mirror-mode skip — was a real-bug catch from
-        # the Plan agent's review during 4b1 design: without this gate
-        # mirror deploys would 423 here even though the phase itself
-        # had no bug.
+        # Mirror-mode skip — without this gate mirror deploys would
+        # 423 here even though the phase itself has no bug.
         if self.gh_mirror_repos:
             return PhaseResult(
                 name="seed",
@@ -743,13 +733,12 @@ class Orchestrator:
         return self._phase_secret_sync(ssh, "marimo")
 
     # ---------------------------------------------------------------------
-    # Phase 4a (#505) — pre-bootstrap pipeline.
+    # Pre-bootstrap pipeline phases.
     #
-    # These phases run BEFORE the existing infisical-bootstrap phase and
-    # collectively replace deploy.sh's [0/7]-[7/7] CLI invocations + the
-    # interleaved bash glue. Each wraps an already-migrated module's
-    # public function and converts its result/exception into a PhaseResult.
-    # No new logic — just a unified place to chain them with state-handoff.
+    # These run BEFORE the infisical-bootstrap phase. Each wraps an
+    # already-implemented module's public function and converts its
+    # result/exception into a PhaseResult — a unified place to chain
+    # them with state-handoff.
     #
     # The pre-bootstrap phases come in two clusters:
     #
@@ -774,8 +763,7 @@ class Orchestrator:
     def _phase_service_env(self) -> PhaseResult:
         """Render per-service ``stacks/<svc>/.env`` files locally + (when
         Gitea is enabled) append the Gitea workspace block to the
-        Gitea-integrated stacks. Replaces deploy.sh's
-        ``service-env --enabled`` invocation (Modul 3.4c, #527).
+        Gitea-integrated stacks.
 
         Local-only — no SSH context needed. Pre-bootstrap phases drop
         the ``ssh`` arg from their signature (caught in PR #532 R1 #2:
@@ -890,8 +878,7 @@ class Orchestrator:
 
     def _phase_stack_sync(self) -> PhaseResult:
         """Rsync each enabled stack to ``/opt/docker-server/stacks/<svc>/``
-        and clean up disabled stack directories on the server. Replaces
-        deploy.sh's ``stack-sync --enabled`` invocation (Modul 3.3, #523).
+        and clean up disabled stack directories on the server.
 
         Uses ``run_stack_sync`` which manages its own rsync subprocess
         + cleanup ssh.run_script invocation independently — the
@@ -948,12 +935,11 @@ class Orchestrator:
     def _phase_firewall_configure(self) -> PhaseResult:
         """Generate per-service ``docker-compose.firewall.yml`` overrides
         and (when RedPanda has firewall ports) the dual-listener override
-        + substituted ``redpanda-firewall.yaml``. Replaces deploy.sh's
-        ``firewall configure --domain`` invocation (Modul 3.4e, #531).
+        + substituted ``redpanda-firewall.yaml``.
 
         Local-only — the rendered files are written to ``stacks/<svc>/``
         on the runner. The subsequent server-side scp + orphan-cleanup
-        loop stays in deploy.sh for now (Phase 4b will migrate it).
+        loop runs as part of the post-bootstrap pipeline.
         """
         try:
             gen, write = _firewall.configure(
@@ -1024,8 +1010,7 @@ class Orchestrator:
 
     def _phase_compose_up(self) -> PhaseResult:
         """Start containers in parallel via
-        :func:`compose_runner.run_compose_up`. Replaces deploy.sh's
-        ``compose up --enabled`` invocation (Modul 2.2a, #505).
+        :func:`compose_runner.run_compose_up`.
 
         ``run_compose_up`` invokes ``ssh <host> 'bash -s'`` via
         subprocess internally, where ``<host>`` is ``self.ssh_host``
@@ -1064,8 +1049,7 @@ class Orchestrator:
         )
 
     def _phase_infisical_provision(self) -> PhaseResult:
-        """Bootstrap the Infisical admin + workspace. Replaces deploy.sh's
-        ``infisical provision-admin`` invocation (Modul 3.4f, #530).
+        """Bootstrap the Infisical admin + workspace.
 
         On success, populates BOTH the state mirrors
         (``self.state.infisical_token`` + ``self.state.project_id``,
@@ -1138,10 +1122,9 @@ class Orchestrator:
         )
 
     # ---------------------------------------------------------------------
-    # Phase 4b1 (#505) — pre-bootstrap pipeline extensions.
+    # Pre-bootstrap pipeline extensions.
     #
-    # Three new phases that run during run_pre_bootstrap and replace
-    # ~270 LoC of bash glue from deploy.sh:
+    # Three phases run during ``run_pre_bootstrap``:
     #
     # 1. _phase_workspace_coords — derives REPO_NAME / GITEA_REPO_OWNER
     #    / WORKSPACE_BRANCH etc. from raw env via workspace_coords.derive,
@@ -1161,7 +1144,7 @@ class Orchestrator:
         Calls :func:`workspace_coords.derive` with raw constructor
         inputs, then writes the 8 derived fields to BOTH:
 
-        - ``self.state.*``  — for the CLI's stdout emission to deploy.sh
+        - ``self.state.*``  — for the CLI's stdout emission
         - ``self.field``    — for downstream phases that gate on the
           orchestrator field (gitea / seed / kestra / woodpecker / etc.)
         - ``self.bootstrap_env.gitea_user_email`` — synced so the
@@ -1255,7 +1238,7 @@ class Orchestrator:
 
     def _phase_firewall_sync(self) -> PhaseResult:
         """Server-side cleanup of stale firewall overrides + RedPanda
-        config copy. Replaces deploy.sh:511-671 (~160 LoC bash).
+        config copy.
 
         Three sub-steps, each fail-fast on transport error:
 
@@ -1444,7 +1427,6 @@ class Orchestrator:
     def _phase_global_env(self) -> PhaseResult:
         """Write the global ``/opt/docker-server/stacks/.env`` on the server.
 
-        Replaces deploy.sh:254-282 (~30 LoC bash heredoc to ssh).
         Contains DOMAIN + ADMIN_EMAIL + ADMIN_USERNAME + USER_EMAIL + the
         IMAGE_VERSIONS_JSON map (parsed and emitted as ``IMAGE_<NAME>=<value>``
         lines: dashes → underscores, uppercase, ``IMAGE_`` prefix).
@@ -1470,15 +1452,12 @@ class Orchestrator:
             )
 
         # PR #533 R3 #2: validate every value before writing. The
-        # global .env is consumed by TWO mechanisms — compose_runner's
-        # ``set -a; source $GLOBAL_ENV; set +a`` (legacy, pre-Phase 4b
-        # — sourcing a file with shell-unsafe values would let a
-        # malicious image-version trigger RCE) AND compose's
-        # ``env_file:`` directive (literal-string semantics; quoted
-        # values would surface as literal characters in the rendered
-        # service env). The safe intersection is "values without
-        # shell metacharacters". Reject up-front instead of trying
-        # to escape — image versions and emails legitimately need
+        # global .env is consumed by compose's ``env_file:``
+        # directive (literal-string semantics; quoted values would
+        # surface as literal characters in the rendered service
+        # env). The safe intersection is "values without shell
+        # metacharacters". Reject up-front instead of trying to
+        # escape — image versions and emails legitimately need
         # alphanum + ``.-_:/@+`` only.
         shell_unsafe = re.compile(r"[\s$`\\();&|<>!?*\[\]{}\"'\n\r]")
 
@@ -1591,11 +1570,9 @@ class Orchestrator:
         )
 
     # ---------------------------------------------------------------------
-    # Phase 4b2 (#505) — post-bootstrap pipeline extensions.
+    # Post-bootstrap pipeline phases.
     #
-    # Six new phases (5 net — _phase_seed gets a mirror-mode-skip but
-    # the method count stays the same) that run during run_all and
-    # replace ~600 LoC of bash glue from deploy.sh's [7/7] section:
+    # Each runs during ``run_all`` after the bootstrap phases finish:
     #
     # 1. _phase_compose_restart  — ssh-loop for state.restart_services
     # 2. _phase_kestra_secret_sync — kestra readiness wait → secret-sync
@@ -1772,9 +1749,9 @@ class Orchestrator:
         """Write the OAuth-populated stacks/woodpecker/.env, rsync to
         server, run ``docker compose up -d``.
 
-        Replaces deploy.sh:1281-1299 (~18 LoC). Reads
-        ``state.woodpecker_client_id`` + ``state.woodpecker_client_secret``
-        populated by ``_phase_woodpecker_oauth``.
+        Reads ``state.woodpecker_client_id`` +
+        ``state.woodpecker_client_secret`` populated by
+        ``_phase_woodpecker_oauth``.
 
         Skipped when woodpecker not enabled OR OAuth phase didn't
         produce credentials. Best-effort: ``docker compose up -d``
@@ -1858,9 +1835,7 @@ class Orchestrator:
         # env-file with its own KEY=VALUE format (no shell
         # interpretation), so a malicious image-version value
         # containing ``$()`` / backticks / ``;`` / ``\n`` cannot
-        # trigger remote command execution. The previous source
-        # pattern (still used by compose_runner.py for now —
-        # tracked for Phase 4c follow-up) was a known foot-gun.
+        # trigger remote command execution.
         up_script = (
             f"cd {_REMOTE_STACKS_DIR}/woodpecker "
             f"&& docker compose --env-file {_REMOTE_STACKS_DIR}/.env up -d"
@@ -2138,11 +2113,12 @@ class Orchestrator:
         self.state.project_id = None
         self.infisical_token = None
         self.project_id = None
-        # Phase 4b1 (#505) — same R2 #3 dual-write reset pattern for the
-        # 8 workspace-coords slots: clear BOTH state.* AND self.* so a
-        # re-run on the same instance can't carry stale values into the
-        # second run's stdout emission. Other state slots (gitea_token /
-        # woodpecker_* / fork_*) reset themselves naturally in run_all.
+        # PR #532 R2 #3 dual-write reset pattern for the 8
+        # workspace-coords slots: clear BOTH state.* AND self.* so a
+        # re-run on the same instance can't carry stale values into
+        # the second run's stdout emission. Other state slots
+        # (gitea_token / woodpecker_* / fork_*) reset themselves
+        # naturally in run_all.
         self.state.repo_name = None
         self.state.gitea_repo_owner = None
         self.state.gitea_repo_url = None
@@ -2154,7 +2130,8 @@ class Orchestrator:
         self.repo_name = ""
         self.gitea_repo_owner = ""
         self.workspace_branch = "main"
-        # Phase 4b1 (#505) — extended from 5 to 8 phases. Order matters:
+        # Phase ordering (order matters; downstream phases gate on
+        # state populated by upstream ones):
         #   workspace-coords — derive REPO_NAME etc. (other phases gate
         #                      on these; must run FIRST)
         #   service-env      — writes per-stack .env files locally
