@@ -124,15 +124,46 @@ or, more generically, a `resource_unavailable` rejection during `tofu apply`.
 
 **Root cause:** Hetzner sells out of specific instance types in specific datacenters during capacity crunches. Both ARM (`cax*`) and x86 (`cx*` / `cpx*`) are affected; the situation can change hour-by-hour.
 
-**How to check current stock:** the third-party live tracker [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) lists availability per region × instance type. Look for a green cell at the intersection of your desired region and instance type.
+### Automatic fallback (default since #536)
 
-**Fix:**
+The `Select Hetzner capacity` step that runs *before* `Apply infrastructure` queries Hetzner's `/v1/datacenters` API and picks the first available `<server_type>:<location>` pair from a preference list. The default list — `cx43:fsn1, cx43:nbg1, cx43:hel1, ccx33:fsn1, ccx33:nbg1, ccx33:hel1` — covers three EU regions for two server-type classes, so a typical capacity crunch is handled without operator intervention.
 
-1. Open [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) and find a region where your instance type (default: `cx43`) is green.
-2. Set `SERVER_LOCATION` to that region in your GitHub repository's variables (Settings → Secrets and variables → Actions → Variables → `SERVER_LOCATION`). Common alternatives: `hel1` (Helsinki), `fsn1` (Falkenstein), `nbg1` (Nuremberg), `ash` (US-East).
+You can see what the step picked in the workflow log:
+
+```
+✓ select-capacity: chose cx43:nbg1
+  ✗ 1. cx43:fsn1
+  → 2. cx43:nbg1
+  ✓ 3. cx43:hel1
+  ...
+```
+
+`✗` = sold out, `✓` = available, `→` = picked.
+
+### When every preference is out of stock
+
+If every entry in the preference list is sold out, the step fails the workflow with the per-pair status block AND a pointer to the live tracker. To unblock:
+
+1. Open [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) and find a region × instance type combination that is green.
+2. Override the preference list by setting `SERVER_PREFERENCES` in your GitHub repository's variables (Settings → Secrets and variables → Actions → Variables → `SERVER_PREFERENCES`) to a comma-separated list, e.g. `cpx32:fsn1, cpx32:nbg1, cpx51:hel1`. The first available pair wins, so order entries by preference.
 3. Re-run the workflow.
 
-If no datacenter has stock for your instance type, fall back to a smaller variant temporarily (e.g. `cx32` or `cpx32` instead of `cx43`) by overriding `SERVER_TYPE`. Note that some Nexus stacks (Spark, Dify, Kestra) can be memory-hungry, so a smaller VM may need fewer enabled stacks.
+### Operator overrides
+
+| Variable | Effect |
+|---|---|
+| `SERVER_PREFERENCES` (repo variable, comma list) | Highest priority. `cx43:fsn1, ccx33:nbg1, cpx51:hel1` etc. |
+| `server_preferences = "..."` line in `config.tfvars` | Used if `SERVER_PREFERENCES` is unset. |
+| `SERVER_TYPE` + `SERVER_LOCATION` (legacy single pair) | Used if neither of the above is set. Effectively a 1-element preference list — the workflow still hard-fails when that one pair is out of stock; widen to a list to get capacity-fallback. |
+| Built-in default | Last resort — see list above. |
+
+### Local-dev / dry-run
+
+When `HCLOUD_TOKEN` is not set in the environment (e.g. running the CLI locally without a Hetzner account), the step soft-skips with a stderr warning and leaves `config.tfvars` untouched. The deploy then proceeds with whatever pair is already in the file.
+
+### Why the fallback exists
+
+Hetzner ARM (`cax*`) availability has been chronically constrained since early 2026 and is now ~40% MORE expensive than equivalent x86 (was ~50% cheaper at project start), so the default list excludes ARM entirely. If you need ARM, add it explicitly: `SERVER_PREFERENCES = "cax31:fsn1, cax31:nbg1, cx43:fsn1"`.
 
 ## General Tips
 

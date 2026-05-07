@@ -23,6 +23,7 @@ Currently:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,7 @@ from pathlib import Path
 import requests
 
 from nexus_deploy import __version__, hello
+from nexus_deploy import hetzner_capacity as _hetzner
 from nexus_deploy import pipeline as _pipeline
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
@@ -2555,6 +2557,218 @@ def _run_all(args: list[str]) -> int:
     return 0
 
 
+_TFVARS_TYPE_LINE = re.compile(
+    r'^(?P<lead>\s*server_type\s*=\s*)"[^"\n\r]*"(?P<trail>\s*(?:#|//).*|.*)$',
+    re.MULTILINE,
+)
+_TFVARS_LOC_LINE = re.compile(
+    r'^(?P<lead>\s*server_location\s*=\s*)"[^"\n\r]*"(?P<trail>\s*(?:#|//).*|.*)$',
+    re.MULTILINE,
+)
+_TFVARS_PREFS_LINE = re.compile(
+    r'^\s*server_preferences\s*=\s*"(?P<value>[^"\n\r]*)"',
+    re.MULTILINE,
+)
+
+
+def _read_preferences_from_tfvars(text: str) -> str | None:
+    """Return the value of ``server_preferences = "..."`` if present.
+
+    Returns ``None`` when the key is absent (or only ``server_type`` /
+    ``server_location`` are present — the legacy single-pair shorthand
+    is reconstructed by the caller from those keys).
+    """
+    match = _TFVARS_PREFS_LINE.search(text)
+    return match.group("value") if match is not None else None
+
+
+def _read_single_pair_from_tfvars(text: str) -> _hetzner.ServerSpec | None:
+    """Return the legacy ``server_type`` + ``server_location`` pair
+    from a tfvars file, or ``None`` if either is missing.
+
+    Used as the back-compat shim when ``server_preferences`` isn't
+    set: an existing operator with ``vars.SERVER_TYPE`` + ``vars.
+    SERVER_LOCATION`` set should keep working without having to
+    learn the new key.
+    """
+    type_match = _TFVARS_TYPE_LINE.search(text)
+    loc_match = _TFVARS_LOC_LINE.search(text)
+    if type_match is None or loc_match is None:
+        return None
+    type_quoted = type_match.group(0).split('"', 2)[1]
+    loc_quoted = loc_match.group(0).split('"', 2)[1]
+    if not type_quoted or not loc_quoted:
+        return None
+    return _hetzner.ServerSpec(
+        server_type=type_quoted.lower(),
+        location=loc_quoted.lower(),
+    )
+
+
+def _rewrite_tfvars_pair(text: str, selected: _hetzner.ServerSpec) -> str:
+    """Rewrite the ``server_type`` and ``server_location`` lines in a
+    tfvars body to the selected pair.
+
+    Trailing inline comments are preserved (the regex captures and
+    re-emits them). If a key is absent the function appends it as a
+    fresh line at the end — so an operator who only configured
+    ``server_preferences`` (no single-pair shorthand) still ends up
+    with the legacy keys in place for ``tofu apply`` to consume.
+    """
+    new_type_line = f'server_type = "{selected.server_type}"'
+    new_loc_line = f'server_location = "{selected.location}"'
+
+    if _TFVARS_TYPE_LINE.search(text):
+        text = _TFVARS_TYPE_LINE.sub(
+            lambda m: f'{m.group("lead")}"{selected.server_type}"',
+            text,
+            count=1,
+        )
+    else:
+        text = text.rstrip("\n") + "\n" + new_type_line + "\n"
+
+    if _TFVARS_LOC_LINE.search(text):
+        text = _TFVARS_LOC_LINE.sub(
+            lambda m: f'{m.group("lead")}"{selected.location}"',
+            text,
+            count=1,
+        )
+    else:
+        text = text.rstrip("\n") + "\n" + new_loc_line + "\n"
+
+    return text
+
+
+def _select_capacity(args: list[str]) -> int:
+    """`nexus-deploy select-capacity` (Issue #536).
+
+    Pre-flight step that runs in spin-up.yml BEFORE ``tofu apply``:
+    walks an operator-provided preference list of ``<server_type>:
+    <location>`` pairs, queries Hetzner Cloud's ``/v1/datacenters``
+    for live availability, and rewrites ``config.tfvars`` to the
+    first pair that is in stock. Lets a deploy survive a Hetzner
+    capacity crunch by transparently falling through to the next
+    region without operator intervention.
+
+    Preference source priority (first non-empty wins):
+
+    1. ``SERVER_PREFERENCES`` env var (passed via spin-up.yml from
+       the ``vars.SERVER_PREFERENCES`` repo variable)
+    2. ``server_preferences = "..."`` line in ``config.tfvars``
+    3. Legacy single-pair shorthand: ``server_type = "..."`` +
+       ``server_location = "..."`` lines in ``config.tfvars``
+    4. :data:`hetzner_capacity.DEFAULT_PREFERENCES`
+
+    Required env: ``HCLOUD_TOKEN``. Without it the step exits 0 with
+    a stderr warning — capacity-selection is opportunistic; a local-
+    dev or CI dry-run that doesn't talk to Hetzner should be free to
+    skip.
+
+    Required positional: ``--tfvars PATH`` to the config.tfvars file
+    that will be rewritten in place.
+
+    Exit codes:
+
+    - 0: a pair was selected (or skipped due to missing token)
+    - 2: preference list exhausted, or API failure, or arg error
+    """
+    # Crude arg-parse — keeps us out of argparse for one-flag handlers.
+    tfvars_path: Path | None = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--tfvars" and i + 1 < len(args):
+            tfvars_path = Path(args[i + 1])
+            i += 2
+            continue
+        print(f"select-capacity: unknown arg {args[i]!r}", file=sys.stderr)
+        return 2
+    if tfvars_path is None:
+        print("select-capacity: --tfvars PATH is required", file=sys.stderr)
+        return 2
+    if not tfvars_path.is_file():
+        print(f"select-capacity: {tfvars_path} not found", file=sys.stderr)
+        return 2
+
+    # ``TF_VAR_hcloud_token`` (lowercase suffix) is the real env-var
+    # name spin-up.yml exports today — Tofu's ``TF_VAR_<name>``
+    # convention requires the suffix to match the variable name in
+    # variables.tf, which is lowercase here. Lint's all-caps rule
+    # is silenced via the inline directive; the name is dictated by
+    # Tofu, not us.
+    token = os.environ.get("HCLOUD_TOKEN") or os.environ.get("TF_VAR_hcloud_token")  # noqa: SIM112
+    if not token:
+        sys.stderr.write(
+            "⚠ select-capacity: HCLOUD_TOKEN not set; skipping capacity check "
+            "(deploy will use whatever pair is already in config.tfvars)\n",
+        )
+        return 0
+
+    # Resolve preferences in priority order.
+    text = tfvars_path.read_text(encoding="utf-8")
+    raw_prefs = os.environ.get("SERVER_PREFERENCES", "").strip()
+    if not raw_prefs:
+        from_file = _read_preferences_from_tfvars(text)
+        if from_file is not None and from_file.strip():
+            raw_prefs = from_file
+    preferences: tuple[_hetzner.ServerSpec, ...]
+    if raw_prefs:
+        try:
+            preferences = _hetzner.parse_preferences(raw_prefs)
+        except ValueError as exc:
+            print(f"select-capacity: {exc}", file=sys.stderr)
+            return 2
+    else:
+        legacy_pair = _read_single_pair_from_tfvars(text)
+        if legacy_pair is not None:
+            preferences = (legacy_pair,)
+            sys.stderr.write(
+                f"select-capacity: no server_preferences set; using legacy "
+                f"single-pair shorthand from config.tfvars: {legacy_pair}\n",
+            )
+        else:
+            preferences = _hetzner.parse_preferences(",".join(_hetzner.DEFAULT_PREFERENCES))
+            sys.stderr.write(
+                "select-capacity: no server_preferences / server_type+location set; "
+                "using built-in default list\n",
+            )
+
+    try:
+        availability = _hetzner.fetch_availability(token)
+    except _hetzner.HetznerCapacityError as exc:
+        print(f"select-capacity: Hetzner API failure: {exc}", file=sys.stderr)
+        return 2
+
+    selected = _hetzner.select(preferences, availability)
+    status_lines = _hetzner.render_status_lines(preferences, availability, selected)
+
+    if selected is None:
+        sys.stderr.write(
+            "✗ select-capacity: every preference is out of stock at Hetzner.\n"
+            "Per-pair availability:\n",
+        )
+        for line in status_lines:
+            sys.stderr.write(line + "\n")
+        sys.stderr.write(
+            "Either widen server_preferences (try ccx*, fsn1/nbg1/hel1, etc.) "
+            "or wait — Hetzner stock fluctuates hour by hour. "
+            "Live tracker: https://radar.iodev.org/cloud-status\n",
+        )
+        return 2
+
+    sys.stderr.write(f"✓ select-capacity: chose {selected}\n")
+    for line in status_lines:
+        sys.stderr.write(line + "\n")
+
+    new_text = _rewrite_tfvars_pair(text, selected)
+    if new_text != text:
+        # Atomic replace — write to sibling tempfile + rename. Survives
+        # a crash mid-write without leaving config.tfvars half-rewritten.
+        tmp = tfvars_path.with_suffix(tfvars_path.suffix + ".select-capacity.tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(tfvars_path)
+    return 0
+
+
 def _run_pipeline(args: list[str]) -> int:
     """`nexus-deploy run-pipeline`.
 
@@ -3011,6 +3225,8 @@ def main() -> int:
         return _run_all(args[1:])
     if args[:1] == ["run-pre-bootstrap"]:
         return _run_pre_bootstrap(args[1:])
+    if args[:1] == ["select-capacity"]:
+        return _select_capacity(args[1:])
     if args[:1] == ["run-pipeline"]:
         return _run_pipeline(args[1:])
     if args[:1] == ["r2-tokens"]:
@@ -3045,6 +3261,10 @@ def main() -> int:
         "SECRETS_JSON from stdin + env vars incl. INFISICAL_PASS, FIREWALL_RULES_JSON, "
         "ADMIN_USERNAME, IMAGE_VERSIONS_JSON; emits eval-able stdout: INFISICAL_TOKEN + "
         "PROJECT_ID + REPO_NAME + GITEA_REPO_OWNER + WORKSPACE_BRANCH), "
+        "select-capacity --tfvars PATH (Issue #536: pre-flight Hetzner capacity "
+        "check; reads HCLOUD_TOKEN + optional SERVER_PREFERENCES env, walks "
+        "<type>:<location> preference list, rewrites server_type+server_location "
+        "in PATH to first available pair; rc=2 if every preference is out of stock), "
         "run-pipeline (Phase 4c top-level entry — replaces scripts/deploy.sh; "
         "reads tofu state + config.tfvars; optional env: SSH_PRIVATE_KEY_CONTENT, "
         "GH_MIRROR_TOKEN, GH_MIRROR_REPOS, DOCKERHUB_USER, DOCKERHUB_TOKEN, "

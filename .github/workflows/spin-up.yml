@@ -294,6 +294,20 @@ jobs:
             sed -i 's/^          //' tofu/stack/config.tfvars
           fi
 
+          # Issue #536: capacity-fallback preference list. When set,
+          # the select-capacity step below picks the first available
+          # <type>:<location> pair from this list and rewrites the
+          # server_type / server_location lines above. Without it, the
+          # legacy single-pair shorthand (lines 272-273) is used as a
+          # 1-element preference list — backward-compatible with any
+          # existing operator config.
+          if [ -n "${{ vars.SERVER_PREFERENCES }}" ]; then
+            cat >> tofu/stack/config.tfvars << EOF
+          server_preferences = "${{ vars.SERVER_PREFERENCES }}"
+          EOF
+            sed -i 's/^          //' tofu/stack/config.tfvars
+          fi
+
           # Get Hetzner Object Storage config from control-plane output
           cd tofu/control-plane
           source ../.r2-credentials
@@ -384,6 +398,27 @@ jobs:
           # Use shared script to avoid code duplication
           chmod +x .github/scripts/generate-services-tfvars.py
           ENABLED_SERVICES="$ENABLED_SERVICES" FIREWALL_RULES="$FIREWALL_RULES" python3 .github/scripts/generate-services-tfvars.py
+
+      - name: Select Hetzner capacity
+        # Issue #536: Hetzner sells out of specific server-type /
+        # location combinations during capacity crunches; a single-
+        # pair config.tfvars then fails ``tofu apply`` with
+        # ``resource_unavailable``. This step queries
+        # ``api.hetzner.cloud/v1/datacenters`` BEFORE tofu runs and
+        # picks the first available pair from the operator-provided
+        # preference list (vars.SERVER_PREFERENCES → config.tfvars's
+        # server_preferences key → legacy single-pair shorthand →
+        # built-in default). Rewrites server_type+server_location
+        # in config.tfvars in place. Soft-skips with a warning when
+        # HCLOUD_TOKEN is not available; hard-fails the workflow
+        # only when every preference is genuinely out of stock.
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          SERVER_PREFERENCES: ${{ vars.SERVER_PREFERENCES }}
+        run: |
+          uv run --quiet --project "$GITHUB_WORKSPACE" \
+            python -m nexus_deploy select-capacity \
+              --tfvars tofu/stack/config.tfvars
 
       - name: Initialize OpenTofu
         run: |

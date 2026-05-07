@@ -1,0 +1,339 @@
+"""Tests for the ``select-capacity`` CLI handler (Issue #536).
+
+These tests cover the small wrapper in ``nexus_deploy.__main__`` that
+glues :mod:`nexus_deploy.hetzner_capacity` to the workflow:
+
+- preference resolution (env > config.tfvars key > legacy single-pair >
+  built-in default)
+- HCLOUD_TOKEN missing → soft-skip with stderr warning + rc=0
+- All preferences out of stock → rc=2 with per-pair status block
+- Successful selection → rewrites ``server_type`` + ``server_location``
+  in config.tfvars while preserving other lines / inline comments
+
+The Hetzner API is stubbed via ``monkeypatch`` of
+``hetzner_capacity.fetch_availability`` so the tests do not require
+network access or a token.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from nexus_deploy import hetzner_capacity as _hetzner
+from nexus_deploy.__main__ import _select_capacity
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_capacity_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop the test runner's own env from bleeding into handler runs.
+    HCLOUD_TOKEN may be set on the developer's shell; SERVER_PREFERENCES
+    almost certainly isn't, but clear both for hermeticity."""
+    monkeypatch.delenv("HCLOUD_TOKEN", raising=False)
+    monkeypatch.delenv("TF_VAR_hcloud_token", raising=False)
+    monkeypatch.delenv("SERVER_PREFERENCES", raising=False)
+
+
+@pytest.fixture
+def tfvars_with_legacy_pair(tmp_path: Path) -> Path:
+    """Mimics today's machine-generated config.tfvars: server_type +
+    server_location set as the only capacity-related lines."""
+    path = tmp_path / "config.tfvars"
+    path.write_text(
+        'server_type     = "cx43"\n'
+        'server_location = "hel1"\n'
+        'server_image    = "ubuntu-24.04"\n'
+        'domain          = "example.com"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def fake_availability_all_in_stock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub Hetzner API so every interesting (type, loc) pair is
+    available. Individual tests narrow this down."""
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _token, http_get=None: {
+            "fsn1": {"cx43", "ccx33"},
+            "nbg1": {"cx43", "ccx33"},
+            "hel1": {"cx43", "ccx33"},
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Argument handling
+# ---------------------------------------------------------------------------
+
+
+def test_select_capacity_requires_tfvars_arg(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = _select_capacity([])
+    assert rc == 2
+    assert "--tfvars PATH is required" in capsys.readouterr().err
+
+
+def test_select_capacity_rejects_unknown_arg(
+    tfvars_with_legacy_pair: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = _select_capacity(["--bogus", "x", "--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 2
+    assert "unknown arg" in capsys.readouterr().err
+
+
+def test_select_capacity_aborts_when_tfvars_missing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = _select_capacity(["--tfvars", str(tmp_path / "does-not-exist.tfvars")])
+    assert rc == 2
+    assert "not found" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Soft-skip when no token
+# ---------------------------------------------------------------------------
+
+
+def test_select_capacity_skips_when_no_token(
+    tfvars_with_legacy_pair: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Local-dev / CI dry-run without HCLOUD_TOKEN must not abort —
+    capacity selection is opportunistic. Returns 0 + stderr warning."""
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "HCLOUD_TOKEN not set" in err
+    assert "skipping capacity check" in err
+    # config.tfvars must NOT have been rewritten.
+    assert tfvars_with_legacy_pair.read_text().count("cx43") == 1
+
+
+# ---------------------------------------------------------------------------
+# Preference source priority
+# ---------------------------------------------------------------------------
+
+
+def test_select_capacity_uses_server_preferences_env_var(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """SERVER_PREFERENCES env var has highest priority — overrides
+    both config.tfvars's key and the legacy single-pair shorthand."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "ccx33:nbg1, cx43:fsn1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"nbg1": {"ccx33"}, "fsn1": {"cx43"}},
+    )
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 0
+    rewritten = tfvars_with_legacy_pair.read_text()
+    # First in env-list, available → picked. The rewrite preserves
+    # the original ``server_type     =`` spacing from the fixture.
+    assert 'server_type     = "ccx33"' in rewritten
+    assert 'server_location = "nbg1"' in rewritten
+    err = capsys.readouterr().err
+    assert "chose ccx33:nbg1" in err
+
+
+def test_select_capacity_uses_server_preferences_from_tfvars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When SERVER_PREFERENCES env is empty, the
+    ``server_preferences = "..."`` line in config.tfvars is used."""
+    path = tmp_path / "config.tfvars"
+    path.write_text(
+        'server_preferences = "cx43:fsn1, ccx33:hel1"\n'
+        'server_type        = "cx43"\n'
+        'server_location    = "hel1"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": set(), "hel1": {"ccx33"}},
+    )
+    rc = _select_capacity(["--tfvars", str(path)])
+    assert rc == 0
+    rewritten = path.read_text()
+    # cx43:fsn1 unavailable → fallback to ccx33:hel1.
+    # Fixture used ``server_type        =`` spacing → rewrite preserves it.
+    assert 'server_type        = "ccx33"' in rewritten
+    assert 'server_location    = "hel1"' in rewritten
+
+
+def test_select_capacity_falls_back_to_legacy_single_pair(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Operator with only ``server_type`` + ``server_location`` set
+    (the pre-#536 shorthand) keeps working: 1-element preference
+    list, no fallback to the in-code default."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"hel1": {"cx43"}},
+    )
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "legacy single-pair shorthand" in err
+    assert "cx43:hel1" in err
+
+
+def test_select_capacity_uses_default_when_nothing_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A bare config.tfvars (no server_type / server_location /
+    server_preferences) → fall back to the in-code default list."""
+    path = tmp_path / "config.tfvars"
+    path.write_text('domain = "example.com"\n', encoding="utf-8")
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": {"cx43"}},
+    )
+    rc = _select_capacity(["--tfvars", str(path)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "built-in default list" in err
+    rewritten = path.read_text()
+    # First default pair is cx43:fsn1 (and it's available).
+    assert 'server_type = "cx43"' in rewritten
+    assert 'server_location = "fsn1"' in rewritten
+
+
+# ---------------------------------------------------------------------------
+# Selection outcomes
+# ---------------------------------------------------------------------------
+
+
+def test_select_capacity_aborts_when_all_unavailable(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every preference out of stock → rc=2 with per-pair status
+    block + actionable suggestion."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:fsn1, cx43:nbg1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": set(), "nbg1": set()},
+    )
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "every preference is out of stock" in err
+    assert "✗ 1. cx43:fsn1" in err
+    assert "✗ 2. cx43:nbg1" in err
+    assert "radar.iodev.org" in err
+    # Original file MUST stay untouched on failure.
+    assert 'server_type     = "cx43"' in tfvars_with_legacy_pair.read_text()
+
+
+def test_select_capacity_aborts_on_api_error(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """HetznerCapacityError (HTTP 401, network error, schema drift)
+    propagates to rc=2 with the original message."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+
+    def _raise(_token: str, http_get: object = None) -> dict[str, set[str]]:
+        raise _hetzner.HetznerCapacityError("HTTP 401: Unauthorized")
+
+    monkeypatch.setattr(_hetzner, "fetch_availability", _raise)
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Hetzner API failure" in err
+    assert "HTTP 401" in err
+
+
+def test_select_capacity_aborts_on_invalid_preferences(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Operator typo in SERVER_PREFERENCES → rc=2 with parse error."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43, fsn1")  # missing colon
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    assert rc == 2
+    assert "missing ':' separator" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# tfvars rewrite mechanics
+# ---------------------------------------------------------------------------
+
+
+def test_select_capacity_preserves_other_tfvars_lines(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only ``server_type`` + ``server_location`` may be touched;
+    ``server_image`` / ``domain`` etc. must round-trip unchanged."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "ccx33:fsn1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": {"ccx33"}},
+    )
+    _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)])
+    rewritten = tfvars_with_legacy_pair.read_text()
+    assert 'server_image    = "ubuntu-24.04"' in rewritten
+    assert 'domain          = "example.com"' in rewritten
+
+
+def test_select_capacity_appends_keys_when_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When config.tfvars only has ``server_preferences`` (no legacy
+    pair lines), the rewrite APPENDS server_type + server_location
+    so ``tofu apply`` has values to consume."""
+    path = tmp_path / "config.tfvars"
+    path.write_text(
+        'server_preferences = "cx43:fsn1, ccx33:nbg1"\ndomain = "example.com"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"fsn1": set(), "nbg1": {"ccx33"}},
+    )
+    rc = _select_capacity(["--tfvars", str(path)])
+    assert rc == 0
+    rewritten = path.read_text()
+    assert 'server_type = "ccx33"' in rewritten
+    assert 'server_location = "nbg1"' in rewritten
+    # Original lines preserved.
+    assert 'domain = "example.com"' in rewritten
+    assert 'server_preferences = "cx43:fsn1, ccx33:nbg1"' in rewritten
