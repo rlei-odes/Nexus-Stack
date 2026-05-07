@@ -71,11 +71,12 @@ repos:
         args: [--config-file=pyproject.toml]
 
   # ---------------------------------------------------------------------------
-  # Shellcheck — for the bash helper scripts we keep (init-r2-state,
-  # cleanup-orphaned-resources, setup-control-panel-secrets,
-  # check-control-panel-env). The deploy path itself is Python since
-  # Phase 4c (#535); these are operator one-shots, not part of the
-  # spin-up loop.
+  # Shellcheck — for the bash helper scripts in scripts/ (init-r2-state,
+  # cleanup-orphaned-resources, setup-control-plane-secrets,
+  # check-control-plane-env, capture-phase1-baselines,
+  # check-cloudflare-pages-logs, parse-services-yaml). The deploy
+  # path itself is Python since Phase 4c (#535); these are operator
+  # one-shots, not part of the spin-up loop.
   # Pre-commit installs shellcheck via the precommit-shfmt-shellcheck mirror.
   # ---------------------------------------------------------------------------
   - repo: https://github.com/shellcheck-py/shellcheck-py

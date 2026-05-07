@@ -71,11 +71,12 @@ jobs:
 
       - name: shellcheck remaining bash
         run: |
-          # Lints the small helper scripts left in scripts/ — operator
+          # Lints the bash helper scripts in scripts/ — operator
           # one-shots (init-r2-state, cleanup-orphaned-resources,
-          # setup-control-panel-secrets, check-control-panel-env). The
-          # main deploy path is Python (python -m nexus_deploy
-          # run-pipeline) since Phase 4c (#535).
+          # setup-control-plane-secrets, check-control-plane-env, and
+          # the smaller capture/check/parse helpers). The main deploy
+          # path is Python (python -m nexus_deploy run-pipeline) since
+          # Phase 4c (#535).
           # `find -print0 | xargs -0` is portable to macOS bash 3.2 too.
           # `--severity=error` only blocks on real bugs; the helpers
           # carry a few style/info nits we tolerate.
@@ -129,8 +130,10 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: pytest unit
-        # Unit tests only. Integration tests, when added, run via the same
-        # step (pytest discovers them via testpaths in pyproject.toml).
+        # Runs the full test suite under pyproject.toml's testpaths (today
+        # only tests/unit/; an `integration` marker is registered for
+        # future testcontainers-based tests, but none exist yet, so this
+        # step is effectively unit-only at present).
         # `--cov-fail-under=80` makes the gate explicit on the CLI;
         # pyproject.toml's [tool.coverage.report] also has fail_under=80
         # so local + CI agree even if someone runs `coverage report` directly.
