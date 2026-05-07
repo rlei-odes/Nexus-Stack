@@ -2683,6 +2683,79 @@ def test_phase_kestra_secret_sync_partial_when_kestra_pass_missing(
     assert "KESTRA_PASS" in result.detail
 
 
+def test_phase_kestra_secret_sync_constructs_correct_stack_target(
+    minimal_env: BootstrapEnv,
+) -> None:
+    """Issue #543: regression test pinning the Kestra-specific
+    StackTarget overrides inside the orchestrator phase. Without
+    these overrides the secret-sync would write to .infisical.env
+    (Jupyter/Marimo default) with bare ``GITEA_TOKEN=`` keys
+    instead of .env with ``SECRET_GITEA_TOKEN=<base64>``, and
+    Kestra's EnvVarSecretProvider would fail to resolve any
+    ``{{ secret('NAME') }}`` reference at runtime.
+
+    Mocks ssh_run + KestraClient.wait_ready + run_sync_for_stack
+    so the assertion is purely on the StackTarget shape passed in.
+    """
+    config = NexusConfig(
+        admin_username="admin",
+        gitea_admin_password="gitea-admin",
+        kestra_admin_password="k-pw",
+    )
+    orchestrator = Orchestrator(
+        config=config,
+        bootstrap_env=minimal_env,
+        enabled_services=["kestra"],
+        repo_name="r",
+        gitea_repo_owner="o",
+        project_id="proj-1",
+        infisical_token="inf-tok",
+        domain="example.com",
+    )
+    orchestrator.state.gitea_token = "gt"
+    from nexus_deploy.secret_sync import StackTarget, SyncResult
+
+    captured: dict[str, StackTarget] = {}
+
+    def _capture_run_sync(target: StackTarget, **kwargs: object) -> SyncResult:
+        captured["target"] = target
+        return SyncResult(
+            pushed=10,
+            skipped_invalid_name=0,
+            skipped_multiline=0,
+            failed_folders=0,
+            collisions=0,
+            succeeded_folders=1,
+            wrote=True,
+        )
+
+    with (
+        patch(
+            "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
+            side_effect=_capture_run_sync,
+        ),
+        patch("nexus_deploy.orchestrator._kestra.KestraClient") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.wait_ready.return_value = True
+        mock_client_cls.return_value = mock_client
+        ssh = MagicMock()
+        ssh.port_forward.return_value.__enter__.return_value = 12345
+        ssh.port_forward.return_value.__exit__.return_value = False
+        orchestrator._phase_kestra_secret_sync(ssh)
+
+    target = captured.get("target")
+    assert target is not None
+    # The five Kestra-specific overrides — each is load-bearing per
+    # the comment block in orchestrator._phase_kestra_secret_sync.
+    assert target.name == "kestra"
+    assert target.key_prefix == "SECRET_"
+    assert target.use_base64_values is True
+    assert target.env_file_basename == ".env"
+    assert target.legacy_env_file_basename is None
+    assert target.force_recreate is True
+
+
 # --- _phase_global_env ---
 
 

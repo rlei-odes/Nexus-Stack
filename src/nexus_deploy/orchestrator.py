@@ -1695,9 +1695,44 @@ class Orchestrator:
                     )
 
                 # Step 2: invoke secret-sync helper (kestra stack).
-                # This delegates to the existing CLI — it handles the
-                # SECRET_<KEY>=<base64> dedup + force-recreate.
-                target = _secret_sync.StackTarget(name="kestra")
+                # The Kestra stack needs five overrides vs. the
+                # Jupyter/Marimo defaults so the rendered SECRET_<key>
+                # block lands where Kestra's EnvVarSecretProvider can
+                # actually find it (Issue #543):
+                #   - env_file_basename=".env" (not .infisical.env;
+                #     Kestra's compose loads .env directly, no separate
+                #     legacy file)
+                #   - legacy_env_file_basename=None (the
+                #     StackTarget default is ``.env``, intended as the
+                #     migration-from-legacy strip target for the
+                #     Jupyter/Marimo path that writes to
+                #     ``.infisical.env``. For Kestra the SECRET block
+                #     IS written to ``.env`` itself; without this
+                #     None-override the remote script's legacy-strip
+                #     step would sed-strip the just-written
+                #     ``BEGIN/END nexus-secret-sync`` block out of
+                #     the same ``.env`` and the mv would wipe its
+                #     own output. ``None`` skips the legacy-strip
+                #     branch entirely — kestra has no migration
+                #     concern.)
+                #   - key_prefix="SECRET_" (Kestra's
+                #     ``{{ secret('GITEA_TOKEN') }}`` looks up env var
+                #     ``SECRET_GITEA_TOKEN``)
+                #   - use_base64_values=True (Kestra's
+                #     EnvVarSecretProvider expects base64-encoded
+                #     values for the SECRET_<key> form)
+                #   - force_recreate=True (compose `up -d` alone
+                #     wouldn't restart kestra to re-read .env;
+                #     --force-recreate is the cheapest reload primitive)
+                # Mirrors the construction in __main__._secret_sync.
+                target = _secret_sync.StackTarget(
+                    name="kestra",
+                    key_prefix="SECRET_",
+                    use_base64_values=True,
+                    env_file_basename=".env",
+                    legacy_env_file_basename=None,
+                    force_recreate=True,
+                )
                 sync_result = _secret_sync.run_sync_for_stack(
                     target,
                     project_id=self.project_id,
