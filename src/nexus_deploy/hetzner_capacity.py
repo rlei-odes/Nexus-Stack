@@ -142,11 +142,16 @@ def parse_preferences(value: str) -> tuple[ServerSpec, ...]:
         # and inject extra keys). Hetzner's own identifiers are
         # lowercase ``[a-z0-9-]+`` so the gate is conservative on
         # legitimate input.
+        # PR #538 R1 #1: error wording — input is already ``.lower()``'d
+        # before this charset check, so saying "expected lowercase" is
+        # misleading (the operator could pass ``Cx43:Fsn1`` and it would
+        # pass; a Unicode-letter token like ``cx43:fsñ1`` would lowercase
+        # cleanly but still fail charset). The real constraint is ASCII.
         for half_name, half_value in (("type", server_type), ("location", location)):
             if not _HETZNER_IDENT.fullmatch(half_value):
                 raise ValueError(
                     f"server_preferences {half_name} has invalid characters "
-                    f"(expected lowercase alphanumeric / dash): {token!r}",
+                    f"(expected ASCII letters, digits, or dash): {token!r}",
                 )
         key = (server_type, location)
         if key in seen:
