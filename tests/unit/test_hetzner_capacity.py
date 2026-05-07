@@ -352,3 +352,200 @@ def test_render_status_handles_no_selection() -> None:
     prefs = (ServerSpec("cx43", "fsn1"),)
     lines = render_status_lines(prefs, {"fsn1": set()}, None)
     assert lines == ["  ✗ 1. cx43:fsn1"]
+
+
+# ---------------------------------------------------------------------------
+# fetch_availability — defensive continue branches (PR #537 R5 coverage)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_availability_skips_dc_with_missing_location() -> None:
+    """Datacenter entry without a ``location`` dict → skipped, not
+    crashed. Future schema where the field becomes optional must
+    not take down the whole capacity check."""
+    dc_payload = {
+        "datacenters": [
+            {"id": 1, "name": "fsn1-dc14", "server_types": {"available": [22]}},
+            {
+                "id": 2,
+                "name": "nbg1-dc3",
+                "location": {"name": "nbg1"},
+                "server_types": {"available": [22]},
+            },
+        ],
+    }
+    fake = _make_http_get(_FAKE_SERVER_TYPES, dc_payload)
+    result = fetch_availability("t", http_get=fake)
+    # Only the well-formed nbg1 entry survived.
+    assert result == {"nbg1": {"cx43"}}
+
+
+def test_fetch_availability_skips_dc_with_non_string_location_name() -> None:
+    dc_payload = {
+        "datacenters": [
+            {
+                "id": 1,
+                "name": "weird",
+                "location": {"name": 12345},  # int, not string
+                "server_types": {"available": [22]},
+            },
+            {
+                "id": 2,
+                "name": "fsn1-dc14",
+                "location": {"name": "fsn1"},
+                "server_types": {"available": [22]},
+            },
+        ],
+    }
+    fake = _make_http_get(_FAKE_SERVER_TYPES, dc_payload)
+    result = fetch_availability("t", http_get=fake)
+    assert result == {"fsn1": {"cx43"}}
+
+
+def test_fetch_availability_skips_dc_with_missing_server_types_field() -> None:
+    dc_payload = {
+        "datacenters": [
+            {"id": 1, "name": "fsn1-dc14", "location": {"name": "fsn1"}},
+            {
+                "id": 2,
+                "name": "nbg1-dc3",
+                "location": {"name": "nbg1"},
+                "server_types": {"available": [22]},
+            },
+        ],
+    }
+    fake = _make_http_get(_FAKE_SERVER_TYPES, dc_payload)
+    result = fetch_availability("t", http_get=fake)
+    assert result == {"nbg1": {"cx43"}}
+
+
+def test_fetch_availability_skips_dc_with_non_list_available() -> None:
+    dc_payload = {
+        "datacenters": [
+            {
+                "id": 1,
+                "name": "fsn1-dc14",
+                "location": {"name": "fsn1"},
+                "server_types": {"available": "not-a-list"},
+            },
+            {
+                "id": 2,
+                "name": "nbg1-dc3",
+                "location": {"name": "nbg1"},
+                "server_types": {"available": [22]},
+            },
+        ],
+    }
+    fake = _make_http_get(_FAKE_SERVER_TYPES, dc_payload)
+    result = fetch_availability("t", http_get=fake)
+    assert result == {"nbg1": {"cx43"}}
+
+
+# ---------------------------------------------------------------------------
+# _default_http_get — production HTTP path (PR #537 R5 coverage)
+#
+# Tests exercise the real urllib-backed implementation by monkey-
+# patching ``urllib.request.urlopen`` so we don't make actual network
+# calls. Each branch (HTTP error / URL error / TimeoutError /
+# malformed JSON / happy path) is pinned because these paths only
+# fire in production, not when callers inject the ``http_get`` seam.
+# ---------------------------------------------------------------------------
+
+
+class _FakeUrlopenContext:
+    """Context-manager stand-in for ``urllib.request.urlopen()`` —
+    the ``with urlopen(req) as resp`` pattern requires both
+    ``__enter__`` and ``__exit__``."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> _FakeUrlopenContext:
+        return self
+
+    def __exit__(self, *_a: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_default_http_get_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real urllib path: build Request, parse JSON body, return dict."""
+    from nexus_deploy.hetzner_capacity import _default_http_get
+
+    captured: dict[str, object] = {}
+
+    def _fake_urlopen(req: object, timeout: float = 0) -> _FakeUrlopenContext:
+        captured["url"] = req.full_url  # type: ignore[attr-defined]
+        captured["auth"] = req.headers.get("Authorization")  # type: ignore[attr-defined]
+        captured["timeout"] = timeout
+        return _FakeUrlopenContext(b'{"ok": true}')
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    result = _default_http_get("https://api.hetzner.cloud/v1/server_types", "abc-token")
+    assert result == {"ok": True}
+    assert captured["url"] == "https://api.hetzner.cloud/v1/server_types"
+    assert captured["auth"] == "Bearer abc-token"
+    assert captured["timeout"] == 30.0  # _DEFAULT_TIMEOUT
+
+
+def test_default_http_get_wraps_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP 4xx/5xx → HetznerCapacityError carrying the status + reason."""
+    import urllib.error
+
+    from nexus_deploy.hetzner_capacity import _default_http_get
+
+    def _fake_urlopen(req: object, timeout: float = 0) -> _FakeUrlopenContext:
+        raise urllib.error.HTTPError(
+            url="https://example/v1/x",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    with pytest.raises(HetznerCapacityError, match=r"HTTP 401.*Unauthorized"):
+        _default_http_get("https://example/v1/x", "t")
+
+
+def test_default_http_get_wraps_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DNS / connection failure → HetznerCapacityError with class name."""
+    import urllib.error
+
+    from nexus_deploy.hetzner_capacity import _default_http_get
+
+    def _fake_urlopen(req: object, timeout: float = 0) -> _FakeUrlopenContext:
+        raise urllib.error.URLError("Name or service not known")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    with pytest.raises(HetznerCapacityError, match=r"URLError"):
+        _default_http_get("https://api.hetzner.cloud/v1/datacenters", "t")
+
+
+def test_default_http_get_wraps_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Socket timeout (TimeoutError subclass of OSError on modern Py)
+    → HetznerCapacityError. Don't surface the raw exception at the CLI."""
+    from nexus_deploy.hetzner_capacity import _default_http_get
+
+    def _fake_urlopen(req: object, timeout: float = 0) -> _FakeUrlopenContext:
+        raise TimeoutError("read timeout after 30s")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    with pytest.raises(HetznerCapacityError, match=r"TimeoutError|read timeout"):
+        _default_http_get("https://api.hetzner.cloud/v1/datacenters", "t")
+
+
+def test_default_http_get_wraps_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Body parses to non-JSON → HetznerCapacityError with parser detail.
+    Defensive against an upstream proxy that intercepts and serves an
+    HTML error page on what should have been a JSON response."""
+    from nexus_deploy.hetzner_capacity import _default_http_get
+
+    def _fake_urlopen(req: object, timeout: float = 0) -> _FakeUrlopenContext:
+        return _FakeUrlopenContext(b"<html>500 Internal Server Error</html>")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    with pytest.raises(HetznerCapacityError, match=r"non-JSON"):
+        _default_http_get("https://api.hetzner.cloud/v1/datacenters", "t")
