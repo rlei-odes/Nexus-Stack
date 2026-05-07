@@ -1695,7 +1695,7 @@ class Orchestrator:
                     )
 
                 # Step 2: invoke secret-sync helper (kestra stack).
-                # The Kestra stack needs four overrides vs. the
+                # The Kestra stack needs five overrides vs. the
                 # Jupyter/Marimo defaults so the rendered SECRET_<key>
                 # block lands where Kestra's EnvVarSecretProvider can
                 # actually find it (Issue #543):

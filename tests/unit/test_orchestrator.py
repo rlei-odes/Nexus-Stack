@@ -2715,12 +2715,12 @@ def test_phase_kestra_secret_sync_constructs_correct_stack_target(
         domain="example.com",
     )
     orchestrator.state.gitea_token = "gt"
-    captured: dict[str, object] = {}
+    from nexus_deploy.secret_sync import StackTarget, SyncResult
 
-    def _capture_run_sync(target: object, **kwargs: object) -> object:
+    captured: dict[str, StackTarget] = {}
+
+    def _capture_run_sync(target: StackTarget, **kwargs: object) -> SyncResult:
         captured["target"] = target
-        from nexus_deploy.secret_sync import SyncResult
-
         return SyncResult(
             pushed=10,
             skipped_invalid_name=0,
@@ -2731,10 +2731,13 @@ def test_phase_kestra_secret_sync_constructs_correct_stack_target(
             wrote=True,
         )
 
-    with patch(
-        "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
-        side_effect=_capture_run_sync,
-    ), patch("nexus_deploy.orchestrator._kestra.KestraClient") as mock_client_cls:
+    with (
+        patch(
+            "nexus_deploy.orchestrator._secret_sync.run_sync_for_stack",
+            side_effect=_capture_run_sync,
+        ),
+        patch("nexus_deploy.orchestrator._kestra.KestraClient") as mock_client_cls,
+    ):
         mock_client = MagicMock()
         mock_client.wait_ready.return_value = True
         mock_client_cls.return_value = mock_client
