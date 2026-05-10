@@ -324,14 +324,14 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 
 Plus: huge operational benefit of spinup-anywhere.
 
-## Decision points needed before implementation starts
+## Decision points — RESOLVED 2026-05-10
 
-1. **Confirm Hetzner Object Storage** vs. Cloudflare R2. (User picked Hetzner — confirm.)
-2. **Bucket-per-stack** vs. shared. (Recommendation: per-stack.)
-3. **Tofu vs. shell script** for bucket provisioning. (Recommendation: shell, since hcloud provider doesn't cover object storage.)
-4. **Native S3 backends (Gitea LFS, Dify storage) in v1.0** or defer to v1.1. (Recommendation: defer.)
-5. **Snapshot retention policy.** (Recommendation: 7 daily + 4 weekly.)
-6. **Treatment of `destroy-all`.** (Recommendation: also delete bucket.)
+1. **Storage provider:** ✅ **Hetzner Object Storage** (EU data-residency, S3-compatible, already used elsewhere in the stack). R2 deferred — switching is a config change later.
+2. **Bucket scoping:** ✅ **Bucket-per-stack** — operational isolation, easy `destroy-all` cleanup, per-stack IAM scope.
+3. **Bucket provisioning:** ✅ **Shell-script** (`scripts/init-s3-bucket.sh` + `scripts/cleanup-s3-bucket.sh`) — same pattern as the existing `scripts/init-r2-state.sh`, cleanest separation from the runtime pipeline.
+4. **Native S3 backends (Gitea LFS, Dify storage):** ✅ **Defer to v1.1** — v1.0 ships with rsync only. Removes one source of risk per release.
+5. **Snapshot retention:** ✅ **7 daily + 4 weekly** — Hetzner Object Storage lifecycle policy. ~50 GB/stack worst case, ~€1.30/month total.
+6. **`destroy-all` behaviour:** ✅ **Opt-in delete** — bucket preserved by default, `--delete-data` flag (or workflow input) required to remove it. Same shape as the existing `confirm=DESTROY` confirmation.
 
 ## Estimated effort
 
