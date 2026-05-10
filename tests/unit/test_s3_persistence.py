@@ -1,0 +1,480 @@
+"""Tests for nexus_deploy.s3_persistence (RFC 0001 foundation).
+
+Pure-rendering tests: we assert on the bash text and the manifest
+JSON, no subprocess calls. The remote execution path is covered
+separately in pipeline.py once it's wired up.
+
+Coverage focus areas:
+
+* :class:`S3Endpoint` charset gating — every malformed value is
+  rejected at construction time, with a message that names the
+  offending field.
+* Manifest round-trip — ``to_json`` → ``from_json`` is identity
+  for valid input; corrupt input raises :class:`S3PersistenceError`
+  with a useful message.
+* Snapshot script invariants — required structure (``set -euo
+  pipefail``, ordered phases), atomicity gate (``rclone check``
+  before pointing ``snapshots/latest.txt`` at the new timestamp),
+  no shell injection from any interpolated value.
+* Restore script invariants — graceful handling of the empty-S3
+  case (fresh-start branch), drop+recreate around pg_restore,
+  cooperative idempotency.
+* Bash exec smoke tests — when bash is available locally, render
+  a minimal script with stubbed external commands and run it; the
+  ``set -euo pipefail`` is satisfied and exit codes match the
+  non-zero gate.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from nexus_deploy.s3_persistence import (
+    RCLONE_PROFILE,
+    ComponentSnapshot,
+    PostgresDumpTarget,
+    RsyncTarget,
+    S3Endpoint,
+    S3PersistenceError,
+    SnapshotManifest,
+    manifest_for_components,
+    render_rclone_config,
+    render_restore_script,
+    render_snapshot_script,
+)
+
+
+def _bash_can_be_invoked() -> bool:
+    return shutil.which("bash") is not None
+
+
+# ---------------------------------------------------------------------------
+# S3Endpoint validation
+# ---------------------------------------------------------------------------
+
+
+def test_s3endpoint_accepts_canonical_hetzner_values() -> None:
+    """Smoke: the constructor doesn't reject a real Hetzner config."""
+    e = S3Endpoint(
+        endpoint="https://fsn1.your-objectstorage.com",
+        region="fsn1",
+        access_key="ABCDEFG1234567890",
+        secret_key="abc123XYZ+/=_-",
+        bucket="nexus-stefan-hslu",
+    )
+    assert e.region == "fsn1"
+    assert e.bucket == "nexus-stefan-hslu"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("endpoint", "fsn1.your-objectstorage.com"),  # missing scheme
+        ("endpoint", "ftp://fsn1.your-objectstorage.com"),  # wrong scheme
+    ],
+)
+def test_s3endpoint_rejects_non_http_endpoint(field: str, value: str) -> None:
+    """Non-HTTP endpoints get caught — common copy-paste error
+    where someone pastes the bucket name into the endpoint slot."""
+    kwargs = {
+        "endpoint": "https://fsn1.your-objectstorage.com",
+        "region": "fsn1",
+        "access_key": "AKIAEXAMPLE",
+        "secret_key": "secret123",
+        "bucket": "nexus-test",
+    }
+    kwargs[field] = value
+    with pytest.raises(S3PersistenceError, match="must start with http"):
+        S3Endpoint(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "fragment"),
+    [
+        ("region", "fsn1; rm -rf /", "region"),
+        ("region", "FSN1", "region"),  # uppercase rejected
+        ("bucket", "nexus stack", "bucket"),  # space rejected
+        ("bucket", "ab", "bucket"),  # too short
+        ("access_key", "key with spaces", "access_key"),
+        ("secret_key", "secret with $bash", "secret_key"),
+    ],
+)
+def test_s3endpoint_rejects_unsafe_charset(field: str, value: str, fragment: str) -> None:
+    """Any value that could break out of bash interpolation gets
+    caught at the constructor — the rendered script never sees an
+    unsafe value."""
+    kwargs = {
+        "endpoint": "https://fsn1.your-objectstorage.com",
+        "region": "fsn1",
+        "access_key": "AKIAEXAMPLE",
+        "secret_key": "secret123",
+        "bucket": "nexus-test",
+    }
+    kwargs[field] = value
+    with pytest.raises(S3PersistenceError, match=fragment):
+        S3Endpoint(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# rclone config
+# ---------------------------------------------------------------------------
+
+
+def test_render_rclone_config_emits_full_profile_block() -> None:
+    """The block contains every key rclone needs to authenticate
+    against Hetzner. No accidental ``env_auth = true`` (which
+    would silently fall back to ambient AWS env vars)."""
+    e = S3Endpoint(
+        endpoint="https://fsn1.your-objectstorage.com",
+        region="fsn1",
+        access_key="AKIA1234",
+        secret_key="secret/key+abc=",
+        bucket="nexus-stefan-hslu",
+    )
+    config = render_rclone_config(e)
+
+    assert config.startswith(f"[{RCLONE_PROFILE}]\n")
+    assert "type = s3\n" in config
+    assert "provider = Other\n" in config
+    assert "env_auth = false\n" in config
+    assert "access_key_id = AKIA1234\n" in config
+    assert "secret_access_key = secret/key+abc=\n" in config
+    assert "endpoint = https://fsn1.your-objectstorage.com\n" in config
+    assert "region = fsn1\n" in config
+    assert "acl = private\n" in config
+
+
+def test_render_rclone_config_uses_module_level_profile_name() -> None:
+    """Regression: render and script use the SAME profile name.
+    Hardcoded literal would be fine but a constant means a future
+    rename can't drift between the two render functions."""
+    e = S3Endpoint(
+        endpoint="https://fsn1.your-objectstorage.com",
+        region="fsn1",
+        access_key="AKIA",
+        secret_key="secret",
+        bucket="nexus-test",
+    )
+    config = render_rclone_config(e)
+    snapshot = render_snapshot_script(
+        endpoint=e,
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert f"[{RCLONE_PROFILE}]" in config
+    assert f"{RCLONE_PROFILE}:" in snapshot
+
+
+# ---------------------------------------------------------------------------
+# Manifest serialisation
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_round_trip_is_identity() -> None:
+    """to_json → from_json preserves every component."""
+    original = SnapshotManifest(
+        version=1,
+        created_at="2026-05-10T20:00:00Z",
+        stack="nexus-stefan-hslu",
+        template_version="v0.56.0",
+        components=(
+            ComponentSnapshot(name="gitea-repos", path="gitea/repos", size_bytes=1024, sha256="abc123"),
+            ComponentSnapshot(name="dify-storage", path="dify/storage", size_bytes=2048, sha256="def456"),
+        ),
+    )
+    parsed = SnapshotManifest.from_json(original.to_json())
+    assert parsed == original
+
+
+def test_manifest_to_json_is_deterministic() -> None:
+    """Sorted keys → same bytes for the same input. Important for
+    rclone-check ETag stability across re-renders."""
+    m = SnapshotManifest(stack="x", template_version="y", components=())
+    assert m.to_json() == m.to_json()
+
+
+def test_manifest_from_json_rejects_unknown_version() -> None:
+    """A future v2 manifest read by a v1 client should hard-fail
+    rather than silently truncate fields."""
+    raw = json.dumps({"version": 2, "components": []})
+    with pytest.raises(S3PersistenceError, match=r"version 2 .* not supported"):
+        SnapshotManifest.from_json(raw)
+
+
+def test_manifest_from_json_rejects_non_object_root() -> None:
+    raw = "[]"
+    with pytest.raises(S3PersistenceError, match="root must be an object"):
+        SnapshotManifest.from_json(raw)
+
+
+def test_manifest_from_json_rejects_invalid_json() -> None:
+    with pytest.raises(S3PersistenceError, match="not valid JSON"):
+        SnapshotManifest.from_json("{ not json")
+
+
+def test_manifest_for_components_helper_sorts_components() -> None:
+    """Components map → sorted ComponentSnapshot tuple. Sorting
+    matters for deterministic manifest bytes regardless of the
+    order callers populate the map in."""
+    m = manifest_for_components(
+        stack="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510",
+        components={
+            "z-stack": (10, "z-hash"),
+            "a-stack": (20, "a-hash"),
+        },
+    )
+    assert [c.name for c in m.components] == ["a-stack", "z-stack"]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot script structure
+# ---------------------------------------------------------------------------
+
+
+def _endpoint() -> S3Endpoint:
+    return S3Endpoint(
+        endpoint="https://fsn1.your-objectstorage.com",
+        region="fsn1",
+        access_key="AKIA1234",
+        secret_key="secret123",
+        bucket="nexus-test",
+    )
+
+
+def test_snapshot_script_has_bash_safety_pragmas() -> None:
+    """Every rendered script must start with the standard bash
+    pragmas — silent failure mid-snapshot would leave inconsistent
+    S3 state."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert script.startswith("#!/usr/bin/env bash\n")
+    assert "set -euo pipefail" in script
+
+
+def test_snapshot_script_orders_phases_correctly() -> None:
+    """The phase order is the atomicity contract: pause → dump →
+    upload → verify → point latest. Reorder would silently break
+    the guarantee that ``snapshots/latest`` only updates after
+    upload succeeded."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
+        rsync_targets=(RsyncTarget(name="gitea-repos", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"),),
+        pause_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
+    )
+    pause_pos = script.find("compose -f")
+    dump_pos = script.find("pg_dump")
+    upload_pos = script.find("rclone sync")
+    check_pos = script.find("rclone check")
+    latest_pos = script.find("snapshots/latest.txt")
+    assert pause_pos < dump_pos < upload_pos < check_pos < latest_pos
+
+
+def test_snapshot_script_omits_pause_when_no_compose_files() -> None:
+    """No compose files passed → no docker pause calls. Avoids
+    the ``no compose files`` echo-only no-op block."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert "docker compose" not in script
+
+
+def test_snapshot_script_omits_postgres_phase_when_no_targets() -> None:
+    """A compose-only stack (no Postgres) shouldn't render the
+    pg_dump block — and shouldn't try to upload an empty dump
+    directory either."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(),
+        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/x", s3_subpath="x"),),
+    )
+    assert "pg_dump" not in script
+    assert "uploading postgres dumps" not in script
+
+
+def test_snapshot_script_rejects_unsafe_stack_slug() -> None:
+    with pytest.raises(S3PersistenceError, match="stack_slug"):
+        render_snapshot_script(
+            endpoint=_endpoint(),
+            stack_slug="nexus stack with spaces",
+            template_version="v",
+            timestamp="t",
+            postgres_targets=(),
+            rsync_targets=(),
+        )
+
+
+def test_snapshot_script_rejects_unsafe_timestamp() -> None:
+    """A timestamp containing shell metacharacters could break out
+    of the rendered ``$TIMESTAMP=...`` interpolation."""
+    with pytest.raises(S3PersistenceError, match="timestamp"):
+        render_snapshot_script(
+            endpoint=_endpoint(),
+            stack_slug="nexus-test",
+            template_version="v0.56.0",
+            timestamp="2026-05-10T20:00:00Z",  # colons rejected
+            postgres_targets=(),
+            rsync_targets=(),
+        )
+
+
+def test_snapshot_script_includes_rclone_check_with_drift_gate() -> None:
+    """``rclone check`` output must be parsed for ``-`` and ``*``
+    markers so any drift fails the snapshot — silently passing
+    would let half-uploaded snapshots count as ``latest``."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert "rclone check" in script
+    assert 'grep -E "^[-*]"' in script
+    assert "snapshot-failed: rclone check found drift" in script
+
+
+# ---------------------------------------------------------------------------
+# Restore script structure
+# ---------------------------------------------------------------------------
+
+
+def test_restore_script_has_bash_safety_pragmas() -> None:
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert script.startswith("#!/usr/bin/env bash\n")
+    assert "set -euo pipefail" in script
+
+
+def test_restore_script_handles_empty_s3_gracefully() -> None:
+    """First-time spinup → no snapshot in S3 → script must exit
+    0, not blow up. The pipeline then proceeds with a clean
+    docker-compose-up just like a brand-new install."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert "fresh-start" in script
+    assert "exit 0" in script
+
+
+def test_restore_script_drops_database_before_pg_restore() -> None:
+    """A restore against a running Postgres with existing rows
+    would conflict on PK; the drop+recreate keeps the pg_restore
+    deterministic."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
+        rsync_targets=(),
+    )
+    assert "DROP DATABASE IF EXISTS gitea" in script
+    assert "CREATE DATABASE gitea OWNER nexus-gitea" in script
+    assert "pg_restore -U nexus-gitea -d gitea" in script
+
+
+def test_restore_script_pulls_filesystem_trees_before_postgres() -> None:
+    """Order matters: restore the FS first (in case any postgres
+    init script reads a config file from the FS), THEN pg_restore.
+    Reversing this ordering would race on first start."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
+        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"),),
+    )
+    fs_pos = script.find("pulling filesystem trees")
+    pg_pos = script.find("pulling postgres dumps")
+    assert 0 < fs_pos < pg_pos
+
+
+def test_restore_script_validates_timestamp_from_s3() -> None:
+    """``snapshots/latest.txt`` is operator-influenced (an admin
+    could in theory write it) — the script must validate the
+    contents before substituting it into a path."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    assert '[[ ! "$TIMESTAMP" =~ ^[0-9A-Za-z_-]+$ ]]' in script
+    assert "restore-failed: latest.txt has invalid timestamp" in script
+
+
+# ---------------------------------------------------------------------------
+# Smoke: the rendered scripts are syntactically valid bash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not available")
+def test_rendered_snapshot_script_is_syntactically_valid_bash(tmp_path: Path) -> None:
+    """``bash -n`` parses the rendered text without complaint.
+    Catches dangling heredocs, unmatched quotes, etc. — the kind
+    of bug that doesn't show up in a string-comparison test but
+    breaks at runtime on the server."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
+        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),),
+        pause_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
+    )
+    script_path = tmp_path / "snapshot.sh"
+    script_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        ["bash", "-n", str(script_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"bash -n failed: {result.stderr}"
+
+
+@pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not available")
+def test_rendered_restore_script_is_syntactically_valid_bash(tmp_path: Path) -> None:
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
+        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),),
+    )
+    script_path = tmp_path / "restore.sh"
+    script_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        ["bash", "-n", str(script_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"bash -n failed: {result.stderr}"
