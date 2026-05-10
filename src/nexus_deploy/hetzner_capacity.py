@@ -51,27 +51,57 @@ _HETZNER_IDENT = re.compile(r"^[a-z0-9-]+$")
 _API_BASE = "https://api.hetzner.cloud/v1"
 _DEFAULT_TIMEOUT = 30.0
 
-# Default preference list — picked in Issue #536:
-#   1. cx43 (Intel-shared, project default since 2026-05) tried in
-#      three EU regions before falling back to ccx33 (dedicated AMD,
-#      same vCPU/RAM class but ~30% pricier).
-#   2. Region order hel1 → fsn1 → nbg1 — matches the historical
-#      project default ``server_location = "hel1"`` from
-#      ``tofu/stack/variables.tf``, so a fresh install that doesn't
-#      configure SERVER_PREFERENCES at all lands in the same region
-#      as before #537. Falkenstein and Nuremberg follow as failovers.
-#      (PR #537 R2 #2 — reordered so the built-in default doesn't
-#      silently change the region for new installs.)
-#   3. ARM (cax*) deliberately excluded — Hetzner ARM EU has been
-#      chronically constrained and is no longer cheaper (per the
-#      2026-05 note in CLAUDE.md).
+# Default preference list — picked in Issue #536, expanded 2026-05
+# after the May stock crunch left whole tiers OOS in all three EU
+# locations simultaneously. Strategy: shared-only (no dedicated, no
+# ARM), four type-tiers in cost order, three regions per tier.
+#
+#   Tier 1: cx43 (Intel shared, 8 vCPU / 16 GB / 160 GB, project
+#           default since 2026-05). The cheapest box that still fits
+#           the 40+ Docker stacks workload.
+#   Tier 2: cpx41 (AMD shared, 8 vCPU / 16 GB / 240 GB). Same
+#           workload class, different silicon — independent stock
+#           pool. linux/amd64 images run on Intel and AMD without
+#           distinction (per CLAUDE.md), so no compat risk.
+#   Tier 3: cx42 (Intel shared, prior generation, 8 vCPU / 16 GB).
+#           Cheap fallback if cx43 is out everywhere.
+#   Tier 4: cx52 (Intel shared, 16 vCPU / 32 GB / 240 GB). Last
+#           resort when nothing else has stock — bigger and pricier
+#           but keeps the spinup unblocked.
+#
+# Region order hel1 → fsn1 → nbg1 within every tier — matches the
+# historical project default ``server_location = "hel1"`` from
+# ``tofu/stack/variables.tf``, so a fresh install that doesn't
+# configure SERVER_PREFERENCES at all lands in the same region as
+# before #537. Falkenstein and Nuremberg follow as failovers. (PR
+# #537 R2 #2 — reordered so the built-in default doesn't silently
+# change the region for new installs.)
+#
+# Deliberately excluded:
+#   * ARM (cax*) — Hetzner ARM EU has been chronically constrained
+#     and is no longer cheaper (per the 2026-05 note in CLAUDE.md);
+#     also some Docker images we ship lack arm64 builds.
+#   * Dedicated (ccx*) — gated by a separate per-account quota
+#     (typically 8-16 cores total), so a class of N students
+#     spinning up in parallel hits the cap immediately. Also ~2.5-3×
+#     the price of the equivalent shared tier.
 DEFAULT_PREFERENCES = (
+    # Tier 1: cx43 (Intel shared, recommended)
     "cx43:hel1",
     "cx43:fsn1",
     "cx43:nbg1",
-    "ccx33:hel1",
-    "ccx33:fsn1",
-    "ccx33:nbg1",
+    # Tier 2: cpx41 (AMD shared, same 8/16 class)
+    "cpx41:hel1",
+    "cpx41:fsn1",
+    "cpx41:nbg1",
+    # Tier 3: cx42 (Intel shared, prior gen)
+    "cx42:hel1",
+    "cx42:fsn1",
+    "cx42:nbg1",
+    # Tier 4: cx52 (Intel shared, bigger 16/32) — last resort
+    "cx52:hel1",
+    "cx52:fsn1",
+    "cx52:nbg1",
 )
 
 
