@@ -114,23 +114,47 @@ Server local SSD (ephemeral, recreated on every spinup):
 
 ```
 1. select-capacity:    pick (type, location) — no volume constraint, full SERVER_PREFERENCES list valid
-2. tofu apply:         provision server (no volume attachment)
+2. tofu apply:         provision server (no volume attachment) +
+                       per-stack minio_s3_bucket (see "Bucket
+                       provisioning" below)
 3. cloud-init / setup:
-   a. mkdir /var/lib/nexus-data; ln -s /mnt/nexus-data
-   b. rclone sync s3://<bucket>/ → /var/lib/nexus-data/   (skip if first-time spinup)
-   c. start docker compose for postgres containers (gitea-db, dify-db) on EMPTY data dirs
-   d. pg_restore < /var/lib/nexus-data/postgres/gitea.sql.gz
-   e. pg_restore < /var/lib/nexus-data/postgres/dify.sql.gz
+   a. mkdir -p /var/lib/nexus-data
+   b. ln -sfn /var/lib/nexus-data /mnt/nexus-data    (back-compat symlink:
+                                                      existing docker-compose
+                                                      bind-mounts under
+                                                      /mnt/nexus-data resolve to
+                                                      the new SSD-local location
+                                                      without docker-compose
+                                                      changes)
+   c. rclone sync s3://<bucket>/ → /var/lib/nexus-data/   (skip if first-time spinup)
+   d. start docker compose for postgres containers (gitea-db, dify-db) on EMPTY data dirs
+   e. pg_restore < /var/lib/nexus-data/postgres/gitea.dump  (custom binary format)
+   f. pg_restore < /var/lib/nexus-data/postgres/dify.dump
 4. compose-runner:     docker compose up for the rest of the stack
 ```
+
+**Postgres dump format**: ``pg_dump -F c | gzip`` (custom binary
+format, gzipped) on snapshot, ``gunzip | pg_restore`` on spinup.
+Plain SQL output (``pg_dump -F p``) would only round-trip through
+``psql``, which doesn't support the ``--clean --no-owner --no-acl``
+options we use for cross-version restores. The implementation in
+``s3_persistence.py:render_snapshot_script`` and
+``render_restore_script`` uses the custom format end-to-end.
 
 ### New teardown flow (atomic)
 
 ```
-1. pre-snapshot:       docker compose pause (graceful, in-flight requests drain)
+1. pre-snapshot:       docker compose stop on app services (Gitea web,
+                       Dify api/web) + Postgres exec CHECKPOINT to flush
+                       WAL. We deliberately do NOT use `docker compose
+                       pause` (cgroup-freezer SIGSTOP is hard-stop, not
+                       drain — in-flight HTTP requests die mid-write).
+                       The compose stop with default 10s timeout gives
+                       app processes time to finish in-flight requests
+                       and close DB connections cleanly.
 2. dump postgres:
-   a. docker exec gitea-db pg_dump → /tmp/dumps/gitea.sql.gz
-   b. docker exec dify-db pg_dump → /tmp/dumps/dify.sql.gz
+   a. docker exec gitea-db pg_dump -F c -U <user> <db> | gzip > /tmp/dumps/gitea.dump.gz
+   b. docker exec dify-db  pg_dump -F c -U <user> <db> | gzip > /tmp/dumps/dify.dump.gz
 3. rsync-to-s3:
    a. rclone sync /var/lib/nexus-data/gitea → s3://<bucket>/gitea/
    b. rclone sync /var/lib/nexus-data/dify → s3://<bucket>/dify/
@@ -277,9 +301,9 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 
 4. **Bucket-per-stack vs. shared bucket with prefixes.** Per-stack is operationally cleaner (easy to delete on destroy-all, isolation, separate IAM scopes). Shared with `<stack>/<path>` prefixes saves the bucket-creation step but couples blast radius. Recommendation: **bucket-per-stack**.
 
-5. **Hetzner Object Storage Terraform provider support.** The `hetznercloud/hcloud` provider does NOT yet have first-class Object Storage resources. Bucket creation must be done via the Hetzner Object Storage S3 API (we already use it for LakeFS, MinIO, etc.) or manually via the Hetzner console. Recommendation: **provision via S3 API call from `tofu/control-plane/` using a `null_resource` + `local-exec`**, or alternatively from `setup.py`. Decision needed before implementation.
+5. **Hetzner Object Storage Terraform provider support.** RESOLVED — the existing `aminueza/minio` provider (already in `tofu/control-plane/main.tf:287-316` for LakeFS / general / pgducklake buckets) handles Hetzner Object Storage cleanly via `minio_s3_bucket`. v1.0 adds a fourth `minio_s3_bucket "persistence"` resource per stack, same pattern. The shell scripts shipped in PR-1 of the implementation become migration tooling for the existing-stack evacuation phase, not the steady-state path.
 
-6. **Snapshot retention.** How many old snapshots to keep? Recommendation: **last 7 daily + last 4 weekly** via Hetzner Object Storage lifecycle policy. ~10× storage of single-snapshot but a flat ~€10/month per stack at typical sizes.
+6. **Snapshot retention.** v1.0 ships with **30-day NoncurrentVersionExpiration** as the safety net (rough ceiling on storage cost, no precise N-of-each control). At typical tutorial-stack sizes (~5 GB current copy, plus same again in noncurrent versions for the most recent ~30 days of teardown→spinup churn) this lands around ~5-10 GB/stack peak — see Cost analysis table for the per-stack monthly impact. The "last 7 daily + last 4 weekly" pattern is a v1.1 follow-up that needs either tag-based lifecycle rules (not in the current minio provider) or a separate cleanup cron.
 
 7. **What happens to `destroy-all`?** Today it removes the volume too. New behaviour: also deletes the S3 bucket? Or preserves it for cold-storage / forensics? Recommendation: **destroy-all deletes the bucket as well** (matches user intent of "clean slate") with a `--keep-data` flag for the cautious case.
 
@@ -314,23 +338,38 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 
 ## Cost analysis (back-of-envelope)
 
-| Item | Today | Post-v1.0 |
-|---|---|---|
-| Hetzner volume (10 GB × 26 stacks) | €0.50 × 26 = €13/month | €0 |
-| Hetzner Object Storage (~5 GB avg × 26 stacks × 8 snapshots retained) | €0 | ~€1/month |
-| Hetzner Object Storage egress (1× per spinup, ~5 GB × 30 spinups/month) | €0 | ~€2/month (within Hetzner network mostly free) |
-| Increased spinup time (3-5 min × 30 spinups × cost-of-Cloudflare-Access-API-time) | n/a | negligible |
-| **Net** | **~€13/month** | **~€3/month** |
+Hetzner Object Storage pricing (2026-05): **€0.99 per TB/month** for storage in
+the bucket, free egress within the Hetzner network, **€1.19 per TB** egress to
+the public internet. We multiply through with 26 stacks at ~5 GB current data.
 
-Plus: huge operational benefit of spinup-anywhere.
+Storage volume estimation under v1.0 retention (30-day NoncurrentVersion-
+Expiration): each snapshot is roughly the size of the live data (~5 GB).
+Stacks teardown+spinup ~10× per month under typical class usage; with 30-day
+retention, peak storage per stack is ``~5 GB current × (1 + 10) = ~55 GB``
+in the absolute worst case. That's the ceiling — typical usage churns less.
+
+| Item | Today | Post-v1.0 (worst case) | Post-v1.0 (typical) |
+|---|---|---|---|
+| Hetzner volume (10 GB × 26 stacks) | €0.50 × 26 = €13/month | €0 | €0 |
+| Hetzner Object Storage storage (~55 GB worst / ~10 GB typical × 26 stacks × €0.99/TB) | €0 | ~€1.40/month | ~€0.25/month |
+| Hetzner Object Storage egress (1× per spinup, ~5 GB × 30 spinups/month, mostly within-Hetzner so free) | €0 | ~€0.20/month (only the cross-DC chunks) | ~€0.20/month |
+| Increased spinup time (3-5 min × 30 spinups) | n/a | negligible | negligible |
+| **Net** | **~€13/month** | **~€1.60/month** | **~€0.45/month** |
+
+Both columns are dramatically cheaper than the pre-v1.0 baseline. The
+"~€10/month" figure that previously appeared in Open Question #6 was an
+overestimate from before the actual Hetzner pricing was looked up — v1.0
+storage cost across the whole class is comfortably under €2/month. The
+operational benefit (spinup-anywhere; no more EU stock crunch) dwarfs the
+storage saving anyway.
 
 ## Decision points — RESOLVED 2026-05-10
 
 1. **Storage provider:** ✅ **Hetzner Object Storage** (EU data-residency, S3-compatible, already used elsewhere in the stack). R2 deferred — switching is a config change later.
 2. **Bucket scoping:** ✅ **Bucket-per-stack** — operational isolation, easy `destroy-all` cleanup, per-stack IAM scope.
-3. **Bucket provisioning:** ✅ **Shell-script** (`scripts/init-s3-bucket.sh` + `scripts/cleanup-s3-bucket.sh`) — same pattern as the existing `scripts/init-r2-state.sh`, cleanest separation from the runtime pipeline.
+3. **Bucket provisioning:** ✅ **Tofu via the existing `aminueza/minio` provider** (`minio_s3_bucket` resource). The repo already provisions three Hetzner Object Storage buckets this way (`tofu/control-plane/main.tf:287-316` — LakeFS, general, pgducklake), so adding a fourth `minio_s3_bucket "persistence"` resource per stack stays in the established pattern. This was originally proposed as a shell script because the `hcloud` provider doesn't cover Object Storage — that's still true, but the `minio` provider does, and we already use it. The shell scripts (`scripts/init-s3-bucket.sh`, `scripts/cleanup-s3-bucket.sh`) shipped in PR-1 of the implementation series remain as **migration tools** for the existing 26 stacks (whose buckets need to be created against the not-yet-Tofu-managed state during the evacuation phase) and as a manual-fallback path for operators not using Education's setup automation. They are not the primary provisioning mechanism in the steady state.
 4. **Native S3 backends (Gitea LFS, Dify storage):** ✅ **Defer to v1.1** — v1.0 ships with rsync only. Removes one source of risk per release.
-5. **Snapshot retention:** ✅ **7 daily + 4 weekly** — Hetzner Object Storage lifecycle policy. ~50 GB/stack worst case, ~€1.30/month total.
+5. **Snapshot retention:** ✅ **30-day NoncurrentVersionExpiration as the safety net for v1.0** — the precise "7 daily + 4 weekly" pattern requires either tag-based lifecycle rules (not supported by the minio provider's lifecycle resource as of writing) or a separate cleanup cron. v1.0 ships with the 30-day cap; a v1.1 follow-up adds a precise-N-of-each cleanup script. ~50 GB/stack worst case under 30-day retention, ~€1.30/month total per the cost analysis below.
 6. **`destroy-all` behaviour:** ✅ **Opt-in delete** — bucket preserved by default, `--delete-data` flag (or workflow input) required to remove it. Same shape as the existing `confirm=DESTROY` confirmation.
 
 ## Estimated effort
