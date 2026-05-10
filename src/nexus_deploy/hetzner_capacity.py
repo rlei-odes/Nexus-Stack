@@ -83,7 +83,7 @@ _DEFAULT_TIMEOUT = 30.0
 #     also some Docker images we ship lack arm64 builds.
 #   * Dedicated (ccx*) — gated by a separate per-account quota
 #     (typically 8-16 cores total), so a class of N students
-#     spinning up in parallel hits the cap immediately. Also ~2.5-3×
+#     spinning up in parallel hits the cap immediately. Also ~2.5-3x
 #     the price of the equivalent shared tier.
 DEFAULT_PREFERENCES = (
     # Tier 1: cx43 (Intel shared, recommended)
