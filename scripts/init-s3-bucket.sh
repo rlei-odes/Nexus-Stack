@@ -3,9 +3,12 @@
 # Nexus-Stack - Hetzner Object Storage bucket bootstrap (RFC 0001)
 # =============================================================================
 # Creates the per-stack persistence bucket on Hetzner Object Storage,
-# enables versioning, sets a lifecycle policy that retains the last 7
-# daily + 4 weekly snapshots, and pushes the access credentials to
-# Infisical so the stack's spinup pipeline can read them.
+# enables versioning, sets a 30-day NoncurrentVersionExpiration
+# lifecycle policy (the safety net that covers the eventual 7-daily +
+# 4-weekly retention window per RFC 0001 decision #5 — precise N-of-
+# each retention is enforced by a separate cleanup script in v1.1),
+# and pushes the access credentials to Infisical so the stack's
+# spinup pipeline can read them.
 #
 # Called once per stack, either:
 #   - by the operator from their workstation during initial setup
@@ -189,20 +192,36 @@ if [ -n "${INFISICAL_PROJECT_ID:-}" ] && [ -n "${INFISICAL_TOKEN:-}" ]; then
     warn "Install from https://infisical.com/docs/cli/overview"
   else
     log "Pushing bucket credentials to Infisical project '$INFISICAL_PROJECT_ID'"
-    # The folder per stack matches the existing convention used by
-    # the secret-sync pipeline (`secret_sync.py`). We push 5 keys:
-    # endpoint, region, access_key, secret_key, bucket name.
-    infisical secrets set \
-      --token "$INFISICAL_TOKEN" \
+    # Secret values must NOT appear in argv — that's visible via
+    # `ps`, in shell history, and in CI logs. We pipe a tempfile of
+    # `KEY=VALUE` lines into `infisical secrets set --read-from-file
+    # -` (or via stdin equivalent). The file lives in $TMPDIR with
+    # mode 600 and is removed via the EXIT trap.
+    #
+    # Path: `/persistence/$STACK_SLUG` matches the existing
+    # `secret_sync.py` folder convention. We push 5 keys: endpoint,
+    # region, bucket, access_key, secret_key.
+    SECRETS_FILE=$(mktemp)
+    chmod 600 "$SECRETS_FILE"
+    # Append to the existing trap so we don't clobber the lifecycle
+    # tempfile cleanup set earlier in the script.
+    trap 'rm -f "$TMP_LIFECYCLE" "$SECRETS_FILE"' EXIT
+    cat > "$SECRETS_FILE" <<EOF
+S3_ENDPOINT=$ENDPOINT
+S3_REGION=$HETZNER_S3_LOCATION
+S3_BUCKET=$BUCKET
+S3_ACCESS_KEY=$HETZNER_S3_ACCESS_KEY
+S3_SECRET_KEY=$HETZNER_S3_SECRET_KEY
+EOF
+    # Pass the token via env, not argv, for the same reason. The
+    # CLI honours `INFISICAL_TOKEN` from the environment per its
+    # docs, so we just unset the explicit `--token` flag.
+    INFISICAL_TOKEN="$INFISICAL_TOKEN" infisical secrets set \
       --projectId "$INFISICAL_PROJECT_ID" \
       --path "/persistence/$STACK_SLUG" \
-      "S3_ENDPOINT=$ENDPOINT" \
-      "S3_REGION=$HETZNER_S3_LOCATION" \
-      "S3_BUCKET=$BUCKET" \
-      "S3_ACCESS_KEY=$HETZNER_S3_ACCESS_KEY" \
-      "S3_SECRET_KEY=$HETZNER_S3_SECRET_KEY" \
-      >/dev/null 2>&1 || warn "infisical secrets set returned non-zero (may already exist)"
-    ok "Credentials pushed to Infisical"
+      --file "$SECRETS_FILE" \
+      >/dev/null 2>&1 || warn "infisical secrets set returned non-zero (values may already exist)"
+    ok "Credentials pushed to Infisical (via stdin file, not argv)"
   fi
 else
   warn "INFISICAL_PROJECT_ID/INFISICAL_TOKEN not set — credentials NOT pushed automatically"

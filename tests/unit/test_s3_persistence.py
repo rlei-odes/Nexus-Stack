@@ -9,20 +9,29 @@ Coverage focus areas:
 * :class:`S3Endpoint` charset gating — every malformed value is
   rejected at construction time, with a message that names the
   offending field.
+* :class:`PostgresDumpTarget` charset gating — container,
+  database and user identifiers all validated against shapes
+  that are safe to interpolate into the rendered bash + SQL.
 * Manifest round-trip — ``to_json`` → ``from_json`` is identity
-  for valid input; corrupt input raises :class:`S3PersistenceError`
-  with a useful message.
+  for valid input; corrupt input (bad JSON, wrong root type,
+  unknown version, malformed components) raises
+  :class:`S3PersistenceError` with a useful message rather than
+  a confusing ``KeyError`` from indexing into bad data.
 * Snapshot script invariants — required structure (``set -euo
   pipefail``, ordered phases), atomicity gate (``rclone check``
-  before pointing ``snapshots/latest.txt`` at the new timestamp),
-  no shell injection from any interpolated value.
+  exit code captured via ``PIPESTATUS`` so a check-itself failure
+  isn't masked by ``|| true``), no shell injection from any
+  interpolated value.
 * Restore script invariants — graceful handling of the empty-S3
   case (fresh-start branch), drop+recreate around pg_restore,
-  cooperative idempotency.
-* Bash exec smoke tests — when bash is available locally, render
-  a minimal script with stubbed external commands and run it; the
-  ``set -euo pipefail`` is satisfied and exit codes match the
-  non-zero gate.
+  filesystem-before-postgres ordering, ``snapshots/latest.txt``
+  shape validation.
+* ``bash -n`` syntax check — the rendered scripts parse cleanly
+  with bash's no-execute mode. Catches dangling heredocs,
+  unmatched quotes etc. — bugs that don't surface in
+  string-equality tests but break at runtime on the server. Full
+  exec-with-stubs smoke tests are deferred to the pipeline-
+  integration PR where the SSHClient runner is plumbed in.
 """
 
 from __future__ import annotations
@@ -186,8 +195,12 @@ def test_manifest_round_trip_is_identity() -> None:
         stack="nexus-stefan-hslu",
         template_version="v0.56.0",
         components=(
-            ComponentSnapshot(name="gitea-repos", path="gitea/repos", size_bytes=1024, sha256="abc123"),
-            ComponentSnapshot(name="dify-storage", path="dify/storage", size_bytes=2048, sha256="def456"),
+            ComponentSnapshot(
+                name="gitea-repos", path="gitea/repos", size_bytes=1024, sha256="abc123"
+            ),
+            ComponentSnapshot(
+                name="dify-storage", path="dify/storage", size_bytes=2048, sha256="def456"
+            ),
         ),
     )
     parsed = SnapshotManifest.from_json(original.to_json())
@@ -218,6 +231,92 @@ def test_manifest_from_json_rejects_non_object_root() -> None:
 def test_manifest_from_json_rejects_invalid_json() -> None:
     with pytest.raises(S3PersistenceError, match="not valid JSON"):
         SnapshotManifest.from_json("{ not json")
+
+
+def test_manifest_from_json_rejects_non_dict_component() -> None:
+    """A component that's not a dict (e.g. a stray string) must
+    surface as :class:`S3PersistenceError` with an actionable
+    message, not a confusing TypeError. Promised in the
+    docstring; the previous implementation indexed straight in
+    and raised ``TypeError: string indices must be integers``."""
+    raw = json.dumps({"version": 1, "components": ["not-a-dict"]})
+    with pytest.raises(S3PersistenceError, match=r"components\[0\] must be an object"):
+        SnapshotManifest.from_json(raw)
+
+
+def test_manifest_from_json_rejects_component_missing_keys() -> None:
+    """A component dict missing one of the four required keys is
+    a manifest corruption — caller needs an actionable error,
+    not a KeyError stack trace."""
+    raw = json.dumps(
+        {
+            "version": 1,
+            "components": [{"name": "x", "path": "x"}],  # no size_bytes/sha256
+        }
+    )
+    with pytest.raises(S3PersistenceError, match=r"missing required key"):
+        SnapshotManifest.from_json(raw)
+
+
+def test_manifest_from_json_rejects_component_with_bad_size() -> None:
+    """``size_bytes`` must be coerce-able to int. A string like
+    'banana' would have raised ValueError mid-parse with the old
+    code; we now wrap it to S3PersistenceError."""
+    raw = json.dumps(
+        {
+            "version": 1,
+            "components": [
+                {
+                    "name": "x",
+                    "path": "x",
+                    "size_bytes": "banana",  # invalid
+                    "sha256": "abc",
+                }
+            ],
+        }
+    )
+    with pytest.raises(S3PersistenceError, match="bad value"):
+        SnapshotManifest.from_json(raw)
+
+
+# ---------------------------------------------------------------------------
+# PostgresDumpTarget charset gating (added in PR review round 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "fragment"),
+    [
+        # container — docker-service-name shape (Hetzner-region regex)
+        ("container", "Gitea_DB", "container"),  # underscore + uppercase
+        ("container", "gitea db", "container"),  # space
+        ("container", "gitea;rm", "container"),  # injection attempt
+        # database / user — strict PG identifier
+        ("database", "drop table users", "database"),
+        ("database", "1abc", "database"),  # leading digit
+        ("database", 'gitea"', "database"),  # quote injection
+        ("user", "user;DROP", "user"),
+        ("user", "user with space", "user"),
+    ],
+)
+def test_postgres_dump_target_rejects_unsafe_identifiers(
+    field: str, value: str, fragment: str
+) -> None:
+    """Every value that could break out of bash interpolation OR
+    SQL identifier interpolation must be rejected at construction
+    time. The rendered bash + SQL never sees an unsafe value."""
+    kwargs = {"container": "gitea-db", "database": "gitea", "user": "nexus-gitea"}
+    kwargs[field] = value
+    with pytest.raises(S3PersistenceError, match=fragment):
+        PostgresDumpTarget(**kwargs)
+
+
+def test_postgres_dump_target_accepts_canonical_values() -> None:
+    """Smoke: real-world configs (``gitea-db`` / ``gitea`` /
+    ``nexus-gitea``) pass the gate."""
+    PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea")
+    PostgresDumpTarget(container="dify-db", database="dify", user="nexus_dify")
+    PostgresDumpTarget(container="x-db-2", database="db_v2", user="role_admin")
 
 
 def test_manifest_for_components_helper_sorts_components() -> None:
@@ -277,8 +376,16 @@ def test_snapshot_script_orders_phases_correctly() -> None:
         stack_slug="nexus-test",
         template_version="v0.56.0",
         timestamp="20260510T120000Z",
-        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
-        rsync_targets=(RsyncTarget(name="gitea-repos", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"),),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="gitea-repos",
+                local_path="/var/lib/nexus-data/gitea/repos",
+                s3_subpath="gitea/repos",
+            ),
+        ),
         pause_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
     )
     pause_pos = script.find("compose -f")
@@ -345,10 +452,18 @@ def test_snapshot_script_rejects_unsafe_timestamp() -> None:
         )
 
 
-def test_snapshot_script_includes_rclone_check_with_drift_gate() -> None:
-    """``rclone check`` output must be parsed for ``-`` and ``*``
-    markers so any drift fails the snapshot — silently passing
-    would let half-uploaded snapshots count as ``latest``."""
+def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> None:
+    """The atomicity gate must distinguish (a) rclone-check itself
+    erroring (auth/network/quota — ``rclone_rc != 0``) from
+    (b) rclone-check succeeding but reporting drift (``drift_rc ==
+    0`` because ``grep`` found a ``-`` or ``*`` marker line).
+
+    The previous ``... | grep ... && {...} || true`` form
+    silently merged both cases and let ``set -e`` mask the
+    rclone-check-itself failure. We assert the rendered bash
+    captures both rcs via ``PIPESTATUS`` and aborts with a
+    distinct message for each.
+    """
     script = render_snapshot_script(
         endpoint=_endpoint(),
         stack_slug="nexus-test",
@@ -358,8 +473,18 @@ def test_snapshot_script_includes_rclone_check_with_drift_gate() -> None:
         rsync_targets=(),
     )
     assert "rclone check" in script
-    assert 'grep -E "^[-*]"' in script
+    # Both PIPESTATUS captures must be present.
+    assert "rclone_rc=${PIPESTATUS[0]}" in script
+    assert "drift_rc=${PIPESTATUS[1]}" in script
+    # And both abort messages must distinguish the two modes.
+    assert "snapshot-failed: rclone check itself errored" in script
     assert "snapshot-failed: rclone check found drift" in script
+    # The rclone-check command itself must not be wrapped in `... ||
+    # true` (which would swallow non-zero exit). The diagnostic
+    # ``cat err || true`` (a best-effort log dump if the err file
+    # didn't get written) is allowed.
+    rclone_check_block = script.split("rclone check ")[1].split("\n", 1)[0]
+    assert "|| true" not in rclone_check_block
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +521,9 @@ def test_restore_script_drops_database_before_pg_restore() -> None:
     deterministic."""
     script = render_restore_script(
         endpoint=_endpoint(),
-        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
         rsync_targets=(),
     )
     assert "DROP DATABASE IF EXISTS gitea" in script
@@ -410,8 +537,14 @@ def test_restore_script_pulls_filesystem_trees_before_postgres() -> None:
     Reversing this ordering would race on first start."""
     script = render_restore_script(
         endpoint=_endpoint(),
-        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
-        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"),),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
     )
     fs_pos = script.find("pulling filesystem trees")
     pg_pos = script.find("pulling postgres dumps")
@@ -447,8 +580,12 @@ def test_rendered_snapshot_script_is_syntactically_valid_bash(tmp_path: Path) ->
         stack_slug="nexus-test",
         template_version="v0.56.0",
         timestamp="20260510T120000Z",
-        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
-        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),
+        ),
         pause_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
     )
     script_path = tmp_path / "snapshot.sh"
@@ -466,8 +603,12 @@ def test_rendered_snapshot_script_is_syntactically_valid_bash(tmp_path: Path) ->
 def test_rendered_restore_script_is_syntactically_valid_bash(tmp_path: Path) -> None:
     script = render_restore_script(
         endpoint=_endpoint(),
-        postgres_targets=(PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),),
-        rsync_targets=(RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),
+        ),
     )
     script_path = tmp_path / "restore.sh"
     script_path.write_text(script, encoding="utf-8")

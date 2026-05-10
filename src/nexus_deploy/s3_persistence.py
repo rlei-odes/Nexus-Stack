@@ -20,10 +20,16 @@ Public surface:
   passed in rather than read from the environment so the rendered
   script never relies on ambient state — and so unit tests can
   inject a fixture without touching real Hetzner credentials.
-* :class:`SnapshotManifest` — what gets serialised into
-  ``manifest.json`` on every snapshot. Carries the per-component
-  byte counts + sha256 checksums that the spinup-restore path uses
-  to verify a snapshot is intact before pulling it down.
+* :class:`SnapshotManifest` — Python-level dataclass + JSON
+  serialiser for the snapshot metadata. The version-1.0 *rendered*
+  bash writes a slim manifest (timestamp, stack, template version)
+  and relies on rclone's ETag check for integrity, so v1.0
+  ``manifest.json`` files in S3 carry no per-component checksums.
+  This dataclass + :func:`manifest_for_components` exist for
+  callers that need to compute and emit per-component checksums
+  client-side — currently used only by tests and a planned v1.1
+  cleanup-and-verify script. See "Open question 1" in
+  ``docs/proposals/0001-s3-persistence.md``.
 * :func:`render_rclone_config` — produces a ``[hetzner-s3]`` rclone
   profile block from an :class:`S3Endpoint`. Written to
   ``~/.config/rclone/rclone.conf`` on the server. Idempotent — the
@@ -96,6 +102,15 @@ _ACCESS_KEY = re.compile(r"^[A-Za-z0-9]+$")
 # reject a future format change, but still gate against bash
 # metacharacters.
 _SECRET_KEY = re.compile(r"^[A-Za-z0-9+/=_-]+$")
+# Postgres identifier shape — applies to both database names and
+# role names interpolated into rendered SQL (``DROP DATABASE
+# {pg.database}``, ``CREATE DATABASE ... OWNER {pg.user}``). PG
+# itself permits a wider character set when identifiers are
+# double-quoted, but we deliberately don't accept that complexity:
+# every database/user we manage today matches this strict shape, and
+# an attacker who controls the value should be rejected at config
+# time, not handled with quoting acrobatics.
+_PG_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
 class S3PersistenceError(Exception):
@@ -236,21 +251,43 @@ class SnapshotManifest:
             raise S3PersistenceError(
                 "manifest.json 'components' must be a list",
             )
-        components = tuple(
-            ComponentSnapshot(
-                name=c["name"],
-                path=c["path"],
-                size_bytes=c["size_bytes"],
-                sha256=c["sha256"],
-            )
-            for c in components_raw
-        )
+        # Each component must be a dict with the four expected keys.
+        # The previous implementation indexed straight into ``c[...]``
+        # which raised KeyError/TypeError on corrupt input — a class
+        # of failure the docstring explicitly promises to surface as
+        # S3PersistenceError. Validate each entry explicitly so a
+        # malformed manifest produces an actionable error rather than
+        # a confusing KeyError stack trace from the restore path.
+        components: list[ComponentSnapshot] = []
+        for idx, c in enumerate(components_raw):
+            if not isinstance(c, dict):
+                raise S3PersistenceError(
+                    f"manifest.json components[{idx}] must be an object, got {type(c).__name__}",
+                )
+            for key in ("name", "path", "size_bytes", "sha256"):
+                if key not in c:
+                    raise S3PersistenceError(
+                        f"manifest.json components[{idx}] is missing required key {key!r}",
+                    )
+            try:
+                components.append(
+                    ComponentSnapshot(
+                        name=str(c["name"]),
+                        path=str(c["path"]),
+                        size_bytes=int(c["size_bytes"]),
+                        sha256=str(c["sha256"]),
+                    ),
+                )
+            except (TypeError, ValueError) as exc:
+                raise S3PersistenceError(
+                    f"manifest.json components[{idx}] has a bad value: {exc}",
+                ) from exc
         return cls(
             version=1,
             created_at=str(data.get("created_at", "")),
             stack=str(data.get("stack", "")),
             template_version=str(data.get("template_version", "")),
-            components=components,
+            components=tuple(components),
         )
 
 
@@ -301,11 +338,35 @@ class PostgresDumpTarget:
     pg_restore. We pass these in (rather than infer them) so the
     same module supports any new stateful stack — the caller in
     pipeline.py decides which databases to back up.
+
+    All three fields are charset-validated at construction so the
+    rendered bash + SQL never sees a value that could break out of
+    interpolation. ``container`` matches the Hetzner-region shape
+    (alnum + dash, lowercase) — every docker-compose service in
+    this codebase uses that style. ``database`` and ``user`` match
+    the strict Postgres-identifier subset (``[A-Za-z_][A-Za-z0-9_-]*``)
+    we use across all stacks; we deliberately don't accept the
+    wider double-quoted-identifier space because no service we ship
+    needs it and it would force quoting acrobatics in the rendered
+    SQL.
     """
 
     container: str
     database: str
     user: str
+
+    def __post_init__(self) -> None:
+        if not _HETZNER_REGION.fullmatch(self.container):
+            raise S3PersistenceError(
+                f"PostgresDumpTarget.container must match docker-service-name shape "
+                f"(lowercase alnum + dash): {self.container!r}",
+            )
+        for name, value in (("database", self.database), ("user", self.user)):
+            if not _PG_IDENTIFIER.fullmatch(value):
+                raise S3PersistenceError(
+                    f"PostgresDumpTarget.{name} must match strict PG identifier shape "
+                    f"([A-Za-z_][A-Za-z0-9_-]*): {value!r}",
+                )
 
 
 @dataclass(frozen=True)
@@ -421,8 +482,7 @@ def render_snapshot_script(
             user = shlex.quote(pg.user)
             dump_file = f"$POSTGRES_DIR/{pg.database}.sql.gz"
             lines.append(
-                f"docker exec {container} pg_dump -U {user} -d {db} -F c "
-                f"| gzip -9 > {dump_file}",
+                f"docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
             )
         lines.append("")
 
@@ -431,8 +491,7 @@ def render_snapshot_script(
         local = shlex.quote(rs.local_path)
         sub = shlex.quote(rs.s3_subpath)
         lines.append(
-            f'rclone sync --create-empty-src-dirs {local} '
-            f'"$BUCKET/$SNAPSHOT_PREFIX/{sub}"',
+            f'rclone sync --create-empty-src-dirs {local} "$BUCKET/$SNAPSHOT_PREFIX/{sub}"',
         )
     lines.append("")
 
@@ -455,24 +514,49 @@ def render_snapshot_script(
             '  "template_version": "$TEMPLATE_VERSION"',
             "}",
             "EOF",
-            'rclone copyto "$WORKDIR/manifest.json" '
-            '"$BUCKET/$SNAPSHOT_PREFIX/manifest.json"',
+            'rclone copyto "$WORKDIR/manifest.json" "$BUCKET/$SNAPSHOT_PREFIX/manifest.json"',
             "",
             'echo "→ snapshot: verifying upload (rclone check)"',
-            # `--one-way` because we don't expect anything in S3 that
-            # isn't local — anything extra would be a stale partial
-            # upload from a previous failure, which the verify step
-            # is allowed to ignore. The `--combined` reporter gives
-            # a single line per file: + (matches), - (missing), *
-            # (size/hash differs), so we can grep for ``-`` and ``*``
-            # to detect drift.
+            # Atomicity gate. Two distinct failure modes need distinct
+            # treatment, which the previous ``... | grep ... && {...}
+            # || true`` form silently merged into one bucket:
+            #
+            #   1. rclone-check itself fails (auth/network/quota) →
+            #      ``rclone check`` exits non-zero. The previous form
+            #      would let ``set -e`` catch that, but only if the
+            #      pipe-grep didn't find any drift markers; the ``||
+            #      true`` fallback then masked it again. We capture
+            #      the rclone-check rc explicitly via ``${PIPESTATUS}``
+            #      and abort if non-zero.
+            #
+            #   2. rclone-check succeeds but reports drift (some file
+            #      missing-on-remote ``-`` or different ``*``). In
+            #      that case ``grep -E "^[-*]"`` *succeeds* (rc=0 →
+            #      drift found) and we abort. If grep returns rc=1
+            #      (no drift markers found) that's the happy path.
+            #
+            # ``--one-way`` keeps the comparison local→S3-only, so a
+            # stale orphan in S3 from a previous failed snapshot can't
+            # by itself fail the gate — only files we actually
+            # uploaded need to round-trip cleanly.
+            "set +e",
             'rclone check "$WORKDIR" "$BUCKET/$SNAPSHOT_PREFIX" '
-            '--one-way --combined - 2>&1 '
-            '| grep -E "^[-*]" '
-            "&& { "
-            'echo "✗ snapshot-failed: rclone check found drift" >&2; '
-            "exit 2; "
-            "} || true",
+            '--one-way --combined - 2>"$WORKDIR/rclone-check.err" '
+            '| tee "$WORKDIR/rclone-check.out" '
+            '| grep -qE "^[-*]"',
+            "drift_rc=${PIPESTATUS[1]}     # 0 = drift found, 1 = clean",
+            "rclone_rc=${PIPESTATUS[0]}    # rclone-check's own exit",
+            "set -e",
+            'if [ "$rclone_rc" -ne 0 ]; then',
+            '  echo "✗ snapshot-failed: rclone check itself errored (rc=$rclone_rc)" >&2',
+            '  cat "$WORKDIR/rclone-check.err" >&2 || true',
+            "  exit 2",
+            "fi",
+            'if [ "$drift_rc" -eq 0 ]; then',
+            '  echo "✗ snapshot-failed: rclone check found drift" >&2',
+            '  cat "$WORKDIR/rclone-check.out" >&2',
+            "  exit 2",
+            "fi",
             "",
             'echo "→ snapshot: pointing snapshots/latest at $TIMESTAMP"',
             'echo "$TIMESTAMP" > "$WORKDIR/latest.txt"',
@@ -553,26 +637,27 @@ def render_restore_script(
     if rs_targets:
         lines.append('echo "→ restore: pulling filesystem trees"')
         for rs in rs_targets:
-            local = shlex.quote(f"{local_root}/{rs.local_path.lstrip('/').removeprefix(local_root.lstrip('/') + '/')}")
             sub = shlex.quote(rs.s3_subpath)
-            # Use rs.local_path directly — we already validated it
-            # in the constructor and it's an absolute path. We
-            # don't try to compose it under local_root because
-            # callers may want to restore to a different absolute
-            # path (e.g. /opt/data) and the value is already
-            # injection-safe.
+            # Use rs.local_path directly — it's already an absolute
+            # path. We deliberately don't recompose under local_root
+            # because callers may want to restore to a different
+            # absolute path (e.g. /opt/data on a future stack) and
+            # the value is already injection-safe via shlex.quote.
+            #
+            # ``local_root`` is still used as the parent dir for
+            # mkdir at the top of the script (so the very first
+            # rsync target lands in a created directory). It does
+            # NOT govern restore destinations.
             local = shlex.quote(rs.local_path)
             lines.append(
-                f'rclone sync "$BUCKET/$SNAPSHOT_PREFIX/{sub}" {local} '
-                "--create-empty-src-dirs",
+                f'rclone sync "$BUCKET/$SNAPSHOT_PREFIX/{sub}" {local} --create-empty-src-dirs',
             )
         lines.append("")
 
     if pg_targets:
         lines.append('echo "→ restore: pulling postgres dumps"')
         lines.append(
-            'rclone sync "$BUCKET/$SNAPSHOT_PREFIX/postgres" '
-            '"$WORKDIR/postgres"',
+            'rclone sync "$BUCKET/$SNAPSHOT_PREFIX/postgres" "$WORKDIR/postgres"',
         )
         lines.append('echo "→ restore: applying postgres dumps"')
         for pg in pg_targets:
@@ -585,7 +670,7 @@ def render_restore_script(
             # but is fragile across PG versions; the explicit
             # drop+create is portable.
             lines.append(
-                f'docker exec {container} psql -U {user} -d postgres '
+                f"docker exec {container} psql -U {user} -d postgres "
                 f'-c "DROP DATABASE IF EXISTS {pg.database} WITH (FORCE);"',
             )
             lines.append(
