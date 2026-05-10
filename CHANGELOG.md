@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.55.0...v0.56.0) (2026-05-10)
+
+
+### 🚀 Features
+
+* **control-plane:** Move Sync to Databricks box to Integrations tab ([c0fda6f](https://github.com/stefanko-ch/Nexus-Stack/commit/c0fda6f17aa6d446aa5ce54512b6a1ee4963030d))
+
+
+### 🐛 Bug Fixes
+
+* **control-plane:** Address PR [#542](https://github.com/stefanko-ch/Nexus-Stack/issues/542) R1 review comments ([c74319a](https://github.com/stefanko-ch/Nexus-Stack/commit/c74319a9408195d31280150b90a0e16451a67d07))
+* **deploy:** Expand DEFAULT_PREFERENCES — shared-only, 4 tiers, no dedicated/ARM ([343a063](https://github.com/stefanko-ch/Nexus-Stack/commit/343a0636e6fe5508329ee5f4367a567855fc9c85))
+* **deploy:** Expand DEFAULT_PREFERENCES — shared-only, 4 tiers, no dedicated/ARM ([e167238](https://github.com/stefanko-ch/Nexus-Stack/commit/e16723836b6e6f1822570ff3577e6bd6fc233592))
+* **deploy:** Replace × with x in DEFAULT_PREFERENCES comment (RUF003) ([bd06e84](https://github.com/stefanko-ch/Nexus-Stack/commit/bd06e8458956a30afd902253128ea39d02581263))
+* **nexus_deploy:** Address PR [#544](https://github.com/stefanko-ch/Nexus-Stack/issues/544) R1 review comments ([03999c2](https://github.com/stefanko-ch/Nexus-Stack/commit/03999c2d56589c51f8bd4acb312b66354700e659))
+* **nexus_deploy:** Address PR [#544](https://github.com/stefanko-ch/Nexus-Stack/issues/544) R2 review comments ([0f205a7](https://github.com/stefanko-ch/Nexus-Stack/commit/0f205a74d95787dc3429bde5011115c307abe312))
+* **nexus_deploy:** Apply Kestra-specific StackTarget overrides in orchestrator phase ([#543](https://github.com/stefanko-ch/Nexus-Stack/issues/543)) ([8108743](https://github.com/stefanko-ch/Nexus-Stack/commit/81087436e24e17aab0dae2a6ff8c2c3a03aa50cc))
+* **nexus_deploy:** Apply Kestra-specific StackTarget overrides in orchestrator phase ([#543](https://github.com/stefanko-ch/Nexus-Stack/issues/543)) ([ba73d11](https://github.com/stefanko-ch/Nexus-Stack/commit/ba73d11615ce41d2f8c4e8b1ef90e1ad9b3e53a4))
+* **seeds:** Hardcode parallel-http-fetch concurrencyLimit (Kestra YAML deserialisation bug) ([772c94c](https://github.com/stefanko-ch/Nexus-Stack/commit/772c94ca74cc9771cf3141caf760850c2fbb42e3))
+
 ## [0.55.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.54.0...v0.55.0) (2026-05-07)
 
 
