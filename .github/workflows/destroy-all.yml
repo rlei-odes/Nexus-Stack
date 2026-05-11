@@ -211,10 +211,19 @@ jobs:
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 
           # RFC 0001 cutover: hcloud_volume.persistent no longer
-          # exists; persistence migrated to R2. The destroy-all
-          # workflow now does NOT protect anything volume-shaped —
-          # the R2 bucket holding snapshots is the new persistence
-          # boundary, and it lives outside Tofu state entirely.
+          # exists; persistence migrated to R2.
+          #
+          # The `nexus-<domain-slug>-persistence` R2 bucket holding
+          # snapshots is INTENTIONALLY NOT touched by destroy-all
+          # — it lives outside Tofu state (created by
+          # setup-control-plane.yaml + init-r2-state.sh via direct
+          # Cloudflare API calls). That means after destroy-all,
+          # the bucket survives with all its snapshot trees + the
+          # latest.txt pointer. Re-running initial-setup +
+          # spin-up later picks them back up via restore_from_s3.
+          # To truly wipe ALL state (including R2 snapshots), the
+          # operator deletes the persistence bucket manually in
+          # the Cloudflare dashboard.
 
           # Protect KV namespace from destruction (keeps Databricks config etc.)
           echo "💾 Protecting KV namespace from destroy..."
