@@ -123,6 +123,10 @@ def setup_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "configure_ssh": MagicMock(return_value=None),
         "wait_for_ssh": MagicMock(return_value=SSHReadinessResult(succeeded=True, attempts=1)),
         "ensure_jq": MagicMock(return_value=False),
+        # rclone must be installed BEFORE restore_from_s3 — pipeline
+        # calls ensure_rclone right after ensure_jq. Pre-Round-6
+        # missing-rclone caused silent fresh-starts → data loss.
+        "ensure_rclone": MagicMock(return_value=False),
         # RFC 0001 cutover: mount_persistent_volume replaced by
         # ensure_data_dirs (chown-only; the Hetzner volume is gone).
         "ensure_data_dirs": MagicMock(return_value=None),
@@ -133,6 +137,10 @@ def setup_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("nexus_deploy.pipeline._setup.configure_ssh", mocks["configure_ssh"])
     monkeypatch.setattr("nexus_deploy.pipeline._setup.wait_for_ssh", mocks["wait_for_ssh"])
     monkeypatch.setattr("nexus_deploy.pipeline._setup.ensure_jq", mocks["ensure_jq"])
+    monkeypatch.setattr(
+        "nexus_deploy.pipeline._setup.ensure_rclone",
+        mocks["ensure_rclone"],
+    )
     monkeypatch.setattr(
         "nexus_deploy.pipeline._setup.ensure_data_dirs",
         mocks["ensure_data_dirs"],
@@ -492,6 +500,7 @@ def test_pipeline_runs_restore_then_ensure_data_dirs_then_pg_restore(
     out-of-order regressions like calling pg-restore BEFORE
     pre_bootstrap (which was the round-4 bug Copilot caught)."""
     parent = MagicMock()
+    parent.attach_mock(setup_mocks["ensure_rclone"], "ensure_rclone")
     parent.attach_mock(setup_mocks["ensure_data_dirs"], "ensure_data_dirs")
 
     restore_calls: list[str] = []
@@ -532,6 +541,7 @@ def test_pipeline_runs_restore_then_ensure_data_dirs_then_pg_restore(
         for c in parent.mock_calls
         if c[0]
         in {
+            "ensure_rclone",
             "restore_from_s3",
             "ensure_data_dirs",
             "run_pre_bootstrap",
@@ -539,6 +549,7 @@ def test_pipeline_runs_restore_then_ensure_data_dirs_then_pg_restore(
         }
     ]
     assert relevant == [
+        "ensure_rclone",  # MUST come before restore_from_s3
         "restore_from_s3",  # phase="filesystem"
         "ensure_data_dirs",
         "run_pre_bootstrap",  # compose-up happens here

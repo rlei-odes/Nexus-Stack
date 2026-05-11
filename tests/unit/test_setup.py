@@ -26,6 +26,7 @@ from nexus_deploy.setup import (
     configure_ssh,
     ensure_data_dirs,
     ensure_jq,
+    ensure_rclone,
     render_ssh_config_block,
     strip_existing_block,
     wait_for_service_token,
@@ -431,6 +432,40 @@ def test_ensure_jq_installs_when_missing() -> None:
     result = ensure_jq(ssh)
     assert result is True
     assert ssh.run.call_count == 2
+
+
+def test_ensure_rclone_returns_false_when_already_present() -> None:
+    """If rclone is already installed (rc=0 from `command -v rclone`),
+    skip the apt-get install."""
+    ssh = MagicMock()
+    ssh.run.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="/usr/bin/rclone\n", stderr=""
+    )
+    result = ensure_rclone(ssh)
+    assert result is False
+    ssh.run.assert_called_once()
+
+
+def test_ensure_rclone_installs_when_missing() -> None:
+    """Pre-Round-6, a missing rclone caused the restore script to
+    silently fresh-start (data loss on next teardown). The current
+    Round-6 probe turns it into a loud rc=2, but the real fix is to
+    install rclone BEFORE the probe runs. This test pins that the
+    install actually happens when the binary is missing."""
+    ssh = MagicMock()
+    ssh.run.side_effect = [
+        # `command -v rclone` → rc=1 (missing)
+        subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="", stderr=""),
+        # apt-get install → rc=0
+        subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="", stderr=""),
+    ]
+    result = ensure_rclone(ssh)
+    assert result is True
+    assert ssh.run.call_count == 2
+    # The install command must reference rclone explicitly so a
+    # future refactor doesn't silently swap the package name.
+    install_call = ssh.run.call_args_list[1]
+    assert "rclone" in install_call.args[0]
 
 
 # ---------------------------------------------------------------------------
