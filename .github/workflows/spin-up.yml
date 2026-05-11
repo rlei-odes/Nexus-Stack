@@ -464,34 +464,61 @@ jobs:
           TUNNEL_TOKEN=$(tofu output -raw tunnel_token)
           echo "::add-mask::$TUNNEL_TOKEN"
 
-          echo "Waiting for SSH to become available on $SERVER_IP..."
-          # Wait for SSH to be ready (server may still be booting)
-          # Max wait: 2 minutes (24 attempts * 5s = 120s)
-          for i in {1..24}; do
+          echo "Waiting for SSH + cloud-init on $SERVER_IP..."
+          # Race fix (2026-05-11): the old loop only probed bare SSH
+          # responsiveness via `echo 'SSH ready'`. sshd comes up
+          # within ~10s of boot, BUT cloud-init's apt-get update +
+          # docker install + apt-get install fail2ban etc. keeps the
+          # system busy for another 60-180s. The first SSH worked
+          # because `echo` is trivial; the second SSH (which streams
+          # an install script via stdin) then hit a banner-exchange
+          # timeout because sshd was too busy answering the new
+          # connection mid-apt.
+          #
+          # New gate: probe for the cloud-init completion marker
+          # `/opt/docker-server/.setup-complete` (touched as the very
+          # last line of the user_data script in tofu/stack/main.tf).
+          # That guarantees:
+          #   (a) sshd is up (test -f runs over SSH, so SSH worked),
+          #   (b) cloud-init's heavy lifting has finished (`docker
+          #       installed, fail2ban running, etc.),
+          #   (c) the second SSH connection won't compete with apt
+          #       for I/O.
+          # Bumped to 6 minutes — cloud-init's apt-get upgrade -y can
+          # take 4-5 min on a fresh Ubuntu 24.04 image when there's
+          # a kernel update.
+          for i in {1..72}; do
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \
-              root@"$SERVER_IP" "echo 'SSH ready'" 2>/dev/null; then
-              echo "✅ SSH is ready (attempt $i)"
+              root@"$SERVER_IP" "test -f /opt/docker-server/.setup-complete" 2>/dev/null; then
+              echo "✅ SSH ready + cloud-init complete (attempt $i)"
               break
             fi
-            if [ $i -eq 24 ]; then
-              echo "❌ SSH did not become available after 2 minutes"
+            if [ $i -eq 72 ]; then
+              echo "❌ cloud-init did not complete after 6 minutes"
+              echo "   Last attempt to surface diagnostic:"
+              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \
+                root@"$SERVER_IP" \
+                "cloud-init status; tail -50 /var/log/cloud-init-output.log" 2>&1 || true
               exit 1
             fi
-            echo "Attempt $i/24 - waiting 5s..."
             sleep 5
           done
 
           echo "Installing Cloudflare Tunnel on $SERVER_IP..."
 
-          # Write tunnel install script
+          # Write tunnel install script.
+          # NOTE: `cloud-init status --wait` here is a defence-in-depth
+          # — the readiness gate above ALREADY waited for the
+          # completion marker, but cloud-init internally may still be
+          # tracking a few late finalization steps. The wait is a
+          # near-no-op in practice.
           cat > /tmp/install-tunnel.sh << SCRIPT
           #!/bin/bash
           set -e
-          echo 'Waiting for cloud-init to complete...'
           cloud-init status --wait || true
           echo 'Installing/updating Cloudflare Tunnel...'
           systemctl stop cloudflared 2>/dev/null || true
-          # Uninstall existing service if present
+          # Uninstall existing service if present (idempotent re-run safety).
           if systemctl list-unit-files | grep -q cloudflared.service; then
             echo 'Uninstalling existing cloudflared service...'
             cloudflared service uninstall 2>/dev/null || true
@@ -505,8 +532,27 @@ jobs:
           SCRIPT
           sed -i 's/^          //' /tmp/install-tunnel.sh
 
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=10 \
-            root@"$SERVER_IP" bash < /tmp/install-tunnel.sh
+          # Retry the install-tunnel SSH up to 5 times with 20s gaps.
+          # Belt-and-suspenders: even with the readiness gate above, a
+          # banner-exchange timeout can still happen on slow Hetzner
+          # cold-starts (sshd reloading host keys, fail2ban tightening
+          # filters mid-flight, etc.). The install script is fully
+          # idempotent (stops + uninstalls cloudflared first), so a
+          # half-completed run + retry is safe. Total worst-case wait
+          # = 5 * 60s (ConnectTimeout) + 4 * 20s (sleep) ≈ 6 min.
+          for attempt in {1..5}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=10 \
+                 root@"$SERVER_IP" bash < /tmp/install-tunnel.sh; then
+              echo "✅ Cloudflare Tunnel installed on attempt $attempt"
+              break
+            fi
+            if [ $attempt -eq 5 ]; then
+              echo "❌ Tunnel install failed after 5 attempts — server unreachable or sshd misbehaving"
+              exit 1
+            fi
+            echo "⚠️  Attempt $attempt failed (likely SSH banner timeout); retrying in 20s..."
+            sleep 20
+          done
           rm -f /tmp/install-tunnel.sh
 
       - name: Close SSH port
