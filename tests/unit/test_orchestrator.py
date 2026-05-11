@@ -14,6 +14,8 @@ not new logic. Focus on:
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import MagicMock, patch
 
@@ -2174,9 +2176,9 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
     result = orchestrator._phase_service_env()
     assert result.status == "ok"
     assert "gitea_appended=0" in result.detail
-    assert append_called is False, (
-        "append_gitea_workspace_block must NOT be called when any coord is empty"
-    )
+    assert (
+        append_called is False
+    ), "append_gitea_workspace_block must NOT be called when any coord is empty"
 
 
 # ---------------------------------------------------------------------------
@@ -2960,3 +2962,487 @@ def test_phase_firewall_sync_no_orphans_no_redpanda(
     result = orchestrator._phase_firewall_sync()
     assert result.status == "ok"
     assert "orphans_removed=0" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# _phase_woodpecker_apply — full happy path + error paths
+# ---------------------------------------------------------------------------
+#
+# Coverage gap before these: the existing 3 tests only exercise the
+# skip / not-populated / no-agent-secret guards. The actual apply
+# flow (write .env, rsync, docker compose up -d) and its four error
+# paths (local-write OSError, rsync transport, compose-up rc!=0,
+# compose-up timeout, compose-up unexpected) were never executed
+# in tests.
+
+
+@pytest.fixture
+def woodpecker_enabled(orchestrator: Orchestrator) -> Orchestrator:
+    """Reusable setup: woodpecker enabled + OAuth creds + agent secret
+    populated, so every test below only differs in the error injection."""
+    orchestrator.enabled_services = ["woodpecker"]
+    orchestrator.state.woodpecker_client_id = "wp-id"
+    orchestrator.state.woodpecker_client_secret = "wp-secret"
+    orchestrator.woodpecker_agent_secret = "agent-secret"
+    orchestrator.domain = "example.com"
+    return orchestrator
+
+
+def test_phase_woodpecker_apply_happy_path(
+    woodpecker_enabled: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """End-to-end: write .env → rsync → compose up. Every external
+    boundary mocked successful. Verifies status='ok' and that the
+    rendered .env carries the OAuth creds we expect."""
+    orchestrator = woodpecker_enabled
+    woodpecker_dir = tmp_path / "stacks" / "woodpecker"
+    woodpecker_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+
+    rsync_mock = MagicMock()
+    ssh_run_mock = MagicMock(return_value=MagicMock(returncode=0, output=""))
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.rsync_to_remote", rsync_mock)
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.ssh_run_script", ssh_run_mock)
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "ok"
+
+    # The .env content must include the OAuth credentials. Operators
+    # debugging a misconfigured woodpecker would look here first.
+    env_content = (woodpecker_dir / ".env").read_text()
+    assert "WOODPECKER_GITEA_CLIENT=wp-id" in env_content
+    assert "WOODPECKER_GITEA_SECRET=wp-secret" in env_content
+    assert "WOODPECKER_AGENT_SECRET=agent-secret" in env_content
+    assert "DOMAIN=example.com" in env_content
+
+
+def test_phase_woodpecker_apply_failed_when_stack_dir_missing(
+    woodpecker_enabled: Orchestrator,
+    tmp_path: Any,
+) -> None:
+    """If stack-sync didn't place stacks/woodpecker locally, the
+    phase MUST fail-fast (not silently no-op) — the rsync below
+    would otherwise upload an empty directory."""
+    orchestrator = woodpecker_enabled
+    orchestrator.project_root = tmp_path  # no stacks/woodpecker dir
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "failed"
+    assert "stack-sync should have placed it" in result.detail
+
+
+def test_phase_woodpecker_apply_failed_on_local_env_write_error(
+    woodpecker_enabled: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Local .env write OSError is distinct from rsync/compose
+    failures — distinct detail string so operators can tell from
+    the log which boundary failed."""
+    orchestrator = woodpecker_enabled
+    woodpecker_dir = tmp_path / "stacks" / "woodpecker"
+    woodpecker_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+
+    # Simulate write_text raising OSError on the .env path.
+    real_write_text = Path.write_text
+
+    def fake_write_text(self: Path, *args: Any, **kw: Any) -> int:
+        if self.name == ".env":
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kw)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "failed"
+    assert "local write" in result.detail
+    assert "OSError" in result.detail
+
+
+def test_phase_woodpecker_apply_partial_on_rsync_transport_error(
+    woodpecker_enabled: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """rsync failure → partial (not failed) — the ssh transport
+    error is distinct from docker compose failure, so operators
+    should investigate connectivity / disk on the server, not
+    container logs. PR #533 R7 #2 finding."""
+    orchestrator = woodpecker_enabled
+    woodpecker_dir = tmp_path / "stacks" / "woodpecker"
+    woodpecker_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._remote.rsync_to_remote",
+        MagicMock(side_effect=subprocess.CalledProcessError(255, ["rsync"])),
+    )
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "partial"
+    assert "rsync transport" in result.detail
+
+
+def test_phase_woodpecker_apply_partial_on_compose_up_rc_nonzero(
+    woodpecker_enabled: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """docker compose up rc!=0 → partial, with the stdout tail in
+    the detail so operators see the compose error inline (PR #533
+    R3 #1: --env-file via compose, not source)."""
+    orchestrator = woodpecker_enabled
+    woodpecker_dir = tmp_path / "stacks" / "woodpecker"
+    woodpecker_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.rsync_to_remote", MagicMock())
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._remote.ssh_run_script",
+        MagicMock(
+            side_effect=subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["ssh"],
+                output="Error response from daemon: pull access denied for woodpecker/server",
+            )
+        ),
+    )
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "partial"
+    assert "docker compose up -d failed" in result.detail
+    assert "rc=1" in result.detail
+
+
+def test_phase_woodpecker_apply_partial_on_compose_up_timeout(
+    woodpecker_enabled: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """ssh transport timeout during compose up → partial. Distinct
+    diagnostic from compose-rc-nonzero: operator investigates
+    connectivity, not container state."""
+    orchestrator = woodpecker_enabled
+    woodpecker_dir = tmp_path / "stacks" / "woodpecker"
+    woodpecker_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.rsync_to_remote", MagicMock())
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._remote.ssh_run_script",
+        MagicMock(side_effect=subprocess.TimeoutExpired(cmd=["ssh"], timeout=120)),
+    )
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "partial"
+    assert "ssh transport timeout" in result.detail
+
+
+def test_phase_woodpecker_apply_failed_on_unexpected_exception(
+    woodpecker_enabled: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Any non-(CalledProcessError|TimeoutExpired) Exception during
+    compose-up → failed (not partial). These shouldn't happen at
+    runtime; if one does, fail-loud so the operator notices."""
+    orchestrator = woodpecker_enabled
+    woodpecker_dir = tmp_path / "stacks" / "woodpecker"
+    woodpecker_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.rsync_to_remote", MagicMock())
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._remote.ssh_run_script",
+        MagicMock(side_effect=RuntimeError("paramiko meltdown")),
+    )
+
+    result = orchestrator._phase_woodpecker_apply(MagicMock())
+    assert result.status == "failed"
+    assert "unexpected" in result.detail
+    assert "RuntimeError" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# _phase_mirror_finalize — full execution paths
+# ---------------------------------------------------------------------------
+#
+# Existing tests only exercise the two skip-gates (not mirror /
+# no fork). The actual flow-sync re-trigger + git-restart loop
+# (~75 lines incl. all four exception branches) was never hit.
+
+
+@pytest.fixture
+def mirror_finalize_ready(orchestrator: Orchestrator) -> Orchestrator:
+    """Mirror mode + fork populated + kestra enabled + admin creds
+    + admin email — the all-prereqs-met setup that exercises the
+    flow-sync + git-restart code paths."""
+    orchestrator.gh_mirror_repos = ["https://github.com/o/r.git"]
+    orchestrator.state.fork_name = "user-fork"
+    orchestrator.enabled_services = ["kestra", "jupyter", "marimo"]
+    return orchestrator
+
+
+def test_phase_mirror_finalize_happy_path_flow_and_restarts(
+    mirror_finalize_ready: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both sub-steps succeed: flow-sync POST + git-restart loop.
+    Status must be 'ok' AND the detail must surface both successes
+    (flow_triggered=True + git_restarted=N)."""
+    orchestrator = mirror_finalize_ready
+
+    # KestraClient.execute_flow — successful path (mocked).
+    kestra_client = MagicMock()
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._kestra.KestraClient",
+        MagicMock(return_value=kestra_client),
+    )
+    # compose_restart.run_restart returns a RestartResult.
+    restart_result = MagicMock(restarted=2, failed=0)
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        MagicMock(return_value=restart_result),
+    )
+
+    ssh = MagicMock()
+    ssh.port_forward.return_value.__enter__.return_value = 8085
+
+    result = orchestrator._phase_mirror_finalize(ssh)
+    assert result.status == "ok"
+    assert "flow_triggered=True" in result.detail
+    assert "git_restarted=2" in result.detail
+    kestra_client.execute_flow.assert_called_once_with("system", "flow-sync")
+
+
+def test_phase_mirror_finalize_partial_when_kestra_not_enabled(
+    mirror_finalize_ready: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No kestra in enabled list → flow-sync is genuinely-skipped
+    (NOT a partial trigger), but git-restart still runs. Status
+    stays 'ok' because the (a) gate excludes 'kestra not enabled'
+    from partial-ness — that's the legitimate skip case."""
+    orchestrator = mirror_finalize_ready
+    orchestrator.enabled_services = ["jupyter", "marimo"]  # no kestra
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        MagicMock(return_value=MagicMock(restarted=1, failed=0)),
+    )
+
+    result = orchestrator._phase_mirror_finalize(MagicMock())
+    assert result.status == "ok"
+    assert "flow_triggered=False" in result.detail
+
+
+def test_phase_mirror_finalize_partial_on_flow_sync_kestra_error(
+    mirror_finalize_ready: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KestraError during execute_flow → flow_triggered stays False
+    + kestra IS in enabled_services → partial. Detail must surface
+    the kestra error message."""
+    orchestrator = mirror_finalize_ready
+
+    # Need to import KestraError to raise it.
+    from nexus_deploy.kestra import KestraError
+
+    kestra_client = MagicMock()
+    kestra_client.execute_flow.side_effect = KestraError("HTTP 503 from kestra")
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._kestra.KestraClient",
+        MagicMock(return_value=kestra_client),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        MagicMock(return_value=MagicMock(restarted=2, failed=0)),
+    )
+
+    ssh = MagicMock()
+    ssh.port_forward.return_value.__enter__.return_value = 8085
+
+    result = orchestrator._phase_mirror_finalize(ssh)
+    assert result.status == "partial"
+    assert "flow_skip=HTTP 503 from kestra" in result.detail
+
+
+def test_phase_mirror_finalize_partial_on_flow_sync_transport_error(
+    mirror_finalize_ready: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subprocess/OS error during port-forward setup → flow-sync
+    abandoned, kestra IS enabled → partial. Distinct from KestraError
+    (auth/HTTP) because the operator should investigate ssh
+    transport, not the kestra server."""
+    orchestrator = mirror_finalize_ready
+
+    ssh = MagicMock()
+    ssh.port_forward.side_effect = OSError("port forward setup failed")
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        MagicMock(return_value=MagicMock(restarted=2, failed=0)),
+    )
+
+    result = orchestrator._phase_mirror_finalize(ssh)
+    assert result.status == "partial"
+    assert "transport" in result.detail
+    assert "OSError" in result.detail
+
+
+def test_phase_mirror_finalize_partial_on_git_restart_transport_error(
+    mirror_finalize_ready: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compose_restart.run_restart raising CalledProcessError →
+    partial with git_restart_transport_error in detail. Flow-sync
+    success state is still surfaced in the detail for the operator."""
+    orchestrator = mirror_finalize_ready
+
+    kestra_client = MagicMock()
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._kestra.KestraClient",
+        MagicMock(return_value=kestra_client),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        MagicMock(side_effect=subprocess.CalledProcessError(255, ["ssh"])),
+    )
+
+    ssh = MagicMock()
+    ssh.port_forward.return_value.__enter__.return_value = 8085
+
+    result = orchestrator._phase_mirror_finalize(ssh)
+    assert result.status == "partial"
+    assert "flow_triggered=True" in result.detail
+    assert "git_restart_transport_error" in result.detail
+    assert "CalledProcessError" in result.detail
+
+
+def test_phase_mirror_finalize_partial_when_git_restart_reports_failures(
+    mirror_finalize_ready: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compose_restart returns successfully but with failed>0 → partial.
+    This is the per-service-failure path: rsync OK, compose error per-
+    service. Detail must surface git_failed= count so operator can
+    drill into which service died."""
+    orchestrator = mirror_finalize_ready
+
+    kestra_client = MagicMock()
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._kestra.KestraClient",
+        MagicMock(return_value=kestra_client),
+    )
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._compose_restart.run_restart",
+        MagicMock(return_value=MagicMock(restarted=1, failed=2)),
+    )
+
+    ssh = MagicMock()
+    ssh.port_forward.return_value.__enter__.return_value = 8085
+
+    result = orchestrator._phase_mirror_finalize(ssh)
+    assert result.status == "partial"
+    assert "git_restarted=1" in result.detail
+    assert "git_failed=2" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# _phase_firewall_sync — redpanda config-copy path
+# ---------------------------------------------------------------------------
+#
+# Existing tests cover (a) project_root missing, (b) stacks/ missing,
+# (c) no-orphans-no-redpanda happy path. The redpanda-enabled
+# branch (~57 lines of mkdir+scp+chown+yaml selection) was uncovered.
+
+
+def test_phase_firewall_sync_failed_when_redpanda_config_dir_missing(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """If redpanda is enabled but stacks/redpanda/config/ is missing
+    locally, the phase MUST fail-fast — scp'ing from a non-existent
+    source would silently no-op and leave the rendered firewall
+    config dangling."""
+    stacks_dir = tmp_path / "stacks"
+    stacks_dir.mkdir()
+    # No redpanda/ subdir created.
+    orchestrator.project_root = tmp_path
+    orchestrator.enabled_services = ["redpanda"]
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._remote.ssh_run_script",
+        MagicMock(return_value=MagicMock(stdout="", returncode=0)),
+    )
+
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "failed"
+    assert "redpanda config dir" in result.detail
+    assert "missing locally" in result.detail
+
+
+def test_phase_firewall_sync_failed_when_no_redpanda_yaml(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Redpanda config dir exists but neither redpanda-firewall.yaml
+    nor redpanda.yaml is present — fail-fast with the exact missing-
+    yaml diagnostic."""
+    redpanda_dir = tmp_path / "stacks" / "redpanda" / "config"
+    redpanda_dir.mkdir(parents=True)
+    orchestrator.project_root = tmp_path
+    orchestrator.enabled_services = ["redpanda"]
+
+    monkeypatch.setattr(
+        "nexus_deploy.orchestrator._remote.ssh_run_script",
+        MagicMock(return_value=MagicMock(stdout="", returncode=0)),
+    )
+
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "failed"
+    assert "neither redpanda-firewall.yaml nor redpanda.yaml" in result.detail
+
+
+def test_phase_firewall_sync_copies_redpanda_firewall_yaml_when_present(
+    orchestrator: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Happy path: redpanda enabled, redpanda-firewall.yaml present
+    locally. The phase must scp THAT file (not the regular
+    redpanda.yaml) and chown 101:101 on the server."""
+    redpanda_dir = tmp_path / "stacks" / "redpanda" / "config"
+    redpanda_dir.mkdir(parents=True)
+    (redpanda_dir / "redpanda-firewall.yaml").write_text("# firewall config\n")
+    (redpanda_dir / "redpanda.yaml").write_text("# regular config\n")
+    orchestrator.project_root = tmp_path
+    orchestrator.enabled_services = ["redpanda"]
+
+    ssh_run_mock = MagicMock(return_value=MagicMock(stdout="", returncode=0))
+    monkeypatch.setattr("nexus_deploy.orchestrator._remote.ssh_run_script", ssh_run_mock)
+    scp_calls: list[list[str]] = []
+
+    def fake_subprocess_run(args: list[str], **_kw: Any) -> Any:
+        scp_calls.append(args)
+        cp = MagicMock()
+        cp.returncode = 0
+        return cp
+
+    monkeypatch.setattr("nexus_deploy.orchestrator.subprocess.run", fake_subprocess_run)
+
+    result = orchestrator._phase_firewall_sync()
+    assert result.status == "ok"
+    # scp must have been called with the firewall variant, not the
+    # regular yaml.
+    assert any("redpanda-firewall.yaml" in arg for call in scp_calls for arg in call)
+    # And one of the ssh_run_script invocations carries the
+    # chown/chmod fallback chain.
+    ssh_scripts = [str(call.args[0]) for call in ssh_run_mock.call_args_list]
+    assert any("chown -R 101:101" in s for s in ssh_scripts)
+    assert any("chmod -R 777" in s for s in ssh_scripts)
