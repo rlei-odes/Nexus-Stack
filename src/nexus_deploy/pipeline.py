@@ -370,8 +370,7 @@ def run_pipeline(
         _setup.ensure_data_dirs(ssh)
         if isinstance(s3_fs_result, _s3_restore.S3RestoreApplied):
             sys.stderr.write(
-                f"✓ s3-restore (filesystem): applied snapshot "
-                f"{s3_fs_result.snapshot_timestamp}\n",
+                f"✓ s3-restore (filesystem): applied snapshot {s3_fs_result.snapshot_timestamp}\n",
             )
         elif s3_fs_result.reason == "fresh_start_empty_s3":
             sys.stderr.write(
@@ -448,8 +447,7 @@ def run_pipeline(
         s3_pg_result = _s3_restore.restore_from_s3(ssh, phase="postgres")
         if isinstance(s3_pg_result, _s3_restore.S3RestoreApplied):
             sys.stderr.write(
-                f"✓ s3-restore (postgres): applied snapshot "
-                f"{s3_pg_result.snapshot_timestamp}\n",
+                f"✓ s3-restore (postgres): applied snapshot {s3_pg_result.snapshot_timestamp}\n",
             )
         # No need to re-log fresh_start_empty_s3 here — the
         # filesystem halve above already emitted that diagnostic.

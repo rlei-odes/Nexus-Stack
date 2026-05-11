@@ -527,14 +527,22 @@ def test_pipeline_runs_restore_then_ensure_data_dirs_then_pg_restore(
     # (parent.mock_calls also captures nested attribute lookups on
     # the orchestrator MagicMock from inside run_pipeline, which
     # would otherwise pollute the sequence).
-    relevant = [c[0] for c in parent.mock_calls if c[0] in {
-        "restore_from_s3", "ensure_data_dirs", "run_pre_bootstrap", "run_all",
-    }]
+    relevant = [
+        c[0]
+        for c in parent.mock_calls
+        if c[0]
+        in {
+            "restore_from_s3",
+            "ensure_data_dirs",
+            "run_pre_bootstrap",
+            "run_all",
+        }
+    ]
     assert relevant == [
-        "restore_from_s3",   # phase="filesystem"
+        "restore_from_s3",  # phase="filesystem"
         "ensure_data_dirs",
         "run_pre_bootstrap",  # compose-up happens here
-        "restore_from_s3",   # phase="postgres"
+        "restore_from_s3",  # phase="postgres"
         "run_all",
     ]
 
