@@ -90,10 +90,10 @@ Hetzner Object Storage (fsn1):
   s3://nexus-<class>-<user>-internal/
     ├── manifest.json                     ← snapshot metadata: timestamp, version, hashes
     ├── postgres/
-    │   ├── gitea.sql.gz                  ← pg_dump
-    │   └── dify.sql.gz
+    │   ├── gitea.dump.gz                 ← pg_dump -F c | gzip (custom binary format, gzipped)
+    │   └── dify.dump.gz
     ├── gitea/
-    │   ├── repos/                        ← rsync mirror (excluding ephemeral .lock files)
+    │   ├── repos/                        ← rsync mirror (excluding ephemeral .lock files + db/)
     │   └── lfs/                          ← rsync mirror (or native Gitea S3-LFS, see Open Questions)
     ├── dify/
     │   ├── storage/                      ← rsync mirror (or native Dify S3 backend)
@@ -101,11 +101,21 @@ Hetzner Object Storage (fsn1):
     │   └── plugins/                      ← rsync mirror
     └── _versioning/                      ← retain last N snapshots (Hetzner lifecycle policy)
 
+Note: `gitea/db/` and `dify/db/` (Postgres data directories) and
+`dify/redis/` (ephemeral cache) are **excluded** from the rsync
+mirror. Postgres state is captured via `pg_dump` into the
+`postgres/` directory above; Redis state is regeneratable on
+spinup. The rsync command applies `--exclude='db/**' --exclude=
+'redis/**'` to enforce this; the on-server bash in
+`s3_persistence.py:render_snapshot_script` only walks the
+explicitly-listed `RsyncTarget` subdirectories, never the whole
+parent.
+
 Server local SSD (ephemeral, recreated on every spinup):
   /var/lib/nexus-data/
-    ├── gitea/                            ← restored from S3 on spinup
-    ├── dify/
-    └── postgres-bootstrap/               ← scratch dir for pg_restore
+    ├── gitea/                            ← restored from S3 on spinup (repos/, lfs/ only)
+    ├── dify/                                                          (storage/, weaviate/, plugins/ only)
+    └── postgres-bootstrap/               ← scratch dir for pg_restore (dump files staged here, then piped via gunzip | pg_restore)
 ```
 
 `/mnt/nexus-data/` symlink points to `/var/lib/nexus-data/` for backward-compat with existing docker-compose paths.
@@ -126,10 +136,16 @@ Server local SSD (ephemeral, recreated on every spinup):
                                                       the new SSD-local location
                                                       without docker-compose
                                                       changes)
-   c. rclone sync s3://<bucket>/ → /var/lib/nexus-data/   (skip if first-time spinup)
+   c. rclone sync s3://<bucket>/ → /var/lib/nexus-data/   (skip if first-time spinup;
+                                                          pulls gitea/{repos,lfs}/, 
+                                                          dify/{storage,weaviate,plugins}/,
+                                                          postgres/*.dump.gz —
+                                                          NOT db/ or redis/)
    d. start docker compose for postgres containers (gitea-db, dify-db) on EMPTY data dirs
-   e. pg_restore < /var/lib/nexus-data/postgres/gitea.dump  (custom binary format)
-   f. pg_restore < /var/lib/nexus-data/postgres/dify.dump
+   e. gunzip -c /var/lib/nexus-data/postgres/gitea.dump.gz \
+        | docker exec -i gitea-db pg_restore -U <user> -d gitea --no-owner --no-acl
+   f. gunzip -c /var/lib/nexus-data/postgres/dify.dump.gz \
+        | docker exec -i dify-db pg_restore -U <user> -d dify --no-owner --no-acl
 4. compose-runner:     docker compose up for the rest of the stack
 ```
 
@@ -155,12 +171,15 @@ options we use for cross-version restores. The implementation in
 2. dump postgres:
    a. docker exec gitea-db pg_dump -F c -U <user> <db> | gzip > /tmp/dumps/gitea.dump.gz
    b. docker exec dify-db  pg_dump -F c -U <user> <db> | gzip > /tmp/dumps/dify.dump.gz
-3. rsync-to-s3:
-   a. rclone sync /var/lib/nexus-data/gitea → s3://<bucket>/gitea/
-   b. rclone sync /var/lib/nexus-data/dify → s3://<bucket>/dify/
-   c. rclone copy /tmp/dumps/ → s3://<bucket>/postgres/
-   d. write manifest.json (timestamps, file count, hashes)
-4. verify:             rclone check (re-list, compare ETag/size)
+3. rsync-to-s3 (only the intended subdirectories — db/ and redis/ excluded):
+   a. rclone sync /var/lib/nexus-data/gitea/repos → s3://<bucket>/gitea/repos
+   b. rclone sync /var/lib/nexus-data/gitea/lfs   → s3://<bucket>/gitea/lfs
+   c. rclone sync /var/lib/nexus-data/dify/storage   → s3://<bucket>/dify/storage
+   d. rclone sync /var/lib/nexus-data/dify/weaviate  → s3://<bucket>/dify/weaviate
+   e. rclone sync /var/lib/nexus-data/dify/plugins   → s3://<bucket>/dify/plugins
+   f. rclone copy /tmp/dumps/ → s3://<bucket>/postgres/      (gitea.dump.gz, dify.dump.gz)
+   g. write manifest.json (timestamp, stack, template_version)
+4. verify:             rclone check --one-way (re-list, compare per-object hashes)
    ✗ on mismatch:      ABORT — leave server up, alert operator, do NOT proceed to step 5
    ✓ on match:         proceed
 5. tofu destroy:       server + tunnel + DNS + access apps
@@ -173,6 +192,24 @@ options we use for cross-version restores. The implementation in
 - **No infrastructure destruction before verified S3 state.**
 - **Idempotency:** re-running teardown after a partial failure replays steps 1–4. Step 4 short-circuits if hashes already match.
 
+**About `rclone check`'s integrity guarantee.** The default
+`rclone check` compares the per-object hash that rclone has for the
+S3 backend — for Hetzner Object Storage (and AWS S3) that's the
+object ETag for non-multipart uploads, or the etag-of-etags for
+multipart uploads. For our typical file sizes (<5 GB per object,
+well under multipart threshold) ETag is exactly the MD5 of the
+object body and the check is end-to-end. For multipart uploads the
+ETag-of-etags scheme means the check verifies *upload integrity*
+(every part uploaded matches what rclone sent) but not strict
+content-equality against the source.
+
+In practice for our use case (sub-multipart files), the check is
+content-equality. The v1.0 implementation accepts that; if a future
+workload pushes individual files past the multipart threshold,
+v1.1 can either chunk smaller, switch to `rclone hashsum` for
+explicit sha256 verification, or move per-component checksums into
+`manifest.json` (see Open Question 1).
+
 ## Code changes
 
 ### Template (`stefanko-ch/Nexus-Stack`)
@@ -181,7 +218,7 @@ options we use for cross-version restores. The implementation in
 
 | File | Change |
 |---|---|
-| `tofu/control-plane/main.tf` | Remove `hcloud_volume "persistent"` resource + outputs. Replace with Hetzner Object Storage bucket creation (`hcloud_storage_box` + S3 credentials, OR document manual bucket creation if Terraform provider lacks support — see Open Questions). |
+| `tofu/control-plane/main.tf` | Remove `hcloud_volume "persistent"` resource + outputs. Add a new `minio_s3_bucket "persistence"` resource using the **existing** `aminueza/minio` provider (already configured in this file at lines 287-316 for LakeFS / general / pgducklake). Same provider, same auth pattern, just a fourth bucket per stack. No new provider plumbing required. |
 | `tofu/control-plane/variables.tf` | Remove `persistent_volume_size`. Add `s3_persistence_bucket_name`, `s3_persistence_endpoint`, `s3_persistence_region`. |
 | `tofu/control-plane/outputs.tf` | Replace `persistent_volume_id` with `s3_persistence_credentials` (sensitive). |
 | `tofu/stack/main.tf` | Remove `hcloud_volume_attachment "persistent"`. Add user-data / cloud-init pulling from S3 (or do it in `pipeline.py` instead — see below). |
@@ -247,7 +284,10 @@ For each of the 26 existing stacks, run a manual evacuation workflow:
 ```
 1. Spin up the stack (current behaviour, attaches volume)
 2. Run `nexus-evacuate-volume-to-s3.yaml` — a one-shot GH workflow:
-   a. docker compose pause
+   a. docker compose stop on app services (Gitea web, Dify api/web) —
+      same graceful-drain approach as the atomic teardown flow above.
+      We deliberately do NOT use `docker compose pause` here either;
+      cgroup-freezer SIGSTOP is hard-stop, not drain.
    b. dump postgres (gitea, dify)
    c. rsync /mnt/nexus-data → s3://<bucket>/
    d. write manifest.json
@@ -285,7 +325,7 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 |---|---|
 | **S3 upload fails mid-teardown** | Atomic 2-phase: verify before destroy. Operator manually resolves; never silently lose data. |
 | **Spinup time becomes too long** | Profile per-stack data size; for large stacks (>5 GB) consider parallel rsync streams or streaming pg_restore. Document expected spinup time impact in setup guide. |
-| **Postgres dump consistency** | `pg_dump` on running DB takes a consistent snapshot at start of operation. For Gitea: pause Gitea before dump (already in teardown plan). For Dify: same. |
+| **Postgres dump consistency** | `pg_dump` on a running DB takes a consistent snapshot at the moment the transaction begins. App-side: `docker compose stop` the Gitea web service / Dify api+web services (10s graceful drain) before `pg_dump` so no new writes land mid-snapshot. We deliberately do NOT use `docker compose pause` — that's a cgroup-freezer SIGSTOP, hard-kills in-flight requests. |
 | **Weaviate corruption on incomplete restore** | Treat Weaviate as rebuildable from Dify-DB metadata if the dump is partial. Worst case: knowledge bases need re-indexing (slow but recoverable). |
 | **Hetzner Object Storage outage in fsn1** | Same blast radius as today's volume situation, but bucket can be (manually) replicated to a different bucket in hel1/nbg1 for DR. Out of scope for v1. |
 | **R2 might be a better choice after all** | R2 is global, zero egress, free tier sufficient for tutorial-scale data. We ship v1 on Hetzner Object Storage per operator preference, but `s3_persistence.py` is endpoint-agnostic — switching to R2 is a config change, not a code change. |
@@ -386,6 +426,14 @@ storage saving anyway.
 
 ## Appendix A — manifest.json schema
 
+The v1.0 *rendered* manifest is slim — just stack identity and
+timestamp — and relies on rclone's per-object hash check for
+integrity. The richer per-component shape below is what the
+Python-side `SnapshotManifest` + `manifest_for_components` helpers
+produce; v1.1 may switch the rendered bash to emit this richer
+form once we've measured the per-stack-size impact of computing
+sha256 over multi-GB trees on the server.
+
 ```json
 {
   "version": 1,
@@ -409,13 +457,19 @@ storage saving anyway.
   },
   "checksums": {
     "gitea/repos/": "sha256:...",
-    "gitea/postgres.sql.gz": "sha256:...",
+    "gitea/lfs/": "sha256:...",
+    "postgres/gitea.dump.gz": "sha256:...",
     "dify/storage/": "sha256:...",
-    "dify/postgres.sql.gz": "sha256:...",
-    "dify/weaviate/": "sha256:..."
+    "dify/weaviate/": "sha256:...",
+    "dify/plugins/": "sha256:...",
+    "postgres/dify.dump.gz": "sha256:..."
   }
 }
 ```
+
+Note: the `postgres/<db>.dump.gz` paths match the actual S3 object
+layout from the teardown flow (custom-format `pg_dump` piped through
+gzip, written under `postgres/` not under each app's subtree).
 
 ## Appendix B — example rclone config snippet
 
