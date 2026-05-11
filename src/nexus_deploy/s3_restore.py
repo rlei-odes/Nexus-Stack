@@ -420,8 +420,10 @@ def restore_from_s3(
     outcome:
 
     * :class:`S3RestoreSkipped` (``"feature_flag_off"``) — the
-      feature flag isn't set; pipeline.py should fall back to the
-      legacy volume-mount path.
+      feature flag isn't set; pipeline.py proceeds with empty
+      data dirs (post-RFC-0001 cutover, there's no legacy
+      volume-mount path to fall back to — the only persistence
+      mechanism is R2).
     * :class:`S3RestoreSkipped` (``"no_endpoint_env"``) — the flag
       is on but credentials are missing. Treated as "skip with
       warning"; pipeline.py emits a stderr message. This is a
@@ -451,10 +453,15 @@ def restore_from_s3(
 
     * ``"filesystem"`` — call BEFORE compose-up; only rsync.
     * ``"postgres"`` — call AFTER compose-up; only pg_restore.
-    * ``"all"`` (default) — single-shot; only safe when callers
-      can guarantee containers are running for the duration. The
-      teardown-side ``snapshot_to_s3`` uses this implicitly since
-      its containers ARE running when the script fires.
+    * ``"all"`` (default) — single-shot; both halves in one
+      script. Safe ONLY when the caller guarantees the gitea-db
+      / dify-db containers are already running for the duration
+      of the restore (otherwise the pg_restore via docker exec
+      will fail). The spinup pipeline must NOT use this — its
+      containers start at compose-up, between the two halves —
+      and uses the split filesystem→postgres calls instead. The
+      "all" phase exists for one-off operator scripts and tests
+      that restore against an already-running stack.
     """
     if not is_enabled(env):
         return S3RestoreSkipped(reason="feature_flag_off")
