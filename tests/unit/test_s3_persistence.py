@@ -810,6 +810,43 @@ def test_restore_script_validates_timestamp_from_s3() -> None:
     assert "restore-failed: latest.txt has invalid timestamp" in script
 
 
+def test_restore_script_rejects_unknown_phase() -> None:
+    """A typo like ``phase="fs"`` would make BOTH include_fs +
+    include_pg false and silently produce a no-op restore script
+    (exit 0 after the latest.txt lookup). Fail loud at render time."""
+    with pytest.raises(ValueError, match="phase must be one of"):
+        render_restore_script(
+            endpoint=_endpoint(),
+            postgres_targets=(),
+            rsync_targets=(),
+            phase="fs",  # type: ignore[arg-type]
+        )
+
+
+def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
+    """A bare ``rclone lsf latest.txt`` failure is ambiguous: missing
+    object OR auth/network error. Treating both as "fresh-start"
+    would silently empty local state on a credentials problem; the
+    next teardown then snapshots the empty state over real R2 data.
+    Render must emit a ``rclone lsd "$BUCKET"`` probe FIRST and
+    exit 2 if that fails — only then check ``latest.txt``."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    probe_pos = script.find('rclone lsd "$BUCKET"')
+    fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/latest.txt"')
+    assert 0 < probe_pos < fresh_check_pos, (
+        "bucket reachability probe must precede the latest.txt check"
+    )
+    assert "not reachable" in script
+    # The probe failure path must exit non-zero (clear error), the
+    # latest.txt failure path must exit 0 (legitimate fresh-start).
+    assert "exit 2" in script
+    assert "exit 0" in script
+
+
 # ---------------------------------------------------------------------------
 # Smoke: the rendered scripts are syntactically valid bash
 # ---------------------------------------------------------------------------

@@ -33,8 +33,19 @@ permissions:
   contents: read
 
 concurrency:
-  # Same group as spin-up/teardown — never let two workflows touch
-  # the same server's state at once.
+  # Shared group with teardown.yml so a teardown can't race with the
+  # migration (which would yank the volume out from under the
+  # snapshot in progress).
+  #
+  # NOTE: spin-up.yml's ``workflow_dispatch`` path runs WITHOUT this
+  # lock by design (operators may need to redeploy on top of a
+  # running stack); a manually-triggered spin-up could in principle
+  # overlap with this migration. The migration runs once per stack
+  # during the legacy-volume cutover and is gated by ``confirm=
+  # MIGRATE`` — operators are expected to leave the stack alone
+  # for the ~5 min the migration takes. If we ever need a hard
+  # mutex against spin-up too, both workflows must opt into the
+  # same group.
   group: infrastructure
   cancel-in-progress: false
 
@@ -130,7 +141,7 @@ jobs:
           domain         = "${{ secrets.DOMAIN }}"
           admin_email    = "${{ secrets.TF_VAR_admin_email }}"
           user_email     = "${{ secrets.TF_VAR_user_email }}"
-          admin_username = "admin"
+          subdomain_separator = "${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}"
           github_owner   = "${{ github.repository_owner }}"
           github_repo    = "${{ github.event.repository.name }}"
           EOF

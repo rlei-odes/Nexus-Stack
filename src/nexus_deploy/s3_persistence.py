@@ -795,22 +795,29 @@ def render_restore_script(
     Idempotent on the empty-S3 case (first-time spinup) — the
     rendered script:
 
-    1. Reads ``snapshots/latest.txt`` to get the active timestamp.
-       If the file is missing, it short-circuits with
-       ``echo 'fresh-start: no snapshot in S3, leaving local
-       state empty'`` and exits 0. Pipeline.py then proceeds with
-       a clean docker-compose up just like a brand-new install.
-       Also validates the timestamp matches the safe-path regex
-       before substituting it into any rclone command — defends
-       against a malformed/tampered ``latest.txt``.
-    2. ``rclone sync`` each RsyncTarget's S3 subpath into the
+    1. Probes bucket reachability via ``rclone lsd "$BUCKET"``. If
+       that fails (auth / endpoint / network), exits with rc=2 and
+       a clear error — NOT treated as "fresh-start", because that
+       would silently turn a credentials problem into empty local
+       state and the next teardown would overwrite real R2 data
+       with empty snapshots.
+    2. Reads ``snapshots/latest.txt`` to get the active timestamp.
+       If the file is missing (but the bucket itself listed fine
+       above), it short-circuits with ``echo 'fresh-start: no
+       snapshot in S3, leaving local state empty'`` and exits 0.
+       Pipeline.py then proceeds with a clean docker-compose up
+       just like a brand-new install. Also validates the timestamp
+       matches the safe-path regex before substituting it into any
+       rclone command — defends against a malformed/tampered
+       ``latest.txt``.
+    3. ``rclone sync`` each RsyncTarget's S3 subpath into the
        matching ``local_path`` (which is the absolute path on the
        server — not always under ``local_root``; callers may
        restore to e.g. ``/opt/data``). ``local_root`` is only used
        to ``mkdir -p`` the top-level data directory.
-    3. ``rclone sync`` the postgres dumps from
+    4. ``rclone sync`` the postgres dumps from
        ``snapshots/<ts>/postgres/`` into a scratch workdir.
-    4. For each postgres target: ``DROP DATABASE IF EXISTS
+    5. For each postgres target: ``DROP DATABASE IF EXISTS
        "<db>" WITH (FORCE);`` → ``CREATE DATABASE "<db>" OWNER
        "<user>";`` → ``gunzip -c <db>.dump.gz | pg_restore -U
        <user> -d <db> --no-owner --no-acl``. SQL identifiers are
@@ -842,6 +849,18 @@ def render_restore_script(
       single-shot teardown-side behaviour and keeps the
       tests/snapshot-replay path unchanged.
     """
+    if phase not in ("all", "filesystem", "postgres"):
+        # Fail loud — if a caller passes a typo like "fs" or
+        # "filesystems", both include_fs and include_pg below would
+        # become False and the rendered script would exit 0 after
+        # only the latest.txt lookup, silently skipping the actual
+        # restore. ValueError surfaces the bug at render time
+        # instead of at run time as a confusing no-op.
+        raise ValueError(
+            f"render_restore_script: phase must be one of "
+            f"('all', 'filesystem', 'postgres'), got {phase!r}"
+        )
+
     pg_targets = tuple(postgres_targets)
     rs_targets = tuple(rsync_targets)
     bucket_url = f"{RCLONE_PROFILE}:{shlex.quote(endpoint.bucket)}"
@@ -858,6 +877,22 @@ def render_restore_script(
         'mkdir -p "$WORKDIR" "$LOCAL_ROOT"',
         "",
         'echo "→ restore: looking up latest snapshot"',
+        # Probe bucket reachability BEFORE deciding "fresh-start". A
+        # missing ``latest.txt`` is a legitimate empty-bucket state
+        # (first-time spin-up), but the same ``rclone lsf`` failure
+        # also fires on auth/endpoint/network errors. Without this
+        # extra probe a misconfigured R2 credential would silently
+        # be treated as "no snapshot" → empty restore → next teardown
+        # snapshots empty state over real data. So: list the bucket
+        # root first; if that fails it's an access problem (rc=2).
+        # An empty bucket lists fine (returns no entries), so the
+        # genuine first-spin-up path still reaches the latest.txt
+        # check below and exits 0 with the fresh-start message.
+        'if ! rclone lsd "$BUCKET" --max-depth 1 >/dev/null 2>&1; then',
+        '  echo "✗ restore-failed: bucket $BUCKET is not reachable '
+        '(check R2 credentials / endpoint / bucket name)" >&2',
+        "  exit 2",
+        "fi",
         # `rclone copyto` returns rc=0 even on missing source if we
         # use `--ignore-checksum --error-on-no-transfer=false`, but
         # the simplest probe is `rclone lsf` which exits non-zero
