@@ -1,9 +1,15 @@
 """S3-backed persistence for stack data (RFC 0001).
 
-Replaces the per-stack Hetzner Block Storage volume with Hetzner
-Object Storage as the canonical persistence layer. Server local
-SSD becomes ephemeral cache; on spinup we restore from S3, on
-teardown we snapshot to S3 *atomically* (verify before destroy).
+Replaces the per-stack Hetzner Block Storage volume with Cloudflare
+R2 as the canonical persistence layer. Server local SSD becomes
+ephemeral cache; on spinup we restore from R2, on teardown we
+snapshot to R2 *atomically* (verify before destroy).
+
+The module itself is endpoint-agnostic — it talks to anything
+S3-compatible via the :class:`S3Endpoint` constructor argument. The
+defaults and docs reflect R2 because that's the v1.0 storage
+provider per RFC 0001 decision #1; the same module can drive
+Hetzner Object Storage or AWS S3 by passing a different endpoint.
 
 This module follows the same pattern as ``setup.py``: pure rendering
 functions that return server-side bash. Actual execution happens via
@@ -19,7 +25,7 @@ Public surface:
   secret_key, bucket)`` tuple. The credentials are intentionally
   passed in rather than read from the environment so the rendered
   script never relies on ambient state — and so unit tests can
-  inject a fixture without touching real Hetzner credentials.
+  inject a fixture without touching real R2 credentials.
 * :class:`SnapshotManifest` — Python-level dataclass + JSON
   serialiser for the snapshot metadata. The version-1.0 *rendered*
   bash writes a slim manifest (timestamp, stack, template version)
@@ -30,8 +36,8 @@ Public surface:
   client-side — currently used only by tests and a planned v1.1
   cleanup-and-verify script. See "Open question 1" in
   ``docs/proposals/0001-s3-persistence.md``.
-* :func:`render_rclone_config` — produces a ``[hetzner-s3]`` rclone
-  profile block from an :class:`S3Endpoint`. Written to
+* :func:`render_rclone_config` — produces a ``[cloudflare-r2]``
+  rclone profile block from an :class:`S3Endpoint`. Written to
   ``~/.config/rclone/rclone.conf`` on the server. Idempotent — the
   block is identified by name and replaced wholesale on every
   spinup so credential rotation is a single render away.
@@ -57,21 +63,24 @@ boundary clean.
 Design choices for v1.0 (see RFC 0001 in
 ``docs/proposals/0001-s3-persistence.md`` for the full reasoning):
 
-* **Hetzner Object Storage**, not Cloudflare R2 — operator
-  preference for EU data-residency. The endpoint URL is the only
-  S3-flavour-specific bit; switching to R2 later is an
-  ``S3Endpoint`` constructor argument away.
-* **Bucket per stack** — one Hetzner bucket per
-  ``<class>-<user>`` slug. Easier blast-radius isolation than
-  ``<bucket>/<stack>/...`` prefixes.
+* **Cloudflare R2**, not Hetzner Object Storage — the project
+  already uses R2 for the Tofu state backend, the
+  ``cloudflare/cloudflare`` provider is already wired up, and R2
+  has zero egress fees + region-agnostic access. The earlier
+  Hetzner-OS proposal would have introduced a parallel storage
+  system and a per-region egress cost for non-EU compute.
+* **Bucket per stack** — one R2 bucket per ``<class>-<user>``
+  slug. Easier blast-radius isolation than ``<bucket>/<stack>/...``
+  prefixes.
 * **rsync (rclone) for everything in v1.0** — Gitea LFS and Dify
   storage have native S3 backends but that's deferred to v1.1.
   v1.0 keeps the docker-compose layout untouched and drives
   persistence purely via rclone sync of the bind-mount directory.
 * **Snapshot-versioning strategy**: timestamped directories under
   ``snapshots/<ISO8601>/`` plus a ``snapshots/latest`` pointer
-  file. Retention (last 7 daily + 4 weekly) is enforced by a
-  separate cleanup script — out of scope for this module.
+  file. Retention (30-day NoncurrentVersionExpiration via R2
+  lifecycle policy) is enforced at bucket-creation time by the
+  Tofu resource — out of scope for this module.
 """
 
 from __future__ import annotations
@@ -86,21 +95,24 @@ from dataclasses import asdict, dataclass, field
 # Identifier shape — protects the rendered bash from injection
 # ---------------------------------------------------------------------------
 
-# Hetzner location names (`fsn1`, `hel1`, `nbg1`) are lowercase
-# alphanumeric with optional dashes. The bucket name follows S3 rules
-# (3-63 chars, lowercase, digits, hyphens). We're strict on both
-# because they're interpolated into rendered bash without further
-# escaping; a value containing ``$``, ``;`` or backticks would let an
-# attacker who controlled the value execute arbitrary commands on
-# the server. Hetzner's own identifiers are always within this set,
-# so the gate is conservative on legitimate input.
-_HETZNER_REGION = re.compile(r"^[a-z0-9-]+$")
+# S3-region identifier shape. R2 uses ``auto`` as the region (R2
+# is a single global namespace with edge replication, no traditional
+# region routing). For Hetzner Object Storage the equivalent is a
+# location code like ``fsn1`` / ``hel1`` / ``nbg1``. We accept any
+# lowercase alnum-with-dashes value so the module supports both
+# providers from the same charset gate. The bucket name follows S3
+# rules (3-63 chars, lowercase, digits, hyphens). We're strict on
+# both because they're interpolated into rendered bash without
+# further escaping; a value containing ``$``, ``;`` or backticks
+# would let an attacker who controlled the value execute arbitrary
+# commands on the server.
+_S3_REGION = re.compile(r"^[a-z0-9-]+$")
 _BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 _ACCESS_KEY = re.compile(r"^[A-Za-z0-9]+$")
-# Hetzner Object Storage secret keys are base64-ish (40-80 chars).
-# We allow the full set of base64 + URL-safe characters so we don't
-# reject a future format change, but still gate against bash
-# metacharacters.
+# S3-style secret keys are base64-ish across providers (R2 emits
+# 40-64 chars; Hetzner / AWS similar). We allow the full set of
+# base64 + URL-safe characters so we don't reject a future format
+# change, but still gate against bash metacharacters.
 _SECRET_KEY = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 # Postgres identifier shape — applies to both database names and
 # role names interpolated into rendered SQL (``DROP DATABASE
@@ -129,7 +141,8 @@ _S3_SUBPATH = re.compile(r"^[a-z0-9][a-z0-9./-]*[a-z0-9]$|^[a-z0-9]$")
 # Endpoint URL shape — the rclone config writes ``endpoint = <value>``
 # verbatim; whitespace or newlines would corrupt the file. Accept
 # scheme + ://, then a conservative URL char set covering host/port/
-# path. Real Hetzner endpoints (https://fsn1.your-objectstorage.com)
+# path. Real R2 endpoints (https://<account_id>.r2.cloudflarestorage.com)
+# and Hetzner endpoints (https://fsn1.your-objectstorage.com) both
 # match cleanly; injection attempts don't.
 _ENDPOINT_URL = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
 
@@ -152,7 +165,7 @@ class S3PersistenceError(Exception):
 
 @dataclass(frozen=True)
 class S3Endpoint:
-    """Hetzner Object Storage connection coordinates.
+    """S3-compatible storage connection coordinates.
 
     All five fields are required: missing credentials are an error
     surfaced at construction time, not at script-render time, so the
@@ -161,10 +174,12 @@ class S3Endpoint:
     rclone error on the remote.
 
     ``endpoint`` is the full URL (e.g.
-    ``https://fsn1.your-objectstorage.com``) so we don't have to
-    assume the URL shape. ``region`` is the short code (``fsn1``)
-    needed by the S3 v4 signing protocol — Hetzner requires it to
-    match the location.
+    ``https://<account_id>.r2.cloudflarestorage.com`` for R2,
+    ``https://fsn1.your-objectstorage.com`` for Hetzner Object
+    Storage) so we don't have to assume the URL shape. ``region``
+    is the short code required by the S3 v4 signing protocol —
+    ``auto`` for R2, the location code (``fsn1`` / ``hel1`` /
+    ``nbg1``) for Hetzner.
     """
 
     endpoint: str
@@ -196,7 +211,7 @@ class S3Endpoint:
                 f"rendered rclone config (whitespace/newlines/control chars): {self.endpoint!r}",
             )
         for name, value, pattern in (
-            ("region", self.region, _HETZNER_REGION),
+            ("region", self.region, _S3_REGION),
             ("bucket", self.bucket, _BUCKET_NAME),
             ("access_key", self.access_key, _ACCESS_KEY),
             ("secret_key", self.secret_key, _SECRET_KEY),
@@ -333,10 +348,13 @@ class SnapshotManifest:
 
 
 # rclone profile name. Used as the destination prefix in rclone
-# commands (``rclone sync /local hetzner-s3:bucket/path``). Picked
-# at module level so the config-render and the script-render can't
-# drift apart.
-RCLONE_PROFILE = "hetzner-s3"
+# commands (``rclone sync /local cloudflare-r2:bucket/path``).
+# Picked at module level so the config-render and the script-render
+# can't drift apart. Naming the profile after the v1.0 provider (R2)
+# keeps things obvious in the rendered scripts; if we ever switch
+# providers in the future we can rename here without changing any
+# caller — the constant is the single source of truth.
+RCLONE_PROFILE = "cloudflare-r2"
 
 
 def _quote_sql_ident(name: str) -> str:
@@ -357,26 +375,33 @@ def _quote_sql_ident(name: str) -> str:
 
 
 def render_rclone_config(endpoint: S3Endpoint) -> str:
-    """Render the ``[hetzner-s3]`` rclone profile block.
+    """Render the ``[cloudflare-r2]`` rclone profile block.
 
     The output is the *full* config file content, not a diff.
     Caller writes it atomically to ``~/.config/rclone/rclone.conf``
     on the server (overwrite-with-tempfile pattern) so a partial
     write can't leave the file in a state where rclone reads
     half-old half-new credentials.
+
+    ``provider = Cloudflare`` tells rclone to apply R2-specific
+    quirks (no checksum-on-multipart, no STORAGE_CLASS, etc.). If
+    the caller passes a Hetzner endpoint instead, this is wrong —
+    but v1.0 ships with R2 only, and the profile name is fixed at
+    module level. A future provider-agnostic refactor would lift
+    the ``provider`` value to a constructor argument.
     """
     return (
         f"[{RCLONE_PROFILE}]\n"
         "type = s3\n"
-        "provider = Other\n"
+        "provider = Cloudflare\n"
         "env_auth = false\n"
         f"access_key_id = {endpoint.access_key}\n"
         f"secret_access_key = {endpoint.secret_key}\n"
         f"endpoint = {endpoint.endpoint}\n"
         f"region = {endpoint.region}\n"
-        # `acl = private` is the Hetzner default but spelling it
-        # out makes the intent explicit and protects against a
-        # future rclone-default change.
+        # `acl = private` is the R2 default but spelling it out
+        # makes the intent explicit and protects against a future
+        # rclone-default change.
         "acl = private\n"
     )
 
@@ -409,7 +434,7 @@ class PostgresDumpTarget:
     user: str
 
     def __post_init__(self) -> None:
-        if not _HETZNER_REGION.fullmatch(self.container):
+        if not _S3_REGION.fullmatch(self.container):
             raise S3PersistenceError(
                 f"PostgresDumpTarget.container must match docker-service-name shape "
                 f"(lowercase alnum + dash): {self.container!r}",

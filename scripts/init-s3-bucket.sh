@@ -1,38 +1,42 @@
 #!/bin/bash
 # =============================================================================
-# Nexus-Stack - Hetzner Object Storage bucket bootstrap (RFC 0001)
+# Nexus-Stack - Cloudflare R2 persistence bucket bootstrap (RFC 0001)
 # =============================================================================
-# Creates the per-stack persistence bucket on Hetzner Object Storage,
-# enables versioning, sets a 30-day NoncurrentVersionExpiration
-# lifecycle policy (the safety net that covers the eventual 7-daily +
-# 4-weekly retention window per RFC 0001 decision #5 — precise N-of-
-# each retention is enforced by a separate cleanup script in v1.1),
-# and pushes the access credentials to Infisical so the stack's
-# spinup pipeline can read them.
+# Creates the per-stack R2 persistence bucket, enables versioning, sets a
+# 30-day NoncurrentVersionExpiration lifecycle policy (the safety net that
+# covers the eventual 7-daily + 4-weekly retention window per RFC 0001
+# decision #5 — precise N-of-each retention is enforced by a v1.1 cleanup
+# script). Reuses the same R2 token already minted by `init-r2-state.sh` for
+# the Tofu state bucket, so this script doesn't need its own credential
+# bootstrap.
 #
 # Called once per stack, either:
 #   - by the operator from their workstation during initial setup
 #   - by the Education repo's setup.ts during fork creation
+#   - by the migration workflow during the existing-26-stacks evacuation phase
 #
-# Idempotent: running it twice with the same arguments produces no
-# changes after the first run. The bucket-exists check lets a
-# re-trigger after a partial failure (e.g. lifecycle policy didn't
-# stick) succeed cleanly.
+# Idempotent: running it twice with the same arguments produces no changes
+# after the first run. The bucket-exists check lets a re-trigger after a
+# partial failure (e.g. lifecycle policy didn't stick) succeed cleanly.
 #
 # Required environment variables:
-#   HETZNER_S3_ACCESS_KEY    - Project-level access key with create-bucket scope
-#   HETZNER_S3_SECRET_KEY    - Matching secret
-#   HETZNER_S3_LOCATION      - fsn1 / hel1 / nbg1 (must match the project)
+#   CLOUDFLARE_API_TOKEN     - Cloudflare API token with R2:Edit scope
+#   CLOUDFLARE_ACCOUNT_ID    - Cloudflare account ID
+#   R2_ACCESS_KEY_ID         - R2 S3-API access key (from init-r2-state.sh
+#                              output; reused across all R2 buckets in the
+#                              project)
+#   R2_SECRET_ACCESS_KEY     - matching secret
 #   STACK_SLUG               - Per-stack slug, e.g. "nexus-stefan-hslu"
-#                              (used as bucket name; must match S3 naming rules)
-#   INFISICAL_PROJECT_ID     - Where to push the bucket creds (optional;
+#                              (used as bucket name; must match R2 naming
+#                              rules: lowercase alnum + hyphen, 3-63 chars)
+#   INFISICAL_PROJECT_ID     - Where to push the bucket coordinates (optional;
 #                              skipped with a warning if unset)
 #   INFISICAL_TOKEN          - Infisical service-account token (optional)
 #
 # Outputs (on stdout):
 #   BUCKET=<bucket-name>
-#   ENDPOINT=<https://<location>.your-objectstorage.com>
-#   REGION=<location>
+#   ENDPOINT=<https://<account_id>.r2.cloudflarestorage.com>
+#   REGION=auto
 #
 # The Education repo's setup.ts captures these and writes them as
 # GitHub Actions secrets on the per-stack fork.
@@ -40,41 +44,38 @@
 
 set -euo pipefail
 
-# Colors for human output. Logs to stderr (so the stdout-parsable
-# KEY=VALUE block at the end isn't polluted).
+# Colors. Logs go to stderr so the trailing stdout KEY=VALUE block stays
+# clean for downstream automation.
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log() { echo -e "${BLUE}[init-s3-bucket]${NC} $*" >&2; }
-ok()  { echo -e "${GREEN}[init-s3-bucket] ✓${NC} $*" >&2; }
+log()  { echo -e "${BLUE}[init-s3-bucket]${NC} $*" >&2; }
+ok()   { echo -e "${GREEN}[init-s3-bucket] ✓${NC} $*" >&2; }
 warn() { echo -e "${YELLOW}[init-s3-bucket] ⚠${NC}  $*" >&2; }
-err() { echo -e "${RED}[init-s3-bucket] ✗${NC}  $*" >&2; exit 1; }
+err()  { echo -e "${RED}[init-s3-bucket] ✗${NC}  $*" >&2; exit 1; }
 
 # -----------------------------------------------------------------------------
 # Argument validation
 # -----------------------------------------------------------------------------
 
-: "${HETZNER_S3_ACCESS_KEY:?HETZNER_S3_ACCESS_KEY is required}"
-: "${HETZNER_S3_SECRET_KEY:?HETZNER_S3_SECRET_KEY is required}"
-: "${HETZNER_S3_LOCATION:?HETZNER_S3_LOCATION is required (fsn1 / hel1 / nbg1)}"
+: "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
+: "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+: "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required (reuse the one from init-r2-state.sh)}"
+: "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}"
 : "${STACK_SLUG:?STACK_SLUG is required (used as bucket name)}"
 
-# Validate STACK_SLUG against S3 bucket-name rules — same regex as
-# the s3_persistence Python module so a slug rejected here would
-# also be rejected at script-render time.
+# Validate STACK_SLUG against R2 bucket-name rules — same regex as the
+# Python module (`_BUCKET_NAME`). R2 bucket names follow the AWS S3 v2
+# convention: lowercase alnum, hyphens, dots; 3-63 chars; must start
+# and end with alnum.
 if ! [[ "$STACK_SLUG" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
-  err "STACK_SLUG '$STACK_SLUG' is not a valid S3 bucket name (3-63 chars, lowercase, digits, hyphens, dots)"
+  err "STACK_SLUG '$STACK_SLUG' is not a valid R2 bucket name (3-63 chars, lowercase alnum + hyphens + dots, must start/end with alnum)"
 fi
 
-case "$HETZNER_S3_LOCATION" in
-  fsn1|hel1|nbg1) ;;
-  *) err "HETZNER_S3_LOCATION must be one of fsn1, hel1, nbg1 (got '$HETZNER_S3_LOCATION')" ;;
-esac
-
-ENDPOINT="https://${HETZNER_S3_LOCATION}.your-objectstorage.com"
+ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
 BUCKET="$STACK_SLUG"
 
 log "Stack: $STACK_SLUG"
@@ -89,20 +90,21 @@ if ! command -v aws >/dev/null 2>&1; then
   err "aws CLI not found in PATH. Install from https://aws.amazon.com/cli/"
 fi
 
-# We rely on the v2 CLI's --endpoint-url flag, which has been stable
-# since 2020. v1 is technically supported but quirky on signed-URL
-# generation; nudge the operator if they're on an old build.
 AWS_VERSION=$(aws --version 2>&1 | head -1)
 log "Using $AWS_VERSION"
 
-# Per-call AWS config. We avoid touching the operator's ~/.aws/
-# directory so the init-bucket script doesn't overwrite an existing
-# personal AWS profile.
-export AWS_ACCESS_KEY_ID="$HETZNER_S3_ACCESS_KEY"
-export AWS_SECRET_ACCESS_KEY="$HETZNER_S3_SECRET_KEY"
-export AWS_DEFAULT_REGION="$HETZNER_S3_LOCATION"
+# Use the R2 S3-compatible access keys (same shape as AWS), but pointed
+# at the Cloudflare R2 endpoint. We avoid touching the operator's
+# ~/.aws/ so the script doesn't overwrite an existing personal profile.
+export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+# R2 uses ``auto`` as the region (R2 is a single global namespace; the
+# SDK doesn't route based on region). The S3 v4 signing protocol still
+# requires *some* region to be set or it 400s — ``auto`` is the
+# Cloudflare-canonical value.
+export AWS_DEFAULT_REGION="auto"
 
-aws_s3() {
+r2_s3() {
   aws --endpoint-url "$ENDPOINT" s3api "$@"
 }
 
@@ -111,18 +113,14 @@ aws_s3() {
 # -----------------------------------------------------------------------------
 
 log "Checking if bucket '$BUCKET' already exists"
-if aws_s3 head-bucket --bucket "$BUCKET" 2>/dev/null; then
+if r2_s3 head-bucket --bucket "$BUCKET" 2>/dev/null; then
   ok "Bucket '$BUCKET' already exists — skipping create"
 else
-  log "Creating bucket '$BUCKET' in $HETZNER_S3_LOCATION"
-  # Hetzner Object Storage requires the LocationConstraint even
-  # though the endpoint URL already encodes the location — leaving
-  # it out gets a 400 with an unhelpful "InvalidLocationConstraint"
-  # error. Pin it explicitly.
-  aws_s3 create-bucket \
-    --bucket "$BUCKET" \
-    --create-bucket-configuration "LocationConstraint=$HETZNER_S3_LOCATION" \
-    >/dev/null
+  log "Creating bucket '$BUCKET' on R2"
+  # R2 doesn't use ``LocationConstraint`` like AWS S3 — passing it
+  # gives a 400. Just create with the default location, which for an
+  # account in the EU jurisdiction lands in an EU data centre.
+  r2_s3 create-bucket --bucket "$BUCKET" >/dev/null
   ok "Bucket '$BUCKET' created"
 fi
 
@@ -131,25 +129,21 @@ fi
 # -----------------------------------------------------------------------------
 
 log "Enabling versioning on '$BUCKET'"
-aws_s3 put-bucket-versioning \
+r2_s3 put-bucket-versioning \
   --bucket "$BUCKET" \
   --versioning-configuration "Status=Enabled" \
   >/dev/null
 ok "Versioning enabled"
 
 # -----------------------------------------------------------------------------
-# Lifecycle policy: retain last 7 daily + 4 weekly snapshots
+# Lifecycle policy: 30-day NoncurrentVersionExpiration
 # -----------------------------------------------------------------------------
 #
-# Per RFC 0001 decision #5: snapshots-per-stack are written under
-# `snapshots/<timestamp>/`. We treat every non-current version of
-# the manifest.json + payload tree as a "previous snapshot". The
-# rule below evicts non-current versions older than 30 days, which
-# covers the 7-daily + 4-weekly window with a generous buffer.
-#
-# More granular retention (exactly 7+4) requires either tag-based
-# rules or a separate cleanup cron — out of scope for v1.0. The
-# 30-day cap is the safety net; a follow-up PR can refine it.
+# Per RFC 0001 decision #5: snapshots are written under
+# `snapshots/<timestamp>/`. We retain non-current versions of any object
+# in that prefix for 30 days, which covers the 7-daily + 4-weekly
+# window with a generous buffer. Precise N-of-each retention is a v1.1
+# follow-up via a separate cleanup script.
 
 log "Setting 30-day lifecycle policy for noncurrent versions"
 LIFECYCLE_POLICY=$(cat <<'EOF'
@@ -170,61 +164,54 @@ EOF
 TMP_LIFECYCLE=$(mktemp)
 trap 'rm -f "$TMP_LIFECYCLE"' EXIT
 echo "$LIFECYCLE_POLICY" > "$TMP_LIFECYCLE"
-aws_s3 put-bucket-lifecycle-configuration \
+r2_s3 put-bucket-lifecycle-configuration \
   --bucket "$BUCKET" \
   --lifecycle-configuration "file://$TMP_LIFECYCLE" \
   >/dev/null
 ok "Lifecycle policy applied"
 
 # -----------------------------------------------------------------------------
-# Push credentials to Infisical (optional)
+# Push bucket coordinates to Infisical (optional)
 # -----------------------------------------------------------------------------
 #
 # When INFISICAL_PROJECT_ID + INFISICAL_TOKEN are set, push the per-stack
-# credentials into the stack's Infisical folder so the spinup pipeline
-# can read them via the existing `infisical.py` machinery. We push the
-# project-level access key as-is — per-bucket sub-keys are a v1.1
-# refinement that needs Hetzner's sub-user API, not yet implemented.
+# bucket coordinates into the stack's Infisical folder so the spinup
+# pipeline can read them via the existing `infisical.py` machinery. Note:
+# the *credentials* (R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY) are SHARED
+# across all R2 buckets in the project (same token as init-r2-state.sh),
+# so we don't push those here — they're already in Infisical from the
+# control-plane setup. We push only the bucket-specific bits (name +
+# endpoint + region).
 
 if [ -n "${INFISICAL_PROJECT_ID:-}" ] && [ -n "${INFISICAL_TOKEN:-}" ]; then
   if ! command -v infisical >/dev/null 2>&1; then
     warn "infisical CLI not found — skipping credential push to Infisical"
     warn "Install from https://infisical.com/docs/cli/overview"
   else
-    log "Pushing bucket credentials to Infisical project '$INFISICAL_PROJECT_ID'"
-    # Secret values must NOT appear in argv — that's visible via
-    # `ps`, in shell history, and in CI logs. We pipe a tempfile of
-    # `KEY=VALUE` lines into `infisical secrets set --read-from-file
-    # -` (or via stdin equivalent). The file lives in $TMPDIR with
-    # mode 600 and is removed via the EXIT trap.
-    #
-    # Path: `/persistence/$STACK_SLUG` matches the existing
-    # `secret_sync.py` folder convention. We push 5 keys: endpoint,
-    # region, bucket, access_key, secret_key.
+    log "Pushing bucket coordinates to Infisical project '$INFISICAL_PROJECT_ID'"
+    # Secret values must NOT appear in argv — that's visible via `ps`,
+    # in shell history, and in CI logs. Pipe a tempfile of
+    # KEY=VALUE lines into ``infisical secrets set --file ...``. The
+    # file lives in $TMPDIR with mode 600 and is removed via the EXIT
+    # trap.
     SECRETS_FILE=$(mktemp)
     chmod 600 "$SECRETS_FILE"
-    # Append to the existing trap so we don't clobber the lifecycle
-    # tempfile cleanup set earlier in the script.
     trap 'rm -f "$TMP_LIFECYCLE" "$SECRETS_FILE"' EXIT
     cat > "$SECRETS_FILE" <<EOF
-S3_ENDPOINT=$ENDPOINT
-S3_REGION=$HETZNER_S3_LOCATION
-S3_BUCKET=$BUCKET
-S3_ACCESS_KEY=$HETZNER_S3_ACCESS_KEY
-S3_SECRET_KEY=$HETZNER_S3_SECRET_KEY
+PERSISTENCE_S3_ENDPOINT=$ENDPOINT
+PERSISTENCE_S3_REGION=auto
+PERSISTENCE_S3_BUCKET=$BUCKET
 EOF
-    # Pass the token via env, not argv, for the same reason. The
-    # CLI honours `INFISICAL_TOKEN` from the environment per its
-    # docs, so we just unset the explicit `--token` flag.
+    # INFISICAL_TOKEN via env, not --token argv.
     INFISICAL_TOKEN="$INFISICAL_TOKEN" infisical secrets set \
       --projectId "$INFISICAL_PROJECT_ID" \
       --path "/persistence/$STACK_SLUG" \
       --file "$SECRETS_FILE" \
       >/dev/null 2>&1 || warn "infisical secrets set returned non-zero (values may already exist)"
-    ok "Credentials pushed to Infisical (via stdin file, not argv)"
+    ok "Bucket coordinates pushed to Infisical (R2 credentials reused from project-wide secrets)"
   fi
 else
-  warn "INFISICAL_PROJECT_ID/INFISICAL_TOKEN not set — credentials NOT pushed automatically"
+  warn "INFISICAL_PROJECT_ID/INFISICAL_TOKEN not set — bucket coordinates NOT pushed automatically"
   warn "The caller is responsible for getting them to the per-stack fork's secrets"
 fi
 
@@ -233,10 +220,8 @@ fi
 # -----------------------------------------------------------------------------
 
 ok "init-s3-bucket complete"
-# Single trailing block on stdout in `KEY=VALUE` form. This is what
-# the calling automation parses; everything else above went to stderr.
 cat <<EOF
 BUCKET=$BUCKET
 ENDPOINT=$ENDPOINT
-REGION=$HETZNER_S3_LOCATION
+REGION=auto
 EOF

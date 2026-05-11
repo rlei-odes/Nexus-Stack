@@ -1,22 +1,22 @@
 #!/bin/bash
 # =============================================================================
-# Nexus-Stack - Hetzner Object Storage bucket cleanup (RFC 0001)
+# Nexus-Stack - Cloudflare R2 persistence bucket cleanup (RFC 0001)
 # =============================================================================
-# Deletes a per-stack persistence bucket on Hetzner Object Storage.
-# Called from `destroy-all.yml` workflow ONLY when the operator
-# explicitly opted in via `--delete-data` (see RFC 0001 decision #6).
+# Deletes a per-stack R2 persistence bucket. Called from
+# `destroy-all.yml` workflow ONLY when the operator explicitly opted in
+# via `--delete-data` (see RFC 0001 decision #6).
 #
 # Default behaviour: PRESERVE the bucket. The script is a no-op
 # unless the operator passes the explicit confirmation environment
 # variable, mirroring the existing `confirm=DESTROY` pattern.
 #
 # Required environment variables:
-#   HETZNER_S3_ACCESS_KEY   - Project-level access key
-#   HETZNER_S3_SECRET_KEY   - Matching secret
-#   HETZNER_S3_LOCATION     - fsn1 / hel1 / nbg1
-#   STACK_SLUG              - Per-stack slug (used as bucket name)
-#   CONFIRM_DELETE_DATA     - Must equal 'DESTROY' for the script to act.
-#                             Anything else (including unset) → no-op.
+#   CLOUDFLARE_ACCOUNT_ID    - Cloudflare account ID
+#   R2_ACCESS_KEY_ID         - R2 S3-API access key (shared project token)
+#   R2_SECRET_ACCESS_KEY     - matching secret
+#   STACK_SLUG               - Per-stack slug (used as bucket name)
+#   CONFIRM_DELETE_DATA      - Must equal 'DESTROY' for the script to act.
+#                              Anything else (including unset) → no-op.
 # =============================================================================
 
 set -euo pipefail
@@ -27,10 +27,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log() { echo -e "${BLUE}[cleanup-s3-bucket]${NC} $*" >&2; }
-ok()  { echo -e "${GREEN}[cleanup-s3-bucket] ✓${NC} $*" >&2; }
+log()  { echo -e "${BLUE}[cleanup-s3-bucket]${NC} $*" >&2; }
+ok()   { echo -e "${GREEN}[cleanup-s3-bucket] ✓${NC} $*" >&2; }
 warn() { echo -e "${YELLOW}[cleanup-s3-bucket] ⚠${NC}  $*" >&2; }
-err() { echo -e "${RED}[cleanup-s3-bucket] ✗${NC}  $*" >&2; exit 1; }
+err()  { echo -e "${RED}[cleanup-s3-bucket] ✗${NC}  $*" >&2; exit 1; }
 
 # -----------------------------------------------------------------------------
 # Safety gate (decision #6 — opt-in delete)
@@ -53,32 +53,27 @@ fi
 # Argument validation (only run when actually deleting)
 # -----------------------------------------------------------------------------
 
-: "${HETZNER_S3_ACCESS_KEY:?HETZNER_S3_ACCESS_KEY is required}"
-: "${HETZNER_S3_SECRET_KEY:?HETZNER_S3_SECRET_KEY is required}"
-: "${HETZNER_S3_LOCATION:?HETZNER_S3_LOCATION is required (fsn1 / hel1 / nbg1)}"
+: "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+: "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required (reuse the one from init-r2-state.sh)}"
+: "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}"
 : "${STACK_SLUG:?STACK_SLUG is required (used as bucket name)}"
 
 if ! [[ "$STACK_SLUG" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
-  err "STACK_SLUG '$STACK_SLUG' is not a valid S3 bucket name"
+  err "STACK_SLUG '$STACK_SLUG' is not a valid R2 bucket name"
 fi
 
-case "$HETZNER_S3_LOCATION" in
-  fsn1|hel1|nbg1) ;;
-  *) err "HETZNER_S3_LOCATION must be one of fsn1, hel1, nbg1 (got '$HETZNER_S3_LOCATION')" ;;
-esac
-
-ENDPOINT="https://${HETZNER_S3_LOCATION}.your-objectstorage.com"
+ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
 BUCKET="$STACK_SLUG"
 
 if ! command -v aws >/dev/null 2>&1; then
   err "aws CLI not found in PATH"
 fi
 
-export AWS_ACCESS_KEY_ID="$HETZNER_S3_ACCESS_KEY"
-export AWS_SECRET_ACCESS_KEY="$HETZNER_S3_SECRET_KEY"
-export AWS_DEFAULT_REGION="$HETZNER_S3_LOCATION"
+export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+export AWS_DEFAULT_REGION="auto"
 
-aws_s3() {
+r2_s3() {
   aws --endpoint-url "$ENDPOINT" s3api "$@"
 }
 
@@ -87,7 +82,7 @@ aws_s3() {
 # -----------------------------------------------------------------------------
 
 log "Checking bucket '$BUCKET' on $ENDPOINT"
-if ! aws_s3 head-bucket --bucket "$BUCKET" 2>/dev/null; then
+if ! r2_s3 head-bucket --bucket "$BUCKET" 2>/dev/null; then
   warn "Bucket '$BUCKET' does not exist — nothing to clean up"
   exit 0
 fi
@@ -106,16 +101,16 @@ log "Listing object versions to delete"
 TMP_VERSIONS=$(mktemp)
 trap 'rm -f "$TMP_VERSIONS"' EXIT
 
-# Paginate via aws_s3's built-in `--max-items` cursor. Hetzner's
-# Object Storage caps a single ListObjectVersions response at 1000
-# entries (matching AWS's documented limit), so we paginate.
+# Paginate via aws_s3's built-in `--max-items` cursor. R2 caps a
+# single ListObjectVersions response at 1000 entries (matching AWS's
+# documented limit), so we paginate.
 NEXT_TOKEN=""
 DELETED_COUNT=0
 while :; do
   if [ -z "$NEXT_TOKEN" ]; then
-    PAGE=$(aws_s3 list-object-versions --bucket "$BUCKET" --max-items 1000 --output json)
+    PAGE=$(r2_s3 list-object-versions --bucket "$BUCKET" --max-items 1000 --output json)
   else
-    PAGE=$(aws_s3 list-object-versions --bucket "$BUCKET" --max-items 1000 \
+    PAGE=$(r2_s3 list-object-versions --bucket "$BUCKET" --max-items 1000 \
       --starting-token "$NEXT_TOKEN" --output json)
   fi
 
@@ -134,7 +129,7 @@ print(json.dumps({"Objects": to_delete, "Quiet": True}))
 ' > "$TMP_VERSIONS"
 
   if [ -s "$TMP_VERSIONS" ]; then
-    aws_s3 delete-objects --bucket "$BUCKET" --delete "file://$TMP_VERSIONS" >/dev/null
+    r2_s3 delete-objects --bucket "$BUCKET" --delete "file://$TMP_VERSIONS" >/dev/null
     BATCH=$(grep -c '"Key"' "$TMP_VERSIONS" || true)
     DELETED_COUNT=$((DELETED_COUNT + BATCH))
   fi
@@ -156,5 +151,5 @@ ok "Deleted $DELETED_COUNT object versions"
 # -----------------------------------------------------------------------------
 
 log "Deleting bucket '$BUCKET'"
-aws_s3 delete-bucket --bucket "$BUCKET" >/dev/null
+r2_s3 delete-bucket --bucket "$BUCKET" >/dev/null
 ok "Bucket '$BUCKET' deleted"

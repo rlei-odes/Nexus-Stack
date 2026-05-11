@@ -67,8 +67,23 @@ def _bash_can_be_invoked() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def test_s3endpoint_accepts_canonical_r2_values() -> None:
+    """Smoke: the constructor doesn't reject a real R2 config."""
+    e = S3Endpoint(
+        endpoint="https://abc123.r2.cloudflarestorage.com",
+        region="auto",
+        access_key="ABCDEFG1234567890",
+        secret_key="abc123XYZ+/=_-",
+        bucket="nexus-stefan-hslu",
+    )
+    assert e.region == "auto"
+    assert e.bucket == "nexus-stefan-hslu"
+
+
 def test_s3endpoint_accepts_canonical_hetzner_values() -> None:
-    """Smoke: the constructor doesn't reject a real Hetzner config."""
+    """Smoke: the module is endpoint-agnostic; a Hetzner Object
+    Storage config also passes the gate (used by future migration
+    tooling, not the v1.0 steady state)."""
     e = S3Endpoint(
         endpoint="https://fsn1.your-objectstorage.com",
         region="fsn1",
@@ -83,15 +98,15 @@ def test_s3endpoint_accepts_canonical_hetzner_values() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("endpoint", "fsn1.your-objectstorage.com"),  # missing scheme
-        ("endpoint", "ftp://fsn1.your-objectstorage.com"),  # wrong scheme
+        ("endpoint", "abc123.r2.cloudflarestorage.com"),  # missing scheme
+        ("endpoint", "ftp://abc123.r2.cloudflarestorage.com"),  # wrong scheme
     ],
 )
 def test_s3endpoint_rejects_non_http_endpoint(field: str, value: str) -> None:
     """Non-HTTP endpoints get caught — common copy-paste error
     where someone pastes the bucket name into the endpoint slot."""
     kwargs = {
-        "endpoint": "https://fsn1.your-objectstorage.com",
+        "endpoint": "https://abc123.r2.cloudflarestorage.com",
         "region": "fsn1",
         "access_key": "AKIAEXAMPLE",
         "secret_key": "secret123",
@@ -118,7 +133,7 @@ def test_s3endpoint_rejects_unsafe_charset(field: str, value: str, fragment: str
     caught at the constructor — the rendered script never sees an
     unsafe value."""
     kwargs = {
-        "endpoint": "https://fsn1.your-objectstorage.com",
+        "endpoint": "https://abc123.r2.cloudflarestorage.com",
         "region": "fsn1",
         "access_key": "AKIAEXAMPLE",
         "secret_key": "secret123",
@@ -136,11 +151,13 @@ def test_s3endpoint_rejects_unsafe_charset(field: str, value: str, fragment: str
 
 def test_render_rclone_config_emits_full_profile_block() -> None:
     """The block contains every key rclone needs to authenticate
-    against Hetzner. No accidental ``env_auth = true`` (which
-    would silently fall back to ambient AWS env vars)."""
+    against R2. No accidental ``env_auth = true`` (which would
+    silently fall back to ambient AWS env vars). The
+    ``provider = Cloudflare`` switch is what tells rclone to
+    apply R2-specific quirks."""
     e = S3Endpoint(
-        endpoint="https://fsn1.your-objectstorage.com",
-        region="fsn1",
+        endpoint="https://abc123.r2.cloudflarestorage.com",
+        region="auto",
         access_key="AKIA1234",
         secret_key="secret/key+abc=",
         bucket="nexus-stefan-hslu",
@@ -149,12 +166,12 @@ def test_render_rclone_config_emits_full_profile_block() -> None:
 
     assert config.startswith(f"[{RCLONE_PROFILE}]\n")
     assert "type = s3\n" in config
-    assert "provider = Other\n" in config
+    assert "provider = Cloudflare\n" in config
     assert "env_auth = false\n" in config
     assert "access_key_id = AKIA1234\n" in config
     assert "secret_access_key = secret/key+abc=\n" in config
-    assert "endpoint = https://fsn1.your-objectstorage.com\n" in config
-    assert "region = fsn1\n" in config
+    assert "endpoint = https://abc123.r2.cloudflarestorage.com\n" in config
+    assert "region = auto\n" in config
     assert "acl = private\n" in config
 
 
@@ -163,8 +180,8 @@ def test_render_rclone_config_uses_module_level_profile_name() -> None:
     Hardcoded literal would be fine but a constant means a future
     rename can't drift between the two render functions."""
     e = S3Endpoint(
-        endpoint="https://fsn1.your-objectstorage.com",
-        region="fsn1",
+        endpoint="https://abc123.r2.cloudflarestorage.com",
+        region="auto",
         access_key="AKIA",
         secret_key="secret",
         bucket="nexus-test",
@@ -385,7 +402,7 @@ def test_s3endpoint_rejects_endpoint_with_whitespace_or_newlines(endpoint: str) 
     with pytest.raises(S3PersistenceError, match="corrupt the rendered rclone config"):
         S3Endpoint(
             endpoint=endpoint,
-            region="fsn1",
+            region="auto",
             access_key="AKIA",
             secret_key="secret",
             bucket="nexus-test",
@@ -428,8 +445,8 @@ def test_manifest_for_components_propagates_created_at() -> None:
 
 def _endpoint() -> S3Endpoint:
     return S3Endpoint(
-        endpoint="https://fsn1.your-objectstorage.com",
-        region="fsn1",
+        endpoint="https://abc123.r2.cloudflarestorage.com",
+        region="auto",
         access_key="AKIA1234",
         secret_key="secret123",
         bucket="nexus-test",
