@@ -840,24 +840,32 @@ def test_restore_script_detects_missing_latest_via_lsf_stdout_not_exit_code() ->
         postgres_targets=(),
         rsync_targets=(),
     )
-    # The fresh-start guard must (a) capture lsf STDOUT into a
-    # variable, (b) tolerate a non-zero exit from lsf by resetting
-    # the variable to empty, and (c) test the variable for emptiness.
-    # Pin all three so a future "simplification" can't regress us
-    # back to ``if ! rclone lsf ...`` (broken on rclone 1.60) OR
-    # to ``[ -z "$(rclone lsf ...)" ]`` (depends on errexit-in-cmd-
-    # sub semantics that change with shopt inherit_errexit).
-    assert "LATEST_LISTING=" in script, "fresh-start guard must capture lsf stdout into a variable"
-    assert "if ! LATEST_LISTING=$(rclone lsf" in script, (
-        "fresh-start guard must tolerate non-zero exit from lsf "
-        "(newer rclone returns non-zero on missing object)"
-    )
+    # The fresh-start guard must list the PARENT prefix (so empty
+    # listing = empty bucket = fresh-start) and treat a non-zero
+    # exit from the listing as a HARD ERROR (not fresh-start) —
+    # otherwise a transient S3 blip after the bucket-reachability
+    # probe would silently empty local state, and the next teardown
+    # would overwrite real R2 data. Pin the exact bash shape so a
+    # future "simplification" can't regress us into any of the
+    # previous broken forms:
+    #   - ``if ! rclone lsf .../latest.txt >/dev/null`` (rclone-1.60
+    #     returns rc=0 on missing → never enters branch)
+    #   - ``[ -z "$(rclone lsf ...)" ]`` (depends on errexit-in-
+    #     cmd-sub semantics that flip with inherit_errexit)
+    #   - ``if ! VAR=$(rclone lsf .../latest.txt); then VAR=""`` →
+    #     treats transient errors as fresh-start (round-2 form)
     assert (
-        'if [ -z "$LATEST_LISTING" ]; then' in script
-    ), "fresh-start guard must test the captured variable for emptiness"
-    # And a defence-in-depth check: even if lsf passed but copyto
-    # didn't actually produce the file, fail loud (exit 2) rather
-    # than letting the next ``tr -d`` leak its kernel error.
+        'SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/")' in script
+    ), "fresh-start guard must list the parent prefix, not the file directly"
+    assert (
+        'grep -qxF "latest.txt"' in script
+    ), "fresh-start guard must check for latest.txt as a whole-line fixed match"
+    # Hard error path — listing failure must exit 2, NOT fresh-start.
+    assert "cannot list" in script
+    # And a defence-in-depth check: even if listing passed and
+    # copyto ran but copyto didn't actually produce the file, fail
+    # loud (exit 2) rather than letting the next ``tr -d`` leak
+    # its kernel error.
     assert '[ ! -s "$WORKDIR/latest.txt" ]' in script
 
 
@@ -874,10 +882,10 @@ def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
         rsync_targets=(),
     )
     probe_pos = script.find('rclone lsd "$BUCKET"')
-    fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/latest.txt"')
+    fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/"')
     assert (
         0 < probe_pos < fresh_check_pos
-    ), "bucket reachability probe must precede the latest.txt check"
+    ), "bucket reachability probe must precede the snapshot-prefix listing"
     assert "not reachable" in script
     # The probe failure path must exit non-zero (clear error), the
     # latest.txt failure path must exit 0 (legitimate fresh-start).

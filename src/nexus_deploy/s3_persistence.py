@@ -893,30 +893,38 @@ def render_restore_script(
         '(check R2 credentials / endpoint / bucket name)" >&2',
         "  exit 2",
         "fi",
-        # Detect "no snapshot yet" by capturing lsf's STDOUT into a
-        # variable, with explicit handling for non-zero exit codes.
-        # Two rclone behaviors to cover:
-        #   - Ubuntu 24.04's apt rclone (v1.60.1) returns rc=0 with
-        #     empty stdout for a missing object.
-        #   - Newer rclone versions return non-zero on missing.
-        # We can't depend on apt-version-skew, so both cases must
-        # land in the fresh-start branch.
+        # Detect "no snapshot yet" by listing the parent prefix and
+        # checking whether ``latest.txt`` is among the entries.
+        # Critically: a non-zero exit from this listing is a HARD
+        # ERROR (rc=2), not "fresh-start" — otherwise a transient
+        # S3 blip between the bucket-reachability probe above and
+        # this call would silently empty local state, and the next
+        # teardown would overwrite real R2 data with empty snapshots.
         #
-        # Why the explicit ``if !`` capture instead of ``[ -z "$(cmd)"
-        # ]`` — the simpler form works under default ``set -euo
-        # pipefail`` because (a) commands in if-tests bypass errexit
-        # and (b) command substitutions don't inherit errexit unless
-        # ``shopt -s inherit_errexit`` is set. But that's a subtle
-        # POSIX rule, and a future maintainer enabling
-        # inherit_errexit (or running the script under a stricter
-        # shell config) would have the script abort here instead of
-        # fresh-starting. The explicit assignment-in-if form is
-        # robust regardless of errexit settings.
-        'LATEST_LISTING=""',
-        'if ! LATEST_LISTING=$(rclone lsf "$BUCKET/snapshots/latest.txt" 2>/dev/null); then',
-        '  LATEST_LISTING=""',
+        # Two distinct empty-prefix vs missing-file paths:
+        #   - bucket reachable, prefix empty (no objects under
+        #     ``snapshots/``) → genuine first spin-up, fresh-start
+        #     (rc=0 from listing, empty stdout, grep returns
+        #     non-zero).
+        #   - bucket reachable, prefix has objects but no
+        #     ``latest.txt`` → orphan snapshot trees from a failed
+        #     ``snapshot_to_s3`` (atomicity guarantee: latest.txt is
+        #     the LAST thing written). Still fresh-start — the
+        #     orphans cost storage but don't affect restoration.
+        #   - listing itself fails (auth/network/perm) → exit 2
+        #     loud, so the operator sees the real cause instead of
+        #     a silent fresh-start that paves over real data.
+        #
+        # Don't suppress stderr — rclone's diagnostic on failure is
+        # what tells the operator whether it's auth, network, or
+        # bucket policy. Quiet on success.
+        'SNAPSHOT_LISTING=""',
+        'if ! SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/"); then',
+        '  echo "✗ restore-failed: cannot list $BUCKET/snapshots/ — '
+        'see rclone error above (auth / network / bucket policy)" >&2',
+        "  exit 2",
         "fi",
-        'if [ -z "$LATEST_LISTING" ]; then',
+        'if ! printf "%s\\n" "$SNAPSHOT_LISTING" | grep -qxF "latest.txt"; then',
         '  echo "fresh-start: no snapshot in S3, leaving local state empty"',
         "  exit 0",
         "fi",
