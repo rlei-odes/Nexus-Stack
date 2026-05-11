@@ -496,6 +496,24 @@ def test_ensure_data_dirs_script_covers_dify_bind_mounts() -> None:
     assert 'chown -R 999:999 "$MOUNT_POINT/dify/redis"' in rendered
 
 
+def test_ensure_data_dirs_forwards_script_stdout_to_stderr(capsys) -> None:  # type: ignore[no-untyped-def]
+    """The remote script's success echo (``ensured data-dir
+    ownership under /mnt/nexus-data``) must reach local stderr so
+    operators see it in the workflow log. Without this, the message
+    is silently dropped — same mistake docstring-vs-behavior drift
+    that Copilot flagged in PR #555 round 7."""
+    ssh = MagicMock()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"],
+        returncode=0,
+        stdout="ensured data-dir ownership under /mnt/nexus-data\n",
+        stderr="",
+    )
+    ensure_data_dirs(ssh)
+    captured = capsys.readouterr()
+    assert "ensured data-dir ownership under /mnt/nexus-data" in captured.err
+
+
 def test_ensure_data_dirs_propagates_called_process_error() -> None:
     """A failed chown is a HARD failure — a stack that comes up
     with mis-owned data dirs misbehaves silently, which is much

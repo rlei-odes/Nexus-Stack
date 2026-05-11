@@ -512,8 +512,20 @@ def ensure_data_dirs(ssh: SSHClient) -> None:
     — that's a hard failure: a stack that comes up with mis-owned
     data dirs will misbehave silently, far harder to debug than a
     fail-loud abort here.
+
+    The remote script emits a single ``ensured data-dir ownership
+    under /mnt/nexus-data`` line to stdout on success. Forward that
+    to local stderr so operators see the confirmation in the
+    workflow log (same pattern as :func:`s3_restore.restore_from_s3`).
     """
-    ssh.run_script(_ENSURE_DATA_DIRS_SCRIPT, check=True)
+    completed = ssh.run_script(_ENSURE_DATA_DIRS_SCRIPT, check=True)
+    # Forward server-side log lines to local stderr so the
+    # confirmation written by the script actually reaches the
+    # workflow log. Without this, the echo in
+    # ``_ENSURE_DATA_DIRS_SCRIPT`` would be lost — the docstring
+    # there implies operators see it.
+    for line in completed.stdout.splitlines():
+        sys.stderr.write(line + "\n")
 
 
 # ---------------------------------------------------------------------------
