@@ -840,13 +840,21 @@ def test_restore_script_detects_missing_latest_via_lsf_stdout_not_exit_code() ->
         postgres_targets=(),
         rsync_targets=(),
     )
-    # The fresh-start guard must read lsf STDOUT (and treat empty as
-    # missing), not just the exit code. Pin the exact bash form so a
-    # future "simplification" can't regress us back to ``if ! rclone
-    # lsf ...``.
+    # The fresh-start guard must (a) capture lsf STDOUT into a
+    # variable, (b) tolerate a non-zero exit from lsf by resetting
+    # the variable to empty, and (c) test the variable for emptiness.
+    # Pin all three so a future "simplification" can't regress us
+    # back to ``if ! rclone lsf ...`` (broken on rclone 1.60) OR
+    # to ``[ -z "$(rclone lsf ...)" ]`` (depends on errexit-in-cmd-
+    # sub semantics that change with shopt inherit_errexit).
+    assert "LATEST_LISTING=" in script, "fresh-start guard must capture lsf stdout into a variable"
+    assert "if ! LATEST_LISTING=$(rclone lsf" in script, (
+        "fresh-start guard must tolerate non-zero exit from lsf "
+        "(newer rclone returns non-zero on missing object)"
+    )
     assert (
-        '[ -z "$(rclone lsf' in script
-    ), "fresh-start guard must inspect lsf STDOUT not just exit code"
+        'if [ -z "$LATEST_LISTING" ]; then' in script
+    ), "fresh-start guard must test the captured variable for emptiness"
     # And a defence-in-depth check: even if lsf passed but copyto
     # didn't actually produce the file, fail loud (exit 2) rather
     # than letting the next ``tr -d`` leak its kernel error.

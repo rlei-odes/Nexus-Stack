@@ -893,20 +893,30 @@ def render_restore_script(
         '(check R2 credentials / endpoint / bucket name)" >&2',
         "  exit 2",
         "fi",
-        # Detect "no snapshot yet" by checking lsf's STDOUT, not its
-        # exit code. Ubuntu 24.04's apt rclone (v1.60.1) returns
-        # rc=0 with empty stdout for a missing object — so an
-        # ``if ! rclone lsf ... >/dev/null`` check NEVER fires on
-        # this version and falls through to ``copyto``, which then
-        # also silently returns rc=0 without creating the local
-        # file. The first observable failure is the ``tr -d < ...``
-        # line below ("No such file or directory"), which is a
-        # confusing diagnostic and an ``rc=1`` instead of the
-        # intended ``rc=0`` fresh-start branch. Newer rclone
-        # versions DO return non-zero on missing source, but we
-        # can't depend on apt-version-skew, so check the listing
-        # output directly: empty = object missing = fresh-start.
-        'if [ -z "$(rclone lsf "$BUCKET/snapshots/latest.txt" 2>/dev/null)" ]; then',
+        # Detect "no snapshot yet" by capturing lsf's STDOUT into a
+        # variable, with explicit handling for non-zero exit codes.
+        # Two rclone behaviors to cover:
+        #   - Ubuntu 24.04's apt rclone (v1.60.1) returns rc=0 with
+        #     empty stdout for a missing object.
+        #   - Newer rclone versions return non-zero on missing.
+        # We can't depend on apt-version-skew, so both cases must
+        # land in the fresh-start branch.
+        #
+        # Why the explicit ``if !`` capture instead of ``[ -z "$(cmd)"
+        # ]`` — the simpler form works under default ``set -euo
+        # pipefail`` because (a) commands in if-tests bypass errexit
+        # and (b) command substitutions don't inherit errexit unless
+        # ``shopt -s inherit_errexit`` is set. But that's a subtle
+        # POSIX rule, and a future maintainer enabling
+        # inherit_errexit (or running the script under a stricter
+        # shell config) would have the script abort here instead of
+        # fresh-starting. The explicit assignment-in-if form is
+        # robust regardless of errexit settings.
+        'LATEST_LISTING=""',
+        'if ! LATEST_LISTING=$(rclone lsf "$BUCKET/snapshots/latest.txt" 2>/dev/null); then',
+        '  LATEST_LISTING=""',
+        "fi",
+        'if [ -z "$LATEST_LISTING" ]; then',
         '  echo "fresh-start: no snapshot in S3, leaving local state empty"',
         "  exit 0",
         "fi",
