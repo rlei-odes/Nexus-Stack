@@ -29,7 +29,7 @@ Move all persistent data to Cloudflare R2. Server local SSD becomes ephemeral ca
 
 - Not a backup solution (though it gets you one for free). Recovery from R2 is the *primary* path, not a fallback.
 - Not Postgres-on-R2. Postgres needs POSIX semantics and stays on local SSD, but its **dump** lives on R2.
-- Not a data-residency commitment beyond what R2 itself offers. R2 stores objects in the Cloudflare data centre closest to the bucket's selected jurisdiction (we use the `EU` jurisdiction, matching where the project already keeps the Tofu state backend). For the tutorial/class-stack data we ship this is fine; if a future workload needs a stricter pinned-region guarantee, R2 supports a `eu` jurisdiction hint that constrains storage to EU DCs.
+- Not a data-residency commitment beyond what R2 itself offers. R2 stores objects in the Cloudflare data centre closest to the bucket's selected jurisdiction. v1.0 sets the persistence bucket's `location` to `EEUR` (Cloudflare's "Eastern Europe" hint) as a **new explicit constraint** on this bucket — the project's existing R2 buckets (Tofu state, data-lake) don't set a jurisdiction and use R2's default. For the tutorial/class-stack data we ship, the EEUR pin is fine; if a future workload needs a stricter pinned-region guarantee, R2's jurisdiction API supports that natively. Operators may set `location` differently per their data-residency needs.
 
 ## Goals
 
@@ -95,20 +95,38 @@ The volume sits idle costing ~€0.50/month per stack until next spinup.
 ### Storage layout
 
 ```
-Cloudflare R2 (EU jurisdiction, single global namespace):
+Cloudflare R2 (per-stack bucket, R2 jurisdiction set to EEUR — see Bucket
+provisioning below; this is a new constraint on the persistence bucket,
+not inherited from the existing Tofu-state bucket which uses R2's default
+jurisdiction):
   s3://nexus-<class>-<user>-internal/
-    ├── manifest.json                     ← snapshot metadata: timestamp, version, hashes
-    ├── postgres/
-    │   ├── gitea.dump.gz                 ← pg_dump -F c | gzip (custom binary format, gzipped)
-    │   └── dify.dump.gz
-    ├── gitea/
-    │   ├── repos/                        ← rsync mirror (excluding ephemeral .lock files + db/)
-    │   └── lfs/                          ← rsync mirror (or native Gitea S3-LFS, see Open Questions)
-    ├── dify/
-    │   ├── storage/                      ← rsync mirror (or native Dify S3 backend)
-    │   ├── weaviate/                     ← rsync mirror of weaviate persistent dir
-    │   └── plugins/                      ← rsync mirror
-    └── _versioning/                      ← retain last N snapshots (Hetzner lifecycle policy)
+    ├── snapshots/
+    │   ├── latest.txt                    ← single-line pointer to the active
+    │   │                                   timestamp; updated only AFTER the
+    │   │                                   verify gate passes
+    │   └── <ISO8601-timestamp>/
+    │       ├── manifest.json             ← slim metadata: stack, timestamp,
+    │       │                               template version (rich per-
+    │       │                               component checksums are a v1.1
+    │       │                               extension; v1.0 trusts rclone's
+    │       │                               per-object hash check for
+    │       │                               integrity)
+    │       ├── postgres/
+    │       │   ├── gitea.dump.gz         ← pg_dump -F c | gzip (custom binary)
+    │       │   └── dify.dump.gz
+    │       ├── gitea/
+    │       │   ├── repos/                ← rsync mirror (excluding .lock + db/)
+    │       │   └── lfs/                  ← rsync mirror
+    │       └── dify/
+    │           ├── storage/              ← rsync mirror
+    │           ├── weaviate/             ← rsync mirror
+    │           └── plugins/              ← rsync mirror
+
+Retention is enforced by R2's built-in object versioning + lifecycle
+policy (30-day NoncurrentVersionExpiration on the ``snapshots/`` prefix
+in v1.0). No dedicated ``_versioning/`` subdirectory; the prior diagram
+inherited that note from the earlier Hetzner-Object-Storage revision and
+was inaccurate.
 
 Note: `gitea/db/` and `dify/db/` (Postgres data directories) and
 `dify/redis/` (ephemeral cache) are **excluded** from the rsync
@@ -133,9 +151,15 @@ Server local SSD (ephemeral, recreated on every spinup):
 
 ```
 1. select-capacity:    pick (type, location) — no volume constraint, full SERVER_PREFERENCES list valid
-2. tofu apply:         provision server (no volume attachment) +
-                       per-stack cloudflare_r2_bucket (see "Bucket
-                       provisioning" below)
+2. tofu apply:         provision server (no volume attachment).
+                       The per-stack R2 bucket already exists from
+                       control-plane setup (see "Code changes →
+                       tofu/control-plane/main.tf" — the bucket
+                       resource lives in control-plane state, not
+                       stack state, so it's NOT created or
+                       destroyed on each spinup/teardown cycle —
+                       same lifecycle pattern as the volume it
+                       replaces).
 3. cloud-init / setup:
    a. mkdir -p /var/lib/nexus-data
    b. ln -sfn /var/lib/nexus-data /mnt/nexus-data    (back-compat symlink:
@@ -186,13 +210,19 @@ options we use for cross-version restores. The implementation in
    c. rclone sync /var/lib/nexus-data/dify/storage   → s3://<bucket>/dify/storage
    d. rclone sync /var/lib/nexus-data/dify/weaviate  → s3://<bucket>/dify/weaviate
    e. rclone sync /var/lib/nexus-data/dify/plugins   → s3://<bucket>/dify/plugins
-   f. rclone copy /tmp/dumps/ → s3://<bucket>/postgres/      (gitea.dump.gz, dify.dump.gz)
-   g. write manifest.json (timestamp, stack, template_version)
-4. verify:             rclone check --one-way (re-list, compare per-object hashes)
-   ✗ on mismatch:      ABORT — leave server up, alert operator, do NOT proceed to step 5
+   f. rclone copy /tmp/dumps/ → s3://<bucket>/snapshots/<timestamp>/postgres/  (gitea.dump.gz, dify.dump.gz)
+   g. write manifest.json into snapshots/<timestamp>/manifest.json
+                                                            (slim — timestamp, stack, template_version; per-component
+                                                             checksums deferred to v1.1, see Open Question 1)
+4. verify:             rclone check --one-way per source (workdir + every rsync target's local_path)
+   ✗ on mismatch:      ABORT — leave server up, alert operator, do NOT proceed to step 5 or 6
    ✓ on match:         proceed
-5. tofu destroy:       server + tunnel + DNS + access apps
-                       volume resource removed entirely from the tofu state
+5. point latest.txt:   rclone copyto $timestamp → snapshots/latest.txt    (single-line text file;
+                                                                          this is the atomic-promotion
+                                                                          step — only happens AFTER
+                                                                          verify passed in step 4)
+6. tofu destroy:       server + tunnel + DNS + access apps (volume already gone; the per-stack R2
+                                                            bucket stays — owned by control-plane state)
 ```
 
 ### Atomicity guarantees
@@ -227,7 +257,7 @@ explicit sha256 verification, or move per-component checksums into
 
 | File | Change |
 |---|---|
-| `tofu/control-plane/main.tf` | Remove `hcloud_volume "persistent"` resource + outputs. Add a new `cloudflare_r2_bucket "persistence"` resource using the **existing** `cloudflare/cloudflare` provider (already configured for DNS / Tunnel / Access / Pages elsewhere in this file). Set the bucket's `location` to `EEUR` (Eastern Europe — Cloudflare's hint that constrains R2 storage replicas to that geography; matches where Tofu state already lives). No new provider plumbing required, no new credentials — the existing `CLOUDFLARE_API_TOKEN` already has the scopes needed. |
+| `tofu/control-plane/main.tf` | Remove `hcloud_volume "persistent"` resource + outputs. Add a new `cloudflare_r2_bucket "persistence"` resource using the **existing** `cloudflare/cloudflare` provider (already configured for DNS / Tunnel / Access / Pages elsewhere in this file). Set the bucket's `location` to `EEUR` (Eastern Europe — Cloudflare's hint that constrains R2 storage replicas to EU geography). Note this is a **new** explicit constraint on the persistence bucket; the project's existing R2 buckets (Tofu state, data-lake) don't set a jurisdiction and rely on R2's default. Operators may set `location` differently per their data-residency needs. No new provider plumbing required, no new credentials — the existing `CLOUDFLARE_API_TOKEN` already has the scopes needed. The bucket lives in **control-plane state** (not stack state), so it's created once at control-plane setup and survives every per-spinup teardown of `tofu/stack/` — same pattern as the volume it replaces. |
 | `tofu/control-plane/variables.tf` | Remove `persistent_volume_size`. Add `s3_persistence_bucket_name`, `s3_persistence_endpoint`, `s3_persistence_region`. |
 | `tofu/control-plane/outputs.tf` | Replace `persistent_volume_id` with `s3_persistence_credentials` (sensitive). |
 | `tofu/stack/main.tf` | Remove `hcloud_volume_attachment "persistent"`. Add user-data / cloud-init pulling from S3 (or do it in `pipeline.py` instead — see below). |
@@ -283,7 +313,7 @@ This is the riskiest part. Existing stacks have data on Hetzner volumes; we must
 ### Phase A: prepare (no breaking changes yet)
 
 1. Pre-create per-stack R2 buckets (one-time admin action via the migration shell script or the new Tofu resource).
-2. Push the R2 access credentials to each stack's Infisical secrets folder. We can reuse the project-wide R2 token that already exists from `scripts/init-r2-state.sh` rather than minting a per-stack token — IAM scoping is at the bucket level via `cloudflare_r2_bucket_lock` policies in v1.1 if needed.
+2. Push the R2 access credentials to each stack's Infisical secrets folder. v1.0 **reuses the project-wide R2 token** that already exists from `scripts/init-r2-state.sh`. **Security trade-off the operator must know about:** that token is account-scoped ("Workers R2 Storage Write" permissions across the whole account), so the same credential is what already protects the Tofu state bucket — and a compromise of any one stack would expose every other stack's persistence bucket (and the state bucket). For v1.0 we accept this because the alternative (a per-stack R2 token) would mean managing 26+ tokens against Cloudflare's 50-token-per-account limit, and the stacks already share trust via Infisical secret-sync. **v1.1 work:** introduce bucket-restricted tokens via Cloudflare's R2 token-permissions API (`bucket = nexus-<class>-<user>-internal`) and the `cloudflare_api_token` Tofu resource, so each stack only sees its own bucket. Tracked as Open Question 9 below.
 3. Add `nexus_deploy.s3_persistence` module to template, but don't wire it into pipeline yet.
 
 ### Phase B: one-time evacuation
@@ -357,6 +387,8 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 7. **What happens to `destroy-all`?** Today it removes the volume too. New behaviour: also deletes the S3 bucket? Or preserves it for cold-storage / forensics? Recommendation: **destroy-all deletes the bucket as well** (matches user intent of "clean slate") with a `--keep-data` flag for the cautious case.
 
 8. **How to surface S3 latency in spinup logs.** Add a `_phase_s3_restore` log section showing per-directory transfer rate so the operator can spot regressions.
+
+9. **Per-stack R2 token scoping (v1.1).** v1.0 reuses the existing account-scoped R2 token from `init-r2-state.sh`. v1.1 should mint a bucket-restricted token per stack (Cloudflare R2 supports `permission_groups` with `bucket = <name>` filtering as of late 2024). The cloudflare provider has a `cloudflare_api_token` resource that can do this in Tofu. The trade-off: 26+ tokens against Cloudflare's 50-token-per-account limit, which is why this is deferred — needs either a token-rotation strategy or moving Tofu state credentials to a different storage system to free up token slots.
 
 ## Phased rollout plan
 
