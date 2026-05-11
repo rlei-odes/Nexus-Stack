@@ -39,6 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nexus_deploy import s3_restore as _s3_restore
 from nexus_deploy import setup as _setup
 from nexus_deploy import tfvars as _tfvars
 from nexus_deploy import tofu as _tofu
@@ -352,6 +353,32 @@ def run_pipeline(
                 f"{mount_result.detail or 'no detail'} — "
                 "downstream stacks that depend on /opt/data may misbehave\n",
             )
+
+        # RFC 0001 phase A wire-up. Reads the NEXUS_S3_PERSISTENCE env
+        # var; when ``"true"`` the S3 restore path runs in addition to
+        # (not instead of) the volume mount above. For stacks that
+        # haven't migrated yet the function returns S3RestoreSkipped
+        # immediately and we pass through with no behavior change.
+        # The volume-mount path itself becomes a no-op once a stack's
+        # config drops ``persistent_volume_id`` (RFC PR-3); for now
+        # both paths coexist so cutover is per-stack and reversible.
+        s3_result = _s3_restore.restore_from_s3(ssh)
+        if isinstance(s3_result, _s3_restore.S3RestoreApplied):
+            sys.stderr.write(
+                f"✓ s3-restore: applied snapshot {s3_result.snapshot_timestamp}\n",
+            )
+        elif s3_result.reason == "fresh_start_empty_s3":
+            sys.stderr.write(
+                "→ s3-restore: bucket empty, fresh-start (first spinup of new "
+                "persistence bucket)\n",
+            )
+        # The other two skip reasons are intentionally not logged here:
+        #   - feature_flag_off: silent by design — the stack hasn't
+        #     opted in to S3 persistence, so logging would just add
+        #     noise to every spinup of stacks that don't use it.
+        #   - no_endpoint_env: restore_from_s3 already wrote its own
+        #     stderr line (it lists the specific missing env vars,
+        #     which is the actionable info the operator needs).
 
         if options.dockerhub_user and options.dockerhub_token:
             login_fn = docker_hub_login if docker_hub_login is not None else _docker_hub_login
