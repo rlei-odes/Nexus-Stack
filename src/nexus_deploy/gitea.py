@@ -1662,10 +1662,13 @@ def run_mirror_setup(
     2. For each repo URL in ``gh_mirror_repos``:
        a. Compute mirror name ``mirror-readonly-<basename>``.
        b. POST /repos/migrate (or skip if 409/already_exists).
-       c. On the FIRST mirror with a configured user, fork it
+       c. Add the user as a read-collaborator on the mirror —
+          MUST happen before (d) because the mirror is created
+          private and the user's token (used in (d)) sees a
+          private repo as 404 until collab is granted.
+       d. On the FIRST mirror with a configured user, fork it
           into the user's namespace via a temp user-token
           (created + deleted on this call).
-       d. Add the user as a read-collaborator on the mirror.
        e. If the fork was created on this iteration: trigger
           ``mirror-sync`` on the mirror, sleep
           ``mirror_sync_settle_seconds``, then ``merge-upstream``
@@ -1774,6 +1777,19 @@ def run_mirror_setup(
             # iteration so a single bad URL doesn't abort the loop.
             continue
 
+        # Grant the user read-only access to the (private) mirror BEFORE
+        # the fork attempt below. ``migrate_mirror`` creates the repo with
+        # ``"private": True``, and ``fork_repo_as_user`` runs as
+        # ``gitea_user_username`` — without prior collaborator access the
+        # user cannot see the mirror at all and Gitea returns 404 on
+        # ``POST .../forks`` (Gitea conflates not-found with permission-
+        # denied on private repos). Doing the add here guarantees the
+        # user can see the mirror by the time the fork POST hits.
+        if gitea_user_username and client.add_collaborator(
+            admin_username, mirror_name, gitea_user_username, permission="read"
+        ):
+            collaborator_added_count += 1
+
         # Fork the FIRST successful mirror into the user's namespace
         # (idempotent across spin-ups via the existing-fork 409 branch).
         # On transient failure (token mint glitch, fork POST 5xx),
@@ -1847,14 +1863,6 @@ def run_mirror_setup(
                 # diagnostic so the FINAL result still surfaces the
                 # last failure if every iteration fails.
                 last_fork_failure = attempt
-
-        # Grant the user read-only access to the mirror (separate from
-        # the fork above — every mirror gets the user as collaborator,
-        # not just the first).
-        if gitea_user_username and client.add_collaborator(
-            admin_username, mirror_name, gitea_user_username, permission="read"
-        ):
-            collaborator_added_count += 1
 
         # Sync the fork from upstream — only on the first iteration
         # where the fork was actually created/already-existed.

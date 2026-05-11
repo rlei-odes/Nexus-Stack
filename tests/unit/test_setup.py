@@ -23,12 +23,9 @@ from nexus_deploy.setup import (
     SetupError,
     SSHConfigSpec,
     SSHReadinessResult,
-    VolumeMountResult,
-    _render_volume_mount_script,
     configure_ssh,
+    ensure_data_dirs,
     ensure_jq,
-    mount_persistent_volume,
-    parse_volume_mount_result,
     render_ssh_config_block,
     strip_existing_block,
     wait_for_service_token,
@@ -437,237 +434,112 @@ def test_ensure_jq_installs_when_missing() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Volume mount — render + parse + pure-logic
+# ensure_data_dirs — RFC 0001 cutover replacement for the chown half
+# of the removed mount_persistent_volume helper.
 # ---------------------------------------------------------------------------
 
 
-def test_render_volume_mount_first_line_is_set_euo_pipefail() -> None:
-    """R1 — `set -euo pipefail` is the first executable line."""
-    script = _render_volume_mount_script("12345")
-    first_executable = next(
-        line for line in script.splitlines() if line.strip() and not line.startswith("#")
+def test_ensure_data_dirs_runs_one_script() -> None:
+    """Sanity — happy path is a single SSHClient.run_script call
+    that doesn't raise."""
+    ssh = MagicMock()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="", stderr=""
     )
-    assert first_executable == "set -euo pipefail"
+    ensure_data_dirs(ssh)
+    ssh.run_script.assert_called_once()
 
 
-def test_render_volume_mount_three_stage_fallback_chain() -> None:
-    """All three discovery stages present in the rendered script."""
-    script = _render_volume_mount_script("12345")
-    assert "/dev/disk/by-id/scsi-0HC_Volume_" in script
-    assert "kernel" in script  # automount stage
-    assert "/dev/sdb" in script  # fallback stage
-
-
-def test_render_volume_mount_digit_id_passes_through_unquoted() -> None:
-    """Sanity: digits-only id (the only form `mount_persistent_volume`
-    actually allows past its `_VOLUME_ID_PATTERN` regex) renders
-    bare. shlex.quote of all-digits is a no-op since digits don't
-    need shell escaping."""
-    script = _render_volume_mount_script("12345")
-    assert "VOLUME_ID=12345" in script
-
-
-def test_render_volume_mount_hostile_id_is_safely_quoted() -> None:
-    """Round-2 PR #524: defence-in-depth — even if a hostile string
-    slipped past the upstream digit-only regex (e.g. via a future
-    refactor that drops the validation, or a direct call to
-    `_render_volume_mount_script`), the rendered bash must NOT
-    execute the hostile payload.
-
-    `_render_volume_mount_script` itself does no validation; it
-    relies on the caller's regex. shlex.quote is the second line
-    of defence. Pinned via an injection-shaped input that would
-    break out without quoting (`'; rm -rf /; #`).
-    """
-    hostile = "'; rm -rf / ; #"
-    script = _render_volume_mount_script(hostile)
-    # The hostile payload must NOT appear unquoted on the
-    # VOLUME_ID line. shlex.quote wraps the whole string in single
-    # quotes and escapes embedded ones, so the assignment looks
-    # like: VOLUME_ID=''"'"'; rm -rf / ; #'
-    volume_line = next(line for line in script.splitlines() if line.startswith("VOLUME_ID="))
-    # The unquoted payload (with the `';` injection) cannot appear as
-    # a parseable command — bash would see the surrounding quotes.
-    # We assert the line starts with the safe-quote marker.
-    assert volume_line.startswith("VOLUME_ID='"), f"hostile id not quoted: {volume_line!r}"
-    # And bash -n must accept it (would fail if quote balance broke).
-    if shutil.which("bash"):
-        proc = subprocess.run(
-            ["bash", "-n", "-c", script],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-
-
-def test_render_volume_mount_mkdir_chown_gated_on_mounted_flag() -> None:
-    """Round-3 PR #524: the mkdir/chown for SERVICE sub-dirs must
-    only run when MOUNTED=1. Otherwise a failed mount leaves the
-    dirs on the underlying root filesystem (ephemeral) and stacks
-    silently lose data on reboot.
-
-    Distinct from the un-gated `mkdir -p "$MOUNT_POINT"` at the top
-    of the script which just ensures the mountpoint dir itself
-    exists before `mount` is called — that's the canonical pattern
-    and must stay un-gated.
-    """
-    script = _render_volume_mount_script("12345")
-    # Find the gate. The service-dir mkdir must come AFTER the gate
-    # opener and BEFORE the matching `fi`.
-    gate_idx = script.index('if [ "$MOUNTED" = "1" ]')
-    service_mkdir_idx = script.index('mkdir -p "$MOUNT_POINT/gitea/repos"')
-    chown_idx = script.index("chown -R 1000:1000")
-    # Both inside the gate.
-    assert gate_idx < service_mkdir_idx
-    assert gate_idx < chown_idx
-    # Closing fi for the gate must come AFTER the chown commands.
-    closing_fi_after_chown = script.index("\nfi\n", chown_idx)
-    assert closing_fi_after_chown > chown_idx
-
-
-def test_render_volume_mount_emits_result_line() -> None:
-    """RESULT wire-format consistent with rest of migration (R8)."""
-    script = _render_volume_mount_script("12345")
-    assert 'echo "RESULT mounted=$MOUNTED fstab_added=$FSTAB_ADDED"' in script
-
-
-def test_parse_volume_mount_result_happy() -> None:
-    out = "  Volume mounted at /mnt/nexus-data\nRESULT mounted=1 fstab_added=1\n"
-    parsed = parse_volume_mount_result(out)
-    assert parsed == (True, True)
-
-
-def test_parse_volume_mount_result_unmounted_no_fstab() -> None:
-    parsed = parse_volume_mount_result("RESULT mounted=0 fstab_added=0")
-    assert parsed == (False, False)
-
-
-def test_parse_volume_mount_result_returns_none_on_unparseable() -> None:
-    assert parse_volume_mount_result("garbage output") is None
-
-
-# ---------------------------------------------------------------------------
-# mount_persistent_volume — DI + invariants
-# ---------------------------------------------------------------------------
-
-
-def test_mount_persistent_volume_skipped_on_empty_id() -> None:
-    """Empty volume_id = no persistent volume = silent skip."""
+def test_ensure_data_dirs_script_chowns_gitea_uids() -> None:
+    """The rendered script must chown the three Gitea bind-mount
+    sources to their container-expected UIDs (1000:1000 for the
+    git data, 70:70 for the bundled postgres). Asserts against
+    the literal substrings — these UIDs are part of the
+    stack-compose contract; a future change must update both."""
     ssh = MagicMock()
-    result = mount_persistent_volume("", ssh)
-    assert result.mounted is False
-    assert result.detail == "skipped"
-    ssh.run_script.assert_not_called()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="", stderr=""
+    )
+    ensure_data_dirs(ssh)
+    rendered = ssh.run_script.call_args.args[0]
+    assert "MOUNT_POINT=/mnt/nexus-data" in rendered
+    assert "chown -R 1000:1000" in rendered
+    assert '"$MOUNT_POINT/gitea/repos"' in rendered
+    assert '"$MOUNT_POINT/gitea/lfs"' in rendered
+    assert "chown -R 70:70" in rendered
+    assert '"$MOUNT_POINT/gitea/db"' in rendered
 
 
-def test_mount_persistent_volume_skipped_on_zero_id() -> None:
-    """volume_id "0" is the legacy "no volume" sentinel."""
+def test_ensure_data_dirs_script_covers_dify_bind_mounts() -> None:
+    """Round-4 PR review fix: ensure_data_dirs must also cover
+    Dify's bind-mount sources. dify-db is postgres:15-alpine
+    (uid 70), dify-redis is redis:6-alpine (uid 999). The other
+    three Dify mounts (storage, weaviate, plugins) run as root
+    inside the container — mkdir only, no chown — but they MUST
+    be mkdir'd here so Docker doesn't auto-create them under the
+    wrong parent perms when the bind path is missing."""
     ssh = MagicMock()
-    result = mount_persistent_volume("0", ssh)
-    assert result.detail == "skipped"
-    ssh.run_script.assert_not_called()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="", stderr=""
+    )
+    ensure_data_dirs(ssh)
+    rendered = ssh.run_script.call_args.args[0]
+    # All 5 Dify bind paths get mkdir'd.
+    assert '"$MOUNT_POINT/dify/db"' in rendered
+    assert '"$MOUNT_POINT/dify/redis"' in rendered
+    assert '"$MOUNT_POINT/dify/storage"' in rendered
+    assert '"$MOUNT_POINT/dify/weaviate"' in rendered
+    assert '"$MOUNT_POINT/dify/plugins"' in rendered
+    # Only db (postgres) + redis get chowned to non-root UIDs.
+    # The chown -R lines (the test below pins their exact UIDs).
+    assert 'chown -R 70:70 "$MOUNT_POINT/dify/db"' in rendered
+    assert 'chown -R 999:999 "$MOUNT_POINT/dify/redis"' in rendered
 
 
-def test_mount_persistent_volume_rejects_non_digit_id() -> None:
-    """Defence-in-depth: non-digit ID raises before bash render."""
-    ssh = MagicMock()
-    with pytest.raises(SetupError, match="positive integer"):
-        mount_persistent_volume("abc; rm -rf /", ssh)
-    ssh.run_script.assert_not_called()
-
-
-def test_mount_persistent_volume_happy_path() -> None:
+def test_ensure_data_dirs_forwards_script_stdout_to_stderr(capsys) -> None:  # type: ignore[no-untyped-def]
+    """The remote script's success echo (``ensured data-dir
+    ownership under /mnt/nexus-data``) must reach local stderr so
+    operators see it in the workflow log. Without this, the message
+    is silently dropped — same mistake docstring-vs-behavior drift
+    that Copilot flagged in PR #555 round 7."""
     ssh = MagicMock()
     ssh.run_script.return_value = subprocess.CompletedProcess(
         args=["ssh"],
         returncode=0,
-        stdout="  Volume mounted at /mnt/nexus-data (scsi-id)\nRESULT mounted=1 fstab_added=1\n",
+        stdout="ensured data-dir ownership under /mnt/nexus-data\n",
         stderr="",
     )
-    result = mount_persistent_volume("42", ssh)
-    assert result.mounted is True
-    assert result.fstab_added is True
-    assert result.detail == "mounted"
+    ensure_data_dirs(ssh)
+    captured = capsys.readouterr()
+    assert "ensured data-dir ownership under /mnt/nexus-data" in captured.err
 
 
-def test_mount_persistent_volume_fallback_failed_returns_unmounted() -> None:
-    """Every device-discovery stage returned no device — RESULT
-    mounted=0. We surface as detail='fallback-failed'."""
+def test_ensure_data_dirs_propagates_called_process_error() -> None:
+    """A failed chown is a HARD failure — a stack that comes up
+    with mis-owned data dirs misbehaves silently, which is much
+    harder to debug than a fail-loud abort here."""
     ssh = MagicMock()
-    ssh.run_script.return_value = subprocess.CompletedProcess(
-        args=["ssh"], returncode=0, stdout="RESULT mounted=0 fstab_added=0\n", stderr=""
+    ssh.run_script.side_effect = subprocess.CalledProcessError(
+        returncode=1, cmd=["ssh"], output="chown: invalid user: 'gitea'\n"
     )
-    result = mount_persistent_volume("42", ssh)
-    assert result.mounted is False
-    assert result.detail == "fallback-failed"
-
-
-def test_mount_persistent_volume_unparseable_result_is_soft_failure() -> None:
-    """Server ran the script but emitted no RESULT — soft failure
-    (no parseable RESULT). The CLI maps this distinct from
-    fallback-failed."""
-    ssh = MagicMock()
-    ssh.run_script.return_value = subprocess.CompletedProcess(
-        args=["ssh"], returncode=0, stdout="something went weird\n", stderr=""
-    )
-    result = mount_persistent_volume("42", ssh)
-    assert result.mounted is False
-    assert "no parseable RESULT" in result.detail
-
-
-# ---------------------------------------------------------------------------
-# Exec'd-bash semantic regression — the volume-mount script must
-# at minimum parse cleanly under bash. Modul-2.0 lesson: static-text
-# tests don't catch dispatch bugs.
-# ---------------------------------------------------------------------------
+    with pytest.raises(subprocess.CalledProcessError):
+        ensure_data_dirs(ssh)
 
 
 @pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not on PATH")
-def test_volume_mount_script_parses_under_bash() -> None:
-    """`bash -n` static parse — catches syntax errors in the
-    rendered template that static-text tests would miss."""
-    script = _render_volume_mount_script("12345")
+def test_ensure_data_dirs_script_parses_under_bash() -> None:
+    """`bash -n` static parse — same regression net as the old
+    volume-mount script: catches syntax errors in the rendered
+    template that pure substring tests would miss."""
+    from nexus_deploy.setup import _ENSURE_DATA_DIRS_SCRIPT
+
     proc = subprocess.run(
-        ["bash", "-n", "-c", script],
+        ["bash", "-n", "-c", _ENSURE_DATA_DIRS_SCRIPT],
         capture_output=True,
         text=True,
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-
-
-@pytest.mark.skipif(not _bash_can_be_invoked(), reason="bash not on PATH")
-def test_volume_mount_script_idempotent_fstab_check() -> None:
-    """Pin the idempotent fstab branch via exec'd bash with a
-    synthetic /etc/fstab containing the mount point — the script
-    should NOT re-add. We can't test the actual mount on macOS
-    (no apt-equivalent or block-device fakery), but the fstab
-    branch is testable in isolation."""
-    # Carve out only the fstab-check sub-block via a stripped-down
-    # script that exercises the exact `grep -q` semantics.
-    fstab_test = textwrap.dedent("""\
-        set -euo pipefail
-        FSTAB=$(mktemp)
-        echo "/dev/sdb /mnt/nexus-data ext4 defaults,nofail 0 2" > "$FSTAB"
-        MOUNT_POINT=/mnt/nexus-data
-        FSTAB_ADDED=0
-        if ! grep -q "$MOUNT_POINT" "$FSTAB"; then
-            echo "WOULD ADD" >&2
-            FSTAB_ADDED=1
-        fi
-        echo "RESULT fstab_added=$FSTAB_ADDED"
-        rm -f "$FSTAB"
-        """)
-    proc = subprocess.run(
-        ["bash", "-c", fstab_test],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0
-    assert "RESULT fstab_added=0" in proc.stdout  # already present, not re-added
-    assert "WOULD ADD" not in proc.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -862,137 +734,11 @@ def test_cli_setup_ensure_jq_transport_failure_returns_2(
     assert "OSError" in captured.err
 
 
-def test_cli_setup_mount_volume_skipped_returns_0(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Empty PERSISTENT_VOLUME_ID = skip = rc=0 (deploy continues
-    happily without a persistent volume)."""
-    from nexus_deploy.__main__ import _setup_mount_volume
-
-    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "")
-
-    class _FakeSSHContext:
-        def __enter__(self) -> Any:
-            return MagicMock()
-
-        def __exit__(self, *_a: Any) -> None:
-            return None
-
-    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
-    monkeypatch.setattr(
-        "nexus_deploy.__main__.mount_persistent_volume",
-        lambda vid, _ssh: VolumeMountResult(mounted=False, fstab_added=False, detail="skipped"),
-    )
-    rc = _setup_mount_volume([])
-    assert rc == 0
-    assert "skipped" in capsys.readouterr().out
-
-
-def test_cli_setup_mount_volume_fallback_failed_returns_1(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """fallback-failed → rc=1 (yellow warning, deploy continues)."""
-    from nexus_deploy.__main__ import _setup_mount_volume
-
-    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
-
-    class _FakeSSHContext:
-        def __enter__(self) -> Any:
-            return MagicMock()
-
-        def __exit__(self, *_a: Any) -> None:
-            return None
-
-    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
-    monkeypatch.setattr(
-        "nexus_deploy.__main__.mount_persistent_volume",
-        lambda vid, _ssh: VolumeMountResult(
-            mounted=False, fstab_added=False, detail="fallback-failed"
-        ),
-    )
-    rc = _setup_mount_volume([])
-    assert rc == 1
-
-
-def test_cli_setup_mount_volume_happy_path_returns_0(monkeypatch: pytest.MonkeyPatch) -> None:
-    from nexus_deploy.__main__ import _setup_mount_volume
-
-    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
-
-    class _FakeSSHContext:
-        def __enter__(self) -> Any:
-            return MagicMock()
-
-        def __exit__(self, *_a: Any) -> None:
-            return None
-
-    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
-    monkeypatch.setattr(
-        "nexus_deploy.__main__.mount_persistent_volume",
-        lambda vid, _ssh: VolumeMountResult(mounted=True, fstab_added=True, detail="mounted"),
-    )
-    rc = _setup_mount_volume([])
-    assert rc == 0
-
-
-def test_cli_setup_mount_volume_remote_script_failure_forwards_output(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Round-5 PR #524: mount-volume CalledProcessError now labelled
-    'remote script failed' with the captured tail forwarded to
-    stderr — actionable signal for mount/permissions/fstab errors."""
-    from nexus_deploy.__main__ import _setup_mount_volume
-
-    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "42")
-
-    class _FakeSSHContext:
-        def __enter__(self) -> Any:
-            return MagicMock()
-
-        def __exit__(self, *_a: Any) -> None:
-            return None
-
-    fake_output = "mount: /mnt/nexus-data: special device /dev/sdb does not exist.\n"
-
-    def boom(_vid: str, _ssh: Any) -> Any:
-        exc = subprocess.CalledProcessError(32, ["ssh", "secret-bearing-arg"])
-        exc.output = fake_output
-        raise exc
-
-    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
-    monkeypatch.setattr("nexus_deploy.__main__.mount_persistent_volume", boom)
-    rc = _setup_mount_volume([])
-    assert rc == 2
-    captured = capsys.readouterr()
-    assert "remote script failed" in captured.err
-    assert "rc=32" in captured.err
-    assert "special device /dev/sdb does not exist" in captured.err
-    assert "secret-bearing-arg" not in captured.err
-    assert "secret-bearing-arg" not in captured.out
-
-
-def test_cli_setup_mount_volume_setup_error_returns_2(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from nexus_deploy.__main__ import _setup_mount_volume
-
-    monkeypatch.setenv("PERSISTENT_VOLUME_ID", "abc")
-
-    class _FakeSSHContext:
-        def __enter__(self) -> Any:
-            return MagicMock()
-
-        def __exit__(self, *_a: Any) -> None:
-            return None
-
-    monkeypatch.setattr("nexus_deploy.__main__.SSHClient", lambda _alias: _FakeSSHContext())
-    monkeypatch.setattr(
-        "nexus_deploy.__main__.mount_persistent_volume",
-        lambda vid, _ssh: (_ for _ in ()).throw(SetupError("not a positive integer")),
-    )
-    rc = _setup_mount_volume([])
-    assert rc == 2
-    assert "positive integer" in capsys.readouterr().err
+# test_cli_setup_mount_volume_* — REMOVED in RFC 0001 cutover. The
+# `nexus-deploy setup mount-volume` CLI subcommand is gone; the
+# data-dir half lives in ensure_data_dirs (tested above) and runs
+# from inside pipeline.run_pipeline rather than a standalone CLI
+# entry point.
 
 
 # ---------------------------------------------------------------------------

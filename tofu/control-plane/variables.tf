@@ -129,16 +129,9 @@ variable "hcloud_token" {
   sensitive   = true
 }
 
-variable "persistent_volume_size" {
-  description = "Size of the persistent Hetzner Cloud Volume in GB (minimum 10)"
-  type        = number
-  default     = 10
-
-  validation {
-    condition     = var.persistent_volume_size >= 10
-    error_message = "Volume size must be at least 10 GB (Hetzner minimum)."
-  }
-}
+# persistent_volume_size — REMOVED in RFC 0001 cutover.
+# The Hetzner volume it sized was replaced by R2-backed snapshots
+# (see tofu/control-plane/main.tf for the full rationale).
 
 # =============================================================================
 # Hetzner Object Storage (for LakeFS)

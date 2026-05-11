@@ -243,7 +243,7 @@ resource "random_password" "garage_admin_token" {
 
 # Garage RPC secret (must be 32 bytes hex-encoded = 64 hex chars)
 resource "random_id" "garage_rpc_secret" {
-  byte_length = 32  # Generates 64 hex characters (32 bytes in hex)
+  byte_length = 32 # Generates 64 hex characters (32 bytes in hex)
 }
 
 # LakeFS database password
@@ -557,17 +557,11 @@ resource "hcloud_server" "main" {
 }
 
 # =============================================================================
-# Persistent Volume Attachment
+# Persistent Volume Attachment — REMOVED in RFC 0001 cutover.
+# The hcloud_volume_attachment that lived here mounted the per-tenant
+# data volume at /mnt/nexus-data/. Replaced by R2-backed snapshots
+# (see tofu/control-plane/main.tf for the full rationale).
 # =============================================================================
-# Attaches the persistent Hetzner Cloud Volume to the server.
-# Volume is created in control-plane state to survive teardown.
-
-resource "hcloud_volume_attachment" "persistent" {
-  count     = var.persistent_volume_id > 0 ? 1 : 0
-  volume_id = var.persistent_volume_id
-  server_id = hcloud_server.main.id
-  automount = true
-}
 
 # =============================================================================
 # Cloudflare Tunnel
@@ -763,10 +757,10 @@ resource "cloudflare_zero_trust_access_policy" "infisical_service_token" {
 resource "cloudflare_zero_trust_access_application" "services" {
   for_each = local.private_services_with_subdomain
 
-  zone_id           = var.cloudflare_zone_id
-  name              = "${local.resource_prefix} ${title(each.key)}"
-  domain            = "${each.value.subdomain}.${var.domain}"
-  type              = "self_hosted"
+  zone_id = var.cloudflare_zone_id
+  name    = "${local.resource_prefix} ${title(each.key)}"
+  domain  = "${each.value.subdomain}.${var.domain}"
+  type    = "self_hosted"
   # Wetty uses shorter session duration (1h) for enhanced security
   # Other services use 24h for better user experience
   session_duration  = each.key == "wetty" ? "1h" : "24h"

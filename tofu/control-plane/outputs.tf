@@ -60,18 +60,9 @@ output "hetzner_s3_region" {
 }
 
 # -----------------------------------------------------------------------------
-# Persistent Volume
+# Persistent Volume outputs — REMOVED in RFC 0001 cutover.
+# Replaced by R2-backed snapshots; see tofu/control-plane/main.tf.
 # -----------------------------------------------------------------------------
-
-output "persistent_volume_id" {
-  description = "Hetzner Cloud Volume ID for persistent storage"
-  value       = hcloud_volume.persistent.id
-}
-
-output "persistent_volume_name" {
-  description = "Hetzner Cloud Volume name"
-  value       = hcloud_volume.persistent.name
-}
 
 # -----------------------------------------------------------------------------
 # KV Namespace

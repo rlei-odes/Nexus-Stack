@@ -315,11 +315,8 @@ jobs:
           HETZNER_S3_BUCKET=$(tofu output -raw hetzner_s3_bucket 2>/dev/null || echo "")
           HETZNER_S3_BUCKET_GENERAL=$(tofu output -raw hetzner_s3_bucket_general 2>/dev/null || echo "")
           HETZNER_S3_BUCKET_PGDUCKLAKE=$(tofu output -raw hetzner_s3_bucket_pgducklake 2>/dev/null || echo "")
-          PERSISTENT_VOLUME_ID=$(tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
-          # Validate ID is numeric (tofu wrapper may write ::error:: to stdout)
-          if [[ ! "$PERSISTENT_VOLUME_ID" =~ ^[0-9]+$ ]]; then
-            PERSISTENT_VOLUME_ID="0"
-          fi
+          # RFC 0001 cutover: persistent_volume_id is gone — Hetzner
+          # volumes are no longer used; persistence lives in R2.
           cd ../..
 
           # Add Hetzner Object Storage config to stack
@@ -329,7 +326,6 @@ jobs:
           hetzner_s3_bucket             = "$HETZNER_S3_BUCKET"
           hetzner_s3_bucket_general     = "$HETZNER_S3_BUCKET_GENERAL"
           hetzner_s3_bucket_pgducklake  = "$HETZNER_S3_BUCKET_PGDUCKLAKE"
-          persistent_volume_id          = $PERSISTENT_VOLUME_ID
           EOF
           sed -i 's/^          //' tofu/stack/config.tfvars
 
@@ -337,10 +333,6 @@ jobs:
             echo "📦 Hetzner Object Storage configured (bucket: $HETZNER_S3_BUCKET)"
           else
             echo "⚠️  Hetzner Object Storage not configured (LakeFS will need manual setup)"
-          fi
-
-          if [ "$PERSISTENT_VOLUME_ID" != "0" ]; then
-            echo "💾 Persistent volume configured (ID: $PERSISTENT_VOLUME_ID)"
           fi
           
           # Generate services config from D1 (single source of truth)
@@ -472,34 +464,61 @@ jobs:
           TUNNEL_TOKEN=$(tofu output -raw tunnel_token)
           echo "::add-mask::$TUNNEL_TOKEN"
 
-          echo "Waiting for SSH to become available on $SERVER_IP..."
-          # Wait for SSH to be ready (server may still be booting)
-          # Max wait: 2 minutes (24 attempts * 5s = 120s)
-          for i in {1..24}; do
+          echo "Waiting for SSH + cloud-init on $SERVER_IP..."
+          # Race fix (2026-05-11): the old loop only probed bare SSH
+          # responsiveness via `echo 'SSH ready'`. sshd comes up
+          # within ~10s of boot, BUT cloud-init's apt-get update +
+          # docker install + apt-get install fail2ban etc. keeps the
+          # system busy for another 60-180s. The first SSH worked
+          # because `echo` is trivial; the second SSH (which streams
+          # an install script via stdin) then hit a banner-exchange
+          # timeout because sshd was too busy answering the new
+          # connection mid-apt.
+          #
+          # New gate: probe for the cloud-init completion marker
+          # `/opt/docker-server/.setup-complete` (touched as the very
+          # last line of the user_data script in tofu/stack/main.tf).
+          # That guarantees:
+          #   (a) sshd is up (test -f runs over SSH, so SSH worked),
+          #   (b) cloud-init's heavy lifting has finished (`docker
+          #       installed, fail2ban running, etc.),
+          #   (c) the second SSH connection won't compete with apt
+          #       for I/O.
+          # Bumped to 6 minutes — cloud-init's apt-get upgrade -y can
+          # take 4-5 min on a fresh Ubuntu 24.04 image when there's
+          # a kernel update.
+          for i in {1..72}; do
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \
-              root@"$SERVER_IP" "echo 'SSH ready'" 2>/dev/null; then
-              echo "✅ SSH is ready (attempt $i)"
+              root@"$SERVER_IP" "test -f /opt/docker-server/.setup-complete" 2>/dev/null; then
+              echo "✅ SSH ready + cloud-init complete (attempt $i)"
               break
             fi
-            if [ $i -eq 24 ]; then
-              echo "❌ SSH did not become available after 2 minutes"
+            if [ $i -eq 72 ]; then
+              echo "❌ cloud-init did not complete after 6 minutes"
+              echo "   Last attempt to surface diagnostic:"
+              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \
+                root@"$SERVER_IP" \
+                "cloud-init status; tail -50 /var/log/cloud-init-output.log" 2>&1 || true
               exit 1
             fi
-            echo "Attempt $i/24 - waiting 5s..."
             sleep 5
           done
 
           echo "Installing Cloudflare Tunnel on $SERVER_IP..."
 
-          # Write tunnel install script
+          # Write tunnel install script.
+          # NOTE: `cloud-init status --wait` here is a defence-in-depth
+          # — the readiness gate above ALREADY waited for the
+          # completion marker, but cloud-init internally may still be
+          # tracking a few late finalization steps. The wait is a
+          # near-no-op in practice.
           cat > /tmp/install-tunnel.sh << SCRIPT
           #!/bin/bash
           set -e
-          echo 'Waiting for cloud-init to complete...'
           cloud-init status --wait || true
           echo 'Installing/updating Cloudflare Tunnel...'
           systemctl stop cloudflared 2>/dev/null || true
-          # Uninstall existing service if present
+          # Uninstall existing service if present (idempotent re-run safety).
           if systemctl list-unit-files | grep -q cloudflared.service; then
             echo 'Uninstalling existing cloudflared service...'
             cloudflared service uninstall 2>/dev/null || true
@@ -513,8 +532,27 @@ jobs:
           SCRIPT
           sed -i 's/^          //' /tmp/install-tunnel.sh
 
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=10 \
-            root@"$SERVER_IP" bash < /tmp/install-tunnel.sh
+          # Retry the install-tunnel SSH up to 5 times with 20s gaps.
+          # Belt-and-suspenders: even with the readiness gate above, a
+          # banner-exchange timeout can still happen on slow Hetzner
+          # cold-starts (sshd reloading host keys, fail2ban tightening
+          # filters mid-flight, etc.). The install script is fully
+          # idempotent (stops + uninstalls cloudflared first), so a
+          # half-completed run + retry is safe. Total worst-case wait
+          # = 5 * 60s (ConnectTimeout) + 4 * 20s (sleep) ≈ 6 min.
+          for attempt in {1..5}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=10 \
+                 root@"$SERVER_IP" bash < /tmp/install-tunnel.sh; then
+              echo "✅ Cloudflare Tunnel installed on attempt $attempt"
+              break
+            fi
+            if [ $attempt -eq 5 ]; then
+              echo "❌ Tunnel install failed after 5 attempts — server unreachable or sshd misbehaving"
+              exit 1
+            fi
+            echo "⚠️  Attempt $attempt failed (likely SSH banner timeout); retrying in 20s..."
+            sleep 20
+          done
           rm -f /tmp/install-tunnel.sh
 
       - name: Close SSH port
@@ -560,13 +598,55 @@ jobs:
         # Python pipeline. Everything that was in deploy.sh now lives
         # in nexus_deploy.pipeline.run_pipeline (R2 creds, tofu reads,
         # tfvars parse, ssh setup, orchestrator phases, done banner).
+        #
+        # RFC 0001 cutover: the S3-persistence env vars below switch
+        # the spinup-side restore from a no-op into the active path —
+        # restore_from_s3 reads them, pulls snapshots/latest.txt from
+        # R2, and seeds /mnt/nexus-data BEFORE docker compose comes
+        # up. Mirrors the teardown.yml wiring; both ends of the cycle
+        # see the same 7-var env. With the flag on (default since
+        # this PR), the Hetzner volume is no longer used at all.
         env:
           SSH_PRIVATE_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY || inputs.ssh_private_key }}
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
           GH_MIRROR_REPOS: ${{ secrets.GH_MIRROR_REPOS }}
           DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          # Feature flag — exact "true" opts in. The `|| 'true'`
+          # fallback means an unset secret still resolves to "true",
+          # so every spinup uses S3 persistence by default. To bypass
+          # (e.g. for an experiment), set the secret EXPLICITLY to a
+          # non-"true" value like "false"; just unsetting it leaves
+          # the default on.
+          NEXUS_S3_PERSISTENCE: ${{ secrets.NEXUS_S3_PERSISTENCE || 'true' }}
+          # R2 persistence-bucket coords. ALL derived from already-
+          # existing secrets — no new operator-set secret needed:
+          #   - endpoint   = https://<CF account>.r2.cloudflarestorage.com
+          #   - region     = "auto" (R2 ignores region)
+          #   - bucket     = nexus-<domain-slug>-persistence (created
+          #                  idempotently by setup-control-plane.yaml,
+          #                  named the same way the data-bucket is)
+          # R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are the same creds
+          # the Tofu state backend already uses (unified token set up
+          # by init-r2-state.sh).
+          PERSISTENCE_S3_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          PERSISTENCE_S3_REGION: auto
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # Manifest fields — bucket-name slug + release tag.
+          # PERSISTENCE_STACK_SLUG: workflow override → repo name fallback.
+          # PERSISTENCE_TEMPLATE_VERSION: github.ref_name (the running ref).
+          PERSISTENCE_STACK_SLUG: ${{ secrets.PERSISTENCE_STACK_SLUG || github.event.repository.name }}
+          PERSISTENCE_TEMPLATE_VERSION: ${{ github.ref_name }}
         run: |
+          # Derive PERSISTENCE_S3_BUCKET inline — YAML expressions
+          # can't `tr '.' '-'` but bash can. Same convention as the
+          # data bucket (nexus-<domain-slug>-data) → persistence
+          # bucket is nexus-<domain-slug>-persistence. The bucket
+          # itself is created by setup-control-plane.yaml.
+          DOMAIN_SLUG=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')
+          export PERSISTENCE_S3_BUCKET="nexus-${DOMAIN_SLUG}-persistence"
+
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy run-pipeline
 

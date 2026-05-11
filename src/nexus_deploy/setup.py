@@ -22,13 +22,17 @@ Public surface:
   remote. Bootstrap for VMs that pre-date the cloud-init jq install
   (newer VMs have it baked in via ``tofu/stack/main.tf``); near-no-op
   on healthy VMs.
-* **``mount_persistent_volume``** — render server-side bash that
-  mounts the Hetzner block storage at ``/mnt/nexus-data`` with
-  three-stage device discovery (scsi-id → automount inspection →
-  ``/dev/sdb`` fallback), idempotent ``/etc/fstab`` entry, and
-  ownership setup for Gitea (uid 1000) + Postgres (uid 70) sub-dirs.
-  An empty volume_id skips the entire block (not every deploy has a
-  persistent volume attached).
+* **``ensure_data_dirs``** — idempotent ``mkdir -p`` + ``chown`` on
+  the Gitea + Dify bind-mount sources under ``/mnt/nexus-data/``.
+  Gitea: ``gitea/{repos,lfs}`` (uid 1000) + ``gitea/db`` (uid 70).
+  Dify: ``dify/db`` (uid 70 for postgres-alpine) + ``dify/redis``
+  (uid 999 for redis-alpine) + ``dify/{storage,weaviate,plugins}``
+  (mkdir only — those containers run as root). Called by the
+  pipeline AFTER the filesystem half of ``restore_from_s3`` so
+  rclone-written files (owned by the SSH user, i.e. root) get
+  the ownership the containers expect. RFC 0001 cutover
+  replacement for the chown half of the removed
+  ``mount_persistent_volume``.
 * **``setup_wetty_ssh_agent``** — provision the SSH key + agent
   socket inside the Wetty container so browser-launched shells can
   reach the host without prompting for credentials.
@@ -39,8 +43,8 @@ Two transports are used:
    pattern as :class:`SSHClient.run` but called pre-tunnel, before
    any persistent SSHClient context exists.
 2. Server-side bash via :func:`SSHClient.run_script` for ``jq``
-   install + volume mount, run from a caller-supplied SSHClient
-   provided by the orchestrator.
+   install + data-dir ownership, run from a caller-supplied
+   SSHClient provided by the orchestrator.
 """
 
 from __future__ import annotations
@@ -55,7 +59,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from nexus_deploy.ssh import SSHClient
 
@@ -134,21 +137,11 @@ class WettyAgentResult:
     auth_sock_written: bool  # SSH_AUTH_SOCK= written to wetty .env (always True on success)
 
 
-@dataclass(frozen=True)
-class VolumeMountResult:
-    """Outcome of the persistent-volume mount step.
-
-    ``mounted=False`` covers two distinct cases (callers that need
-    to distinguish them check ``detail``): (a) ``volume_id`` was
-    empty → skipped, deploy continues; (b) every device-discovery
-    fallback failed → operator should investigate but deploy is
-    not aborted (downstream stacks that don't need the volume can
-    still come up healthy).
-    """
-
-    mounted: bool
-    fstab_added: bool
-    detail: str = ""
+# VolumeMountResult — REMOVED in RFC 0001 cutover. The
+# mount_persistent_volume helper that returned this is gone;
+# /mnt/nexus-data is now seeded by s3_restore from R2, and the
+# ownership-fixup half of the old mount step lives in
+# ensure_data_dirs below.
 
 
 # ---------------------------------------------------------------------------
@@ -450,151 +443,89 @@ def ensure_jq(ssh: SSHClient) -> bool:
     return True
 
 
-# Server-side bash for the volume-mount step. Rendered in Python +
-# exec'd via ssh.run_script so we control the script as a string
-# (snapshot-testable) instead of relying on a heredoc literal.
-def _render_volume_mount_script(volume_id: str) -> str:
-    """Render the server-side bash that mounts /mnt/nexus-data.
+# ---------------------------------------------------------------------------
+# Data-dir ownership — RFC 0001 cutover replacement for the chown
+# half of the removed mount_persistent_volume helper.
+#
+# The Hetzner block volume that used to back /mnt/nexus-data is gone
+# (see tofu/control-plane/main.tf for the rationale). Data now lives
+# on the server's local SSD, seeded by s3_restore from R2. rclone
+# writes files as the SSH user (root); the gitea + postgres
+# containers expect uid 1000:1000 and 70:70 respectively, so we
+# recursively chown after every restore.
+# ---------------------------------------------------------------------------
 
-    ``volume_id`` is interpolated into the scsi device-id glob.
-    Caller pre-validates it as digits-only; this function does NOT
-    re-validate, since it's an internal seam.
 
-    Three-stage device discovery + idempotent fstab + service-dir
-    chown. Emits a RESULT-line wire format so the Python wrapper
-    can parse the outcome.
-    """
-    vid_q = shlex.quote(volume_id)
-    return f"""set -euo pipefail
+_ENSURE_DATA_DIRS_SCRIPT = """set -euo pipefail
 
-VOLUME_ID={vid_q}
 MOUNT_POINT=/mnt/nexus-data
-FSTAB_ADDED=0
 
-mkdir -p "$MOUNT_POINT"
+# --- Gitea bind-mount sources -------------------------------------
+# gitea-app container runs as uid 1000; bundled gitea-db (postgres-
+# alpine) as uid 70. Both need write access to their bind sources,
+# so we recursively chown after every restore (rclone writes files
+# as the SSH user, i.e. root).
+mkdir -p "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs" "$MOUNT_POINT/gitea/db"
+chown -R 1000:1000 "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs"
+chown -R 70:70 "$MOUNT_POINT/gitea/db"
 
-if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
-    echo "  Volume already mounted at $MOUNT_POINT" >&2
-    MOUNTED=1
-else
-    MOUNTED=0
-    # Stage 1: scsi-id discovery (Hetzner block-storage canonical path)
-    DEV=$(ls "/dev/disk/by-id/scsi-0HC_Volume_$VOLUME_ID" 2>/dev/null || echo "")
-    if [ -n "$DEV" ]; then
-        if mount "$DEV" "$MOUNT_POINT" 2>&1; then
-            echo "  Volume mounted at $MOUNT_POINT (scsi-id)" >&2
-            MOUNTED=1
-        fi
-    fi
-    # Stage 2: automount inspection — kernel may have already mounted it
-    if [ "$MOUNTED" = "0" ] && mount | grep -q " $MOUNT_POINT "; then
-        echo "  Volume auto-mounted at $MOUNT_POINT (kernel)" >&2
-        MOUNTED=1
-    fi
-    # Stage 3: /dev/sdb fallback for VMs that pre-date scsi-id naming
-    if [ "$MOUNTED" = "0" ] && [ -b /dev/sdb ]; then
-        if mount /dev/sdb "$MOUNT_POINT" 2>&1; then
-            echo "  Volume mounted at $MOUNT_POINT (/dev/sdb fallback)" >&2
-            MOUNTED=1
-        fi
-    fi
-fi
+# --- Dify bind-mount sources --------------------------------------
+# dify-db is postgres:15-alpine (uid 70). dify-redis is redis:6-
+# alpine which uses uid 999. The other three Dify mounts (storage,
+# weaviate, plugins) run as root inside the container by default —
+# we still mkdir them so Docker doesn't auto-create them under a
+# different parent's perms, but no chown needed.
+#
+# All 5 paths on one mkdir line: avoids the Python-vs-bash
+# backslash-line-continuation confusion that comes up in code
+# review (Python `\\` in a triple-quoted string → single literal
+# backslash → bash line continuation; technically correct but
+# easy to misread).
+mkdir -p "$MOUNT_POINT/dify/db" "$MOUNT_POINT/dify/redis" "$MOUNT_POINT/dify/storage" "$MOUNT_POINT/dify/weaviate" "$MOUNT_POINT/dify/plugins"
+chown -R 70:70 "$MOUNT_POINT/dify/db"
+chown -R 999:999 "$MOUNT_POINT/dify/redis"
 
-# Idempotent fstab entry — only add if not already there. Use scsi-id
-# preferentially (stable across kernel reboots), fallback to /dev/sdb.
-if ! grep -q "$MOUNT_POINT" /etc/fstab; then
-    DEV=$(ls "/dev/disk/by-id/scsi-0HC_Volume_$VOLUME_ID" 2>/dev/null || echo "/dev/sdb")
-    echo "$DEV $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
-    echo "  fstab entry added" >&2
-    FSTAB_ADDED=1
-fi
-
-# Service sub-dirs — gated on a successful mount (Round-3 PR #524
-# finding). Without the gate, mkdir/chown would land on the
-# underlying root filesystem when every mount stage failed,
-# silently storing user data on ephemeral storage that vanishes
-# on reboot. Better to leave the dirs absent so downstream stacks
-# fail fast with a clear "directory not found" error than to fake
-# success on the wrong filesystem.
-if [ "$MOUNTED" = "1" ]; then
-    mkdir -p "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs" "$MOUNT_POINT/gitea/db"
-    chown -R 1000:1000 "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs"
-    chown -R 70:70 "$MOUNT_POINT/gitea/db"
-fi
-
-echo "RESULT mounted=$MOUNTED fstab_added=$FSTAB_ADDED"
+echo "  ensured data-dir ownership under $MOUNT_POINT/{gitea,dify}" >&2
 """
 
 
-_VOLUME_RESULT_PATTERN = re.compile(
-    r"^RESULT mounted=(?P<mounted>[01]) fstab_added=(?P<fstab>[01])$",
-    re.MULTILINE,
-)
+def ensure_data_dirs(ssh: SSHClient) -> None:
+    """Idempotent ``mkdir -p`` + ``chown -R`` of the Gitea + Dify
+    bind-mount sources under ``/mnt/nexus-data/``.
 
+    Called by the pipeline AFTER ``s3_restore.restore_from_s3`` —
+    rclone-restored files land owned by the SSH user (root), but
+    the various containers run as non-root UIDs and expect ownership
+    on their bind-mount sources:
 
-def parse_volume_mount_result(stdout: str) -> tuple[bool, bool] | None:
-    """Extract (mounted, fstab_added) from server stdout, or None on
-    unparseable RESULT (caller maps to a soft failure)."""
-    m = _VOLUME_RESULT_PATTERN.search(stdout)
-    if m is None:
-        return None
-    g = m.groupdict()
-    return (g["mounted"] == "1", g["fstab"] == "1")
+    * Gitea app (uid 1000): ``gitea/repos``, ``gitea/lfs``
+    * Gitea bundled postgres (uid 70): ``gitea/db``
+    * Dify postgres (uid 70): ``dify/db``
+    * Dify redis (uid 999): ``dify/redis``
+    * Dify storage / weaviate / plugins: container runs as root,
+      ``mkdir`` only (no chown — Docker would otherwise auto-create
+      the path with whatever the parent dir owner is).
 
+    No-op on a fresh-start spinup (rclone wrote nothing); idempotent
+    on a populated dir (chown -R is fine to re-run). Raises
+    :class:`subprocess.CalledProcessError` if the remote script fails
+    — that's a hard failure: a stack that comes up with mis-owned
+    data dirs will misbehave silently, far harder to debug than a
+    fail-loud abort here.
 
-# Volume_id must be digits — comes from Hetzner as a numeric ID. Reject
-# anything else early to keep the rendered bash safe.
-_VOLUME_ID_PATTERN = re.compile(r"^[0-9]+$")
-
-
-def mount_persistent_volume(
-    volume_id: str,
-    ssh: SSHClient,
-) -> VolumeMountResult:
-    """Mount the Hetzner persistent volume at /mnt/nexus-data.
-
-    Empty/zero ``volume_id`` (i.e. no persistent volume configured)
-    short-circuits to ``mounted=False, detail='skipped'``.
-
-    Non-empty volume_id is digits-only validated; non-digit input
-    raises :class:`SetupError` (Hetzner volume IDs are always
-    numeric; this is a defence-in-depth check against future
-    refactor mistakes).
+    The remote script emits a single ``ensured data-dir ownership
+    under /mnt/nexus-data`` line to stdout on success. Forward that
+    to local stderr so operators see the confirmation in the
+    workflow log (same pattern as :func:`s3_restore.restore_from_s3`).
     """
-    if not volume_id or volume_id == "0":
-        return VolumeMountResult(mounted=False, fstab_added=False, detail="skipped")
-    if not _VOLUME_ID_PATTERN.match(volume_id):
-        raise SetupError(
-            f"mount_persistent_volume: volume_id {volume_id!r} is not a "
-            "positive integer (Hetzner volumes use numeric IDs)",
-        )
-    script = _render_volume_mount_script(volume_id)
-    completed = ssh.run_script(script, check=True)
-    # Forward per-step server-side output to local stderr. The remote
-    # script writes diagnostics to its own stderr (`>&2`), but
-    # ssh.run_script defaults to ``merge_stderr=True``, so they land
-    # on completed.stdout interleaved with the RESULT line. We split
-    # them: the RESULT wire-format line is parsed by Python below,
-    # everything else gets forwarded to local stderr (the docstring
-    # was corrected in PR #524 R3 — the actual fd is merged stdout,
-    # not stderr).
+    completed = ssh.run_script(_ENSURE_DATA_DIRS_SCRIPT, check=True)
+    # Forward server-side log lines to local stderr so the
+    # confirmation written by the script actually reaches the
+    # workflow log. Without this, the echo in
+    # ``_ENSURE_DATA_DIRS_SCRIPT`` would be lost — the docstring
+    # there implies operators see it.
     for line in completed.stdout.splitlines():
-        if not line.startswith("RESULT "):
-            sys.stderr.write(line + "\n")
-    parsed = parse_volume_mount_result(completed.stdout)
-    if parsed is None:
-        # Server-side script ran but emitted no parseable RESULT —
-        # treat as a soft failure (the operator already saw the
-        # forwarded stderr; downstream stacks that don't need the
-        # volume can still come up).
-        return VolumeMountResult(
-            mounted=False,
-            fstab_added=False,
-            detail="no parseable RESULT",
-        )
-    mounted, fstab_added = parsed
-    detail: Literal["mounted", "fallback-failed"] = "mounted" if mounted else "fallback-failed"
-    return VolumeMountResult(mounted=mounted, fstab_added=fstab_added, detail=detail)
+        sys.stderr.write(line + "\n")
 
 
 # ---------------------------------------------------------------------------

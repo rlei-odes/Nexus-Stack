@@ -314,11 +314,9 @@ variable "r2_data_bucket" {
   default     = ""
 }
 
-variable "persistent_volume_id" {
-  description = "Hetzner Cloud Volume ID for persistent storage (from control-plane output, 0 = no volume)"
-  type        = number
-  default     = 0
-}
+# persistent_volume_id — REMOVED in RFC 0001 cutover. Was the
+# Hetzner Cloud Volume ID for the per-tenant data mount; replaced
+# by R2-backed snapshots (see tofu/control-plane/main.tf).
 
 variable "github_owner" {
   description = "GitHub repository owner (used by control-plane module)"

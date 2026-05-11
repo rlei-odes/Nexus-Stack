@@ -720,6 +720,83 @@ def test_restore_script_pulls_filesystem_trees_before_postgres() -> None:
     assert 0 < fs_pos < pg_pos
 
 
+def test_restore_script_phase_filesystem_omits_postgres_block() -> None:
+    """RFC 0001 cutover: ``phase="filesystem"`` is called BEFORE
+    compose-up on the spinup side, when no gitea-db / dify-db
+    container exists yet. The rendered script MUST omit the
+    ``docker exec ... pg_restore`` block — otherwise the very
+    first spinup after a snapshot would hit "container not found"
+    and abort the pipeline. Symmetric to the postgres-only phase
+    below."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
+        phase="filesystem",
+    )
+    # Filesystem block present.
+    assert "pulling filesystem trees" in script
+    # Postgres block absent — neither the rclone-sync of dumps nor
+    # any docker exec line should be rendered.
+    assert "pulling postgres dumps" not in script
+    assert "docker exec" not in script
+    assert "pg_restore" not in script
+
+
+def test_restore_script_phase_postgres_omits_filesystem_block() -> None:
+    """Symmetric to the filesystem-only test above.
+    ``phase="postgres"`` runs AFTER compose-up; the filesystem
+    rsync has already happened in the earlier phase=filesystem
+    call, so the postgres-only call MUST NOT re-run those
+    (cheap to do twice but breaks the test contract that the
+    function honors its phase parameter)."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
+        phase="postgres",
+    )
+    # Postgres block present.
+    assert "pulling postgres dumps" in script
+    assert "docker exec gitea-db" in script
+    # Filesystem block absent.
+    assert "pulling filesystem trees" not in script
+    # The latest.txt lookup prelude is still present in both phases —
+    # it gates the fresh-start short-circuit.
+    assert "snapshots/latest.txt" in script
+
+
+def test_restore_script_phase_all_is_the_default_and_includes_both() -> None:
+    """Backward-compat: ``phase="all"`` is the default (preserved
+    for the snapshot-replay paths and any caller that runs both
+    halves in one shot). Must render BOTH halves."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
+    )
+    assert "pulling filesystem trees" in script
+    assert "pulling postgres dumps" in script
+
+
 def test_restore_script_validates_timestamp_from_s3() -> None:
     """``snapshots/latest.txt`` is operator-influenced (an admin
     could in theory write it) — the script must validate the
@@ -731,6 +808,43 @@ def test_restore_script_validates_timestamp_from_s3() -> None:
     )
     assert '[[ ! "$TIMESTAMP" =~ ^[0-9A-Za-z_-]+$ ]]' in script
     assert "restore-failed: latest.txt has invalid timestamp" in script
+
+
+def test_restore_script_rejects_unknown_phase() -> None:
+    """A typo like ``phase="fs"`` would make BOTH include_fs +
+    include_pg false and silently produce a no-op restore script
+    (exit 0 after the latest.txt lookup). Fail loud at render time."""
+    with pytest.raises(ValueError, match="phase must be one of"):
+        render_restore_script(
+            endpoint=_endpoint(),
+            postgres_targets=(),
+            rsync_targets=(),
+            phase="fs",  # type: ignore[arg-type]
+        )
+
+
+def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
+    """A bare ``rclone lsf latest.txt`` failure is ambiguous: missing
+    object OR auth/network error. Treating both as "fresh-start"
+    would silently empty local state on a credentials problem; the
+    next teardown then snapshots the empty state over real R2 data.
+    Render must emit a ``rclone lsd "$BUCKET"`` probe FIRST and
+    exit 2 if that fails — only then check ``latest.txt``."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    probe_pos = script.find('rclone lsd "$BUCKET"')
+    fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/latest.txt"')
+    assert 0 < probe_pos < fresh_check_pos, (
+        "bucket reachability probe must precede the latest.txt check"
+    )
+    assert "not reachable" in script
+    # The probe failure path must exit non-zero (clear error), the
+    # latest.txt failure path must exit 0 (legitimate fresh-start).
+    assert "exit 2" in script
+    assert "exit 0" in script
 
 
 # ---------------------------------------------------------------------------

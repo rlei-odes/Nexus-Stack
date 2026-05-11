@@ -117,15 +117,15 @@ def setup_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Install no-op mocks for every external boundary the pipeline
     crosses. Tests that need to assert specific behavior re-set the
     mock they care about."""
-    from nexus_deploy.setup import SSHReadinessResult, VolumeMountResult
+    from nexus_deploy.setup import SSHReadinessResult
 
     mocks: dict[str, Any] = {
         "configure_ssh": MagicMock(return_value=None),
         "wait_for_ssh": MagicMock(return_value=SSHReadinessResult(succeeded=True, attempts=1)),
         "ensure_jq": MagicMock(return_value=False),
-        "mount_persistent_volume": MagicMock(
-            return_value=VolumeMountResult(mounted=True, fstab_added=True, detail="mounted"),
-        ),
+        # RFC 0001 cutover: mount_persistent_volume replaced by
+        # ensure_data_dirs (chown-only; the Hetzner volume is gone).
+        "ensure_data_dirs": MagicMock(return_value=None),
         "setup_wetty_ssh_agent": MagicMock(return_value=None),
         "ssh_keygen_cleanup": MagicMock(),
         "SSHClient": MagicMock(),
@@ -134,8 +134,8 @@ def setup_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("nexus_deploy.pipeline._setup.wait_for_ssh", mocks["wait_for_ssh"])
     monkeypatch.setattr("nexus_deploy.pipeline._setup.ensure_jq", mocks["ensure_jq"])
     monkeypatch.setattr(
-        "nexus_deploy.pipeline._setup.mount_persistent_volume",
-        mocks["mount_persistent_volume"],
+        "nexus_deploy.pipeline._setup.ensure_data_dirs",
+        mocks["ensure_data_dirs"],
     )
     monkeypatch.setattr(
         "nexus_deploy.pipeline._setup.setup_wetty_ssh_agent",
@@ -466,60 +466,85 @@ def test_pipeline_wraps_required_output_missing(
         )
 
 
-def test_pipeline_warns_on_volume_mount_failure(
+def test_pipeline_runs_restore_then_ensure_data_dirs_then_pg_restore(
     project_root: Path,
     fake_tofu_runner: MagicMock,
     setup_mocks: dict[str, Any],
     mock_orchestrator: MagicMock,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PR #535 R4 #4: when persistent_volume_id is non-zero but
-    mount_persistent_volume returned mounted=False, emit a stderr
-    warning. Failure stays non-fatal (deploy continues)."""
-    from nexus_deploy.setup import VolumeMountResult
+    """RFC 0001 cutover ordering invariant — the spinup pipeline
+    splits restore into two halves around compose-up:
 
-    setup_mocks["mount_persistent_volume"].return_value = VolumeMountResult(
-        mounted=False,
-        fstab_added=False,
-        detail="fallback-failed",
-    )
-    # Run pipeline; should NOT raise because mount failure is non-fatal.
+    1. ``restore_from_s3(phase="filesystem")`` BEFORE compose-up
+       (so containers come up reading the seeded bind-mounts)
+    2. ``ensure_data_dirs`` AFTER FS restore (chown the rsync'd
+       files to container UIDs) but still BEFORE compose-up
+    3. ``orchestrator.run_pre_bootstrap()`` — last phase is
+       ``_phase_compose_up`` so containers are running after
+    4. ``restore_from_s3(phase="postgres")`` — pg_restore via
+       docker exec, requires running containers
+    5. ``orchestrator.run_all()`` — gitea-configure et al. now
+       see the restored database
+
+    A parent MagicMock receives every call so we can assert the
+    sequence in one go; pure ``assert_called`` per-mock would miss
+    out-of-order regressions like calling pg-restore BEFORE
+    pre_bootstrap (which was the round-4 bug Copilot caught)."""
+    parent = MagicMock()
+    parent.attach_mock(setup_mocks["ensure_data_dirs"], "ensure_data_dirs")
+
+    restore_calls: list[str] = []
+
+    def fake_restore(
+        _ssh: Any,
+        *,
+        env: Any = None,
+        phase: str = "all",
+    ) -> Any:
+        restore_calls.append(phase)
+        parent.restore_from_s3(phase=phase)
+        from nexus_deploy.s3_restore import S3RestoreSkipped
+
+        return S3RestoreSkipped(reason="fresh_start_empty_s3")
+
+    monkeypatch.setattr("nexus_deploy.pipeline._s3_restore.restore_from_s3", fake_restore)
+    parent.attach_mock(mock_orchestrator.run_pre_bootstrap, "run_pre_bootstrap")
+    parent.attach_mock(mock_orchestrator.run_all, "run_all")
+
     run_pipeline(
         project_root=project_root,
         options=PipelineOptions(),
         tofu_runner=fake_tofu_runner,
     )
-    err = capsys.readouterr().err
-    assert "persistent volume 1234 did NOT mount" in err
-    assert "fallback-failed" in err
 
+    # Exact phase ordering — captured into restore_calls so the
+    # assertion is readable, separately from the cross-mock order
+    # assertion on parent.mock_calls below.
+    assert restore_calls == ["filesystem", "postgres"]
 
-def test_pipeline_silent_when_volume_id_zero_and_unmounted(
-    project_root: Path,
-    fake_tofu_runner: MagicMock,
-    setup_mocks: dict[str, Any],
-    mock_orchestrator: MagicMock,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """When the operator hasn't configured a volume (volume_id="0"),
-    mounted=False is the EXPECTED outcome and must NOT warn."""
-    from nexus_deploy.setup import VolumeMountResult
-
-    fake_tofu_runner.output_raw.side_effect = lambda name, default="": (
-        "0" if name == "persistent_volume_id" else "1.2.3.4"
-    )
-    setup_mocks["mount_persistent_volume"].return_value = VolumeMountResult(
-        mounted=False,
-        fstab_added=False,
-        detail="skipped",
-    )
-    run_pipeline(
-        project_root=project_root,
-        options=PipelineOptions(),
-        tofu_runner=fake_tofu_runner,
-    )
-    err = capsys.readouterr().err
-    assert "did NOT mount" not in err
+    # Cross-mock ordering — extract only the names we care about
+    # (parent.mock_calls also captures nested attribute lookups on
+    # the orchestrator MagicMock from inside run_pipeline, which
+    # would otherwise pollute the sequence).
+    relevant = [
+        c[0]
+        for c in parent.mock_calls
+        if c[0]
+        in {
+            "restore_from_s3",
+            "ensure_data_dirs",
+            "run_pre_bootstrap",
+            "run_all",
+        }
+    ]
+    assert relevant == [
+        "restore_from_s3",  # phase="filesystem"
+        "ensure_data_dirs",
+        "run_pre_bootstrap",  # compose-up happens here
+        "restore_from_s3",  # phase="postgres"
+        "run_all",
+    ]
 
 
 def test_pipeline_aborts_when_enabled_services_not_list(

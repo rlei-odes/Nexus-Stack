@@ -41,6 +41,9 @@ fi
 DOMAIN_SLUG=$(echo "$DOMAIN" | tr '.' '-')
 BUCKET_NAME="${DOMAIN_SLUG}-terraform-state"
 DATA_BUCKET_NAME="nexus-${DOMAIN_SLUG}-data"
+# RFC 0001: persistence bucket for spinup-restore / teardown-snapshot
+# of Gitea + Dify state (replaces the old Hetzner block volume).
+PERSISTENCE_BUCKET_NAME="nexus-${DOMAIN_SLUG}-persistence"
 
 R2_CREDENTIALS_FILE="tofu/.r2-credentials"
 
@@ -150,6 +153,44 @@ elif [ "$DATA_HTTP_CODE" = "404" ]; then
 else
     echo -e "  ${RED}❌ Failed to check data bucket (HTTP ${DATA_HTTP_CODE})${NC}"
     echo "     Response: $(echo "$DATA_BUCKET_CHECK" | sed '$d')"
+    exit 1
+fi
+
+echo ""
+echo -e "  ${YELLOW}→${NC} Checking persistence bucket '${PERSISTENCE_BUCKET_NAME}'..."
+
+# RFC 0001: persistence bucket (idempotent). Same pattern as data
+# bucket above. setup-control-plane.yaml ALSO ensures this on every
+# run, so a user who skips this bootstrap and goes straight to
+# initial-setup still gets the bucket created. Belt-and-suspenders.
+PERSISTENCE_BUCKET_CHECK=$(curl -s -w "\n%{http_code}" \
+    "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${PERSISTENCE_BUCKET_NAME}" \
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+
+PERSISTENCE_HTTP_CODE=$(echo "$PERSISTENCE_BUCKET_CHECK" | tail -n1)
+
+if [ "$PERSISTENCE_HTTP_CODE" = "200" ]; then
+    echo -e "  ${GREEN}✓${NC} Persistence bucket '${PERSISTENCE_BUCKET_NAME}' already exists"
+elif [ "$PERSISTENCE_HTTP_CODE" = "404" ]; then
+    echo -e "  ${YELLOW}→${NC} Creating persistence bucket '${PERSISTENCE_BUCKET_NAME}'..."
+
+    PERSISTENCE_CREATE_RESPONSE=$(curl -s -X POST \
+        "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets" \
+        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\": \"${PERSISTENCE_BUCKET_NAME}\"}")
+
+    if echo "$PERSISTENCE_CREATE_RESPONSE" | grep -q '"success":true'; then
+        echo -e "  ${GREEN}✓${NC} Persistence bucket created successfully"
+    else
+        ERROR_MSG=$(echo "$PERSISTENCE_CREATE_RESPONSE" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"$//')
+        echo -e "  ${RED}❌ Failed to create persistence bucket: ${ERROR_MSG}${NC}"
+        echo "     Check Cloudflare dashboard for details"
+        exit 1
+    fi
+else
+    echo -e "  ${RED}❌ Failed to check persistence bucket (HTTP ${PERSISTENCE_HTTP_CODE})${NC}"
+    echo "     Response: $(echo "$PERSISTENCE_BUCKET_CHECK" | sed '$d')"
     exit 1
 fi
 

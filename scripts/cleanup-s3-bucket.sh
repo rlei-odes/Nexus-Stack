@@ -2,9 +2,13 @@
 # =============================================================================
 # Nexus-Stack - Cloudflare R2 persistence bucket cleanup (RFC 0001)
 # =============================================================================
-# Deletes a per-stack R2 persistence bucket. Called from
-# `destroy-all.yml` workflow ONLY when the operator explicitly opted in
-# via `--delete-data` (see RFC 0001 decision #6).
+# Deletes a per-stack R2 persistence bucket. STANDALONE script — run
+# manually by the operator when they want to wipe snapshot history
+# (the audited deletion path per RFC 0001 decision #6). Not invoked
+# by destroy-all.yml — that workflow intentionally preserves the
+# bucket so operators can re-attach to existing snapshots on the
+# next initial-setup. See destroy-all.yml's R2-persistence comment
+# for the operator workflow.
 #
 # Default behaviour: PRESERVE the bucket. The script is a no-op
 # unless the operator passes the explicit confirmation environment

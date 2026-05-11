@@ -333,6 +333,7 @@ def render_combined_restore_script(
     postgres_targets: tuple[_s3.PostgresDumpTarget, ...],
     rsync_targets: tuple[_s3.RsyncTarget, ...],
     local_root: str = "/mnt/nexus-data",
+    phase: Literal["all", "filesystem", "postgres"] = "all",
 ) -> str:
     """Render a single bash script that does BOTH:
 
@@ -361,6 +362,7 @@ def render_combined_restore_script(
         postgres_targets=postgres_targets,
         rsync_targets=rsync_targets,
         local_root=local_root,
+        phase=phase,
     )
     # Strip the shebang + outer ``set -euo pipefail`` from the
     # restore body — the wrapper script provides them. Keeping
@@ -409,6 +411,7 @@ def restore_from_s3(
     ssh: SSHClient,
     *,
     env: dict[str, str] | None = None,
+    phase: Literal["all", "filesystem", "postgres"] = "all",
 ) -> S3RestoreSkipped | S3RestoreApplied:
     """Pull the latest snapshot from R2 onto the server's local SSD.
 
@@ -417,8 +420,10 @@ def restore_from_s3(
     outcome:
 
     * :class:`S3RestoreSkipped` (``"feature_flag_off"``) — the
-      feature flag isn't set; pipeline.py should fall back to the
-      legacy volume-mount path.
+      feature flag isn't set; pipeline.py proceeds with empty
+      data dirs (post-RFC-0001 cutover, there's no legacy
+      volume-mount path to fall back to — the only persistence
+      mechanism is R2).
     * :class:`S3RestoreSkipped` (``"no_endpoint_env"``) — the flag
       is on but credentials are missing. Treated as "skip with
       warning"; pipeline.py emits a stderr message. This is a
@@ -439,6 +444,24 @@ def restore_from_s3(
     inside ``ssh.run_script(check=True)``. That propagates up
     pipeline.py as a hard failure — restore corruption should NOT
     let the spinup proceed with half-populated data.
+
+    The ``phase`` parameter splits restore into two halves because
+    pg_restore needs the gitea-db / dify-db containers running
+    (``docker exec`` target), while the filesystem rsync MUST land
+    before compose-up (containers come up reading the seeded
+    bind-mounts):
+
+    * ``"filesystem"`` — call BEFORE compose-up; only rsync.
+    * ``"postgres"`` — call AFTER compose-up; only pg_restore.
+    * ``"all"`` (default) — single-shot; both halves in one
+      script. Safe ONLY when the caller guarantees the gitea-db
+      / dify-db containers are already running for the duration
+      of the restore (otherwise the pg_restore via docker exec
+      will fail). The spinup pipeline must NOT use this — its
+      containers start at compose-up, between the two halves —
+      and uses the split filesystem→postgres calls instead. The
+      "all" phase exists for one-off operator scripts and tests
+      that restore against an already-running stack.
     """
     if not is_enabled(env):
         return S3RestoreSkipped(reason="feature_flag_off")
@@ -466,6 +489,7 @@ def restore_from_s3(
         endpoint=endpoint,
         postgres_targets=postgres_targets,
         rsync_targets=rsync_targets,
+        phase=phase,
     )
 
     # The rendered restore script either:
