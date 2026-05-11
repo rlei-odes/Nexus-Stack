@@ -129,14 +129,18 @@ inherited that note from the earlier Hetzner-Object-Storage revision and
 was inaccurate.
 
 Note: `gitea/db/` and `dify/db/` (Postgres data directories) and
-`dify/redis/` (ephemeral cache) are **excluded** from the rsync
-mirror. Postgres state is captured via `pg_dump` into the
-`postgres/` directory above; Redis state is regeneratable on
-spinup. The rsync command applies `--exclude='db/**' --exclude=
-'redis/**'` to enforce this; the on-server bash in
-`s3_persistence.py:render_snapshot_script` only walks the
-explicitly-listed `RsyncTarget` subdirectories, never the whole
-parent.
+`dify/redis/` (ephemeral cache) are **excluded** from the sync.
+Postgres state is captured via `pg_dump` into the `postgres/`
+directory above; Redis state is regeneratable on spinup. There's
+no `--exclude` flag involved — the on-server bash in
+`s3_persistence.py:render_snapshot_script` enforces the exclusion
+structurally by only walking the explicitly-listed `RsyncTarget`
+subdirectories (gitea/repos, gitea/lfs, dify/storage,
+dify/weaviate, dify/plugins). Anything outside that list, db/ and
+redis/ included, never reaches a rclone-sync call in the first
+place. (An earlier RFC revision mentioned `rsync --exclude=…` here,
+which was both the wrong tool name and an incorrect syntax — the
+project uses `rclone sync` throughout.)
 
 Server local SSD (ephemeral, recreated on every spinup):
   /var/lib/nexus-data/
@@ -248,20 +252,39 @@ options we use for cross-version restores. The implementation in
 **About `rclone check`'s integrity guarantee.** The default
 `rclone check` compares the per-object hash that rclone has for the
 S3 backend — for R2 (S3-compatible API) that's the object ETag for
-non-multipart uploads, or the etag-of-etags for multipart uploads.
-For our typical file sizes (<5 GB per object, well under R2's
-multipart threshold) ETag is exactly the MD5 of the object body and
-the check is end-to-end. For multipart uploads the ETag-of-etags
-scheme means the check verifies *upload integrity* (every part
-uploaded matches what rclone sent) but not strict content-equality
-against the source.
+non-multipart uploads, or the etag-of-etags (an MD5-of-MD5s) for
+multipart uploads.
 
-In practice for our use case (sub-multipart files), the check is
-content-equality. The v1.0 implementation accepts that; if a future
-workload pushes individual files past the multipart threshold,
-v1.1 can either chunk smaller, switch to `rclone hashsum` for
-explicit sha256 verification, or move per-component checksums into
-`manifest.json` (see Open Question 1).
+**Multipart-threshold caveat.** An earlier draft of this section
+claimed our typical files are "well under R2's multipart
+threshold" and that ETag therefore equals MD5 end-to-end. That's
+not generally true: rclone's S3 backend uses `--s3-upload-cutoff`
+(default ~200 MiB) to decide when to multipart-upload, and the
+default `--s3-chunk-size` is 5 MiB. Plenty of our objects —
+Gitea LFS attachments, larger Postgres dumps, Dify uploads — can
+land above 200 MiB, in which case ETag is the etag-of-etags and
+NOT plain MD5 of the body.
+
+What ``rclone check`` actually guarantees in that case:
+*upload integrity* (every part uploaded matches what rclone
+sent, and the assembled object's etag-of-etags matches rclone's
+locally-computed etag-of-etags) — NOT strict content-equality
+against the source bytes. That's still a strong property —
+network corruption or partial-upload truncation get caught — but
+it's weaker than "bit-for-bit equal to source." A deliberately
+corrupted source could in theory hash-collide its way through
+the etag-of-etags scheme; for our threat model (no adversarial
+operator) we accept that.
+
+**v1.0 acceptance.** We accept that the integrity guarantee in
+the multipart case is "upload integrity," not "content equality
+against source." v1.1 can tighten this by either: (a) pinning
+``--s3-upload-cutoff`` high enough that all our objects stay
+single-part (works for ≤200 MiB-ish; not for LFS or large Dify
+uploads); (b) running ``rclone hashsum sha256 --download`` after
+upload to round-trip every object; or (c) moving per-component
+sha256 into ``manifest.json`` and verifying client-side on
+restore (Open Question 1).
 
 ## Code changes
 
