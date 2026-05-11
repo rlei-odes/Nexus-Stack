@@ -11,12 +11,22 @@ sits above and around them:
    firewall_rules, ssh_service_token, server_ip)
 5. SSH known_hosts cleanup (``ssh-keygen -R``)
 6. ``setup.configure_ssh`` → ``setup.wait_for_ssh`` →
-   ``setup.ensure_jq`` → ``s3_restore.restore_from_s3``
-7. Docker Hub login (when creds set)
-8. ``setup.setup_wetty_ssh_agent`` (when wetty enabled)
-9. ``Orchestrator.run_pre_bootstrap``
-10. ``Orchestrator.run_all``
-11. Display service URLs from ``tofu output service_urls``
+   ``setup.ensure_jq``
+7. ``s3_restore.restore_from_s3(phase="filesystem")`` — rclone-syncs
+   the FS bind-mount trees onto local SSD; fresh-start exits 0
+8. ``setup.ensure_data_dirs`` — chowns the rsync'd trees to
+   container UIDs (1000:1000 for gitea, 70:70 for postgres,
+   999:999 for redis); runs BEFORE compose-up
+9. Docker Hub login (when creds set)
+10. ``setup.setup_wetty_ssh_agent`` (when wetty enabled)
+11. ``Orchestrator.run_pre_bootstrap`` — last phase is
+    ``_phase_compose_up``, so containers come up reading the
+    seeded bind-mounts
+12. ``s3_restore.restore_from_s3(phase="postgres")`` — ``docker
+    exec pg_restore`` against the now-running gitea-db + dify-db
+13. ``Orchestrator.run_all`` — gitea-configure et al. see the
+    restored database
+14. Display service URLs from ``tofu output service_urls``
 
 Everything runs in-process — no subprocess CLI invocations of
 ``python -m nexus_deploy <subcommand>``, no ``eval`` of stdout

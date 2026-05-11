@@ -23,12 +23,16 @@ Public surface:
   (newer VMs have it baked in via ``tofu/stack/main.tf``); near-no-op
   on healthy VMs.
 * **``ensure_data_dirs``** — idempotent ``mkdir -p`` + ``chown`` on
-  the three Gitea data directories under ``/mnt/nexus-data/gitea/``
-  (repos + lfs uid 1000:1000, db uid 70:70). Called by the
-  pipeline AFTER ``s3_restore.restore_from_s3`` so rclone-written
-  files (which land owned by the SSH user, i.e. root) get the
-  ownership the containers expect. RFC 0001 cutover replacement
-  for the chown half of the removed ``mount_persistent_volume``.
+  the Gitea + Dify bind-mount sources under ``/mnt/nexus-data/``.
+  Gitea: ``gitea/{repos,lfs}`` (uid 1000) + ``gitea/db`` (uid 70).
+  Dify: ``dify/db`` (uid 70 for postgres-alpine) + ``dify/redis``
+  (uid 999 for redis-alpine) + ``dify/{storage,weaviate,plugins}``
+  (mkdir only — those containers run as root). Called by the
+  pipeline AFTER the filesystem half of ``restore_from_s3`` so
+  rclone-written files (owned by the SSH user, i.e. root) get
+  the ownership the containers expect. RFC 0001 cutover
+  replacement for the chown half of the removed
+  ``mount_persistent_volume``.
 * **``setup_wetty_ssh_agent``** — provision the SSH key + agent
   socket inside the Wetty container so browser-launched shells can
   reach the host without prompting for credentials.
@@ -471,9 +475,13 @@ chown -R 70:70 "$MOUNT_POINT/gitea/db"
 # weaviate, plugins) run as root inside the container by default —
 # we still mkdir them so Docker doesn't auto-create them under a
 # different parent's perms, but no chown needed.
-mkdir -p "$MOUNT_POINT/dify/db" "$MOUNT_POINT/dify/redis" \\
-         "$MOUNT_POINT/dify/storage" "$MOUNT_POINT/dify/weaviate" \\
-         "$MOUNT_POINT/dify/plugins"
+#
+# All 5 paths on one mkdir line: avoids the Python-vs-bash
+# backslash-line-continuation confusion that comes up in code
+# review (Python `\\` in a triple-quoted string → single literal
+# backslash → bash line continuation; technically correct but
+# easy to misread).
+mkdir -p "$MOUNT_POINT/dify/db" "$MOUNT_POINT/dify/redis" "$MOUNT_POINT/dify/storage" "$MOUNT_POINT/dify/weaviate" "$MOUNT_POINT/dify/plugins"
 chown -R 70:70 "$MOUNT_POINT/dify/db"
 chown -R 999:999 "$MOUNT_POINT/dify/redis"
 

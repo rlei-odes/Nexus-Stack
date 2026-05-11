@@ -144,7 +144,7 @@ Persistence moved from Hetzner block storage to R2 in RFC 0001. Spin-up and tear
 
 | Secret Name | Description |
 |-------------|-------------|
-| `NEXUS_S3_PERSISTENCE` | Feature flag — exact `"true"` opts in. Defaults to `"true"` via the workflow `||` fallback; unset entirely (or set to anything else) to bypass for an experiment. |
+| `NEXUS_S3_PERSISTENCE` | Feature flag — exact `"true"` opts in. Both `spin-up.yml` and `teardown.yml` inject `${{ secrets.NEXUS_S3_PERSISTENCE \|\| 'true' }}`, so leaving the secret unset still resolves to `"true"`. To bypass S3 persistence for an experiment, set the secret explicitly to `"false"` (or any value other than `"true"`). |
 | `PERSISTENCE_S3_ENDPOINT` | R2 endpoint, e.g. `https://<account-id>.r2.cloudflarestorage.com` |
 | `PERSISTENCE_S3_REGION` | R2 region — use `auto` |
 | `PERSISTENCE_S3_BUCKET` | Bucket holding `snapshots/<timestamp>/` trees + `snapshots/latest.txt` |
