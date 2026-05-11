@@ -810,8 +810,21 @@ def render_snapshot_script(
             '--one-way --combined - 2>"$WORKDIR/rclone-check.err" '
             '| tee "$WORKDIR/rclone-check.out" '
             '| grep -qE "^[-*]"',
-            "  local rclone_rc=${PIPESTATUS[0]}",
-            "  local drift_rc=${PIPESTATUS[2]}",
+            # CRITICAL: copy PIPESTATUS to a local array IMMEDIATELY,
+            # in ONE command. Every subsequent command (including the
+            # ``local`` builtin) overwrites PIPESTATUS with its own
+            # single-element exit code, so doing two separate
+            # ``local rclone_rc=${PIPESTATUS[0]}; local drift_rc=
+            # ${PIPESTATUS[2]}`` would have ``set -u`` complain about
+            # ``PIPESTATUS[2]: unbound variable`` on the second line
+            # (the first ``local`` clobbered PIPESTATUS to a
+            # 1-element array). This was a latent bug since RFC-0001
+            # day 1 — bash -n syntax checks didn't catch it; pure-
+            # string tests didn't notice; nobody ever actually ran
+            # the verify phase against real S3 until today.
+            '  local pipeline_status=("${PIPESTATUS[@]}")',
+            "  local rclone_rc=${pipeline_status[0]}",
+            "  local drift_rc=${pipeline_status[2]}",
             "  set -e",
             '  if [ "$rclone_rc" -ne 0 ]; then',
             '    echo "✗ snapshot-failed: rclone check ${label} errored (rc=$rclone_rc)" >&2',
@@ -1009,9 +1022,8 @@ def render_restore_script(
         # leak its kernel-level "No such file or directory" out
         # as the only diagnostic.
         'if [ ! -s "$WORKDIR/latest.txt" ]; then',
-        '  echo "✗ restore-failed: rclone copyto did not produce '
-        "$WORKDIR/latest.txt (or it's empty) — likely rclone version "
-        'mismatch or transient S3 issue" >&2',
+        '  echo "✗ restore-failed: rclone copyto did not produce $WORKDIR/latest.txt" >&2',
+        '  echo "  (file missing or empty — likely rclone version mismatch or transient S3 issue)" >&2',
         "  exit 2",
         "fi",
         'TIMESTAMP=$(tr -d "\\r\\n" < "$WORKDIR/latest.txt")',

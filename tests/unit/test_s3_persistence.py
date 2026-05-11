@@ -664,15 +664,23 @@ def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> Non
         rsync_targets=(),
     )
     assert "rclone check" in script
-    # Both PIPESTATUS captures must be present in the verify_one helper.
-    # Pipeline is `rclone | tee | grep`, so PIPESTATUS indexes are:
-    #   [0] = rclone (the integrity check), [1] = tee (always 0),
-    #   [2] = grep (0 = drift markers found, 1 = clean).
-    # An earlier revision had drift_rc=[1] (tee) which made the gate
-    # report "drift" on every snapshot — locking in [2] (grep) here
-    # is the regression test.
-    assert "rclone_rc=${PIPESTATUS[0]}" in script
-    assert "drift_rc=${PIPESTATUS[2]}" in script
+    # PIPESTATUS must be captured into a LOCAL ARRAY immediately
+    # after the pipeline runs, BEFORE any other command (including
+    # `local`). The `local` builtin overwrites PIPESTATUS with its
+    # own single-element exit-code array, so two separate
+    # `local rclone_rc=${PIPESTATUS[0]}; local drift_rc=${PIPESTATUS[2]}`
+    # would fail with "PIPESTATUS[2]: unbound variable" under
+    # set -u — the second `local` reads from the already-clobbered
+    # 1-element array.
+    #
+    # Regression pin for two distinct bugs in the same line block:
+    #   - drift_rc must read [2] (grep), not [1] (tee — always 0,
+    #     would make every snapshot report drift)
+    #   - the capture must be a single `local ps=("${PIPESTATUS[@]}")`
+    #     before the two reads, NOT two separate `local` lines
+    assert 'local pipeline_status=("${PIPESTATUS[@]}")' in script
+    assert "rclone_rc=${pipeline_status[0]}" in script
+    assert "drift_rc=${pipeline_status[2]}" in script
     # And both abort messages must distinguish the two modes.
     assert "snapshot-failed: rclone check ${label} errored" in script
     assert "snapshot-failed: rclone check ${label} found drift" in script
