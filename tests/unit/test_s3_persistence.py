@@ -514,6 +514,16 @@ def test_snapshot_script_orders_phases_correctly() -> None:
     # No blanket "|| echo non-fatal" masking on the stop step.
     stop_block = script.split("→ snapshot: stopping compose stacks")[1].split("→ snapshot:")[0]
     assert "stop || echo" not in stop_block
+    # Regression for Copilot round-6 #3216702497: the
+    # ``ps -q`` probe must capture both the exit code AND the
+    # stdout separately, so an empty-stdout-from-ps-FAILING
+    # case (missing compose file, daemon down, YAML syntax)
+    # doesn't masquerade as the empty-stdout-from-no-containers
+    # case. The earlier ``[ -n "$(ps -q 2>/dev/null)" ]`` form
+    # silently mapped failure to "skip stop" and continued the
+    # snapshot while services kept running.
+    assert "PS_RC=$?" in stop_block
+    assert '[ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]' in stop_block
 
 
 def test_snapshot_script_omits_compose_stop_when_no_files_passed() -> None:

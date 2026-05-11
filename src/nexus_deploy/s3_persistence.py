@@ -273,8 +273,9 @@ class SnapshotManifest:
         at the root of the timestamped snapshot directory.
 
         Indented because it's read by humans during ops/debugging,
-        and 200-300 bytes of whitespace doesn't move the needle on
-        Hetzner egress costs.
+        and 200-300 bytes of whitespace per manifest doesn't move
+        the needle on storage cost or transfer time at our snapshot
+        cadence — for R2 specifically, egress is free.
         """
         return json.dumps(
             {
@@ -613,16 +614,37 @@ def render_snapshot_script(
             # operator quietly ignores. Per CLAUDE.md "Never silently
             # swallow errors in critical operations."
             #
-            # We now branch on the SPECIFIC happy "stack is already
-            # down" case via ``docker compose ps -q`` (returns empty
-            # when no containers are running). Any other ``stop``
-            # failure bubbles up via ``set -e``.
+            # We branch on the SPECIFIC happy "stack is already
+            # down" case via ``docker compose ps -q``: if the
+            # command SUCCEEDS (rc=0) AND its stdout is EMPTY,
+            # there are no running containers → safe to skip stop.
+            # Any other situation (ps itself fails, or it succeeds
+            # and lists running containers) takes us into the
+            # ``compose stop`` branch — where ``set -e`` will abort
+            # the snapshot on any non-zero exit, surfacing missing-
+            # compose-file / daemon-down / YAML-syntax errors as
+            # the real failures they are.
+            #
+            # An earlier revision of this block evaluated only the
+            # stdout via ``[ -n "$(... 2>/dev/null)" ]`` — that
+            # silently mapped every ps failure (which produces
+            # empty stdout) to "stack already down" and continued
+            # the snapshot while services were still running.
+            # We now capture ps's exit code explicitly via
+            # ``set +e`` so the empty-stdout-from-failure case
+            # can't masquerade as the empty-stdout-from-no-
+            # containers case.
+            lines.append(f"COMPOSE_FILE={quoted}")
+            lines.append("set +e")
+            lines.append('PS_OUT=$(docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null)')
+            lines.append("PS_RC=$?")
+            lines.append("set -e")
+            lines.append('if [ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]; then')
             lines.append(
-                f'if [ -n "$(docker compose -f {quoted} ps -q 2>/dev/null)" ]; then',
+                f'  echo "  (skip: compose stack at {compose_file} already down)"',
             )
-            lines.append(f"  docker compose -f {quoted} stop")
             lines.append("else")
-            lines.append(f'  echo "  (skip: compose stack at {compose_file} already down)"')
+            lines.append('  docker compose -f "$COMPOSE_FILE" stop')
             lines.append("fi")
         lines.append("")
 
