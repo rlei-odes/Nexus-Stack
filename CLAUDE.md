@@ -351,6 +351,37 @@ the pattern + per-hook unit tests in `tests/unit/test_services.py`.
 which tofu cloudflared docker
 ```
 
+### Pre-commit hooks (REQUIRED before Python edits)
+
+The repo ships a `.pre-commit-config.yaml` that runs `ruff format`,
+`ruff check`, `mypy`, and `shellcheck` on every commit. **The hook is
+not active until installed locally** — fresh clones don't get it
+automatically. Without it, formatter drift (e.g. long f-strings, set
+comprehensions) lands on the branch, then CI fails on the `ruff format
+--check` step with a "would reformat N files" error.
+
+Install once per clone:
+```bash
+# If `core.hooksPath` is set redundantly (points at default), unset first:
+git config --get core.hooksPath && git config --unset-all core.hooksPath
+uv run pre-commit install
+```
+
+Verify it's wired up:
+```bash
+ls -la .git/hooks/pre-commit  # should exist and be executable
+```
+
+**Don't rely on memory** — `ruff check` (which catches lint rules) and
+`ruff format --check` (which catches whitespace/line-length drift) are
+SEPARATE checks. CI runs both; running only `ruff check` locally will
+miss formatter issues. The pre-commit hook is the only reliable gate.
+
+If a commit must skip a hook (rare, document why):
+```bash
+SKIP=ruff-format git commit -m "..."
+```
+
 ### Test Infrastructure Changes
 ```bash
 cd tofu && tofu plan -var-file=config.tfvars
