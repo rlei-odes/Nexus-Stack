@@ -101,6 +101,7 @@ import re
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
+from typing import Literal
 
 # ---------------------------------------------------------------------------
 # Identifier shape — protects the rendered bash from injection
@@ -786,6 +787,7 @@ def render_restore_script(
     postgres_targets: Iterable[PostgresDumpTarget],
     rsync_targets: Iterable[RsyncTarget],
     local_root: str = "/var/lib/nexus-data",
+    phase: Literal["all", "filesystem", "postgres"] = "all",
 ) -> str:
     """Render the bash that restores a snapshot from R2 to the local
     filesystem.
@@ -824,6 +826,21 @@ def render_restore_script(
     Does NOT touch ``snapshots/latest.txt`` — the active snapshot
     pointer is owned by the snapshot side. A restore is purely
     read-only against R2.
+
+    The ``phase`` parameter splits the restore for callers that
+    can't run both halves in one shot (the spinup pipeline can't —
+    ``docker exec pg_restore`` needs the gitea-db / dify-db
+    containers running, which only happens after compose-up,
+    while the filesystem rsync MUST happen before compose-up so
+    the containers come up with the right bind-mount data):
+
+    * ``"filesystem"`` — rsync targets only; skip the postgres
+      block. Containers don't need to be running.
+    * ``"postgres"`` — pg_restore via docker exec only; skip the
+      rsync block. Containers MUST already be running.
+    * ``"all"`` (default) — both halves, matches the legacy
+      single-shot teardown-side behaviour and keeps the
+      tests/snapshot-replay path unchanged.
     """
     pg_targets = tuple(postgres_targets)
     rs_targets = tuple(rsync_targets)
@@ -861,7 +878,10 @@ def render_restore_script(
         "",
     ]
 
-    if rs_targets:
+    include_fs = phase in ("all", "filesystem")
+    include_pg = phase in ("all", "postgres")
+
+    if rs_targets and include_fs:
         lines.append('echo "→ restore: pulling filesystem trees"')
         for rs in rs_targets:
             sub = shlex.quote(rs.s3_subpath)
@@ -881,7 +901,7 @@ def render_restore_script(
             )
         lines.append("")
 
-    if pg_targets:
+    if pg_targets and include_pg:
         lines.append('echo "→ restore: pulling postgres dumps"')
         lines.append(
             'rclone sync "$BUCKET/$SNAPSHOT_PREFIX/postgres" "$WORKDIR/postgres"',

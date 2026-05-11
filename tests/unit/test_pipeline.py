@@ -466,28 +466,77 @@ def test_pipeline_wraps_required_output_missing(
         )
 
 
-def test_pipeline_runs_ensure_data_dirs_after_restore(
+def test_pipeline_runs_restore_then_ensure_data_dirs_then_pg_restore(
     project_root: Path,
     fake_tofu_runner: MagicMock,
     setup_mocks: dict[str, Any],
     mock_orchestrator: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RFC 0001 cutover: rclone restores files as the SSH user
-    (root), so ``ensure_data_dirs`` MUST run after
-    ``restore_from_s3`` to fix Gitea + Postgres ownership.
-    Without this call, the bind-mounted containers fail to write
-    to their own data dirs — symptom is hard to debug at runtime,
-    so we pin the invariant here.
+    """RFC 0001 cutover ordering invariant — the spinup pipeline
+    splits restore into two halves around compose-up:
 
-    Asserts the mock was called at least once (the orchestrator
-    may invoke it indirectly too in future phases — we only care
-    that the pipeline's explicit pre-orchestrator call is wired)."""
+    1. ``restore_from_s3(phase="filesystem")`` BEFORE compose-up
+       (so containers come up reading the seeded bind-mounts)
+    2. ``ensure_data_dirs`` AFTER FS restore (chown the rsync'd
+       files to container UIDs) but still BEFORE compose-up
+    3. ``orchestrator.run_pre_bootstrap()`` — last phase is
+       ``_phase_compose_up`` so containers are running after
+    4. ``restore_from_s3(phase="postgres")`` — pg_restore via
+       docker exec, requires running containers
+    5. ``orchestrator.run_all()`` — gitea-configure et al. now
+       see the restored database
+
+    A parent MagicMock receives every call so we can assert the
+    sequence in one go; pure ``assert_called`` per-mock would miss
+    out-of-order regressions like calling pg-restore BEFORE
+    pre_bootstrap (which was the round-4 bug Copilot caught)."""
+    parent = MagicMock()
+    parent.attach_mock(setup_mocks["ensure_data_dirs"], "ensure_data_dirs")
+
+    restore_calls: list[str] = []
+
+    def fake_restore(
+        _ssh: Any,
+        *,
+        env: Any = None,
+        phase: str = "all",
+    ) -> Any:
+        restore_calls.append(phase)
+        parent.restore_from_s3(phase=phase)
+        from nexus_deploy.s3_restore import S3RestoreSkipped
+
+        return S3RestoreSkipped(reason="fresh_start_empty_s3")
+
+    monkeypatch.setattr("nexus_deploy.pipeline._s3_restore.restore_from_s3", fake_restore)
+    parent.attach_mock(mock_orchestrator.run_pre_bootstrap, "run_pre_bootstrap")
+    parent.attach_mock(mock_orchestrator.run_all, "run_all")
+
     run_pipeline(
         project_root=project_root,
         options=PipelineOptions(),
         tofu_runner=fake_tofu_runner,
     )
-    setup_mocks["ensure_data_dirs"].assert_called()
+
+    # Exact phase ordering — captured into restore_calls so the
+    # assertion is readable, separately from the cross-mock order
+    # assertion on parent.mock_calls below.
+    assert restore_calls == ["filesystem", "postgres"]
+
+    # Cross-mock ordering — extract only the names we care about
+    # (parent.mock_calls also captures nested attribute lookups on
+    # the orchestrator MagicMock from inside run_pipeline, which
+    # would otherwise pollute the sequence).
+    relevant = [c[0] for c in parent.mock_calls if c[0] in {
+        "restore_from_s3", "ensure_data_dirs", "run_pre_bootstrap", "run_all",
+    }]
+    assert relevant == [
+        "restore_from_s3",   # phase="filesystem"
+        "ensure_data_dirs",
+        "run_pre_bootstrap",  # compose-up happens here
+        "restore_from_s3",   # phase="postgres"
+        "run_all",
+    ]
 
 
 def test_pipeline_aborts_when_enabled_services_not_list(

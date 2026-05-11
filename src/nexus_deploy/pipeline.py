@@ -339,26 +339,31 @@ def run_pipeline(
         ssh = stack.enter_context(SSHClient("nexus"))
         _setup.ensure_jq(ssh)
 
-        # RFC 0001 cutover wire-up. Reads the NEXUS_S3_PERSISTENCE
-        # env var; when ``"true"`` the S3 restore path pulls
-        # snapshots/latest.txt from R2 and seeds /mnt/nexus-data on
-        # the local SSD. When unset or any other value, returns
-        # Skipped/feature_flag_off and we pass through with empty
-        # data dirs (compose still comes up; stateful services
-        # start fresh). The Hetzner volume that used to back this
-        # path was removed from Tofu in the same cutover PR —
-        # there's no volume-mount fallback to fall back to.
-        s3_result = _s3_restore.restore_from_s3(ssh)
+        # RFC 0001 cutover wire-up — split into two halves because
+        # pg_restore needs the gitea-db / dify-db containers running
+        # (``docker exec`` target), while the filesystem rsync MUST
+        # land BEFORE compose-up (the containers come up reading
+        # the seeded bind-mounts).
+        #
+        # Halve 1 (here, pre-compose): pull only the filesystem
+        # trees (gitea repos/lfs, dify storage/weaviate/plugins).
+        # On a fresh-start the script short-circuits with rc=0; on
+        # an existing snapshot rclone-syncs the trees onto local SSD.
+        s3_fs_result = _s3_restore.restore_from_s3(ssh, phase="filesystem")
         # rclone writes restored files as the SSH user (root), but
-        # gitea + postgres containers expect uid 1000:1000 / 70:70
-        # on their bind-mount sources. Idempotent — fine to run on
-        # an empty fresh-start tree too.
+        # gitea + postgres containers expect their container UIDs
+        # on the bind-mount sources. Idempotent — fine to run on
+        # an empty fresh-start tree too. Must run AFTER the
+        # filesystem rsync (so chown -R sees the rsync'd files) and
+        # BEFORE compose-up (so containers start with the right
+        # ownership in place).
         _setup.ensure_data_dirs(ssh)
-        if isinstance(s3_result, _s3_restore.S3RestoreApplied):
+        if isinstance(s3_fs_result, _s3_restore.S3RestoreApplied):
             sys.stderr.write(
-                f"✓ s3-restore: applied snapshot {s3_result.snapshot_timestamp}\n",
+                f"✓ s3-restore (filesystem): applied snapshot "
+                f"{s3_fs_result.snapshot_timestamp}\n",
             )
-        elif s3_result.reason == "fresh_start_empty_s3":
+        elif s3_fs_result.reason == "fresh_start_empty_s3":
             sys.stderr.write(
                 "→ s3-restore: bucket empty, fresh-start (first spinup of new "
                 "persistence bucket)\n",
@@ -421,6 +426,23 @@ def run_pipeline(
             raise PipelineError(
                 "pre-bootstrap pipeline aborted (see per-phase log above)",
             )
+
+        # Halve 2 of RFC 0001 restore: pg_restore now that
+        # compose-up has run (last phase of run_pre_bootstrap),
+        # so gitea-db and dify-db containers are up + accepting
+        # ``docker exec``. Must run BEFORE ``run_all`` because
+        # the gitea-configure phase later inspects/mutates the
+        # gitea database — restored snapshot has to be in place
+        # first or gitea-configure would write into a soon-to-be-
+        # clobbered database. Fresh-start short-circuits at rc=0.
+        s3_pg_result = _s3_restore.restore_from_s3(ssh, phase="postgres")
+        if isinstance(s3_pg_result, _s3_restore.S3RestoreApplied):
+            sys.stderr.write(
+                f"✓ s3-restore (postgres): applied snapshot "
+                f"{s3_pg_result.snapshot_timestamp}\n",
+            )
+        # No need to re-log fresh_start_empty_s3 here — the
+        # filesystem halve above already emitted that diagnostic.
 
         all_result = orchestrator.run_all()
         if all_result.has_hard_failure:

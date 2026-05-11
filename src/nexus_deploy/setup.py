@@ -455,22 +455,48 @@ def ensure_jq(ssh: SSHClient) -> bool:
 _ENSURE_DATA_DIRS_SCRIPT = """set -euo pipefail
 
 MOUNT_POINT=/mnt/nexus-data
+
+# --- Gitea bind-mount sources -------------------------------------
+# gitea-app container runs as uid 1000; bundled gitea-db (postgres-
+# alpine) as uid 70. Both need write access to their bind sources,
+# so we recursively chown after every restore (rclone writes files
+# as the SSH user, i.e. root).
 mkdir -p "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs" "$MOUNT_POINT/gitea/db"
 chown -R 1000:1000 "$MOUNT_POINT/gitea/repos" "$MOUNT_POINT/gitea/lfs"
 chown -R 70:70 "$MOUNT_POINT/gitea/db"
-echo "  ensured data-dir ownership under $MOUNT_POINT/gitea (gitea+postgres uids)" >&2
+
+# --- Dify bind-mount sources --------------------------------------
+# dify-db is postgres:15-alpine (uid 70). dify-redis is redis:6-
+# alpine which uses uid 999. The other three Dify mounts (storage,
+# weaviate, plugins) run as root inside the container by default —
+# we still mkdir them so Docker doesn't auto-create them under a
+# different parent's perms, but no chown needed.
+mkdir -p "$MOUNT_POINT/dify/db" "$MOUNT_POINT/dify/redis" \\
+         "$MOUNT_POINT/dify/storage" "$MOUNT_POINT/dify/weaviate" \\
+         "$MOUNT_POINT/dify/plugins"
+chown -R 70:70 "$MOUNT_POINT/dify/db"
+chown -R 999:999 "$MOUNT_POINT/dify/redis"
+
+echo "  ensured data-dir ownership under $MOUNT_POINT/{gitea,dify}" >&2
 """
 
 
 def ensure_data_dirs(ssh: SSHClient) -> None:
-    """Idempotent ``mkdir -p`` + ``chown -R`` of the Gitea data dirs
-    under ``/mnt/nexus-data/gitea/``.
+    """Idempotent ``mkdir -p`` + ``chown -R`` of the Gitea + Dify
+    bind-mount sources under ``/mnt/nexus-data/``.
 
     Called by the pipeline AFTER ``s3_restore.restore_from_s3`` —
     rclone-restored files land owned by the SSH user (root), but
-    the gitea container runs as uid 1000 and its bundled Postgres
-    as uid 70. Without the chown the containers fail to write to
-    their own bind-mounted data dirs.
+    the various containers run as non-root UIDs and expect ownership
+    on their bind-mount sources:
+
+    * Gitea app (uid 1000): ``gitea/repos``, ``gitea/lfs``
+    * Gitea bundled postgres (uid 70): ``gitea/db``
+    * Dify postgres (uid 70): ``dify/db``
+    * Dify redis (uid 999): ``dify/redis``
+    * Dify storage / weaviate / plugins: container runs as root,
+      ``mkdir`` only (no chown — Docker would otherwise auto-create
+      the path with whatever the parent dir owner is).
 
     No-op on a fresh-start spinup (rclone wrote nothing); idempotent
     on a populated dir (chown -R is fine to re-run). Raises

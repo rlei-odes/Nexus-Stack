@@ -720,6 +720,83 @@ def test_restore_script_pulls_filesystem_trees_before_postgres() -> None:
     assert 0 < fs_pos < pg_pos
 
 
+def test_restore_script_phase_filesystem_omits_postgres_block() -> None:
+    """RFC 0001 cutover: ``phase="filesystem"`` is called BEFORE
+    compose-up on the spinup side, when no gitea-db / dify-db
+    container exists yet. The rendered script MUST omit the
+    ``docker exec ... pg_restore`` block — otherwise the very
+    first spinup after a snapshot would hit "container not found"
+    and abort the pipeline. Symmetric to the postgres-only phase
+    below."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
+        phase="filesystem",
+    )
+    # Filesystem block present.
+    assert "pulling filesystem trees" in script
+    # Postgres block absent — neither the rclone-sync of dumps nor
+    # any docker exec line should be rendered.
+    assert "pulling postgres dumps" not in script
+    assert "docker exec" not in script
+    assert "pg_restore" not in script
+
+
+def test_restore_script_phase_postgres_omits_filesystem_block() -> None:
+    """Symmetric to the filesystem-only test above.
+    ``phase="postgres"`` runs AFTER compose-up; the filesystem
+    rsync has already happened in the earlier phase=filesystem
+    call, so the postgres-only call MUST NOT re-run those
+    (cheap to do twice but breaks the test contract that the
+    function honors its phase parameter)."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
+        phase="postgres",
+    )
+    # Postgres block present.
+    assert "pulling postgres dumps" in script
+    assert "docker exec gitea-db" in script
+    # Filesystem block absent.
+    assert "pulling filesystem trees" not in script
+    # The latest.txt lookup prelude is still present in both phases —
+    # it gates the fresh-start short-circuit.
+    assert "snapshots/latest.txt" in script
+
+
+def test_restore_script_phase_all_is_the_default_and_includes_both() -> None:
+    """Backward-compat: ``phase="all"`` is the default (preserved
+    for the snapshot-replay paths and any caller that runs both
+    halves in one shot). Must render BOTH halves."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="r", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+            ),
+        ),
+    )
+    assert "pulling filesystem trees" in script
+    assert "pulling postgres dumps" in script
+
+
 def test_restore_script_validates_timestamp_from_s3() -> None:
     """``snapshots/latest.txt`` is operator-influenced (an admin
     could in theory write it) — the script must validate the
