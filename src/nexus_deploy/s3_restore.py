@@ -119,12 +119,19 @@ class S3RestoreApplied:
 
 @dataclasses.dataclass(frozen=True)
 class S3SnapshotSkipped:
-    """Snapshot was a no-op. ``reason`` is operator-facing: one of
-    ``"feature_flag_off"`` or ``"no_endpoint_env"``. Both are
-    configuration states — the stack hasn't opted in to S3
-    persistence, or has opted in but is missing the credentials.
-    Teardown can proceed safely in both cases (legacy volume path
-    keeps the data on the Hetzner volume across teardowns)."""
+    """Snapshot was a no-op. ``reason`` is operator-facing:
+
+    * ``"feature_flag_off"`` — stack hasn't opted in to S3
+      persistence. Teardown proceeds safely (legacy volume path
+      keeps the data on the Hetzner volume across teardowns).
+      CLI rc=0.
+    * ``"no_endpoint_env"`` — opted in but credentials missing.
+      **Teardown MUST abort**: an unverified snapshot followed
+      by ``tofu destroy`` would lose the only copy of student
+      state. CLI rc=2 enforces this. The :func:`snapshot_to_s3`
+      caller has already written an operator-actionable
+      ``Refusing to teardown`` line to stderr listing the
+      missing env vars."""
 
     reason: Literal["feature_flag_off", "no_endpoint_env"]
 

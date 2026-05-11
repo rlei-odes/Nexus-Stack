@@ -2966,8 +2966,15 @@ def _s3_snapshot(args: list[str]) -> int:
     - ``PERSISTENCE_S3_ENDPOINT`` / ``PERSISTENCE_S3_REGION`` /
       ``PERSISTENCE_S3_BUCKET`` (the R2 coords)
     - ``R2_ACCESS_KEY_ID`` / ``R2_SECRET_ACCESS_KEY``
-    - ``PERSISTENCE_STACK_SLUG`` (manifest field; bucket-name shape)
-    - ``PERSISTENCE_TEMPLATE_VERSION`` (manifest field; release tag)
+    - ``PERSISTENCE_STACK_SLUG`` (manifest field; bucket-name shape).
+      The teardown workflow injects this from
+      ``${{ secrets.PERSISTENCE_STACK_SLUG || github.event.repository.name }}``
+      so operators get a sensible CI fallback without code in this
+      handler. Local CLI invocations MUST set it explicitly — no
+      filesystem-side default applies.
+    - ``PERSISTENCE_TEMPLATE_VERSION`` (manifest field; release tag).
+      Workflow-injected from ``github.ref_name``; required for local
+      CLI invocations.
 
     Optional env:
     - ``PROJECT_ROOT`` — defaults to ``$PWD``; the repo checkout root
