@@ -1,11 +1,24 @@
-"""Pipeline-side orchestration for S3 spinup-restore (RFC 0001 PR-2).
+"""Pipeline-side orchestration for S3 spinup-restore + teardown-
+snapshot (RFC 0001 PR-2 + PR-4).
 
 This module is the *caller* of the pure-rendering functions in
 :mod:`nexus_deploy.s3_persistence`. The split mirrors the
 ``setup.py`` pattern: ``s3_persistence.py`` produces bash strings,
 ``s3_restore.py`` reads environment / config, builds the target
-lists, and ships the rendered script to the remote via
-:class:`SSHClient`.
+lists, and ships the rendered scripts to the remote via
+:class:`SSHClient`. Two directions live here:
+
+* **spinup-restore** (:func:`restore_from_s3`) — pulls the latest
+  snapshot from R2 onto the server's local SSD right after
+  bootstrap, before docker compose comes up.
+* **teardown-snapshot** (:func:`snapshot_to_s3`) — pushes the
+  current state to R2 right before ``tofu destroy``, with the
+  atomic verify-before-destroy contract from RFC 0001 §"Atomicity
+  guarantees".
+
+The module name predates the snapshot side; it's kept for stable
+imports (4 call sites today). Both directions share env-var
+parsing, feature-flag gating, and the canonical target list.
 
 Public surface:
 
@@ -56,6 +69,7 @@ import contextlib
 import dataclasses
 import os
 import sys
+from collections.abc import Callable
 from typing import Literal
 
 from nexus_deploy import s3_persistence as _s3
@@ -101,6 +115,37 @@ class S3RestoreApplied:
     emit a one-line summary to stderr after the phase."""
 
     snapshot_timestamp: str
+
+
+@dataclasses.dataclass(frozen=True)
+class S3SnapshotSkipped:
+    """Snapshot was a no-op. ``reason`` is operator-facing: one of
+    ``"feature_flag_off"`` or ``"no_endpoint_env"``. Both are
+    configuration states — the stack hasn't opted in to S3
+    persistence, or has opted in but is missing the credentials.
+    Teardown can proceed safely in both cases (legacy volume path
+    keeps the data on the Hetzner volume across teardowns)."""
+
+    reason: Literal["feature_flag_off", "no_endpoint_env"]
+
+
+@dataclasses.dataclass(frozen=True)
+class S3SnapshotApplied:
+    """Snapshot was written and verified end-to-end. ``timestamp``
+    is the ISO-8601 directory under ``snapshots/`` that the
+    rendered bash uploaded into AND pointed ``snapshots/latest.txt``
+    at. The CLI handler prints this on success so an operator can
+    correlate the teardown log line with the matching S3 object
+    tree.
+
+    Returning this class is the explicit "verified, safe to
+    proceed with tofu destroy" signal from the orchestration
+    side. Any non-zero rc from the rendered bash raises
+    ``CalledProcessError`` instead; the snapshot's atomicity
+    contract (RFC 0001) means a half-uploaded snapshot must
+    block the destroy, not signal success."""
+
+    timestamp: str
 
 
 # ---------------------------------------------------------------------------
@@ -443,3 +488,186 @@ def restore_from_s3(
                 timestamp = line.split("snapshots/", 1)[1].strip()
             break
     return S3RestoreApplied(snapshot_timestamp=timestamp)
+
+
+# ---------------------------------------------------------------------------
+# Teardown-side snapshot (PR-4)
+# ---------------------------------------------------------------------------
+
+
+# Compose-file list for the stop-before-snapshot step. v1.0 stops the
+# two stateful stacks (Gitea, Dify) before pg_dump so we get a
+# quiesced view. Other stacks aren't stopped — they don't carry
+# state, and the longer we keep them up the shorter the spinup-side
+# downtime window. If a future stack gains state, extend this list AND
+# add to standard_targets().
+#
+# Paths match the on-server layout the orchestrator already uses
+# elsewhere (compose_runner.py writes each stack to
+# /opt/docker-server/stacks/<name>/docker-compose.yml).
+_STANDARD_STOP_COMPOSE_FILES = (
+    "/opt/docker-server/stacks/gitea/docker-compose.yml",
+    "/opt/docker-server/stacks/dify/docker-compose.yml",
+)
+
+
+def _build_snapshot_timestamp() -> str:
+    """ISO-8601 timestamp in the strict shape the s3_persistence
+    snapshot script accepts (``[0-9A-Za-z_-]+``, no colons).
+
+    Format: ``YYYYMMDDTHHMMSSZ`` (basic ISO-8601 without
+    punctuation). Stable lexicographic ordering of timestamped
+    snapshots is what makes the "latest by sort order" cleanup
+    cron in v1.1 work — it relies on this exact shape.
+
+    Factored out so tests can monkey-patch a deterministic value
+    instead of asserting on ``datetime.utcnow``.
+    """
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def render_combined_snapshot_script(
+    *,
+    endpoint: _s3.S3Endpoint,
+    stack_slug: str,
+    template_version: str,
+    timestamp: str,
+    postgres_targets: tuple[_s3.PostgresDumpTarget, ...],
+    rsync_targets: tuple[_s3.RsyncTarget, ...],
+    stop_compose_files: tuple[str, ...] = _STANDARD_STOP_COMPOSE_FILES,
+) -> str:
+    """Render a single bash script that does BOTH:
+
+    1. Writes the rclone config to ``~/.config/rclone/rclone.conf``
+       via ``install -m 600 /dev/stdin`` — same atomic-perms
+       pattern as :func:`render_combined_restore_script`.
+    2. Runs the snapshot body from
+       :func:`s3_persistence.render_snapshot_script`, which
+       implements the RFC 0001 atomicity contract (stop →
+       pg_dump → rclone sync → per-source verify → only-then
+       point ``snapshots/latest.txt``).
+
+    Caller ships the combined script via one ``ssh.run_script``
+    invocation. Any non-zero exit raises CalledProcessError,
+    which the workflow caller MUST treat as "abort teardown,
+    leave server up." That's the verify-before-destroy contract:
+    we never let ``tofu destroy`` run if the snapshot didn't
+    complete cleanly.
+    """
+    rclone_config = _s3.render_rclone_config(endpoint)
+    snapshot_body = _s3.render_snapshot_script(
+        endpoint=endpoint,
+        stack_slug=stack_slug,
+        template_version=template_version,
+        timestamp=timestamp,
+        postgres_targets=postgres_targets,
+        rsync_targets=rsync_targets,
+        stop_compose_files=stop_compose_files,
+    )
+    body_lines = snapshot_body.splitlines()
+    while body_lines and (
+        body_lines[0].startswith("#!")
+        or body_lines[0].startswith("# Generated")
+        or body_lines[0].strip() == "set -euo pipefail"
+        or body_lines[0].strip() == ""
+    ):
+        body_lines.pop(0)
+    body_inner = "\n".join(body_lines)
+
+    return (
+        "#!/usr/bin/env bash\n"
+        "# Generated by nexus_deploy.s3_restore — do not edit by hand.\n"
+        "set -euo pipefail\n"
+        "\n"
+        "# ---- write rclone config (atomic, mode 600) -----------\n"
+        'mkdir -p "$HOME/.config/rclone"\n'
+        "install -m 600 /dev/stdin \"$HOME/.config/rclone/rclone.conf\" <<'RCLONE_CONFIG_EOF'\n"
+        f"{rclone_config}"
+        "RCLONE_CONFIG_EOF\n"
+        "\n"
+        "# ---- snapshot body ------------------------------------\n"
+        f"{body_inner}\n"
+    )
+
+
+def snapshot_to_s3(
+    ssh: SSHClient,
+    *,
+    stack_slug: str,
+    template_version: str,
+    env: dict[str, str] | None = None,
+    timestamp_factory: Callable[[], str] | None = None,
+) -> S3SnapshotSkipped | S3SnapshotApplied:
+    """Push the current persistent state to R2 atomically.
+
+    Teardown-side counterpart to :func:`restore_from_s3`. Returns
+    a typed outcome:
+
+    * :class:`S3SnapshotSkipped` (``"feature_flag_off"``) — the
+      stack hasn't opted in. Caller proceeds with the legacy
+      teardown path (no snapshot, volume keeps the data on
+      Hetzner across teardowns).
+    * :class:`S3SnapshotSkipped` (``"no_endpoint_env"``) — flag on
+      but credentials missing. **Caller MUST abort the teardown**
+      here — the operator opted in to S3 persistence but the
+      env is misconfigured; proceeding with ``tofu destroy``
+      would mean the next spinup pulls an empty bucket and the
+      volume data is the only copy of student state. CLI handler
+      maps this to a non-zero exit code.
+    * :class:`S3SnapshotApplied` — snapshot written, verified
+      (every per-source ``rclone check`` passed), and
+      ``snapshots/latest.txt`` updated. Safe to proceed with
+      ``tofu destroy``.
+
+    Any non-zero exit from the rendered bash propagates as
+    ``CalledProcessError``. That's the atomicity gate: rclone
+    drift, pg_dump failure, or compose-stop failure all map to a
+    hard abort. The teardown workflow must let it bubble up
+    (``set -e`` in the workflow shell step) so ``tofu destroy``
+    never runs against an unverified snapshot state.
+
+    ``stack_slug`` + ``template_version`` are caller-supplied so
+    the rendered manifest carries the right identity. Production
+    callers read them from tofu outputs / env vars; tests inject
+    string fixtures. ``timestamp_factory`` is the DI seam — tests
+    pass a lambda returning a deterministic value; production
+    uses :func:`_build_snapshot_timestamp`.
+    """
+    if not is_enabled(env):
+        return S3SnapshotSkipped(reason="feature_flag_off")
+
+    endpoint = build_endpoint_from_env(env)
+    if endpoint is None:
+        source = env if env is not None else os.environ
+        missing = [name for name in _REQUIRED_ENV_VAR_NAMES if not source.get(name)]
+        sys.stderr.write(
+            f"✗ s3-snapshot: feature flag {FEATURE_FLAG_ENV}=true but the following "
+            f"required env vars are unset or empty: {', '.join(missing)}. "
+            "Refusing to teardown — fix the credentials or unset the flag.\n",
+        )
+        return S3SnapshotSkipped(reason="no_endpoint_env")
+
+    postgres_targets, rsync_targets = standard_targets()
+    factory = timestamp_factory if timestamp_factory is not None else _build_snapshot_timestamp
+    timestamp = factory()
+
+    script = render_combined_snapshot_script(
+        endpoint=endpoint,
+        stack_slug=stack_slug,
+        template_version=template_version,
+        timestamp=timestamp,
+        postgres_targets=postgres_targets,
+        rsync_targets=rsync_targets,
+    )
+
+    # Any non-zero exit raises CalledProcessError — let it
+    # propagate up to the CLI handler / workflow so tofu destroy
+    # never runs against an unverified snapshot. This is the
+    # atomicity contract from RFC 0001 §"Atomicity guarantees".
+    completed = ssh.run_script(script, check=True)
+    output = completed.stdout
+    for line in output.splitlines():
+        sys.stderr.write(line + "\n")
+    return S3SnapshotApplied(timestamp=timestamp)

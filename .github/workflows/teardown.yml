@@ -63,6 +63,30 @@ jobs:
         with:
           tofu_version: 1.10.0
 
+      - name: Install uv
+        # Required by the `nexus_deploy` Python package — the
+        # s3-snapshot step below runs `python -m nexus_deploy
+        # s3-snapshot` which lives in the Python package. Pinned
+        # to the same version spin-up.yml + python-tests use.
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.7"
+          enable-cache: true
+
+      - name: Sync nexus_deploy runtime deps
+        # Pre-resolve the lockfile-pinned runtime deps. `--no-dev`
+        # skips ruff/mypy/pytest since we only need runtime here.
+        run: uv sync --frozen --no-dev
+
+      - name: Install cloudflared
+        # Needed by the SSH-over-Cloudflare-Access setup in
+        # `nexus_deploy.pipeline.run_snapshot` (configure_ssh writes
+        # a Host block that uses ProxyCommand=cloudflared).
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+
       - name: Generate SSH key for OpenTofu
         run: |
           mkdir -p ~/.ssh
@@ -165,13 +189,38 @@ jobs:
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
           tofu init -backend-config=../backend.hcl
 
+      - name: Snapshot persistent state to R2 (atomic, pre-destroy)
+        # RFC 0001 PR-4 — atomicity contract: when the
+        # NEXUS_S3_PERSISTENCE flag is on, push the current state to
+        # R2 BEFORE tofu destroy. Any failure aborts the teardown
+        # (rc=2) so destroy never runs against an unverified
+        # snapshot. When the flag is off the step is a fast no-op
+        # (rc=0) — backwards-compatible for stacks still on the
+        # volume-mount path.
+        env:
+          # Feature flag — exact "true" opts in. Set per-stack in
+          # workflow secrets; absent / any other value = no-op.
+          NEXUS_S3_PERSISTENCE: ${{ secrets.NEXUS_S3_PERSISTENCE }}
+          # R2 persistence bucket coords (set per-stack in secrets).
+          PERSISTENCE_S3_ENDPOINT: ${{ secrets.PERSISTENCE_S3_ENDPOINT }}
+          PERSISTENCE_S3_REGION: ${{ secrets.PERSISTENCE_S3_REGION }}
+          PERSISTENCE_S3_BUCKET: ${{ secrets.PERSISTENCE_S3_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # Manifest fields — bucket-name slug + release tag.
+          PERSISTENCE_STACK_SLUG: ${{ secrets.PERSISTENCE_STACK_SLUG || github.event.repository.name }}
+          PERSISTENCE_TEMPLATE_VERSION: ${{ github.ref_name }}
+        run: |
+          uv run --quiet --project "$GITHUB_WORKSPACE" \
+            python -m nexus_deploy s3-snapshot
+
       - name: Teardown Hetzner infrastructure only
         run: |
           cd tofu/stack
           source ../.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-          
+
           # Destroy all resources in nexus-stack state
           # Control Plane is now in separate state (tofu/control-plane/)
           tofu destroy -var-file=config.tfvars -auto-approve

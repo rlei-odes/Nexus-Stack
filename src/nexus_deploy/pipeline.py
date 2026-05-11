@@ -451,6 +451,134 @@ def run_pipeline(
     )
 
 
+@dataclass(frozen=True)
+class SnapshotResult:
+    """Outcome of :func:`run_snapshot`.
+
+    Wraps an ``s3_restore.S3SnapshotSkipped`` or
+    ``S3SnapshotApplied`` so callers don't need to import
+    ``s3_restore`` to branch on the result.
+    """
+
+    outcome: _s3_restore.S3SnapshotSkipped | _s3_restore.S3SnapshotApplied
+
+
+def run_snapshot(
+    *,
+    project_root: Path,
+    stack_slug: str,
+    template_version: str,
+    tofu_runner: _tofu.TofuRunner | None = None,
+) -> SnapshotResult:
+    """Push current persistent state to R2 before a teardown.
+
+    Counterpart to :func:`run_pipeline` for the *teardown* side:
+    reuses the same R2-creds / tofu-state / SSH-setup pre-flight,
+    but skips secret reads, orchestrator phases, and service-URL
+    banners — none of which apply when we're tearing down. After
+    SSH is up, delegates to :func:`s3_restore.snapshot_to_s3`,
+    which implements the atomicity contract.
+
+    Exit-code semantics on the CLI side:
+
+    - Hard failure (PipelineError raised) → rc=2, teardown MUST
+      abort (operator-fixable: tofu state missing, ssh wait
+      timeout, R2 creds broken).
+    - ``snapshot_to_s3`` itself raises CalledProcessError on
+      remote-script failure (rclone drift, pg_dump error,
+      compose-stop error) — propagates out, CLI maps to rc=2.
+      Teardown MUST abort: an unverified snapshot followed by
+      ``tofu destroy`` would lose data.
+    - Snapshot returns ``S3SnapshotSkipped(reason='feature_flag_off')``
+      → rc=0, this stack hasn't opted in to S3 persistence;
+      caller proceeds with legacy teardown path.
+    - Snapshot returns ``S3SnapshotSkipped(reason='no_endpoint_env')``
+      → rc=2, flag is on but credentials missing; teardown MUST
+      abort to avoid data loss.
+    - Snapshot returns ``S3SnapshotApplied`` → rc=0, safe to
+      proceed with ``tofu destroy``.
+    """
+    # 1. R2 credentials (identical to run_pipeline step 1).
+    creds_file = project_root / "tofu" / ".r2-credentials"
+    try:
+        creds = _tofu.load_r2_credentials(creds_file)
+    except _tofu.TofuError as exc:
+        raise PipelineError(
+            f"could not load {creds_file}: {exc} — delete the file or fix it to KEY=value form",
+        ) from exc
+    if creds is not None:
+        os.environ["AWS_ACCESS_KEY_ID"] = creds.access_key_id
+        os.environ["AWS_SECRET_ACCESS_KEY"] = creds.secret_access_key
+
+    # 2. tofu state pre-flight (identical to run_pipeline step 2).
+    tofu_dir = project_root / "tofu" / "stack"
+    runner = tofu_runner if tofu_runner is not None else _tofu.TofuRunner(tofu_dir=tofu_dir)
+    if not runner.state_list_ok():
+        reason_obj = runner.diagnose_state() if hasattr(runner, "diagnose_state") else None
+        reason: str | None = reason_obj if isinstance(reason_obj, str) else None
+        if reason:
+            raise PipelineError(
+                f"OpenTofu state at {tofu_dir} not usable: {reason} — "
+                "nothing to teardown (already destroyed?)",
+            )
+        raise PipelineError(
+            f"OpenTofu state at {tofu_dir} is not initialised — nothing to teardown",
+        )
+
+    # 3. config.tfvars → domain → ssh host (subset of run_pipeline step 3).
+    tfvars_path = tofu_dir / "config.tfvars"
+    try:
+        tfvars_config = _tfvars.parse(tfvars_path)
+    except _tfvars.TfvarsError as exc:
+        raise PipelineError(f"could not load {tfvars_path}: {exc}") from exc
+    if not tfvars_config.domain:
+        raise PipelineError(
+            f"{tfvars_path} is missing a non-empty 'domain' value",
+        )
+
+    # 4. ssh_service_token + server_ip from tofu outputs.
+    try:
+        ssh_service_token = runner.output_json("ssh_service_token")
+    except _tofu.TofuError as exc:
+        raise PipelineError(
+            f"required tofu output missing or invalid: {exc} — "
+            "state may be partially applied; nothing to snapshot",
+        ) from exc
+    server_ip = runner.output_raw("server_ip", default="")
+
+    # 5. SSH known_hosts cleanup — same pattern as run_pipeline.
+    ssh_host_dns = service_host("ssh", tfvars_config.domain, tfvars_config.subdomain_separator)
+    _ssh_keygen_cleanup(ssh_host_dns, server_ip)
+
+    # 6. configure_ssh → wait_for_ssh → SSHClient → snapshot.
+    with contextlib.ExitStack() as stack:
+        cf_client_id = ""
+        cf_client_secret = ""
+        if isinstance(ssh_service_token, dict):
+            cf_client_id = str(ssh_service_token.get("client_id") or "")
+            cf_client_secret = str(ssh_service_token.get("client_secret") or "")
+        _setup.configure_ssh(
+            _setup.SSHConfigSpec(
+                ssh_host=ssh_host_dns,
+                cf_client_id=cf_client_id,
+                cf_client_secret=cf_client_secret,
+            ),
+        )
+        readiness = _setup.wait_for_ssh()
+        if not readiness.succeeded:
+            raise PipelineError(
+                f"SSH did not become ready after {readiness.attempts} attempts: "
+                f"{readiness.last_error[:500]}",
+            )
+        ssh = stack.enter_context(SSHClient("nexus"))
+        outcome = _s3_restore.snapshot_to_s3(
+            ssh,
+            stack_slug=stack_slug,
+            template_version=template_version,
+        )
+    return SnapshotResult(outcome=outcome)
+
+
 def format_done_banner(result: PipelineResult) -> str:
     """Render the post-deploy banner.
 
