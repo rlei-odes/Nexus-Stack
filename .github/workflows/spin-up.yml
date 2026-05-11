@@ -619,10 +619,18 @@ jobs:
           # non-"true" value like "false"; just unsetting it leaves
           # the default on.
           NEXUS_S3_PERSISTENCE: ${{ secrets.NEXUS_S3_PERSISTENCE || 'true' }}
-          # R2 persistence bucket coords.
-          PERSISTENCE_S3_ENDPOINT: ${{ secrets.PERSISTENCE_S3_ENDPOINT }}
-          PERSISTENCE_S3_REGION: ${{ secrets.PERSISTENCE_S3_REGION }}
-          PERSISTENCE_S3_BUCKET: ${{ secrets.PERSISTENCE_S3_BUCKET }}
+          # R2 persistence-bucket coords. ALL derived from already-
+          # existing secrets — no new operator-set secret needed:
+          #   - endpoint   = https://<CF account>.r2.cloudflarestorage.com
+          #   - region     = "auto" (R2 ignores region)
+          #   - bucket     = nexus-<domain-slug>-persistence (created
+          #                  idempotently by setup-control-plane.yaml,
+          #                  named the same way the data-bucket is)
+          # R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are the same creds
+          # the Tofu state backend already uses (unified token set up
+          # by init-r2-state.sh).
+          PERSISTENCE_S3_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          PERSISTENCE_S3_REGION: auto
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           # Manifest fields — bucket-name slug + release tag.
@@ -631,6 +639,14 @@ jobs:
           PERSISTENCE_STACK_SLUG: ${{ secrets.PERSISTENCE_STACK_SLUG || github.event.repository.name }}
           PERSISTENCE_TEMPLATE_VERSION: ${{ github.ref_name }}
         run: |
+          # Derive PERSISTENCE_S3_BUCKET inline — YAML expressions
+          # can't `tr '.' '-'` but bash can. Same convention as the
+          # data bucket (nexus-<domain-slug>-data) → persistence
+          # bucket is nexus-<domain-slug>-persistence. The bucket
+          # itself is created by setup-control-plane.yaml.
+          DOMAIN_SLUG=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')
+          export PERSISTENCE_S3_BUCKET="nexus-${DOMAIN_SLUG}-persistence"
+
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy run-pipeline
 

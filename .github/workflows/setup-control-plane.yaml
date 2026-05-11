@@ -820,6 +820,33 @@ jobs:
             gh secret delete R2_DATA_SECRET_ACCESS_KEY 2>/dev/null || true
           fi
 
+          # RFC 0001 persistence bucket — idempotent create. Naming
+          # convention: `nexus-${DOMAIN_SLUG}-persistence`. The
+          # spin-up / teardown / migrate workflows derive this same
+          # name inline so we don't need a new GitHub secret for it.
+          PERSISTENCE_BUCKET_NAME="nexus-${DOMAIN_SLUG}-persistence"
+          BUCKET_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${R2_API}/r2/buckets/${PERSISTENCE_BUCKET_NAME}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+          if [ "$BUCKET_HTTP" = "200" ]; then
+            echo "  ✅ Persistence bucket '$PERSISTENCE_BUCKET_NAME' exists"
+          elif [ "$BUCKET_HTTP" = "404" ]; then
+            echo "  Creating persistence bucket '$PERSISTENCE_BUCKET_NAME'..."
+            CREATE_BODY=$(curl -s -X POST "${R2_API}/r2/buckets" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${PERSISTENCE_BUCKET_NAME}\"}")
+            if echo "$CREATE_BODY" | jq -e '.success == true' >/dev/null 2>&1; then
+              echo "  ✅ Persistence bucket created"
+            else
+              echo "  ❌ Failed to create persistence bucket: $(echo "$CREATE_BODY" | jq -r '.errors[0].message // "unknown"')"
+              exit 1
+            fi
+          else
+            echo "  ❌ Failed to check persistence bucket (HTTP $BUCKET_HTTP)"
+            exit 1
+          fi
+
           # Output unified credentials for downstream workflows
           echo "r2_data_access_key=$R2_ACCESS_KEY_ID" >> "$GITHUB_OUTPUT"
           echo "r2_data_secret_key=$R2_SECRET_ACCESS_KEY" >> "$GITHUB_OUTPUT"

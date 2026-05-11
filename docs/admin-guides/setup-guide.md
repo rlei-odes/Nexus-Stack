@@ -140,17 +140,19 @@ Add these secrets to your GitHub repository:
 
 ### S3-Persistence Secrets (RFC 0001)
 
-Persistence moved from Hetzner block storage to R2 in RFC 0001. Spin-up and teardown both inject these env vars into `python -m nexus_deploy run-pipeline` / `s3-snapshot`; the feature flag defaults to on.
+Persistence moved from Hetzner block storage to R2 in RFC 0001. **Zero new operator-set secrets required** — the workflows derive everything from already-existing secrets and conventions:
 
-| Secret Name | Description |
-|-------------|-------------|
-| `NEXUS_S3_PERSISTENCE` | Feature flag — exact `"true"` opts in. Both `spin-up.yml` and `teardown.yml` inject `${{ secrets.NEXUS_S3_PERSISTENCE \|\| 'true' }}`, so leaving the secret unset still resolves to `"true"`. To bypass S3 persistence for an experiment, set the secret explicitly to `"false"` (or any value other than `"true"`). |
-| `PERSISTENCE_S3_ENDPOINT` | R2 endpoint, e.g. `https://<account-id>.r2.cloudflarestorage.com` |
-| `PERSISTENCE_S3_REGION` | R2 region — use `auto` |
-| `PERSISTENCE_S3_BUCKET` | Bucket holding `snapshots/<timestamp>/` trees + `snapshots/latest.txt` |
-| `R2_ACCESS_KEY_ID` | R2 access key (same one used for the Tofu backend) |
-| `R2_SECRET_ACCESS_KEY` | R2 secret access key |
-| `PERSISTENCE_STACK_SLUG` | Manifest field; defaults to `github.event.repository.name`. Set only if you need a different slug. |
+- **`PERSISTENCE_S3_ENDPOINT`** is computed inline as `https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com`.
+- **`PERSISTENCE_S3_REGION`** is always `auto` (R2 doesn't use regions).
+- **`PERSISTENCE_S3_BUCKET`** follows the convention `nexus-<domain-slug>-persistence` and is created idempotently by `setup-control-plane.yaml` the same way the data bucket is.
+- **`R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`** are the unified R2 token credentials already set by `init-r2-state.sh` (used by the Tofu state backend too).
+
+Optional secrets (only set if you want to override defaults):
+
+| Secret Name | Default | Why you'd override |
+|-------------|---------|---------------------|
+| `NEXUS_S3_PERSISTENCE` | `"true"` (workflow fallback) | Set explicitly to `"false"` to bypass persistence for an experiment. |
+| `PERSISTENCE_STACK_SLUG` | `github.event.repository.name` | Set if you want the manifest written under a different slug (e.g. for Education-mode forks that share a persistence bucket layout). |
 
 #### GH_SECRETS_TOKEN
 
