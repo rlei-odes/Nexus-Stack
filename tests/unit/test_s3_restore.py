@@ -294,7 +294,7 @@ def test_restore_from_s3_skips_when_feature_flag_off() -> None:
     ssh.run_script.assert_not_called()
 
 
-def test_restore_from_s3_skips_when_env_incomplete(capsys: pytest.CaptureFixture) -> None:
+def test_restore_from_s3_skips_when_env_incomplete(capsys: pytest.CaptureFixture[str]) -> None:
     """Flag on but a required env var missing — should warn to
     stderr (operator-actionable) and skip."""
     env = _good_env()
