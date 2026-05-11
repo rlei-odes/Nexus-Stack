@@ -22,6 +22,12 @@ Public surface:
   remote. Bootstrap for VMs that pre-date the cloud-init jq install
   (newer VMs have it baked in via ``tofu/stack/main.tf``); near-no-op
   on healthy VMs.
+* **``ensure_rclone``** — idempotent ``apt-get install -y rclone``
+  on the remote. MUST run before ``s3_restore.restore_from_s3``;
+  without rclone the restore script's bucket-reachability probe
+  fails (rc=127 → 2), and the legacy pre-Round-6 code path would
+  have silently fresh-started → data loss on next teardown.
+  See the function's own docstring for the historical incident.
 * **``ensure_data_dirs``** — idempotent ``mkdir -p`` + ``chown`` on
   the Gitea + Dify bind-mount sources under ``/mnt/nexus-data/``.
   Gitea: ``gitea/{repos,lfs}`` (uid 1000) + ``gitea/db`` (uid 70).
@@ -437,6 +443,44 @@ def ensure_jq(ssh: SSHClient) -> bool:
         return False
     install = ssh.run(
         "sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq jq >/dev/null",
+        check=True,
+    )
+    _ = install
+    return True
+
+
+def ensure_rclone(ssh: SSHClient) -> bool:
+    """Install ``rclone`` on the remote if not already present.
+
+    Returns ``True`` if ``apt-get install`` actually ran (fresh VM
+    or rebuild), ``False`` if the binary was already there.
+
+    Why this matters — and why it MUST run before
+    :func:`s3_restore.restore_from_s3` in the pipeline:
+
+    Pre-RFC-0001 the rendered restore script did ``if ! rclone lsf
+    .../latest.txt``. If rclone wasn't installed, that branch
+    evaluated as ``!127 == true`` and the script silently exited 0
+    with a "fresh-start: no snapshot in S3" message. Operationally:
+    every spinup that touched a brand-new VM would *appear* to
+    fresh-start (because rclone was missing), and the next teardown
+    would happily snapshot the empty local state OVER any real R2
+    data — silent data loss.
+
+    Round 6 of PR #555 added a bucket-reachability probe that turns
+    this into a loud rc=2, so the loop now FAILS instead of corrupting.
+    But the right fix is to ensure rclone is actually installed
+    BEFORE the probe runs, which is what this helper does.
+
+    Raises :class:`subprocess.CalledProcessError` on install failure.
+    The Ubuntu 24.04 main repo carries rclone 1.65, which is recent
+    enough for the S3/R2 operations we use.
+    """
+    check = ssh.run("command -v rclone", check=False)
+    if check.returncode == 0:
+        return False
+    install = ssh.run(
+        "sudo apt-get update -qq >/dev/null && " "sudo apt-get install -y -qq rclone >/dev/null",
         check=True,
     )
     _ = install

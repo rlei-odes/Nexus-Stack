@@ -11,7 +11,10 @@ sits above and around them:
    firewall_rules, ssh_service_token, server_ip)
 5. SSH known_hosts cleanup (``ssh-keygen -R``)
 6. ``setup.configure_ssh`` → ``setup.wait_for_ssh`` →
-   ``setup.ensure_jq``
+   ``setup.ensure_jq`` → ``setup.ensure_rclone`` (rclone MUST exist
+   before step 7 — otherwise the restore script's command-not-found
+   exits silently fresh-start, leading to silent data loss on the
+   next teardown)
 7. ``s3_restore.restore_from_s3(phase="filesystem")`` — rclone-syncs
    the FS bind-mount trees onto local SSD; fresh-start exits 0
 8. ``setup.ensure_data_dirs`` — chowns the rsync'd trees to
@@ -348,6 +351,16 @@ def run_pipeline(
 
         ssh = stack.enter_context(SSHClient("nexus"))
         _setup.ensure_jq(ssh)
+        # rclone MUST be installed before restore_from_s3 runs. Without
+        # this, the rendered restore script's `rclone lsd / rclone lsf`
+        # calls return rc=127 (command not found), which the Round-6
+        # reachability probe correctly flags as "bucket not reachable"
+        # and aborts the spinup with rc=2. The PRE-Round-6 behavior was
+        # even worse: a missing rclone silently fresh-started the spinup
+        # and the next teardown overwrote real R2 data with empty
+        # snapshots. See ensure_rclone's docstring for the full
+        # rationale.
+        _setup.ensure_rclone(ssh)
 
         # RFC 0001 cutover wire-up — split into two halves because
         # pg_restore needs the gitea-db / dify-db containers running
