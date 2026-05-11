@@ -649,6 +649,40 @@ def test_snapshot_script_rejects_unsafe_timestamp() -> None:
         )
 
 
+def test_snapshot_script_verify_logs_live_outside_workdir() -> None:
+    """The rclone-check stderr/stdout dumps MUST live OUTSIDE
+    ``$WORKDIR``. The first verify_one call compares ``$WORKDIR``
+    against S3; if the dumps lived inside $WORKDIR they'd appear
+    as untracked extras and rclone would report 'differences
+    found', failing every snapshot.
+
+    Real incident: PR #557 first end-to-end teardown surfaced this
+    after every other layer was patched — the verify gate fired
+    for the first time ever, the manifest+pg-dumps verify
+    reported 2 diffs (rclone-check.err + rclone-check.out), and
+    the snapshot aborted without flipping snapshots/latest.txt.
+    """
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(),
+    )
+    # Scratch dir for verify-phase logs must be declared separately
+    # and live outside $WORKDIR.
+    assert "LOG_DIR=/tmp/nexus-snapshot-logs" in script
+    # The rclone-check redirects must go to LOG_DIR, NOT WORKDIR.
+    assert '2>"$LOG_DIR/rclone-check.err"' in script
+    assert '"$LOG_DIR/rclone-check.out"' in script
+    # And NOTHING should write rclone-check.{err,out} into WORKDIR
+    # — the regression we're guarding against.
+    assert "WORKDIR/rclone-check" not in script
+
+
 def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> None:
     """The atomicity gate must distinguish (a) rclone-check itself
     erroring (auth/network/quota) from (b) drift found via the

@@ -601,10 +601,18 @@ def render_snapshot_script(
         f"SNAPSHOT_PREFIX={snapshot_prefix}",
         "WORKDIR=/tmp/nexus-snapshot",
         "POSTGRES_DIR=$WORKDIR/postgres",
+        # Verify-phase scratch files (rclone-check stderr/stdout)
+        # MUST live OUTSIDE $WORKDIR — verify_one writes them and
+        # the first verify_one call compares $WORKDIR vs S3. If
+        # they lived in $WORKDIR they'd appear as untracked extras
+        # and rclone would report "differences found", failing
+        # every snapshot. Took until today's first real run to
+        # surface (no test exercised the bash-level verify path).
+        "LOG_DIR=/tmp/nexus-snapshot-logs",
         "",
         'echo "→ snapshot: preparing workdir"',
-        'rm -rf "$WORKDIR"',
-        'mkdir -p "$POSTGRES_DIR"',
+        'rm -rf "$WORKDIR" "$LOG_DIR"',
+        'mkdir -p "$POSTGRES_DIR" "$LOG_DIR"',
         "",
     ]
 
@@ -807,8 +815,8 @@ def render_snapshot_script(
             # every real teardown. Capturing [2] (grep) makes drift
             # detection actually correct.
             '  rclone check "$src" "$dst" '
-            '--one-way --combined - 2>"$WORKDIR/rclone-check.err" '
-            '| tee "$WORKDIR/rclone-check.out" '
+            '--one-way --combined - 2>"$LOG_DIR/rclone-check.err" '
+            '| tee "$LOG_DIR/rclone-check.out" '
             '| grep -qE "^[-*]"',
             # CRITICAL: copy PIPESTATUS to a local array IMMEDIATELY,
             # in ONE command. Every subsequent command (including the
@@ -828,13 +836,13 @@ def render_snapshot_script(
             "  set -e",
             '  if [ "$rclone_rc" -ne 0 ]; then',
             '    echo "✗ snapshot-failed: rclone check ${label} errored (rc=$rclone_rc)" >&2',
-            '    cat "$WORKDIR/rclone-check.err" >&2 || true',
+            '    cat "$LOG_DIR/rclone-check.err" >&2 || true',
             "    verify_failed=1",
             "    return",
             "  fi",
             '  if [ "$drift_rc" -eq 0 ]; then',
             '    echo "✗ snapshot-failed: rclone check ${label} found drift" >&2',
-            '    cat "$WORKDIR/rclone-check.out" >&2',
+            '    cat "$LOG_DIR/rclone-check.out" >&2',
             "    verify_failed=1",
             "    return",
             "  fi",
