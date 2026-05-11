@@ -517,16 +517,27 @@ def render_snapshot_script(
     Steps the rendered script performs (in order, ``set -euo
     pipefail`` throughout — first failure aborts):
 
-    1. ``docker compose stop`` for every file in
+    1. ``pg_dump -F c | gzip`` for each postgres target into
+       ``/tmp/nexus-snapshot/postgres/<db>.dump.gz`` (custom
+       binary format, gzipped — works with the matching
+       ``gunzip | pg_restore`` on the spinup side). Runs FIRST
+       while the postgres containers are still running — pg_dump
+       is a client tool that requires a live server. The earlier
+       "stop first, dump second" form failed every snapshot
+       with "container is not running". pg_dump's MVCC gives a
+       consistent snapshot internally; the small window between
+       dump and stop may lose writes that happened in that gap
+       (acceptable for a teardown use case at low traffic).
+       Per-target skip if the container isn't running (``docker
+       inspect --format='{{.State.Running}}'``).
+    2. ``docker compose stop`` for every file in
        ``stop_compose_files``. Graceful drain with the default
        10s timeout: app processes finish in-flight requests and
        close DB connections cleanly. We deliberately do NOT use
        ``docker compose pause`` — that's a cgroup-freezer SIGSTOP
-       and hard-kills in-flight writes mid-transaction.
-    2. ``pg_dump -F c | gzip`` for each postgres target into
-       ``/tmp/nexus-snapshot/postgres/<db>.dump.gz`` (custom
-       binary format, gzipped — works with the matching
-       ``gunzip | pg_restore`` on the spinup side).
+       and hard-kills in-flight writes mid-transaction. Runs
+       AFTER pg_dump so the DB is up at dump time. Per-file skip
+       if the compose file isn't on disk (stack not deployed).
     3. ``rclone sync`` each rsync target's ``local_path`` into the
        timestamped R2 directory ``snapshots/<timestamp>/<s3_subpath>``.
        Only the listed targets are walked — db/ and redis/ subdirs
@@ -597,15 +608,68 @@ def render_snapshot_script(
         "",
     ]
 
+    # Order matters here. pg_dump MUST run BEFORE compose-stop,
+    # not after — ``docker compose stop`` halts the postgres
+    # container, after which ``docker exec <container> pg_dump``
+    # fails with "container is not running". The original RFC-0001
+    # design (stop → drain → dump) assumed pg_dump could read the
+    # on-disk data dir directly after a graceful stop, but pg_dump
+    # is a CLIENT tool that needs a running server. We accept the
+    # small inconsistency window (apps may write new rows between
+    # pg_dump and compose-stop) — pg_dump's MVCC snapshot is
+    # internally consistent, and the post-dump writes are simply
+    # lost on restore. For the v1.0 teardown use case (deliberate
+    # shutdown at low traffic) this is acceptable; if a future
+    # use case needs hard-stop consistency, the right answer is
+    # filesystem-level snapshot of ``/mnt/nexus-data/<stack>/db``
+    # AFTER compose-stop, not pg_dump.
+    if pg_targets:
+        lines.append('echo "→ snapshot: dumping postgres databases (online)"')
+        for pg in pg_targets:
+            container = shlex.quote(pg.container)
+            db = shlex.quote(pg.database)
+            user = shlex.quote(pg.user)
+            # File naming: ``<database>.dump.gz`` (custom binary
+            # pg_dump format, gzipped) — matches the restore-side
+            # filename and the RFC's stated S3 layout. Earlier this
+            # said ``.sql.gz`` which was misleading since the body
+            # is NOT plain SQL (``-F c`` produces a binary archive).
+            dump_file = f"$POSTGRES_DIR/{pg.database}.dump.gz"
+            # Skip if the postgres container isn't RUNNING on this
+            # server. Two distinct skip cases:
+            #   - container doesn't exist (stack not deployed)
+            #   - container exists but is stopped (previous crashed
+            #     run, or operator stopped it manually)
+            # Both have the same outcome: no dump captured. We
+            # explicitly check ``.State.Running == "true"`` rather
+            # than just ``docker inspect`` because the latter
+            # succeeds for stopped containers, and we already hit
+            # that bug once (compose-stop happened before pg_dump
+            # in an earlier revision, leaving the container stopped
+            # but inspectable).
+            lines.append(
+                f"if [ \"$(docker inspect --format='{{{{.State.Running}}}}' "
+                f'{container} 2>/dev/null)" = "true" ]; then',
+            )
+            lines.append(
+                f"  docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
+            )
+            lines.append("else")
+            lines.append(
+                f'  echo "  (skip: container {pg.container} not running — stack not deployed or stopped)"',
+            )
+            lines.append("fi")
+        lines.append("")
+
     if stop_files:
         lines.append('echo "→ snapshot: stopping compose stacks (graceful 10s drain)"')
         for compose_file in stop_files:
             quoted = shlex.quote(compose_file)
-            # ``docker compose stop`` (not ``pause``) — the latter is
+            # ``docker compose stop`` (not ``pause``) — ``pause`` is
             # SIGSTOP via the cgroup freezer and hard-kills in-flight
             # writes. ``stop`` sends SIGTERM with a 10s grace window
-            # for the container to flush + close DB connections
-            # cleanly.
+            # for the container to flush + close. Runs AFTER pg_dump
+            # above (so the DB is still up when pg_dump runs).
             #
             # The previous form used a blanket ``|| echo "non-fatal"``
             # which would swallow every non-zero exit — missing
@@ -625,26 +689,13 @@ def render_snapshot_script(
             # the snapshot on any non-zero exit, surfacing missing-
             # compose-file / daemon-down / YAML-syntax errors as
             # the real failures they are.
-            #
-            # An earlier revision of this block evaluated only the
-            # stdout via ``[ -n "$(... 2>/dev/null)" ]`` — that
-            # silently mapped every ps failure (which produces
-            # empty stdout) to "stack already down" and continued
-            # the snapshot while services were still running.
-            # We now capture ps's exit code explicitly via
-            # ``set +e`` so the empty-stdout-from-failure case
-            # can't masquerade as the empty-stdout-from-no-
-            # containers case.
             lines.append(f"COMPOSE_FILE={quoted}")
             # Skip cleanly if the compose file isn't on disk —
             # ``stop_compose_files`` is a static list of stacks the
             # persistence layer KNOWS ABOUT; whether a given stack
             # is actually deployed on this server is decided by D1
             # (enabled_services). A stack absent from disk just
-            # means it isn't enabled here, not an error. Treating
-            # this as benign-skip (with an explicit log line so
-            # operators see it) keeps the snapshot deterministic
-            # across partially-deployed configurations.
+            # means it isn't enabled here, not an error.
             lines.append('if [ ! -f "$COMPOSE_FILE" ]; then')
             lines.append(
                 f'  echo "  (skip: compose file {compose_file} not on disk — stack not deployed)"',
@@ -661,33 +712,6 @@ def render_snapshot_script(
             lines.append("  else")
             lines.append('    docker compose -f "$COMPOSE_FILE" stop')
             lines.append("  fi")
-            lines.append("fi")
-        lines.append("")
-
-    if pg_targets:
-        lines.append('echo "→ snapshot: dumping postgres databases"')
-        for pg in pg_targets:
-            container = shlex.quote(pg.container)
-            db = shlex.quote(pg.database)
-            user = shlex.quote(pg.user)
-            # File naming: ``<database>.dump.gz`` (custom binary
-            # pg_dump format, gzipped) — matches the restore-side
-            # filename and the RFC's stated S3 layout. Earlier this
-            # said ``.sql.gz`` which was misleading since the body
-            # is NOT plain SQL (``-F c`` produces a binary archive).
-            dump_file = f"$POSTGRES_DIR/{pg.database}.dump.gz"
-            # Same "stack not deployed" handling as the compose-stop
-            # block: skip if the postgres container isn't even
-            # running on this server, so partially-deployed stacks
-            # don't fail teardown.
-            lines.append(f"if docker inspect {container} >/dev/null 2>&1; then")
-            lines.append(
-                f"  docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
-            )
-            lines.append("else")
-            lines.append(
-                f'  echo "  (skip: container {pg.container} not present — stack not deployed)"',
-            )
             lines.append("fi")
         lines.append("")
 

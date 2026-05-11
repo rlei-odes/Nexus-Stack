@@ -470,10 +470,14 @@ def test_snapshot_script_has_bash_safety_pragmas() -> None:
 
 
 def test_snapshot_script_orders_phases_correctly() -> None:
-    """The phase order is the atomicity contract: stop → dump →
-    upload → verify → point latest. Reorder would silently break
-    the guarantee that ``snapshots/latest.txt`` only updates after
-    upload succeeded.
+    """The phase order is the atomicity contract: **dump → stop →
+    upload → verify → point latest**. Note dump comes BEFORE stop —
+    pg_dump is a client tool that requires the postgres container
+    running, so stopping it first leaves dump with nothing to
+    connect to. The earlier "stop first, dump second" form failed
+    every real teardown with "container is not running". Reorder
+    would silently break the guarantee that ``snapshots/latest.txt``
+    only updates after upload succeeded.
 
     We use ``docker compose stop`` (graceful 10s drain), not
     ``pause`` (SIGSTOP via cgroup freezer, hard-kills in-flight
@@ -497,12 +501,14 @@ def test_snapshot_script_orders_phases_correctly() -> None:
         stop_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
     )
     # Locate each phase via a stable substring + assert ordering.
-    stop_pos = script.find("compose -f")
+    # **dump → stop** is the load-bearing ordering: pg_dump needs
+    # the container running, so it must come before compose-stop.
     dump_pos = script.find("pg_dump")
+    stop_pos = script.find("compose -f")
     upload_pos = script.find("rclone sync")
     check_pos = script.find("rclone check")
     latest_pos = script.find("snapshots/latest.txt")
-    assert stop_pos < dump_pos < upload_pos < check_pos < latest_pos
+    assert dump_pos < stop_pos < upload_pos < check_pos < latest_pos
     # Regression: stop, not pause, AND no `... || echo` blanket
     # error-swallowing (per CLAUDE.md "Never silently swallow
     # errors in critical operations"). The current implementation
@@ -570,8 +576,14 @@ def test_snapshot_script_skips_compose_stop_when_file_missing() -> None:
     # missing container today produces an opaque "Error: No such
     # container" with rc=1 which set -e turns into a teardown
     # abort.
-    assert "docker inspect gitea-db" in script
-    assert "container dify-db not present" in script
+    # pg_dump must guard with `docker inspect --format='{{.State.Running}}'`
+    # — a missing container (not deployed) AND a stopped container
+    # (e.g. crashed earlier) both produce non-"true" output, both
+    # land in the skip branch. Bare `docker inspect <c>` would
+    # incorrectly succeed for stopped containers, then `docker
+    # exec` would fail with rc=1 and abort the snapshot.
+    assert "docker inspect --format='{{.State.Running}}' gitea-db" in script
+    assert "container dify-db not running" in script
     # rsync sync must guard with `[ -d <path> ]`. The verify_one
     # function (called for every rs_target) must short-circuit on
     # missing source too — verifying a non-existent local dir
