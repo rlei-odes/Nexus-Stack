@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.56.0...v0.57.0) (2026-05-11)
+
+
+### 🚀 Features
+
+* **deploy:** Add s3_persistence foundation for RFC 0001 ([f4442c9](https://github.com/stefanko-ch/Nexus-Stack/commit/f4442c94227ca029ace3fa672f6e1b5a68c4bbbf))
+* **deploy:** Atomic teardown snapshot to R2 (RFC 0001 PR-4) ([1493c50](https://github.com/stefanko-ch/Nexus-Stack/commit/1493c50612158d542aabac8e94e40f90179c7cad))
+* **deploy:** Atomic teardown snapshot to R2 (RFC 0001 PR-4) ([7fba6da](https://github.com/stefanko-ch/Nexus-Stack/commit/7fba6dac0c8553e650729ed66a04b5f393816bb0))
+* **deploy:** Complete S3-persistence cutover (RFC 0001) ([aba488c](https://github.com/stefanko-ch/Nexus-Stack/commit/aba488cf5d8ede36864fb4bfa766c800304e8dd8))
+* **deploy:** Complete S3-persistence cutover (RFC 0001) ([95341de](https://github.com/stefanko-ch/Nexus-Stack/commit/95341de43c9bf6eecfc08407b27df68f6e22c34c))
+* **deploy:** RFC 0001 PR-1 of 7 — s3_persistence foundation (module + scripts + tests) ([e3ce61c](https://github.com/stefanko-ch/Nexus-Stack/commit/e3ce61c59d0ad52fe1376331672881e39cbb6c8f))
+* **deploy:** RFC 0001 PR-2 of 7 — pipeline-side s3 restore orchestration ([fa743d5](https://github.com/stefanko-ch/Nexus-Stack/commit/fa743d576c738ef8d83d95df217ce7ca6d8efcaf))
+* **deploy:** RFC 0001 PR-2 of 7 — pipeline-side s3 restore orchestration ([3d8aa3a](https://github.com/stefanko-ch/Nexus-Stack/commit/3d8aa3a4b34ff425d604d8d711a706f1e75b9ca7))
+* **deploy:** Switch s3_persistence foundation from Hetzner OS to Cloudflare R2 ([d94a35d](https://github.com/stefanko-ch/Nexus-Stack/commit/d94a35d8e7ea618fca6705d3b816efeae41ef70f))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Harden SSH+cloud-init readiness gate before tunnel install ([0834664](https://github.com/stefanko-ch/Nexus-Stack/commit/0834664f246ccfe69ada7326daa29f9ef2d9ed64))
+* **ci:** Lowercase PERSISTENCE_STACK_SLUG before s3-snapshot ([6ccd4a6](https://github.com/stefanko-ch/Nexus-Stack/commit/6ccd4a60feb68d49c69aa813bcf80c8ea7a177a4))
+* **ci:** teardown.yml — install SSH key from secrets, not ephemeral ([d335066](https://github.com/stefanko-ch/Nexus-Stack/commit/d3350663ee0ae8dc289f658601011a22e772eceb))
+* **ci:** Zero-config R2 persistence — derive env from existing secrets ([e57e1c5](https://github.com/stefanko-ch/Nexus-Stack/commit/e57e1c5edcf75af1f368773283587ef8924bf88b))
+* **deploy:** Address 2 missed [#551](https://github.com/stefanko-ch/Nexus-Stack/issues/551) review comments — Hetzner-egress doc leftover + ps-q exit-code gap ([0acc2f9](https://github.com/stefanko-ch/Nexus-Stack/commit/0acc2f9f53f9150b1f4ba4bedd723d037c81b118))
+* **deploy:** Address 4 missed [#551](https://github.com/stefanko-ch/Nexus-Stack/issues/551) review comments + 2 PIPESTATUS comments ([d2c84bb](https://github.com/stefanko-ch/Nexus-Stack/commit/d2c84bb0c17c700fb2021005344ad35af179fdc6))
+* **deploy:** Address PR [#551](https://github.com/stefanko-ch/Nexus-Stack/issues/551) review round 3 — SQL quoting, full verify, charset gaps ([a372ae2](https://github.com/stefanko-ch/Nexus-Stack/commit/a372ae2bc851a02cf90d0e76132463dee56f84e2))
+* **deploy:** Address PR review comments — clarify 'atomic' wording on rclone config write ([0b8c968](https://github.com/stefanko-ch/Nexus-Stack/commit/0b8c968606ba24b11f9f4f77fc5ee55f202a62c4))
+* **deploy:** Address PR review comments — doc wording fixes ([44ad76e](https://github.com/stefanko-ch/Nexus-Stack/commit/44ad76e1ec3f4001d7d8799b9a39a9085db35cbe))
+* **deploy:** Address PR review comments — docstring drift + dismiss-proof mkdir ([dca0802](https://github.com/stefanko-ch/Nexus-Stack/commit/dca0802d37b67a3fe9b10d38634145556db15956))
+* **deploy:** Address PR review comments — docstring drift on Skipped + CLI env ([d21be7c](https://github.com/stefanko-ch/Nexus-Stack/commit/d21be7cbd6546d359c9903c4f984b71f04c5f8f6))
+* **deploy:** Address PR review comments — mypy strict + CodeQL false-positive defensive rename ([381dfec](https://github.com/stefanko-ch/Nexus-Stack/commit/381dfec9e92648041c68e3647026fa32cd016e86))
+* **deploy:** Address PR review comments — round 2 ([94793c9](https://github.com/stefanko-ch/Nexus-Stack/commit/94793c9ea8020add740b2a3519d30c20c5d4c59d))
+* **deploy:** Address PR review comments — round 2 (errexit-robust lsf check) ([a02c7c0](https://github.com/stefanko-ch/Nexus-Stack/commit/a02c7c09ff2d9eb9c8f713bb6f4a7754cd506d9d))
+* **deploy:** Address PR review comments — round 3 (list-parent-prefix form) ([c450aae](https://github.com/stefanko-ch/Nexus-Stack/commit/c450aae25598abdc60a518c1840fa5bbea3ecf18))
+* **deploy:** Address PR review comments — round 4 (split error echo) ([c3dcb74](https://github.com/stefanko-ch/Nexus-Stack/commit/c3dcb74b9876c39622efd82765cbd000116e7753))
+* **deploy:** Address PR review comments — round 6 ([bdd5456](https://github.com/stefanko-ch/Nexus-Stack/commit/bdd54565ac21cd3f8109ad0283b36f38fb475a00))
+* **deploy:** Address PR review comments — short-circuit + targeted error catch ([718934b](https://github.com/stefanko-ch/Nexus-Stack/commit/718934baf083b9502c597e3a0811b53e26fbe938))
+* **deploy:** Address PR review comments — split restore FS/PG, fix data-loss footguns ([31975b5](https://github.com/stefanko-ch/Nexus-Stack/commit/31975b5c1af168bf88f0e69da05a2b776589acf1))
+* **deploy:** Address PR review comments on s3_persistence foundation ([91afaa2](https://github.com/stefanko-ch/Nexus-Stack/commit/91afaa296995dd0ca5066ffd72b55d1d6856a2f8))
+* **deploy:** Address PR review round 3 — path bug + 4 correctness drifts ([b7608e4](https://github.com/stefanko-ch/Nexus-Stack/commit/b7608e4d444dda6837fc63e42a2c2cea73798b83))
+* **deploy:** Capture PIPESTATUS into local array + split copyto echo ([9b13a8e](https://github.com/stefanko-ch/Nexus-Stack/commit/9b13a8e56473782d6948d04227094f3c20f2ba97))
+* **deploy:** Detect missing latest.txt via lsf stdout (rclone 1.60 quirk) ([576a201](https://github.com/stefanko-ch/Nexus-Stack/commit/576a201fbb0b3e7741c73ae0267d59d24ded5547))
+* **deploy:** Forward ensure_data_dirs script output to local stderr ([61aef9f](https://github.com/stefanko-ch/Nexus-Stack/commit/61aef9f1fb5716b7d6918b4844a48bb3fa9e7ba3))
+* **deploy:** Install rclone before restore — fixes silent fresh-start bug ([9a7d812](https://github.com/stefanko-ch/Nexus-Stack/commit/9a7d812912f2817e5c084692ad9e53cd0fe01441))
+* **deploy:** Install rclone before restore — fixes silent fresh-start bug ([63550be](https://github.com/stefanko-ch/Nexus-Stack/commit/63550be5abadf824f66958e375242d83351356cc))
+* **deploy:** Move rclone-check logs outside WORKDIR + ruff format ([d680c68](https://github.com/stefanko-ch/Nexus-Stack/commit/d680c68ddfc3ec437e5ca16d63b9568e38de7ab5))
+* **deploy:** pg_dump before compose-stop + tighter container check ([2e0c5e2](https://github.com/stefanko-ch/Nexus-Stack/commit/2e0c5e2490472d3253b6d71a2be3e2f68e62e9b9))
+* **deploy:** PIPESTATUS[1]→[2] for `rclone|tee|grep` drift detection + 2 docstring fixes ([a0148bd](https://github.com/stefanko-ch/Nexus-Stack/commit/a0148bd9d8a5fc3c8a707266e226e25620724a2f))
+* **deploy:** R2-persistence cutover follow-ups (rclone-lsf quirk + teardown SSH) ([4398574](https://github.com/stefanko-ch/Nexus-Stack/commit/4398574229e6814cac90e94e07d5e1b81f3509b8))
+* **deploy:** Snapshot resilient against not-deployed stacks + CI fixes ([98314e6](https://github.com/stefanko-ch/Nexus-Stack/commit/98314e67a58d1f0aecac57c7007c26dd26400154))
+* **deploy:** Symmetric persistence-bucket bootstrap + destroy-all docs ([bf73c74](https://github.com/stefanko-ch/Nexus-Stack/commit/bf73c7448af50563d367e9c395ba1a4afd940e78))
+* **deploy:** Symmetric pg_restore skip on missing dump/container ([fe3470e](https://github.com/stefanko-ch/Nexus-Stack/commit/fe3470e51cf9de82d53cf4decee56e01b4870172))
+* **gitea:** Add collaborator before fork to avoid 404 on private mirror ([1398f66](https://github.com/stefanko-ch/Nexus-Stack/commit/1398f6603a6922a7d485b986da10e825544631ae))
+
+
+### 📚 Documentation
+
+* Address PR review comments — round 8 (docstring + doc drift) ([30cb5e1](https://github.com/stefanko-ch/Nexus-Stack/commit/30cb5e144ee80794c0c5ae15c5dca395612eb8c7))
+* **deploy:** Address PR review round 4 — module docstring drift ([17dae1a](https://github.com/stefanko-ch/Nexus-Stack/commit/17dae1a9fe1313f324c6f639c072157e11caf5ef))
+* **deploy:** Sync docstrings + parameter names with the actual flow ([819921b](https://github.com/stefanko-ch/Nexus-Stack/commit/819921ba6484f2b59ee24e91bd6f47452c5a03ab))
+* Document pre-commit hook installation as required setup ([374be94](https://github.com/stefanko-ch/Nexus-Stack/commit/374be94eabd31b0a988708507d9615f565aceb59))
+* **rfc:** Add S3-backed persistence proposal (RFC 0001) ([b10d4fe](https://github.com/stefanko-ch/Nexus-Stack/commit/b10d4fe968d6bc3195b408710adbf59ab6d359cc))
+* **rfc:** Add S3-backed persistence proposal (RFC 0001) — Cloudflare R2 ([488258f](https://github.com/stefanko-ch/Nexus-Stack/commit/488258f469224f423ee4705b5dc8cdf82945ab94))
+* **rfc:** Address 2 missed findings — multipart-threshold accuracy + rsync→rclone terminology ([667afb1](https://github.com/stefanko-ch/Nexus-Stack/commit/667afb1ff48bc7a3eafbd3d6b7cd612f76d29aa4))
+* **rfc:** Address 2 missed Round-3 findings — Q7 vs Decision-[#6](https://github.com/stefanko-ch/Nexus-Stack/issues/6) conflict, versioning+lifecycle code-changes ([c1f0370](https://github.com/stefanko-ch/Nexus-Stack/commit/c1f03702c6c3dd2eecaca1056eb61db34d28610a))
+* **rfc:** Address 3 missed Round-3 findings — Hetzner-OS leftovers in Education list + Open Q6/Q7 ([541a1f7](https://github.com/stefanko-ch/Nexus-Stack/commit/541a1f7e21d533931f0ec621c6750896a5adb289))
+* **rfc:** Address PR [#550](https://github.com/stefanko-ch/Nexus-Stack/issues/550) review round 3 — factual corrections ([0c85be7](https://github.com/stefanko-ch/Nexus-Stack/commit/0c85be7b6438650b3d4bd5dbca900464ec756d76))
+* **rfc:** Address PR review comments on RFC 0001 ([4f9a0a8](https://github.com/stefanko-ch/Nexus-Stack/commit/4f9a0a85964cc1e47842ce2e5c03ba09ff42eac6))
+* **rfc:** Address PR review round 2 — internal consistency across the RFC ([fc5217e](https://github.com/stefanko-ch/Nexus-Stack/commit/fc5217e6fec7eab293487914ca4ddeee04ce1e36))
+* **rfc:** Address RFC PR review round 4 — internal consistency after R2 switch ([cd30428](https://github.com/stefanko-ch/Nexus-Stack/commit/cd304284d0b7b020ed152c56dc5a6b426fd1529e))
+* **rfc:** Fix S3 path inconsistencies in spinup/teardown/Phase-B flows ([f7136fd](https://github.com/stefanko-ch/Nexus-Stack/commit/f7136fd4a083b686f06cc1e1f0fa17c233557fde))
+* **rfc:** Resolve open decisions — Hetzner S3, per-stack bucket, shell-script provisioning, defer native backends to v1.1, 7d+4w retention, opt-in destroy-data ([15b810f](https://github.com/stefanko-ch/Nexus-Stack/commit/15b810f26b72b3d34626cda0801264e355166b1a))
+* **rfc:** Switch storage provider from Hetzner Object Storage to Cloudflare R2 ([9c34e9a](https://github.com/stefanko-ch/Nexus-Stack/commit/9c34e9ae67d9e5ffa4965c1c5f3102bc34b18c24))
+* **stacks:** Add usage section to CloudBeaver docs ([a165096](https://github.com/stefanko-ch/Nexus-Stack/commit/a16509613d98fa6ccaadfc75edcc112af0a1ea0c))
+* **stacks:** Add usage section to CloudBeaver docs ([47104b2](https://github.com/stefanko-ch/Nexus-Stack/commit/47104b2afad9a11abf8a82a9055d0b130e7a7718))
+* **tutorials:** Add dlt tutorial series for Postgres ingestion ([b04969f](https://github.com/stefanko-ch/Nexus-Stack/commit/b04969fe5ceee4738721a4a0c9a61a1c3b25f047))
+* **tutorials:** Add dlt tutorial series for Postgres ingestion ([daac2e4](https://github.com/stefanko-ch/Nexus-Stack/commit/daac2e4891d6f30df683751eb3748e255ca043be))
+* **tutorials:** Address PR review feedback ([62f6ee7](https://github.com/stefanko-ch/Nexus-Stack/commit/62f6ee72576ab44ac21dc3ca25a809ec92eeed04))
+
 ## [0.56.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.55.0...v0.56.0) (2026-05-10)
 
 
