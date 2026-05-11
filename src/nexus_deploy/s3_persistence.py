@@ -41,14 +41,19 @@ Public surface:
   ``~/.config/rclone/rclone.conf`` on the server. Idempotent — the
   block is identified by name and replaced wholesale on every
   spinup so credential rotation is a single render away.
-* :func:`render_snapshot_script` — bash that pauses the relevant
-  docker compose stacks, runs ``pg_dump`` for each Postgres
-  database we care about, rsyncs ``/var/lib/nexus-data/`` to S3,
-  writes the manifest, and exits with rc=0 only if every
-  ``rclone check`` passed. Caller is responsible for treating
-  rc≠0 as "abort teardown — leave the server up".
-* :func:`render_restore_script` — bash that reads the latest
-  manifest, rclone-syncs the snapshot to ``/var/lib/nexus-data/``,
+* :func:`render_snapshot_script` — bash that stops the relevant
+  docker compose stacks (graceful drain, not ``pause``), runs
+  ``pg_dump`` for each Postgres database we care about, rsyncs
+  ``/var/lib/nexus-data/`` to S3, writes the manifest, and exits
+  with rc=0 only if every ``rclone check`` passed. Caller is
+  responsible for treating rc≠0 as "abort teardown — leave the
+  server up".
+* :func:`render_restore_script` — bash that reads
+  ``snapshots/latest.txt`` (a single-line pointer to the active
+  snapshot timestamp; v1.0 does NOT download/parse
+  ``manifest.json`` — integrity is checked at snapshot-write
+  time via ``rclone check``, not on restore), then rclone-syncs
+  the snapshot tree to ``/var/lib/nexus-data/``,
   and runs ``pg_restore`` for each Postgres dump. Idempotent on
   the empty-S3 case (first-time spinup).
 
@@ -77,10 +82,16 @@ Design choices for v1.0 (see RFC 0001 in
   v1.0 keeps the docker-compose layout untouched and drives
   persistence purely via rclone sync of the bind-mount directory.
 * **Snapshot-versioning strategy**: timestamped directories under
-  ``snapshots/<ISO8601>/`` plus a ``snapshots/latest`` pointer
+  ``snapshots/<ISO8601>/`` plus a ``snapshots/latest.txt`` pointer
   file. Retention (30-day NoncurrentVersionExpiration via R2
-  lifecycle policy) is enforced at bucket-creation time by the
-  Tofu resource — out of scope for this module.
+  lifecycle policy) is enforced by ``scripts/init-s3-bucket.sh``
+  in v1.0 — the script enables bucket versioning and applies the
+  lifecycle rule via the S3 API at bucket-bootstrap time. v1.1
+  may migrate this to a Tofu resource once the
+  ``cloudflare/cloudflare`` provider grows a first-class R2
+  lifecycle resource. Either way, it stays out of scope for
+  this module — the module only writes objects, never configures
+  the bucket itself.
 """
 
 from __future__ import annotations
@@ -674,12 +685,22 @@ def render_snapshot_script(
             '  local dst="$2"',
             '  local label="$3"',
             "  set +e",
+            # Pipeline is three-stage: rclone | tee | grep. PIPESTATUS
+            # indexes accordingly:
+            #   [0] = rclone (the actual integrity check)
+            #   [1] = tee   (just buffering output; ~always succeeds)
+            #   [2] = grep  (0 = drift markers found, 1 = clean)
+            # An earlier revision captured drift_rc=[1] (tee), which
+            # always succeeds, so the gate effectively reported
+            # "drift found" on every snapshot and would have aborted
+            # every real teardown. Capturing [2] (grep) makes drift
+            # detection actually correct.
             '  rclone check "$src" "$dst" '
             '--one-way --combined - 2>"$WORKDIR/rclone-check.err" '
             '| tee "$WORKDIR/rclone-check.out" '
             '| grep -qE "^[-*]"',
-            "  local drift_rc=${PIPESTATUS[1]}",
             "  local rclone_rc=${PIPESTATUS[0]}",
+            "  local drift_rc=${PIPESTATUS[2]}",
             "  set -e",
             '  if [ "$rclone_rc" -ne 0 ]; then',
             '    echo "✗ snapshot-failed: rclone check ${label} errored (rc=$rclone_rc)" >&2',

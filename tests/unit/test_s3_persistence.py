@@ -584,8 +584,14 @@ def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> Non
     )
     assert "rclone check" in script
     # Both PIPESTATUS captures must be present in the verify_one helper.
+    # Pipeline is `rclone | tee | grep`, so PIPESTATUS indexes are:
+    #   [0] = rclone (the integrity check), [1] = tee (always 0),
+    #   [2] = grep (0 = drift markers found, 1 = clean).
+    # An earlier revision had drift_rc=[1] (tee) which made the gate
+    # report "drift" on every snapshot — locking in [2] (grep) here
+    # is the regression test.
     assert "rclone_rc=${PIPESTATUS[0]}" in script
-    assert "drift_rc=${PIPESTATUS[1]}" in script
+    assert "drift_rc=${PIPESTATUS[2]}" in script
     # And both abort messages must distinguish the two modes.
     assert "snapshot-failed: rclone check ${label} errored" in script
     assert "snapshot-failed: rclone check ${label} found drift" in script
