@@ -229,6 +229,16 @@ jobs:
           DOMAIN_SLUG=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')
           export PERSISTENCE_S3_BUCKET="nexus-${DOMAIN_SLUG}-persistence"
 
+          # Lowercase PERSISTENCE_STACK_SLUG — the env-var value
+          # from the step's env: block falls back to
+          # github.event.repository.name (e.g. "Nexus-Stack" with
+          # a capital N), but the s3_persistence validator enforces
+          # S3 bucket-name shape on the slug (lowercase only).
+          # GitHub Actions has no lowercase filter on workflow-
+          # expression interpolations, so the cast happens here in
+          # the shell before the subcommand runs.
+          export PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy s3-snapshot
 

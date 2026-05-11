@@ -201,7 +201,7 @@ jobs:
       - name: Create R2 credentials from secrets
         run: |
           mkdir -p tofu
-          
+
           # Use inputs from setup-control-plane if available, otherwise fall back to secrets
           # This allows initial-setup.yaml to pass freshly created credentials
           if [ -n "${{ inputs.r2_access_key_id }}" ] && [ -n "${{ inputs.r2_secret_access_key }}" ]; then
@@ -216,7 +216,7 @@ jobs:
             # Trim whitespace and newlines from secrets to avoid auth issues
             R2_ACCESS_KEY_ID=$(echo -n "${{ secrets.R2_ACCESS_KEY_ID }}" | tr -d '[:space:]')
             R2_SECRET_ACCESS_KEY=$(echo -n "${{ secrets.R2_SECRET_ACCESS_KEY }}" | tr -d '[:space:]')
-            
+
             # Debug: Check if secrets are available (without exposing values)
             if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ]; then
               echo "⚠️  R2 credentials from secrets are empty"
@@ -232,7 +232,7 @@ jobs:
               echo "   or manually set R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in GitHub Settings → Secrets → Actions."
             fi
           fi
-          
+
           # Validate credentials are not empty
           if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ]; then
             echo "❌ R2 credentials are empty!"
@@ -240,11 +240,11 @@ jobs:
             echo "   or set R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in GitHub Settings → Secrets → Actions."
             exit 1
           fi
-          
+
           # Generate dynamic bucket name from domain
           BUCKET_NAME=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')-terraform-state
           echo "📦 Using bucket: $BUCKET_NAME"
-          
+
           cat > tofu/.r2-credentials << EOF
           R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}"
           R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}"
@@ -258,7 +258,7 @@ jobs:
           bucket = "${BUCKET_NAME}"
           EOF
           sed -i 's/^          //' tofu/backend.hcl
-          
+
           echo "✅ R2 credentials file created"
 
       - name: Generate config.tfvars
@@ -285,7 +285,7 @@ jobs:
           github_repo          = "${{ github.event.repository.name }}"
           EOF
           sed -i 's/^          //' tofu/stack/config.tfvars
-          
+
           # Add Docker Hub credentials if provided (optional)
           if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
             cat >> tofu/stack/config.tfvars << EOF
@@ -334,12 +334,12 @@ jobs:
           else
             echo "⚠️  Hetzner Object Storage not configured (LakeFS will need manual setup)"
           fi
-          
+
           # Generate services config from D1 (single source of truth)
           # If enabled_services input is provided (from Control Plane), use it
           # Otherwise, read from D1 database
           ENABLED_SERVICES="${{ inputs.enabled_services }}"
-          
+
           if [ -n "$ENABLED_SERVICES" ]; then
             echo "📋 Using services from Control Plane: $ENABLED_SERVICES"
           else
@@ -349,14 +349,14 @@ jobs:
             ENABLED_SERVICES=$(npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
               --command "SELECT name FROM services WHERE enabled = 1" 2>/dev/null \
               | jq -r '.[0].results | map(.name) | join(",")' 2>/dev/null || echo "")
-            
+
             if [ -n "$ENABLED_SERVICES" ]; then
               echo "📋 Enabled services from D1: $ENABLED_SERVICES"
             else
               echo "📋 No services in D1 yet - core services will be enabled by default"
             fi
           fi
-          
+
           # Sync firewall rules from services.yaml to D1 BEFORE reading them
           # This ensures dns_record and label changes are applied before Tofu reads them
           D1_DATABASE_NAME="nexus-${DOMAIN//./-}-db"
@@ -647,6 +647,18 @@ jobs:
           DOMAIN_SLUG=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')
           export PERSISTENCE_S3_BUCKET="nexus-${DOMAIN_SLUG}-persistence"
 
+          # Lowercase PERSISTENCE_STACK_SLUG — the env-var value
+          # falls back to github.event.repository.name (e.g.
+          # "Nexus-Stack" with capital N), but the s3_persistence
+          # validator enforces S3 bucket-name shape on the slug
+          # (lowercase only). GitHub Actions has no lowercase
+          # filter on workflow-expression interpolations, so the
+          # cast happens here in the shell. Restore today doesn't
+          # validate stack_slug so this would only surface on
+          # teardown — but keeping the two sides symmetric is
+          # cheap insurance.
+          export PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy run-pipeline
 
@@ -664,32 +676,32 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
         run: |
           echo "📝 Writing infrastructure config to D1..."
-          
+
           # Get D1 database name from control-plane state
           cd tofu/control-plane
           source ../.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-          
+
           # Initialize control-plane state to read D1 database name
           tofu init -backend-config=../backend.hcl >/dev/null 2>&1 || true
           D1_DATABASE_NAME=$(tofu output -raw d1_database_name 2>/dev/null || echo "")
           cd ../..
-          
+
           if [ -z "$D1_DATABASE_NAME" ]; then
             echo "⚠️  Could not get D1 database name - skipping config write"
             exit 0
           fi
-          
+
           # Server config values
           SERVER_TYPE="${{ vars.SERVER_TYPE || 'cx43' }}"
           SERVER_LOCATION="${{ vars.SERVER_LOCATION || 'hel1' }}"
-          
+
           # Escape values for safe SQL insertion (single quotes doubled)
           ESCAPED_SERVER_TYPE=${SERVER_TYPE//\'/\'\'}
           ESCAPED_SERVER_LOCATION=${SERVER_LOCATION//\'/\'\'}
           ESCAPED_DOMAIN=${DOMAIN//\'/\'\'}
-          
+
           # Write config to D1
           npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_type', '$ESCAPED_SERVER_TYPE', datetime('now'))"
           npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('server_location', '$ESCAPED_SERVER_LOCATION', datetime('now'))"
@@ -795,7 +807,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "🔄 Redeploying Control Plane to activate new secrets..."
-          
+
           cd tofu/control-plane
           source ../.r2-credentials
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
@@ -898,7 +910,7 @@ jobs:
           echo "📋 Control Panel: https://control.${{ secrets.DOMAIN }}"
           echo "   (Manage services, view URLs, and access settings)"
           echo ""
-      
+
       - name: Sync deployed state to D1
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -951,11 +963,11 @@ jobs:
             fi
 
             echo "📧 Sending stack online email..."
-            
+
             EMAIL_HTML='<div style="font-family:monospace;background:#0a0a0f;color:#00ff88;padding:20px"><h1 style="color:#00ff88">✅ Nexus-Stack is Online</h1><p>Your stack is back online at <strong>DOMAIN_PLACEHOLDER</strong></p><h2>🔗 Quick Links</h2><ul><li><a href="https://control.DOMAIN_PLACEHOLDER" style="color:#00ff88">Control Panel</a> - Manage services &amp; view URLs</li></ul><p style="color:#999;font-size:12px;margin-top:1rem">Need credentials? Click "Send Credentials" in the Control Panel.</p></div>'
-            
+
             EMAIL_HTML="${EMAIL_HTML//DOMAIN_PLACEHOLDER/$DOMAIN}"
-            
+
             # Build email: User as primary recipient, Admin in CC
             if [ -n "$USER_EMAIL" ]; then
               JSON_PAYLOAD=$(jq -n \
@@ -973,12 +985,12 @@ jobs:
                 --arg html "$EMAIL_HTML" \
                 '{from: $from, to: [$to], subject: $subject, html: $html}')
             fi
-            
+
             HTTP_STATUS=$(curl -s -o /tmp/resend_response.txt -w "%{http_code}" -X POST 'https://api.resend.com/emails' \
               -H "Authorization: Bearer $RESEND_API_KEY" \
               -H "Content-Type: application/json" \
               -d "$JSON_PAYLOAD")
-            
+
             if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
               if [ -n "$USER_EMAIL" ]; then
                 echo "✅ Stack online email sent to $USER_EMAIL (cc: $ADMIN_EMAIL)"
