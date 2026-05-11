@@ -11,10 +11,13 @@ sits above and around them:
    firewall_rules, ssh_service_token, server_ip)
 5. SSH known_hosts cleanup (``ssh-keygen -R``)
 6. ``setup.configure_ssh`` → ``setup.wait_for_ssh`` →
-   ``setup.ensure_jq`` → ``setup.ensure_rclone`` (rclone MUST exist
-   before step 7 — otherwise the restore script's command-not-found
-   exits silently fresh-start, leading to silent data loss on the
-   next teardown)
+   ``setup.ensure_jq`` → ``setup.ensure_rclone``. rclone MUST be
+   installed before step 7 — otherwise the Round-6 bucket-
+   reachability probe sees rc=127 (command not found) and aborts
+   the spinup with rc=2. (Historical: pre-Round-6 the same
+   missing-rclone case silently fresh-started instead, leading
+   to data loss on the next teardown — see ensure_rclone's
+   docstring.)
 7. ``s3_restore.restore_from_s3(phase="filesystem")`` — rclone-syncs
    the FS bind-mount trees onto local SSD; fresh-start exits 0
 8. ``setup.ensure_data_dirs`` — chowns the rsync'd trees to

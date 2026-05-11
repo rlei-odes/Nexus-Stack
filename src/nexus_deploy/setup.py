@@ -480,7 +480,7 @@ def ensure_rclone(ssh: SSHClient) -> bool:
     if check.returncode == 0:
         return False
     install = ssh.run(
-        "sudo apt-get update -qq >/dev/null && " "sudo apt-get install -y -qq rclone >/dev/null",
+        "sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq rclone >/dev/null",
         check=True,
     )
     _ = install
