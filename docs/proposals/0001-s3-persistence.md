@@ -13,7 +13,7 @@ Replace the per-stack Hetzner Block Storage volume with **Hetzner Object Storage
 
 ### The current wedge
 
-Every Nexus-Stack instance has one persistent Hetzner Block Storage volume mounted at `/mnt/nexus-data/`. The volume is created once at control-plane setup and pinned to a specific Hetzner location (typically `fsn1`). On every spinup the server is provisioned and the existing volume is attached.
+Every Nexus-Stack instance has one persistent Hetzner Block Storage volume mounted at `/mnt/nexus-data/`. The volume is created once at control-plane setup and pinned to the location configured at the time (`server_location` in `tofu/control-plane/variables.tf` — current repo default is `hel1`, but the stacks affected by the 2026-05-10 incident were originally provisioned when the default was `fsn1`). On every spinup the server is provisioned and the existing volume is attached.
 
 Hetzner enforces: **server and volume must be in the same location**. Volumes are **not migratable** between locations.
 
@@ -31,7 +31,7 @@ Move all persistent data to Hetzner Object Storage. Server local SSD becomes eph
 
 ## Goals
 
-1. **Eliminate Hetzner volume location lock-in.** A spinup must succeed in any of fsn1, hel1, nbg1, ash, hil, sin given Hetzner has stock there.
+1. **Eliminate Hetzner volume location lock-in.** A spinup must succeed in any Hetzner location that has compute stock — there's no more compute-location dependency on a specific volume's pin. The primary target is the three EU locations (fsn1, hel1, nbg1) that match the Hetzner Object Storage footprint, where reading the snapshot from S3 is in-network and free. Non-EU compute locations (ash, hil, sin) are technically unblocked too once the volume is gone, but doing so reintroduces cross-region S3 egress (Hetzner charges ~€1.19/TB to the public internet for the non-EU server to pull the snapshot back) and adds latency to spinup. v1.0 expects operators to keep `SERVER_PREFERENCES` EU-only by default; non-EU is an explicit operator opt-in for the rare case where every EU location is out of stock.
 2. **Preserve all student-visible state across teardown→spinup cycles** (Gitea repos, Postgres data, Dify uploads, Weaviate vectors).
 3. **Atomic teardown.** A teardown that fails to upload to S3 must abort, not destroy infra. No "half-saved" state.
 4. **Acceptable spinup overhead.** Adding S3-restore should not extend spinup beyond +5 minutes vs. today.
@@ -76,7 +76,14 @@ Move all persistent data to Hetzner Object Storage. Server local SSD becomes eph
 
 ```
 1. tofu destroy:     server + tunnel + DNS + access apps
-                     volume is RETAINED (lifecycle prevent_destroy)
+                     volume is RETAINED — but NOT via `lifecycle
+                     { prevent_destroy = true }`. The mechanism is
+                     simpler: the volume resource lives in the
+                     `tofu/control-plane/` state, and the teardown
+                     workflow only runs `tofu destroy` against
+                     `tofu/stack/` (the per-spinup state file).
+                     Since the volume isn't part of that state, it's
+                     never considered for destruction.
 ```
 
 The volume sits idle costing ~€0.50/month per stack until next spinup.
@@ -232,7 +239,7 @@ explicit sha256 verification, or move per-component checksums into
 | `pipeline.py` | Replace `_setup.mount_persistent_volume(...)` with `_setup.restore_from_s3(...)`. Add new phase `_phase_postgres_restore` that runs pg_restore before `_phase_compose_up`. |
 | `compose_runner.py` | Replace bind-mount paths from `/mnt/nexus-data/...` to `/var/lib/nexus-data/...`, OR keep `/mnt/nexus-data` as symlink (decide based on whether `/mnt` is conventional in any tooling). |
 | **NEW** `s3_persistence.py` | Module containing: `dump_postgres_to_s3()`, `rclone_sync_to_s3()`, `rclone_sync_from_s3()`, `verify_s3_snapshot()`, `write_manifest()`, `read_manifest()`. |
-| **NEW** `teardown.py` (or extend existing teardown logic in `__main__.py`) | New phase ordering: pause → dump → sync → verify → tofu destroy. Abort on verify failure. |
+| **NEW** `teardown.py` (or extend existing teardown logic in `__main__.py`) | New phase ordering: **stop (graceful drain) → dump → sync → verify → tofu destroy**. Abort on verify failure. ``docker compose stop`` (not ``pause`` — see Risks table) with the default 10s timeout gives app processes time to finish in-flight requests and close DB connections cleanly. |
 
 #### `services.yaml` / `stacks/`
 
