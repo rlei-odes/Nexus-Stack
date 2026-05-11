@@ -53,21 +53,33 @@ repos:
   # Slow-ish (~1-3 sec on this codebase). Worth it.
   # Pinned to match pyproject.toml's [dependency-groups].dev.mypy bound.
   # ---------------------------------------------------------------------------
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+  # mypy via the project's uv venv — NOT mirrors-mypy's isolated env.
+  #
+  # The previous form (mirrors-mypy + additional_dependencies) built
+  # an isolated pip env without nexus_deploy itself installed, so
+  # every `from nexus_deploy.X import Y` in tests/ failed with
+  # `import-not-found`. CI mypy passes because it runs
+  # `uv run mypy` against the project-installed package; pre-commit
+  # was missing that same wiring.
+  #
+  # Switching to `language: system + uv run mypy` aligns local
+  # pre-commit with CI exactly — same mypy version, same site-
+  # packages, same pyproject.toml config — so a green pre-commit
+  # actually predicts a green CI typecheck.
+  #
+  # `pass_filenames: false` because mypy's `files = [...]` setting
+  # in pyproject.toml already picks the right scope; passing
+  # individual filenames in addition would make mypy ignore the
+  # config-file's files= directive.
+  - repo: local
     hooks:
       - id: mypy
+        name: mypy (project venv, strict)
+        entry: uv run mypy
+        language: system
+        types: [python]
         files: ^(src|tests)/.*\.py$
-        # Bring deps so mypy can resolve imports. Bounds match
-        # pyproject.toml's [project].dependencies / [dependency-groups].dev
-        # so pre-commit and CI never disagree (e.g. when pydantic 3.x ships).
-        # `pytest` is here because mypy also type-checks tests/.
-        additional_dependencies:
-          - pydantic>=2.7,<3.0
-          - pytest>=8.3,<9.0
-          - types-paramiko>=3.4,<4.0
-          - types-requests>=2.32,<3.0
-          - types-pyyaml>=6.0,<7.0
+        pass_filenames: false
         args: [--config-file=pyproject.toml]
 
   # ---------------------------------------------------------------------------
