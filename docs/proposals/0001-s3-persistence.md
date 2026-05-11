@@ -169,15 +169,22 @@ Server local SSD (ephemeral, recreated on every spinup):
                                                       the new SSD-local location
                                                       without docker-compose
                                                       changes)
-   c. rclone sync s3://<bucket>/ → /var/lib/nexus-data/   (skip if first-time spinup;
-                                                          pulls gitea/{repos,lfs}/, 
-                                                          dify/{storage,weaviate,plugins}/,
-                                                          postgres/*.dump.gz —
-                                                          NOT db/ or redis/)
-   d. start docker compose for postgres containers (gitea-db, dify-db) on EMPTY data dirs
-   e. gunzip -c /var/lib/nexus-data/postgres/gitea.dump.gz \
+   c. Read s3://<bucket>/snapshots/latest.txt → $TIMESTAMP
+      (single-line pointer; first-time spinup → file missing →
+      skip the rest of step 3 and proceed with empty data dirs)
+   d. rclone sync s3://<bucket>/snapshots/$TIMESTAMP/gitea/repos    → /var/lib/nexus-data/gitea/repos
+      rclone sync s3://<bucket>/snapshots/$TIMESTAMP/gitea/lfs      → /var/lib/nexus-data/gitea/lfs
+      rclone sync s3://<bucket>/snapshots/$TIMESTAMP/dify/storage   → /var/lib/nexus-data/dify/storage
+      rclone sync s3://<bucket>/snapshots/$TIMESTAMP/dify/weaviate  → /var/lib/nexus-data/dify/weaviate
+      rclone sync s3://<bucket>/snapshots/$TIMESTAMP/dify/plugins   → /var/lib/nexus-data/dify/plugins
+      rclone copy s3://<bucket>/snapshots/$TIMESTAMP/postgres/      → /tmp/nexus-restore/postgres/
+      (each rsync goes against the explicit subdirectory under
+      snapshots/<timestamp>/; db/ and redis/ are NOT in the
+      snapshot so they're implicitly excluded)
+   e. start docker compose for postgres containers (gitea-db, dify-db) on EMPTY data dirs
+   f. gunzip -c /tmp/nexus-restore/postgres/gitea.dump.gz \
         | docker exec -i gitea-db pg_restore -U <user> -d gitea --no-owner --no-acl
-   f. gunzip -c /var/lib/nexus-data/postgres/dify.dump.gz \
+   g. gunzip -c /tmp/nexus-restore/postgres/dify.dump.gz \
         | docker exec -i dify-db pg_restore -U <user> -d dify --no-owner --no-acl
 4. compose-runner:     docker compose up for the rest of the stack
 ```
@@ -204,23 +211,30 @@ options we use for cross-version restores. The implementation in
 2. dump postgres:
    a. docker exec gitea-db pg_dump -F c -U <user> <db> | gzip > /tmp/dumps/gitea.dump.gz
    b. docker exec dify-db  pg_dump -F c -U <user> <db> | gzip > /tmp/dumps/dify.dump.gz
-3. rsync-to-s3 (only the intended subdirectories — db/ and redis/ excluded):
-   a. rclone sync /var/lib/nexus-data/gitea/repos → s3://<bucket>/gitea/repos
-   b. rclone sync /var/lib/nexus-data/gitea/lfs   → s3://<bucket>/gitea/lfs
-   c. rclone sync /var/lib/nexus-data/dify/storage   → s3://<bucket>/dify/storage
-   d. rclone sync /var/lib/nexus-data/dify/weaviate  → s3://<bucket>/dify/weaviate
-   e. rclone sync /var/lib/nexus-data/dify/plugins   → s3://<bucket>/dify/plugins
-   f. rclone copy /tmp/dumps/ → s3://<bucket>/snapshots/<timestamp>/postgres/  (gitea.dump.gz, dify.dump.gz)
-   g. write manifest.json into snapshots/<timestamp>/manifest.json
+3. rsync-to-s3 — every destination is **under the timestamped
+   ``snapshots/<timestamp>/`` prefix** (matches the storage-layout
+   section above; the bare ``s3://<bucket>/gitea/...`` form in
+   earlier RFC revisions was a path-mismatch bug). Only the
+   intended subdirectories — db/ and redis/ never reach S3:
+   a. rclone sync /var/lib/nexus-data/gitea/repos    → s3://<bucket>/snapshots/<timestamp>/gitea/repos
+   b. rclone sync /var/lib/nexus-data/gitea/lfs      → s3://<bucket>/snapshots/<timestamp>/gitea/lfs
+   c. rclone sync /var/lib/nexus-data/dify/storage   → s3://<bucket>/snapshots/<timestamp>/dify/storage
+   d. rclone sync /var/lib/nexus-data/dify/weaviate  → s3://<bucket>/snapshots/<timestamp>/dify/weaviate
+   e. rclone sync /var/lib/nexus-data/dify/plugins   → s3://<bucket>/snapshots/<timestamp>/dify/plugins
+   f. rclone copy /tmp/dumps/                        → s3://<bucket>/snapshots/<timestamp>/postgres/  (gitea.dump.gz, dify.dump.gz)
+   g. rclone copyto manifest.json                    → s3://<bucket>/snapshots/<timestamp>/manifest.json
                                                             (slim — timestamp, stack, template_version; per-component
                                                              checksums deferred to v1.1, see Open Question 1)
 4. verify:             rclone check --one-way per source (workdir + every rsync target's local_path)
    ✗ on mismatch:      ABORT — leave server up, alert operator, do NOT proceed to step 5 or 6
    ✓ on match:         proceed
-5. point latest.txt:   rclone copyto $timestamp → snapshots/latest.txt    (single-line text file;
-                                                                          this is the atomic-promotion
-                                                                          step — only happens AFTER
-                                                                          verify passed in step 4)
+5. point latest.txt:   rclone copyto $timestamp.txt → s3://<bucket>/snapshots/latest.txt
+                                                            (single-line text file at the snapshots/ root, NOT
+                                                             under any timestamped prefix — it's the cross-snapshot
+                                                             pointer that restore reads to figure out which
+                                                             snapshots/<timestamp>/ subtree to pull. This is the
+                                                             atomic-promotion step — only happens AFTER verify
+                                                             passed in step 4.)
 6. tofu destroy:       server + tunnel + DNS + access apps (volume already gone; the per-stack R2
                                                             bucket stays — owned by control-plane state)
 ```
@@ -327,10 +341,24 @@ For each of the 26 existing stacks, run a manual evacuation workflow:
       same graceful-drain approach as the atomic teardown flow above.
       We deliberately do NOT use `docker compose pause` here either;
       cgroup-freezer SIGSTOP is hard-stop, not drain.
-   b. dump postgres (gitea, dify)
-   c. rsync /mnt/nexus-data → s3://<bucket>/
-   d. write manifest.json
-   e. verify
+   b. dump postgres (gitea, dify) via `pg_dump -F c | gzip`
+      into /tmp/dumps/<db>.dump.gz
+   c. rsync exactly the same 5 subdirectories as the steady-state
+      teardown flow above, into the snapshots/<timestamp>/
+      prefix of the per-stack R2 bucket (NOT to the bucket root
+      — earlier RFC revisions had this wrong):
+      - /mnt/nexus-data/gitea/repos    → s3://<bucket>/snapshots/<timestamp>/gitea/repos
+      - /mnt/nexus-data/gitea/lfs      → s3://<bucket>/snapshots/<timestamp>/gitea/lfs
+      - /mnt/nexus-data/dify/storage   → s3://<bucket>/snapshots/<timestamp>/dify/storage
+      - /mnt/nexus-data/dify/weaviate  → s3://<bucket>/snapshots/<timestamp>/dify/weaviate
+      - /mnt/nexus-data/dify/plugins   → s3://<bucket>/snapshots/<timestamp>/dify/plugins
+      gitea/db/ and dify/{db,redis}/ are NOT rsync'd (Postgres
+      state lives under postgres/<db>.dump.gz; Redis is
+      regeneratable).
+   d. rclone copy /tmp/dumps/ → s3://<bucket>/snapshots/<timestamp>/postgres/
+   e. write manifest.json into snapshots/<timestamp>/manifest.json
+   f. verify via `rclone check --one-way` per source
+   g. point s3://<bucket>/snapshots/latest.txt at the new timestamp
 3. Operator confirms S3 contents look right
 4. Stack stays up on volume (still using old code path)
 ```
