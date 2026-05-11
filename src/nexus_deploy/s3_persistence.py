@@ -1090,6 +1090,34 @@ def render_restore_script(
             db_sql = _quote_sql_ident(pg.database)
             user_sql = _quote_sql_ident(pg.user)
             dump_file = f"$WORKDIR/postgres/{pg.database}.dump.gz"
+            # Symmetric "stack not deployed" handling matching the
+            # snapshot-side guards. Two cases:
+            #   - No dump file under WORKDIR/postgres/ — the
+            #     snapshot side skipped this DB (container wasn't
+            #     running at snapshot time). Without the guard, the
+            #     subsequent ``gunzip`` would fail with "No such
+            #     file" and abort restore.
+            #   - Dump file exists but the container isn't running
+            #     on this stack (different stack composition between
+            #     snapshot and restore — e.g. dify enabled when
+            #     snapshotted but not when restored). Without the
+            #     guard, ``docker exec dify-db psql`` fails with
+            #     "No such container" rc=1 and aborts restore.
+            # Either case → skip with an explicit log line; the
+            # gitea-only restore path still proceeds normally.
+            lines.append(f"if [ ! -f {dump_file} ]; then")
+            lines.append(
+                f'  echo "  (skip: no dump for {pg.database} ' f'— stack not snapshotted)"',
+            )
+            lines.append(
+                f"elif [ \"$(docker inspect --format='{{{{.State.Running}}}}' "
+                f'{container} 2>/dev/null)" != "true" ]; then',
+            )
+            lines.append(
+                f'  echo "  (skip: container {pg.container} not running '
+                f'— stack not deployed on this restore target)"',
+            )
+            lines.append("else")
             # We drop+recreate the database to guarantee a clean
             # restore. pg_restore --clean would do something similar
             # but is fragile across PG versions; the explicit
@@ -1098,18 +1126,19 @@ def render_restore_script(
             # ``-c '<SQL>'`` (single-quoted bash arg) so the inner
             # double-quoted SQL identifiers don't need escaping.
             lines.append(
-                f"docker exec {container} psql -U {user_cli} -d postgres "
+                f"  docker exec {container} psql -U {user_cli} -d postgres "
                 f"-c 'DROP DATABASE IF EXISTS {db_sql} WITH (FORCE);'",
             )
             lines.append(
-                f"docker exec {container} psql -U {user_cli} -d postgres "
+                f"  docker exec {container} psql -U {user_cli} -d postgres "
                 f"-c 'CREATE DATABASE {db_sql} OWNER {user_sql};'",
             )
             lines.append(
-                f"gunzip -c {dump_file} | "
+                f"  gunzip -c {dump_file} | "
                 f"docker exec -i {container} pg_restore -U {user_cli} -d {db_cli} "
                 "--no-owner --no-acl",
             )
+            lines.append("fi")
         lines.append("")
 
     lines.append('echo "✓ restore complete from $SNAPSHOT_PREFIX"')

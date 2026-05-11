@@ -809,6 +809,51 @@ def test_restore_script_drops_database_before_pg_restore() -> None:
     assert "pg_restore -U nexus-gitea -d gitea" in script
 
 
+def test_restore_script_skips_pg_restore_when_dump_missing_or_container_absent() -> None:
+    """Symmetric "stack not deployed" handling between snapshot
+    and restore. Two distinct skip cases on the restore side:
+
+    1. The dump file isn't in WORKDIR/postgres/ because the
+       snapshot side skipped that DB (container wasn't running
+       at snapshot time).
+    2. The dump exists but the target container isn't running
+       on this restore stack (snapshot composition differs from
+       restore composition — e.g. dify snapshotted but not
+       restored).
+
+    Without these guards, ``gunzip ... | docker exec dify-db
+    pg_restore`` aborts the whole restore with "No such file"
+    or "No such container". This is the symmetric fix to the
+    snapshot-side pg_dump skip guard.
+
+    Real incident: first end-to-end restore test of PR #557 —
+    snapshot correctly skipped dify-db (not deployed), but
+    restore tried to ``docker exec dify-db`` and aborted with
+    rc=1 → spin-up failed."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+            PostgresDumpTarget(container="dify-db", database="dify", user="nexus-dify"),
+        ),
+        rsync_targets=(),
+    )
+    # Both guards must be present, in the right shape, before the
+    # docker exec / gunzip lines that would otherwise crash.
+    assert "if [ ! -f $WORKDIR/postgres/gitea.dump.gz ]" in script
+    assert "if [ ! -f $WORKDIR/postgres/dify.dump.gz ]" in script
+    assert "no dump for dify" in script
+    assert "no dump for gitea" in script
+    assert "container dify-db not running" in script
+    assert "container gitea-db not running" in script
+    # And the skip path must be an EARLY return — no DROP DATABASE
+    # / gunzip / pg_restore on the dify side when container's gone.
+    # Pin the if-elif-else structure so the guards can't be silently
+    # bypassed by a future refactor.
+    assert "docker inspect --format='{{.State.Running}}' dify-db" in script
+    assert "docker inspect --format='{{.State.Running}}' gitea-db" in script
+
+
 def test_restore_script_pulls_filesystem_trees_before_postgres() -> None:
     """Order matters: restore the FS first (in case any postgres
     init script reads a config file from the FS), THEN pg_restore.
