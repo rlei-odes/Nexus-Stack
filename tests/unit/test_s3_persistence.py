@@ -470,10 +470,15 @@ def test_snapshot_script_has_bash_safety_pragmas() -> None:
 
 
 def test_snapshot_script_orders_phases_correctly() -> None:
-    """The phase order is the atomicity contract: pause → dump →
+    """The phase order is the atomicity contract: stop → dump →
     upload → verify → point latest. Reorder would silently break
-    the guarantee that ``snapshots/latest`` only updates after
-    upload succeeded."""
+    the guarantee that ``snapshots/latest.txt`` only updates after
+    upload succeeded.
+
+    We use ``docker compose stop`` (graceful 10s drain), not
+    ``pause`` (SIGSTOP via cgroup freezer, hard-kills in-flight
+    writes mid-transaction).
+    """
     script = render_snapshot_script(
         endpoint=_endpoint(),
         stack_slug="nexus-test",
@@ -489,19 +494,27 @@ def test_snapshot_script_orders_phases_correctly() -> None:
                 s3_subpath="gitea/repos",
             ),
         ),
-        pause_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
+        stop_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
     )
-    pause_pos = script.find("compose -f")
+    # Locate each phase via a stable substring + assert ordering.
+    stop_pos = script.find("compose -f")
     dump_pos = script.find("pg_dump")
     upload_pos = script.find("rclone sync")
     check_pos = script.find("rclone check")
     latest_pos = script.find("snapshots/latest.txt")
-    assert pause_pos < dump_pos < upload_pos < check_pos < latest_pos
+    assert stop_pos < dump_pos < upload_pos < check_pos < latest_pos
+    # Regression: stop, not pause.
+    assert "compose -f" in script
+    assert "stop" in script.split("compose -f")[1].split("\n")[0]
+    assert "docker compose -f" in script
+    assert " pause " not in script.replace(
+        '"compose pause non-fatal: stack may already be down"', ""
+    )
 
 
-def test_snapshot_script_omits_pause_when_no_compose_files() -> None:
-    """No compose files passed → no docker pause calls. Avoids
-    the ``no compose files`` echo-only no-op block."""
+def test_snapshot_script_omits_compose_stop_when_no_files_passed() -> None:
+    """No compose files passed → no docker compose calls at all.
+    Avoids the ``no compose files`` echo-only no-op block."""
     script = render_snapshot_script(
         endpoint=_endpoint(),
         stack_slug="nexus-test",
@@ -722,7 +735,7 @@ def test_rendered_snapshot_script_is_syntactically_valid_bash(tmp_path: Path) ->
         rsync_targets=(
             RsyncTarget(name="r", local_path="/var/lib/nexus-data/gitea", s3_subpath="gitea"),
         ),
-        pause_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
+        stop_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
     )
     script_path = tmp_path / "snapshot.sh"
     script_path.write_text(script, encoding="utf-8")

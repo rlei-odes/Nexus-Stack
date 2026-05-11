@@ -497,37 +497,53 @@ def render_snapshot_script(
     timestamp: str,
     postgres_targets: Iterable[PostgresDumpTarget],
     rsync_targets: Iterable[RsyncTarget],
-    pause_compose_files: Iterable[str] = (),
+    stop_compose_files: Iterable[str] = (),
 ) -> str:
-    """Render the bash that snapshots the live stack to S3.
+    """Render the bash that snapshots the live stack to R2.
 
     Steps the rendered script performs (in order, ``set -euo
     pipefail`` throughout — first failure aborts):
 
-    1. ``docker compose pause`` for every file in
-       ``pause_compose_files``. This lets in-flight HTTP requests
-       drain naturally instead of being killed mid-write.
-    2. ``pg_dump`` (compressed) for each postgres target into
-       ``/tmp/nexus-snapshot/postgres/<db>.sql.gz``.
-    3. ``rclone sync`` each rsync target into the timestamped S3
-       directory ``snapshots/<timestamp>/<subpath>``.
+    1. ``docker compose stop`` for every file in
+       ``stop_compose_files``. Graceful drain with the default
+       10s timeout: app processes finish in-flight requests and
+       close DB connections cleanly. We deliberately do NOT use
+       ``docker compose pause`` — that's a cgroup-freezer SIGSTOP
+       and hard-kills in-flight writes mid-transaction.
+    2. ``pg_dump -F c | gzip`` for each postgres target into
+       ``/tmp/nexus-snapshot/postgres/<db>.dump.gz`` (custom
+       binary format, gzipped — works with the matching
+       ``gunzip | pg_restore`` on the spinup side).
+    3. ``rclone sync`` each rsync target's ``local_path`` into the
+       timestamped R2 directory ``snapshots/<timestamp>/<s3_subpath>``.
+       Only the listed targets are walked — db/ and redis/ subdirs
+       under /var/lib/nexus-data are NOT included (Postgres state is
+       captured separately via pg_dump, Redis is regeneratable).
     4. Upload the postgres dumps under
-       ``snapshots/<timestamp>/postgres/``.
-    5. Compute sha256 + size for each component, write
-       ``manifest.json``, upload it.
-    6. ``rclone check`` re-reads the upload and compares ETags —
-       this is the gate the caller checks for atomicity.
-    7. Update ``snapshots/latest`` to point at the new timestamp.
-
-    On any non-zero step the script prints a clear ``✗
-    snapshot-failed: ...`` line and exits non-zero. Pipeline.py
-    interprets that as "do NOT proceed to tofu destroy".
+       ``snapshots/<timestamp>/postgres/<db>.dump.gz``.
+    5. Write a slim ``manifest.json`` (stack, timestamp, template
+       version — no per-component checksums in v1.0; we rely on
+       rclone's ETag/per-object hash check for integrity). Upload
+       it to ``snapshots/<timestamp>/manifest.json``.
+    6. **Atomicity gate** — run ``rclone check --one-way`` once
+       per source: the workdir tree (containing manifest +
+       postgres dumps) PLUS each RsyncTarget's local_path against
+       its R2 destination. Each check captures two rcs via
+       ``PIPESTATUS`` (rclone's own exit, and the drift-grep's
+       exit), neither maskable by ``|| true``. Any failure
+       accumulates into ``verify_failed=1`` and the script aborts
+       BEFORE touching the ``snapshots/latest.txt`` pointer —
+       this is the "verified-before-pointing-latest" invariant
+       the caller relies on for atomic teardown.
+    7. Update ``snapshots/latest.txt`` to contain the new
+       timestamp. Pipeline.py interprets script rc=0 as
+       "proceed to tofu destroy"; any non-zero rc means
+       "abort teardown, leave server up".
 
     Side note on shlex.quote: every interpolated value is gated
-    upstream by :class:`S3Endpoint`'s charset checks and the
-    ``stack_slug``/``timestamp`` regexes below — but we still
-    ``shlex.quote`` belt-and-suspenders to keep the rendered bash
-    safe even if a future caller bypasses the constructor.
+    upstream by the dataclass constructors' charset checks; we
+    still ``shlex.quote`` belt-and-suspenders to keep the rendered
+    bash safe even if a future caller bypasses validation.
     """
     if not _BUCKET_NAME.fullmatch(stack_slug):
         raise S3PersistenceError(
@@ -544,7 +560,7 @@ def render_snapshot_script(
 
     pg_targets = tuple(postgres_targets)
     rs_targets = tuple(rsync_targets)
-    pause_files = tuple(pause_compose_files)
+    stop_files = tuple(stop_compose_files)
 
     bucket_url = f"{RCLONE_PROFILE}:{shlex.quote(endpoint.bucket)}"
     snapshot_prefix = f"snapshots/{shlex.quote(timestamp)}"
@@ -568,13 +584,19 @@ def render_snapshot_script(
         "",
     ]
 
-    if pause_files:
-        lines.append('echo "→ snapshot: pausing compose stacks"')
-        for compose_file in pause_files:
+    if stop_files:
+        lines.append('echo "→ snapshot: stopping compose stacks (graceful 10s drain)"')
+        for compose_file in stop_files:
             quoted = shlex.quote(compose_file)
+            # ``docker compose stop`` (not ``pause``) — the latter is
+            # SIGSTOP via the cgroup freezer and hard-kills in-flight
+            # writes. ``stop`` sends SIGTERM with a 10s grace window
+            # for the container to flush + close DB connections
+            # cleanly. ``|| echo`` keeps this non-fatal if a stack
+            # is already down (e.g. partial-failure retry).
             lines.append(
-                f"docker compose -f {quoted} pause || "
-                'echo "  (compose pause non-fatal: stack may already be down)"',
+                f"docker compose -f {quoted} stop || "
+                'echo "  (compose stop non-fatal: stack may already be down)"',
             )
         lines.append("")
 
@@ -707,7 +729,7 @@ def render_restore_script(
     rsync_targets: Iterable[RsyncTarget],
     local_root: str = "/var/lib/nexus-data",
 ) -> str:
-    """Render the bash that restores a snapshot from S3 to the local
+    """Render the bash that restores a snapshot from R2 to the local
     filesystem.
 
     Idempotent on the empty-S3 case (first-time spinup) — the
@@ -718,16 +740,32 @@ def render_restore_script(
        ``echo 'fresh-start: no snapshot in S3, leaving local
        state empty'`` and exits 0. Pipeline.py then proceeds with
        a clean docker-compose up just like a brand-new install.
-    2. ``rclone sync`` the snapshot's filesystem trees into
-       ``local_root``.
-    3. ``pg_restore`` each postgres dump into the matching
-       container's database. The container is assumed to already be
-       running (compose-up ran first); we drop+recreate the
-       database to get a clean restore.
+       Also validates the timestamp matches the safe-path regex
+       before substituting it into any rclone command — defends
+       against a malformed/tampered ``latest.txt``.
+    2. ``rclone sync`` each RsyncTarget's S3 subpath into the
+       matching ``local_path`` (which is the absolute path on the
+       server — not always under ``local_root``; callers may
+       restore to e.g. ``/opt/data``). ``local_root`` is only used
+       to ``mkdir -p`` the top-level data directory.
+    3. ``rclone sync`` the postgres dumps from
+       ``snapshots/<ts>/postgres/`` into a scratch workdir.
+    4. For each postgres target: ``DROP DATABASE IF EXISTS
+       "<db>" WITH (FORCE);`` → ``CREATE DATABASE "<db>" OWNER
+       "<user>";`` → ``gunzip -c <db>.dump.gz | pg_restore -U
+       <user> -d <db> --no-owner --no-acl``. SQL identifiers are
+       always double-quoted (real role names use hyphens, e.g.
+       ``nexus-gitea``, which are invalid as unquoted PG idents).
+       The container is assumed to already be running
+       (compose-up ran first).
+
+    Order matters: filesystem trees restored before pg_restore so
+    any postgres init script reading FS config files sees the FS
+    in place. Reversing this would race on first start.
 
     Does NOT touch ``snapshots/latest.txt`` — the active snapshot
     pointer is owned by the snapshot side. A restore is purely
-    read-only against S3.
+    read-only against R2.
     """
     pg_targets = tuple(postgres_targets)
     rs_targets = tuple(rsync_targets)
