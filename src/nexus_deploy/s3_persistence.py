@@ -920,8 +920,8 @@ def render_restore_script(
         # bucket policy. Quiet on success.
         'SNAPSHOT_LISTING=""',
         'if ! SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/"); then',
-        '  echo "✗ restore-failed: cannot list $BUCKET/snapshots/ — '
-        'see rclone error above (auth / network / bucket policy)" >&2',
+        '  echo "✗ restore-failed: cannot list $BUCKET/snapshots/" >&2',
+        '  echo "  (auth / network / bucket policy — see rclone error above)" >&2',
         "  exit 2",
         "fi",
         'if ! printf "%s\\n" "$SNAPSHOT_LISTING" | grep -qxF "latest.txt"; then',
