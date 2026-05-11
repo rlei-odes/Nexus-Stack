@@ -1,13 +1,15 @@
-# RFC 0001 — S3-Backed Persistence (Hetzner Object Storage)
+# RFC 0001 — S3-Backed Persistence (Cloudflare R2)
 
 **Status:** Draft
 **Author:** sk@stefanko.ch
-**Date:** 2026-05-10
+**Date:** 2026-05-10 (rev. 2026-05-11 — storage provider switched from Hetzner Object Storage to Cloudflare R2)
 **Target version:** v1.0.0 (breaking change)
 
 ## tl;dr
 
-Replace the per-stack Hetzner Block Storage volume with **Hetzner Object Storage** as the canonical persistence layer. On `spinup`, restore from S3 to local SSD; on `teardown`, snapshot back to S3, then destroy infra. This eliminates the volume-location lock-in that today wedges every stack to a single Hetzner DC, surfaces dramatically during EU stock crunches (root cause of the 2026-05-10 Hetzner OOS incident).
+Replace the per-stack Hetzner Block Storage volume with **Cloudflare R2** as the canonical persistence layer. On `spinup`, restore from R2 to local SSD; on `teardown`, snapshot back to R2, then destroy infra. This eliminates the volume-location lock-in that today wedges every stack to a single Hetzner DC, surfaces dramatically during EU stock crunches (root cause of the 2026-05-10 Hetzner OOS incident).
+
+**Why R2** (revised from earlier Hetzner Object Storage proposal): the project already uses R2 — the Tofu state backend lives in R2 (`scripts/init-r2-state.sh`, `tofu/backend.hcl`), the Cloudflare provider is already configured for DNS / Tunnel / Access. Adding an R2 *persistence* bucket per stack reuses the existing R2 token, the existing Cloudflare provider, and ships with no EU lock-in + zero egress fees. The Hetzner-Object-Storage path explored in the previous revision of this RFC would have introduced a parallel storage system, parallel credential handling, and a per-region egress cost when non-EU compute pulls the snapshot. R2 doesn't have any of those problems.
 
 ## Motivation
 
@@ -21,17 +23,17 @@ Today (2026-05-10) Hetzner Falkenstein went out of stock for every server type w
 
 ### The architectural fix
 
-Move all persistent data to Hetzner Object Storage. Server local SSD becomes ephemeral cache. Spinup-anywhere becomes possible because the server has no location-locked dependency.
+Move all persistent data to Cloudflare R2. Server local SSD becomes ephemeral cache. Spinup-anywhere becomes possible because the server has no location-locked dependency, AND because R2 is region-agnostic (single global namespace, automatic edge replication, zero egress fees — the server pulls the snapshot at full speed from wherever it landed).
 
 ### What this is NOT
 
-- Not a backup solution (though it gets you one for free). Recovery from S3 is the *primary* path, not a fallback.
-- Not multi-region (Hetzner Object Storage is EU-only: fsn1, hel1, nbg1). For multi-region resilience use Cloudflare R2; for now we stay on Hetzner for data-residency / GDPR alignment with the rest of the stack.
-- Not Postgres-on-S3. Postgres needs POSIX semantics and stays on local SSD, but its **dump** lives on S3.
+- Not a backup solution (though it gets you one for free). Recovery from R2 is the *primary* path, not a fallback.
+- Not Postgres-on-R2. Postgres needs POSIX semantics and stays on local SSD, but its **dump** lives on R2.
+- Not a data-residency commitment beyond what R2 itself offers. R2 stores objects in the Cloudflare data centre closest to the bucket's selected jurisdiction (we use the `EU` jurisdiction, matching where the project already keeps the Tofu state backend). For the tutorial/class-stack data we ship this is fine; if a future workload needs a stricter pinned-region guarantee, R2 supports a `eu` jurisdiction hint that constrains storage to EU DCs.
 
 ## Goals
 
-1. **Eliminate Hetzner volume location lock-in.** A spinup must succeed in any Hetzner location that has compute stock — there's no more compute-location dependency on a specific volume's pin. The primary target is the three EU locations (fsn1, hel1, nbg1) that match the Hetzner Object Storage footprint, where reading the snapshot from S3 is in-network and free. Non-EU compute locations (ash, hil, sin) are technically unblocked too once the volume is gone, but doing so reintroduces cross-region S3 egress (Hetzner charges ~€1.19/TB to the public internet for the non-EU server to pull the snapshot back) and adds latency to spinup. v1.0 expects operators to keep `SERVER_PREFERENCES` EU-only by default; non-EU is an explicit operator opt-in for the rare case where every EU location is out of stock.
+1. **Eliminate Hetzner volume location lock-in.** A spinup must succeed in any Hetzner location that has compute stock — there's no more compute-location dependency on a specific volume's pin. R2 being region-agnostic with zero egress means non-EU compute (ash, hil, sin) is just as cheap as EU compute to pull the snapshot from — no cross-region surcharge to worry about (the worry that pushed the previous revision of this RFC toward EU-only as a default). Operators can keep `SERVER_PREFERENCES` EU-only for latency reasons, but the architecture itself doesn't push them in that direction.
 2. **Preserve all student-visible state across teardown→spinup cycles** (Gitea repos, Postgres data, Dify uploads, Weaviate vectors).
 3. **Atomic teardown.** A teardown that fails to upload to S3 must abort, not destroy infra. No "half-saved" state.
 4. **Acceptable spinup overhead.** Adding S3-restore should not extend spinup beyond +5 minutes vs. today.
@@ -41,7 +43,7 @@ Move all persistent data to Hetzner Object Storage. Server local SSD becomes eph
 
 - Real-time replication (streaming changes to S3 on every write). Snapshot-based suffices for the "scheduled teardown / class-end" pattern.
 - Per-second RPO. RPO is "since last teardown" (typically nightly). Acceptable for a class environment.
-- Encryption at rest beyond what Hetzner Object Storage provides natively (server-side encryption is on by default; we don't add envelope encryption in v1).
+- Encryption at rest beyond what R2 provides natively (R2 encrypts every object at rest with AES-256 by default; we don't add envelope encryption in v1).
 - Migrating away from Postgres entirely. We keep the existing Postgres containers, just move their dump (not their live data) to S3.
 
 ## Current architecture
@@ -93,7 +95,7 @@ The volume sits idle costing ~€0.50/month per stack until next spinup.
 ### Storage layout
 
 ```
-Hetzner Object Storage (fsn1):
+Cloudflare R2 (EU jurisdiction, single global namespace):
   s3://nexus-<class>-<user>-internal/
     ├── manifest.json                     ← snapshot metadata: timestamp, version, hashes
     ├── postgres/
@@ -132,7 +134,7 @@ Server local SSD (ephemeral, recreated on every spinup):
 ```
 1. select-capacity:    pick (type, location) — no volume constraint, full SERVER_PREFERENCES list valid
 2. tofu apply:         provision server (no volume attachment) +
-                       per-stack minio_s3_bucket (see "Bucket
+                       per-stack cloudflare_r2_bucket (see "Bucket
                        provisioning" below)
 3. cloud-init / setup:
    a. mkdir -p /var/lib/nexus-data
@@ -201,14 +203,14 @@ options we use for cross-version restores. The implementation in
 
 **About `rclone check`'s integrity guarantee.** The default
 `rclone check` compares the per-object hash that rclone has for the
-S3 backend — for Hetzner Object Storage (and AWS S3) that's the
-object ETag for non-multipart uploads, or the etag-of-etags for
-multipart uploads. For our typical file sizes (<5 GB per object,
-well under multipart threshold) ETag is exactly the MD5 of the
-object body and the check is end-to-end. For multipart uploads the
-ETag-of-etags scheme means the check verifies *upload integrity*
-(every part uploaded matches what rclone sent) but not strict
-content-equality against the source.
+S3 backend — for R2 (S3-compatible API) that's the object ETag for
+non-multipart uploads, or the etag-of-etags for multipart uploads.
+For our typical file sizes (<5 GB per object, well under R2's
+multipart threshold) ETag is exactly the MD5 of the object body and
+the check is end-to-end. For multipart uploads the ETag-of-etags
+scheme means the check verifies *upload integrity* (every part
+uploaded matches what rclone sent) but not strict content-equality
+against the source.
 
 In practice for our use case (sub-multipart files), the check is
 content-equality. The v1.0 implementation accepts that; if a future
@@ -225,7 +227,7 @@ explicit sha256 verification, or move per-component checksums into
 
 | File | Change |
 |---|---|
-| `tofu/control-plane/main.tf` | Remove `hcloud_volume "persistent"` resource + outputs. Add a new `minio_s3_bucket "persistence"` resource using the **existing** `aminueza/minio` provider (already configured in this file at lines 287-316 for LakeFS / general / pgducklake). Same provider, same auth pattern, just a fourth bucket per stack. No new provider plumbing required. |
+| `tofu/control-plane/main.tf` | Remove `hcloud_volume "persistent"` resource + outputs. Add a new `cloudflare_r2_bucket "persistence"` resource using the **existing** `cloudflare/cloudflare` provider (already configured for DNS / Tunnel / Access / Pages elsewhere in this file). Set the bucket's `location` to `EEUR` (Eastern Europe — Cloudflare's hint that constrains R2 storage replicas to that geography; matches where Tofu state already lives). No new provider plumbing required, no new credentials — the existing `CLOUDFLARE_API_TOKEN` already has the scopes needed. |
 | `tofu/control-plane/variables.tf` | Remove `persistent_volume_size`. Add `s3_persistence_bucket_name`, `s3_persistence_endpoint`, `s3_persistence_region`. |
 | `tofu/control-plane/outputs.tf` | Replace `persistent_volume_id` with `s3_persistence_credentials` (sensitive). |
 | `tofu/stack/main.tf` | Remove `hcloud_volume_attachment "persistent"`. Add user-data / cloud-init pulling from S3 (or do it in `pipeline.py` instead — see below). |
@@ -280,8 +282,8 @@ This is the riskiest part. Existing stacks have data on Hetzner volumes; we must
 
 ### Phase A: prepare (no breaking changes yet)
 
-1. Pre-create per-stack S3 buckets (one-time admin action).
-2. Push Hetzner Object Storage credentials to each stack's Infisical secrets folder.
+1. Pre-create per-stack R2 buckets (one-time admin action via the migration shell script or the new Tofu resource).
+2. Push the R2 access credentials to each stack's Infisical secrets folder. We can reuse the project-wide R2 token that already exists from `scripts/init-r2-state.sh` rather than minting a per-stack token — IAM scoping is at the bucket level via `cloudflare_r2_bucket_lock` policies in v1.1 if needed.
 3. Add `nexus_deploy.s3_persistence` module to template, but don't wire it into pipeline yet.
 
 ### Phase B: one-time evacuation
@@ -334,8 +336,8 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 | **Spinup time becomes too long** | Profile per-stack data size; for large stacks (>5 GB) consider parallel rsync streams or streaming pg_restore. Document expected spinup time impact in setup guide. |
 | **Postgres dump consistency** | `pg_dump` on a running DB takes a consistent snapshot at the moment the transaction begins. App-side: `docker compose stop` the Gitea web service / Dify api+web services (10s graceful drain) before `pg_dump` so no new writes land mid-snapshot. We deliberately do NOT use `docker compose pause` — that's a cgroup-freezer SIGSTOP, hard-kills in-flight requests. |
 | **Weaviate corruption on incomplete restore** | Treat Weaviate as rebuildable from Dify-DB metadata if the dump is partial. Worst case: knowledge bases need re-indexing (slow but recoverable). |
-| **Hetzner Object Storage outage in fsn1** | Same blast radius as today's volume situation, but bucket can be (manually) replicated to a different bucket in hel1/nbg1 for DR. Out of scope for v1. |
-| **R2 might be a better choice after all** | R2 is global, zero egress, free tier sufficient for tutorial-scale data. We ship v1 on Hetzner Object Storage per operator preference, but `s3_persistence.py` is endpoint-agnostic — switching to R2 is a config change, not a code change. |
+| **Cloudflare R2 outage** | R2 has a single global namespace with automatic replication, but a control-plane outage at Cloudflare blocks both reads and writes. Today's design has a single Cloudflare dependency anyway (Tunnel, Access, DNS, Pages all depend on Cloudflare), so adding R2 doesn't expand the blast radius. If the project ever needs to be Cloudflare-independent, that's a separate concern outside this RFC. |
+| **R2 ops free-tier exhaustion** | Class A ops (writes) capped at 1M/month free; we estimate ~780K/month at 26 stacks × ~10 teardowns each. Adding more classes pushes us over. Monitor via Cloudflare dashboard; switch billing on once usage approaches the cap (paid is $4.50 per million additional Class A ops — small absolute cost). |
 | **Existing Class config breaks on upgrade** | Migration script; back-compat shim in tofu (`persistent_volume_id = 0` becomes the new normal). |
 
 ### Open questions
@@ -348,7 +350,7 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 
 4. **Bucket-per-stack vs. shared bucket with prefixes.** Per-stack is operationally cleaner (easy to delete on destroy-all, isolation, separate IAM scopes). Shared with `<stack>/<path>` prefixes saves the bucket-creation step but couples blast radius. Recommendation: **bucket-per-stack**.
 
-5. **Hetzner Object Storage Terraform provider support.** RESOLVED — the existing `aminueza/minio` provider (already in `tofu/control-plane/main.tf:287-316` for LakeFS / general / pgducklake buckets) handles Hetzner Object Storage cleanly via `minio_s3_bucket`. v1.0 adds a fourth `minio_s3_bucket "persistence"` resource per stack, same pattern. The shell scripts shipped in PR-1 of the implementation become migration tooling for the existing-stack evacuation phase, not the steady-state path.
+5. **R2 Terraform provider support.** RESOLVED — the `cloudflare/cloudflare` provider has a first-class `cloudflare_r2_bucket` resource and is already configured in this repo for DNS / Tunnel / Access / Pages. The persistence bucket is just one more cloudflare resource per stack — no new provider, no new credentials. The shell scripts shipped in PR-1 of the implementation become migration tooling for the existing-stack evacuation phase, not the steady-state path.
 
 6. **Snapshot retention.** v1.0 ships with **30-day NoncurrentVersionExpiration** as the safety net (rough ceiling on storage cost, no precise N-of-each control). At typical tutorial-stack sizes (~5 GB current copy, plus same again in noncurrent versions for the most recent ~30 days of teardown→spinup churn) this lands around ~5-10 GB/stack peak — see Cost analysis table for the per-stack monthly impact. The "last 7 daily + last 4 weekly" pattern is a v1.1 follow-up that needs either tag-based lifecycle rules (not in the current minio provider) or a separate cleanup cron.
 
@@ -385,38 +387,41 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 
 ## Cost analysis (back-of-envelope)
 
-Hetzner Object Storage pricing (2026-05): **€0.99 per TB/month** for storage in
-the bucket, free egress within the Hetzner network, **€1.19 per TB** egress to
-the public internet. We multiply through with 26 stacks at ~5 GB current data.
+Cloudflare R2 pricing (2026-05):
+- **Free tier**: 10 GB storage + 1M Class A ops/month + 10M Class B ops/month
+- **Above free tier**: $0.015 per GB/month storage, $4.50 per million Class A ops (writes), $0.36 per million Class B ops (reads)
+- **Egress**: **$0 (zero) regardless of destination** — major advantage over both Hetzner Object Storage and AWS S3
 
-Storage volume estimation under v1.0 retention (30-day NoncurrentVersion-
-Expiration): each snapshot is roughly the size of the live data (~5 GB).
-Stacks teardown+spinup ~10× per month under typical class usage; with 30-day
-retention, peak storage per stack is ``~5 GB current × (1 + 10) = ~55 GB``
-in the absolute worst case. That's the ceiling — typical usage churns less.
+Class-A ops counted: ``rclone sync`` writes (one PutObject per file) + ``rclone copyto`` for manifest + `latest.txt`. For a typical teardown
+(~1000 small repo files + a handful of dump files + manifest) → ~1000 Class-A ops per teardown × 30 teardowns/month × 26 stacks = ~780K Class-A ops/month — comfortably inside the free 1M.
+
+Class-B ops counted: ``rclone sync`` reads on spinup-restore — same magnitude as Class-A on teardown. ~780K Class-B ops/month — comfortably inside the free 10M.
+
+Storage volume estimation under v1.0 retention (30-day expiration of noncurrent versions): each snapshot is roughly the size of the live data (~5 GB peak per typical stack). 30-day retention with ~10 teardowns/month per stack → ~55 GB peak per stack worst case (1 current + 10 noncurrent versions); typical usage churns far less so realistic average is closer to 5-10 GB/stack.
 
 | Item | Today | Post-v1.0 (worst case) | Post-v1.0 (typical) |
 |---|---|---|---|
 | Hetzner volume (10 GB × 26 stacks) | €0.50 × 26 = €13/month | €0 | €0 |
-| Hetzner Object Storage storage (~55 GB worst / ~10 GB typical × 26 stacks × €0.99/TB) | €0 | ~€1.40/month | ~€0.25/month |
-| Hetzner Object Storage egress (1× per spinup, ~5 GB × 30 spinups/month, mostly within-Hetzner so free) | €0 | ~€0.20/month (only the cross-DC chunks) | ~€0.20/month |
+| R2 storage (~55 GB worst / ~10 GB typical × 26 stacks = ~1430 GB / ~260 GB; first 10 GB free per *account* not per bucket) | €0 | ~$21/month | ~$3.75/month |
+| R2 Class A + Class B ops | €0 | within free tier | within free tier |
+| R2 egress (spinup pulls) | €0 | **$0** (R2 zero-egress) | **$0** |
 | Increased spinup time (3-5 min × 30 spinups) | n/a | negligible | negligible |
-| **Net** | **~€13/month** | **~€1.60/month** | **~€0.45/month** |
+| **Net** | **~€13/month** | **~$21/month** | **~$4/month** |
 
-Both columns are dramatically cheaper than the pre-v1.0 baseline. The
-"~€10/month" figure that previously appeared in Open Question #6 was an
-overestimate from before the actual Hetzner pricing was looked up — v1.0
-storage cost across the whole class is comfortably under €2/month. The
-operational benefit (spinup-anywhere; no more EU stock crunch) dwarfs the
-storage saving anyway.
+Wider considerations vs the previous Hetzner-Object-Storage proposal:
 
-## Decision points — RESOLVED 2026-05-10
+- **R2 is more expensive per GB** ($0.015/GB vs Hetzner €0.99/TB ≈ $0.001/GB). Pure storage cost is a wash at small data sizes; R2 pulls ahead on the operational story.
+- **R2 has zero egress, which dominates** the moment a non-EU compute pull happens. Hetzner-Object-Storage charged €1.19/TB to the public internet — at 5 GB/spinup × 30 spinups = 150 GB/month egress, that would have been ~€0.18/month. Small absolute number, but a real operational caveat that pushed the previous RFC revision toward "EU-only compute by default". With R2 that caveat is gone.
+- **R2 ops counted differently** — Class-A vs Class-B distinction (writes vs reads) is something Hetzner doesn't have. The 1M Class-A ops/month free-tier ceiling is generous for 26 stacks but worth tracking as the class grows.
+- **Below free tier the cost is literally zero.** For pilot work or a smaller class (<10 GB total across all stacks) R2 is free.
 
-1. **Storage provider:** ✅ **Hetzner Object Storage** (EU data-residency, S3-compatible, already used elsewhere in the stack). R2 deferred — switching is a config change later.
+## Decision points — RESOLVED 2026-05-11
+
+1. **Storage provider:** ✅ **Cloudflare R2** (revised from the earlier Hetzner Object Storage choice). The project already uses R2 — the Tofu state backend lives in R2 (`scripts/init-r2-state.sh`, `tofu/backend.hcl`), and the `cloudflare/cloudflare` Tofu provider is already configured for DNS / Tunnel / Access / Pages. Reusing R2 for persistence means: same credentials, same provider, no new system to operate. R2 is also region-agnostic with zero egress fees — non-EU compute pulls the snapshot at no surcharge, which eliminates the EU-only-compute caveat that made the Hetzner-Object-Storage proposal awkward.
 2. **Bucket scoping:** ✅ **Bucket-per-stack** — operational isolation, easy `destroy-all` cleanup, per-stack IAM scope.
-3. **Bucket provisioning:** ✅ **Tofu via the existing `aminueza/minio` provider** (`minio_s3_bucket` resource). The repo already provisions three Hetzner Object Storage buckets this way (`tofu/control-plane/main.tf:287-316` — LakeFS, general, pgducklake), so adding a fourth `minio_s3_bucket "persistence"` resource per stack stays in the established pattern. This was originally proposed as a shell script because the `hcloud` provider doesn't cover Object Storage — that's still true, but the `minio` provider does, and we already use it. The shell scripts (`scripts/init-s3-bucket.sh`, `scripts/cleanup-s3-bucket.sh`) shipped in PR-1 of the implementation series remain as **migration tools** for the existing 26 stacks (whose buckets need to be created against the not-yet-Tofu-managed state during the evacuation phase) and as a manual-fallback path for operators not using Education's setup automation. They are not the primary provisioning mechanism in the steady state.
+3. **Bucket provisioning:** ✅ **Tofu via the existing `cloudflare/cloudflare` provider** (`cloudflare_r2_bucket` resource). The cloudflare provider is already in `providers.tf` for the project's DNS / Tunnel / Access / Pages resources, so a new `cloudflare_r2_bucket "persistence"` per stack stays in the established pattern. No additional providers, no additional credentials. The shell scripts shipped in PR-1 of the implementation series (`scripts/init-s3-bucket.sh`, `scripts/cleanup-s3-bucket.sh`) — originally framed for Hetzner-Object-Storage — are rewritten in PR-1 round-4 to use the Cloudflare API + `wrangler r2 bucket` pattern (same shape as the existing `scripts/init-r2-state.sh`). They remain as migration tooling for the existing 26 stacks during the evacuation phase, and as a manual-fallback path for operators not using Education's setup automation.
 4. **Native S3 backends (Gitea LFS, Dify storage):** ✅ **Defer to v1.1** — v1.0 ships with rsync only. Removes one source of risk per release.
-5. **Snapshot retention:** ✅ **30-day NoncurrentVersionExpiration as the safety net for v1.0** — the precise "7 daily + 4 weekly" pattern requires either tag-based lifecycle rules (not supported by the minio provider's lifecycle resource as of writing) or a separate cleanup cron. v1.0 ships with the 30-day cap; a v1.1 follow-up adds a precise-N-of-each cleanup script. ~50 GB/stack worst case under 30-day retention, ~€1.30/month total per the cost analysis below.
+5. **Snapshot retention:** ✅ **30-day expiration of noncurrent versions** as the safety net for v1.0, configured via R2's built-in object-versioning + lifecycle policy. The precise "7 daily + 4 weekly" pattern still needs a separate cleanup script — v1.1 work.
 6. **`destroy-all` behaviour:** ✅ **Opt-in delete** — bucket preserved by default, `--delete-data` flag (or workflow input) required to remove it. Same shape as the existing `confirm=DESTROY` confirmation.
 
 ## Estimated effort
@@ -481,12 +486,19 @@ gzip, written under `postgres/` not under each app's subtree).
 ## Appendix B — example rclone config snippet
 
 ```ini
-[hetzner-s3]
+[cloudflare-r2]
 type = s3
-provider = Other
-endpoint = https://fsn1.your-objectstorage.com
+provider = Cloudflare
+endpoint = https://<account_id>.r2.cloudflarestorage.com
 access_key_id = <from-infisical>
 secret_access_key = <from-infisical>
-region = fsn1
+region = auto
 acl = private
 ```
+
+R2 uses ``region = auto`` (R2 is a single global namespace; the SDK
+doesn't route based on region). The endpoint URL includes the
+Cloudflare account ID, which the existing
+``scripts/init-r2-state.sh`` already retrieves from the
+``CLOUDFLARE_ACCOUNT_ID`` env var when it sets up the Tofu state
+bucket.
