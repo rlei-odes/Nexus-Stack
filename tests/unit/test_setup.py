@@ -470,6 +470,32 @@ def test_ensure_data_dirs_script_chowns_gitea_uids() -> None:
     assert '"$MOUNT_POINT/gitea/db"' in rendered
 
 
+def test_ensure_data_dirs_script_covers_dify_bind_mounts() -> None:
+    """Round-4 PR review fix: ensure_data_dirs must also cover
+    Dify's bind-mount sources. dify-db is postgres:15-alpine
+    (uid 70), dify-redis is redis:6-alpine (uid 999). The other
+    three Dify mounts (storage, weaviate, plugins) run as root
+    inside the container — mkdir only, no chown — but they MUST
+    be mkdir'd here so Docker doesn't auto-create them under the
+    wrong parent perms when the bind path is missing."""
+    ssh = MagicMock()
+    ssh.run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"], returncode=0, stdout="", stderr=""
+    )
+    ensure_data_dirs(ssh)
+    rendered = ssh.run_script.call_args.args[0]
+    # All 5 Dify bind paths get mkdir'd.
+    assert '"$MOUNT_POINT/dify/db"' in rendered
+    assert '"$MOUNT_POINT/dify/redis"' in rendered
+    assert '"$MOUNT_POINT/dify/storage"' in rendered
+    assert '"$MOUNT_POINT/dify/weaviate"' in rendered
+    assert '"$MOUNT_POINT/dify/plugins"' in rendered
+    # Only db (postgres) + redis get chowned to non-root UIDs.
+    # The chown -R lines (the test below pins their exact UIDs).
+    assert 'chown -R 70:70 "$MOUNT_POINT/dify/db"' in rendered
+    assert 'chown -R 999:999 "$MOUNT_POINT/dify/redis"' in rendered
+
+
 def test_ensure_data_dirs_propagates_called_process_error() -> None:
     """A failed chown is a HARD failure — a stack that comes up
     with mis-owned data dirs misbehaves silently, which is much
