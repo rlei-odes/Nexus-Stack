@@ -566,9 +566,12 @@ jobs:
           GH_MIRROR_REPOS: ${{ secrets.GH_MIRROR_REPOS }}
           DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          # Feature flag — exact "true" opts in. Default to "true"
-          # so every spinup uses S3 persistence; set the secret to
-          # any other value (or unset) to bypass for an experiment.
+          # Feature flag — exact "true" opts in. The `|| 'true'`
+          # fallback means an unset secret still resolves to "true",
+          # so every spinup uses S3 persistence by default. To bypass
+          # (e.g. for an experiment), set the secret EXPLICITLY to a
+          # non-"true" value like "false"; just unsetting it leaves
+          # the default on.
           NEXUS_S3_PERSISTENCE: ${{ secrets.NEXUS_S3_PERSISTENCE || 'true' }}
           # R2 persistence bucket coords.
           PERSISTENCE_S3_ENDPOINT: ${{ secrets.PERSISTENCE_S3_ENDPOINT }}
