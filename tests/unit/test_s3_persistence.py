@@ -319,6 +319,79 @@ def test_postgres_dump_target_accepts_canonical_values() -> None:
     PostgresDumpTarget(container="x-db-2", database="db_v2", user="role_admin")
 
 
+# ---------------------------------------------------------------------------
+# RsyncTarget charset gating (Copilot round-3 #3216323836 / #3216323852)
+# ---------------------------------------------------------------------------
+
+
+def test_rsync_target_accepts_canonical_values() -> None:
+    """Smoke: the typical nexus-data layout passes the gate."""
+    RsyncTarget(
+        name="gitea-repos", local_path="/var/lib/nexus-data/gitea/repos", s3_subpath="gitea/repos"
+    )
+    RsyncTarget(
+        name="dify-storage",
+        local_path="/var/lib/nexus-data/dify/storage",
+        s3_subpath="dify/storage",
+    )
+
+
+@pytest.mark.parametrize(
+    "subpath",
+    [
+        "gitea/$(rm -rf /)",  # command substitution
+        "gitea/`whoami`",  # backticks
+        "gitea/repos with space",
+        "/gitea/repos",  # leading slash
+        "gitea/repos/",  # trailing slash
+        "../gitea",  # parent ref
+        "gitea/../etc",  # parent ref middle
+        'gitea/"injection',  # quote
+    ],
+)
+def test_rsync_target_rejects_unsafe_s3_subpath(subpath: str) -> None:
+    """``s3_subpath`` is interpolated into double-quoted bash strings
+    where ``shlex.quote`` doesn't help. Constructor must catch every
+    shape that would corrupt the rendered bash or escape the bucket
+    path."""
+    with pytest.raises(S3PersistenceError, match="s3_subpath"):
+        RsyncTarget(name="x", local_path="/var/lib/nexus-data/x", s3_subpath=subpath)
+
+
+def test_rsync_target_rejects_relative_local_path() -> None:
+    with pytest.raises(S3PersistenceError, match="local_path must be absolute"):
+        RsyncTarget(name="x", local_path="relative/path", s3_subpath="x")
+
+
+# ---------------------------------------------------------------------------
+# S3Endpoint endpoint-URL charset gating (Copilot round-3 #3216323864)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://fsn1.your-objectstorage.com\nextra_key = injection",
+        "https://fsn1 .your-objectstorage.com",  # space
+        "https://fsn1.your-objectstorage.com\r\n",
+        "https://fsn1.your-objectstorage.com\t",
+    ],
+)
+def test_s3endpoint_rejects_endpoint_with_whitespace_or_newlines(endpoint: str) -> None:
+    """Whitespace/newlines in the endpoint URL would corrupt the
+    rendered rclone config (split the value across multiple keys,
+    inject extra config lines). Regression for Copilot round-3
+    #3216323864."""
+    with pytest.raises(S3PersistenceError, match="corrupt the rendered rclone config"):
+        S3Endpoint(
+            endpoint=endpoint,
+            region="fsn1",
+            access_key="AKIA",
+            secret_key="secret",
+            bucket="nexus-test",
+        )
+
+
 def test_manifest_for_components_helper_sorts_components() -> None:
     """Components map → sorted ComponentSnapshot tuple. Sorting
     matters for deterministic manifest bytes regardless of the
@@ -326,13 +399,26 @@ def test_manifest_for_components_helper_sorts_components() -> None:
     m = manifest_for_components(
         stack="nexus-test",
         template_version="v0.56.0",
-        timestamp="20260510",
+        created_at="2026-05-11T04:00:00Z",
         components={
             "z-stack": (10, "z-hash"),
             "a-stack": (20, "a-hash"),
         },
     )
     assert [c.name for c in m.components] == ["a-stack", "z-stack"]
+
+
+def test_manifest_for_components_propagates_created_at() -> None:
+    """Regression: ``created_at`` is now an actual parameter (was
+    previously a no-op ``timestamp`` arg that the helper ignored).
+    The value must land on the manifest's ``created_at`` field."""
+    m = manifest_for_components(
+        stack="nexus-test",
+        template_version="v0.56.0",
+        created_at="2026-05-11T04:00:00Z",
+        components={},
+    )
+    assert m.created_at == "2026-05-11T04:00:00Z"
 
 
 # ---------------------------------------------------------------------------
@@ -454,16 +540,10 @@ def test_snapshot_script_rejects_unsafe_timestamp() -> None:
 
 def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> None:
     """The atomicity gate must distinguish (a) rclone-check itself
-    erroring (auth/network/quota — ``rclone_rc != 0``) from
-    (b) rclone-check succeeding but reporting drift (``drift_rc ==
-    0`` because ``grep`` found a ``-`` or ``*`` marker line).
-
-    The previous ``... | grep ... && {...} || true`` form
-    silently merged both cases and let ``set -e`` mask the
-    rclone-check-itself failure. We assert the rendered bash
-    captures both rcs via ``PIPESTATUS`` and aborts with a
-    distinct message for each.
-    """
+    erroring (auth/network/quota) from (b) drift found via the
+    pipe-grep on rclone-check's --combined output. Both rcs are
+    captured via ``PIPESTATUS`` so neither can be silently masked
+    by ``|| true``."""
     script = render_snapshot_script(
         endpoint=_endpoint(),
         stack_slug="nexus-test",
@@ -473,18 +553,49 @@ def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> Non
         rsync_targets=(),
     )
     assert "rclone check" in script
-    # Both PIPESTATUS captures must be present.
+    # Both PIPESTATUS captures must be present in the verify_one helper.
     assert "rclone_rc=${PIPESTATUS[0]}" in script
     assert "drift_rc=${PIPESTATUS[1]}" in script
     # And both abort messages must distinguish the two modes.
-    assert "snapshot-failed: rclone check itself errored" in script
-    assert "snapshot-failed: rclone check found drift" in script
-    # The rclone-check command itself must not be wrapped in `... ||
-    # true` (which would swallow non-zero exit). The diagnostic
-    # ``cat err || true`` (a best-effort log dump if the err file
-    # didn't get written) is allowed.
-    rclone_check_block = script.split("rclone check ")[1].split("\n", 1)[0]
-    assert "|| true" not in rclone_check_block
+    assert "snapshot-failed: rclone check ${label} errored" in script
+    assert "snapshot-failed: rclone check ${label} found drift" in script
+
+
+def test_snapshot_script_verifies_every_rsync_target() -> None:
+    """The verify gate must run an rclone check for ``$WORKDIR``
+    (manifest + postgres dumps) AND one per ``RsyncTarget`` — the
+    filesystem trees uploaded via ``rclone sync {local} {dst}``
+    are NOT in $WORKDIR, so a $WORKDIR-only check would have left
+    the bulk of the persisted state unverified.
+
+    Regression for Copilot round-3 #3216323822."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(),
+        rsync_targets=(
+            RsyncTarget(
+                name="gitea-repos",
+                local_path="/var/lib/nexus-data/gitea/repos",
+                s3_subpath="gitea/repos",
+            ),
+            RsyncTarget(
+                name="dify-storage",
+                local_path="/var/lib/nexus-data/dify/storage",
+                s3_subpath="dify/storage",
+            ),
+        ),
+    )
+    # Workdir verify (manifest + postgres dumps)
+    assert 'verify_one "$WORKDIR" "$BUCKET/$SNAPSHOT_PREFIX" "workdir(manifest+postgres)"' in script
+    # Plus per-rsync-target verify
+    assert "verify_one /var/lib/nexus-data/gitea/repos" in script
+    assert "verify_one /var/lib/nexus-data/dify/storage" in script
+    # Final gate before pointing snapshots/latest
+    assert 'if [ "$verify_failed" -ne 0 ]; then' in script
+    assert "not pointing snapshots/latest at $TIMESTAMP" in script
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +629,13 @@ def test_restore_script_handles_empty_s3_gracefully() -> None:
 def test_restore_script_drops_database_before_pg_restore() -> None:
     """A restore against a running Postgres with existing rows
     would conflict on PK; the drop+recreate keeps the pg_restore
-    deterministic."""
+    deterministic.
+
+    SQL identifiers are now ALWAYS double-quoted because real role
+    names use hyphens (``nexus-gitea``) which would be invalid as
+    unquoted SQL — the previous unquoted form would have produced
+    ``OWNER nexus-gitea`` which Postgres rejects as a syntax error.
+    """
     script = render_restore_script(
         endpoint=_endpoint(),
         postgres_targets=(
@@ -526,8 +643,10 @@ def test_restore_script_drops_database_before_pg_restore() -> None:
         ),
         rsync_targets=(),
     )
-    assert "DROP DATABASE IF EXISTS gitea" in script
-    assert "CREATE DATABASE gitea OWNER nexus-gitea" in script
+    assert 'DROP DATABASE IF EXISTS "gitea"' in script
+    assert 'CREATE DATABASE "gitea" OWNER "nexus-gitea"' in script
+    # CLI args don't need SQL quoting — pg_restore's -U/-d take plain
+    # values via argv, not embedded SQL.
     assert "pg_restore -U nexus-gitea -d gitea" in script
 
 

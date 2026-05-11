@@ -110,7 +110,28 @@ _SECRET_KEY = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 # every database/user we manage today matches this strict shape, and
 # an attacker who controls the value should be rejected at config
 # time, not handled with quoting acrobatics.
+#
+# Note: this charset **includes hyphens** because real role names in
+# the project use them (``nexus-gitea`` in stacks/gitea/docker-
+# compose.yml, ``nexus-dify`` in stacks/dify/docker-compose.yml).
+# Hyphens are valid inside double-quoted SQL identifiers but invalid
+# unquoted, so :func:`_quote_sql_ident` below double-quotes the
+# rendered SQL identifier unconditionally.
 _PG_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+# S3 object-key shape — applies to ``RsyncTarget.s3_subpath`` which is
+# interpolated into double-quoted bash strings like
+# ``"$BUCKET/$SNAPSHOT_PREFIX/{sub}"``. ``shlex.quote`` does NOT make
+# a value safe inside double quotes (``$(...)`` and backticks still
+# expand). Restrict to a strict path-segment shape: lowercase alnum +
+# hyphen + dot + forward-slash for nesting. No ``..``, no leading
+# slash, no quotes/dollars/backticks/spaces/newlines.
+_S3_SUBPATH = re.compile(r"^[a-z0-9][a-z0-9./-]*[a-z0-9]$|^[a-z0-9]$")
+# Endpoint URL shape — the rclone config writes ``endpoint = <value>``
+# verbatim; whitespace or newlines would corrupt the file. Accept
+# scheme + ://, then a conservative URL char set covering host/port/
+# path. Real Hetzner endpoints (https://fsn1.your-objectstorage.com)
+# match cleanly; injection attempts don't.
+_ENDPOINT_URL = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
 
 
 class S3PersistenceError(Exception):
@@ -158,6 +179,21 @@ class S3Endpoint:
         if not self.endpoint.startswith(("http://", "https://")):
             raise S3PersistenceError(
                 f"S3Endpoint.endpoint must start with http(s)://: {self.endpoint!r}",
+            )
+        # The endpoint URL gets interpolated verbatim into the
+        # rendered rclone config (key=value lines). The http(s)://
+        # prefix check alone doesn't catch whitespace, newlines, or
+        # control characters — any of which would corrupt the config
+        # file (split the value across multiple keys, inject extra
+        # lines) the moment rclone parses it. Tighten to the URL
+        # character set: scheme + `://` + RFC-3986 unreserved/host
+        # characters + optional port + optional path. Real Hetzner
+        # endpoints (e.g. ``https://fsn1.your-objectstorage.com``)
+        # are well inside this set; an injection attempt is not.
+        if not _ENDPOINT_URL.fullmatch(self.endpoint):
+            raise S3PersistenceError(
+                "S3Endpoint.endpoint contains characters that would corrupt the "
+                f"rendered rclone config (whitespace/newlines/control chars): {self.endpoint!r}",
             )
         for name, value, pattern in (
             ("region", self.region, _HETZNER_REGION),
@@ -303,6 +339,23 @@ class SnapshotManifest:
 RCLONE_PROFILE = "hetzner-s3"
 
 
+def _quote_sql_ident(name: str) -> str:
+    """Double-quote a Postgres identifier for safe SQL interpolation.
+
+    Real role names in the project use hyphens (``nexus-gitea``,
+    ``nexus-dify``) — hyphens are illegal inside *unquoted* SQL
+    identifiers but valid inside double-quoted ones. Always
+    emitting the quoted form means the rendered SQL works for
+    both shapes without case-by-case logic.
+
+    The input is already charset-gated by :data:`_PG_IDENTIFIER`,
+    so it never contains a literal ``"``; we still double any that
+    appear, belt-and-suspenders, in case a future caller bypasses
+    the gate.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
 def render_rclone_config(endpoint: S3Endpoint) -> str:
     """Render the ``[hetzner-s3]`` rclone profile block.
 
@@ -378,11 +431,37 @@ class RsyncTarget:
     is the relative key under the snapshot's timestamped directory
     — kept short and stable across snapshots so a future
     diff-based optimisation has a useful key to compare against.
+
+    Charset validation: ``s3_subpath`` is interpolated into bash
+    *inside* double-quoted strings (``"$BUCKET/$PREFIX/{sub}"``),
+    where ``shlex.quote()`` doesn't help — ``$()`` and backticks
+    still expand inside double quotes. We enforce a strict
+    path-segment shape at construction so the rendered bash can't
+    be tricked into executing the value as a command substitution.
+    ``local_path`` is interpolated with ``shlex.quote`` outside any
+    double quotes, so its only requirement is absolute-path
+    (the rendered script does ``mkdir -p`` etc. against it).
     """
 
     name: str
     local_path: str
     s3_subpath: str
+
+    def __post_init__(self) -> None:
+        if not self.local_path.startswith("/"):
+            raise S3PersistenceError(
+                f"RsyncTarget.local_path must be absolute: {self.local_path!r}",
+            )
+        if not _S3_SUBPATH.fullmatch(self.s3_subpath):
+            raise S3PersistenceError(
+                "RsyncTarget.s3_subpath must match strict path-segment shape "
+                "(lowercase alnum + hyphen + dot + forward-slash, no leading "
+                f"slash, no `..`): {self.s3_subpath!r}",
+            )
+        if ".." in self.s3_subpath.split("/"):
+            raise S3PersistenceError(
+                f"RsyncTarget.s3_subpath must not contain '..' segments: {self.s3_subpath!r}",
+            )
 
 
 def render_snapshot_script(
@@ -480,7 +559,12 @@ def render_snapshot_script(
             container = shlex.quote(pg.container)
             db = shlex.quote(pg.database)
             user = shlex.quote(pg.user)
-            dump_file = f"$POSTGRES_DIR/{pg.database}.sql.gz"
+            # File naming: ``<database>.dump.gz`` (custom binary
+            # pg_dump format, gzipped) — matches the restore-side
+            # filename and the RFC's stated S3 layout. Earlier this
+            # said ``.sql.gz`` which was misleading since the body
+            # is NOT plain SQL (``-F c`` produces a binary archive).
+            dump_file = f"$POSTGRES_DIR/{pg.database}.dump.gz"
             lines.append(
                 f"docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
             )
@@ -517,44 +601,66 @@ def render_snapshot_script(
             'rclone copyto "$WORKDIR/manifest.json" "$BUCKET/$SNAPSHOT_PREFIX/manifest.json"',
             "",
             'echo "→ snapshot: verifying upload (rclone check)"',
-            # Atomicity gate. Two distinct failure modes need distinct
-            # treatment, which the previous ``... | grep ... && {...}
-            # || true`` form silently merged into one bucket:
+            # Atomicity gate. Three classes of source need verifying:
             #
-            #   1. rclone-check itself fails (auth/network/quota) →
-            #      ``rclone check`` exits non-zero. The previous form
-            #      would let ``set -e`` catch that, but only if the
-            #      pipe-grep didn't find any drift markers; the ``||
-            #      true`` fallback then masked it again. We capture
-            #      the rclone-check rc explicitly via ``${PIPESTATUS}``
-            #      and abort if non-zero.
+            #   a. ``$WORKDIR`` — locally-staged manifest.json + the
+            #      postgres dumps under $POSTGRES_DIR.
+            #   b. each :class:`RsyncTarget`.local_path — the
+            #      filesystem trees uploaded directly from
+            #      /var/lib/nexus-data/<...>. These were NOT in
+            #      $WORKDIR (we synced them straight from the live
+            #      mount), so a $WORKDIR-only check would have left
+            #      the bulk of the persisted state unverified.
             #
-            #   2. rclone-check succeeds but reports drift (some file
-            #      missing-on-remote ``-`` or different ``*``). In
-            #      that case ``grep -E "^[-*]"`` *succeeds* (rc=0 →
-            #      drift found) and we abort. If grep returns rc=1
-            #      (no drift markers found) that's the happy path.
+            # We run ``rclone check`` once per source, accumulating
+            # any failure into a single ``verify_failed`` flag. Two
+            # distinct rcs per check (rclone's own exit and the
+            # grep-for-drift) are captured via ``PIPESTATUS`` so
+            # neither can be masked by ``|| true``.
             #
-            # ``--one-way`` keeps the comparison local→S3-only, so a
-            # stale orphan in S3 from a previous failed snapshot can't
-            # by itself fail the gate — only files we actually
-            # uploaded need to round-trip cleanly.
-            "set +e",
-            'rclone check "$WORKDIR" "$BUCKET/$SNAPSHOT_PREFIX" '
+            # ``--one-way`` keeps each comparison source→S3 only, so
+            # a stale orphan in S3 from a previous failed snapshot
+            # can't by itself fail the gate.
+            "verify_failed=0",
+            "verify_one() {",
+            '  local src="$1"',
+            '  local dst="$2"',
+            '  local label="$3"',
+            "  set +e",
+            '  rclone check "$src" "$dst" '
             '--one-way --combined - 2>"$WORKDIR/rclone-check.err" '
             '| tee "$WORKDIR/rclone-check.out" '
             '| grep -qE "^[-*]"',
-            "drift_rc=${PIPESTATUS[1]}     # 0 = drift found, 1 = clean",
-            "rclone_rc=${PIPESTATUS[0]}    # rclone-check's own exit",
-            "set -e",
-            'if [ "$rclone_rc" -ne 0 ]; then',
-            '  echo "✗ snapshot-failed: rclone check itself errored (rc=$rclone_rc)" >&2',
-            '  cat "$WORKDIR/rclone-check.err" >&2 || true',
-            "  exit 2",
-            "fi",
-            'if [ "$drift_rc" -eq 0 ]; then',
-            '  echo "✗ snapshot-failed: rclone check found drift" >&2',
-            '  cat "$WORKDIR/rclone-check.out" >&2',
+            "  local drift_rc=${PIPESTATUS[1]}",
+            "  local rclone_rc=${PIPESTATUS[0]}",
+            "  set -e",
+            '  if [ "$rclone_rc" -ne 0 ]; then',
+            '    echo "✗ snapshot-failed: rclone check ${label} errored (rc=$rclone_rc)" >&2',
+            '    cat "$WORKDIR/rclone-check.err" >&2 || true',
+            "    verify_failed=1",
+            "    return",
+            "  fi",
+            '  if [ "$drift_rc" -eq 0 ]; then',
+            '    echo "✗ snapshot-failed: rclone check ${label} found drift" >&2',
+            '    cat "$WORKDIR/rclone-check.out" >&2',
+            "    verify_failed=1",
+            "    return",
+            "  fi",
+            '  echo "  ✓ verified ${label}"',
+            "}",
+            "",
+            'verify_one "$WORKDIR" "$BUCKET/$SNAPSHOT_PREFIX" "workdir(manifest+postgres)"',
+        ]
+        + [
+            f"verify_one {shlex.quote(rs.local_path)} "
+            f'"$BUCKET/$SNAPSHOT_PREFIX/{shlex.quote(rs.s3_subpath)}" '
+            f"{shlex.quote('rsync:' + rs.name)}"
+            for rs in rs_targets
+        ]
+        + [
+            "",
+            'if [ "$verify_failed" -ne 0 ]; then',
+            '  echo "✗ snapshot-failed: one or more verifications drifted; not pointing snapshots/latest at $TIMESTAMP" >&2',
             "  exit 2",
             "fi",
             "",
@@ -662,24 +768,39 @@ def render_restore_script(
         lines.append('echo "→ restore: applying postgres dumps"')
         for pg in pg_targets:
             container = shlex.quote(pg.container)
-            db = shlex.quote(pg.database)
-            user = shlex.quote(pg.user)
-            dump_file = f"$WORKDIR/postgres/{pg.database}.sql.gz"
+            db_cli = shlex.quote(pg.database)
+            user_cli = shlex.quote(pg.user)
+            # SQL identifiers — must be DOUBLE-QUOTED in the rendered
+            # SQL because real role names use hyphens (``nexus-gitea``,
+            # ``nexus-dify``) which are invalid as unquoted PG
+            # identifiers. ``_quote_sql_ident`` handles the doubling
+            # of any literal ``"`` in the value (defensive — values
+            # are already charset-gated by ``_PG_IDENTIFIER`` so they
+            # can't contain quotes today). The SQL goes inside a
+            # ``-c "..."`` bash argument that is itself double-quoted,
+            # so the inner ``"`` characters need bash-escaping → we
+            # use a single-quoted bash argument instead.
+            db_sql = _quote_sql_ident(pg.database)
+            user_sql = _quote_sql_ident(pg.user)
+            dump_file = f"$WORKDIR/postgres/{pg.database}.dump.gz"
             # We drop+recreate the database to guarantee a clean
             # restore. pg_restore --clean would do something similar
             # but is fragile across PG versions; the explicit
             # drop+create is portable.
+            #
+            # ``-c '<SQL>'`` (single-quoted bash arg) so the inner
+            # double-quoted SQL identifiers don't need escaping.
             lines.append(
-                f"docker exec {container} psql -U {user} -d postgres "
-                f'-c "DROP DATABASE IF EXISTS {pg.database} WITH (FORCE);"',
+                f"docker exec {container} psql -U {user_cli} -d postgres "
+                f"-c 'DROP DATABASE IF EXISTS {db_sql} WITH (FORCE);'",
             )
             lines.append(
-                f"docker exec {container} psql -U {user} -d postgres "
-                f'-c "CREATE DATABASE {pg.database} OWNER {pg.user};"',
+                f"docker exec {container} psql -U {user_cli} -d postgres "
+                f"-c 'CREATE DATABASE {db_sql} OWNER {user_sql};'",
             )
             lines.append(
                 f"gunzip -c {dump_file} | "
-                f"docker exec -i {container} pg_restore -U {user} -d {db} "
+                f"docker exec -i {container} pg_restore -U {user_cli} -d {db_cli} "
                 "--no-owner --no-acl",
             )
         lines.append("")
@@ -698,7 +819,7 @@ def manifest_for_components(
     *,
     stack: str,
     template_version: str,
-    timestamp: str,
+    created_at: str,
     components: Mapping[str, tuple[int, str]],
 ) -> SnapshotManifest:
     """Build a :class:`SnapshotManifest` from a sized+hashed component map.
@@ -711,6 +832,12 @@ def manifest_for_components(
     sha256 over multi-GB rsync trees on the server adds material
     minutes to teardown.
 
+    ``created_at`` should be an ISO-8601 string (e.g.
+    ``2026-05-11T04:00:00Z``); it lands on the manifest's
+    ``created_at`` field. Previously this parameter was named
+    ``timestamp`` and silently ignored — misleading API, fixed
+    here by renaming + actually using it.
+
     The version-1.1 plan is to revisit this and either (a) make the
     rendered bash compute and emit per-component sha256 (slower
     teardown, more robust restore) or (b) trust rclone's own
@@ -718,7 +845,7 @@ def manifest_for_components(
     """
     return SnapshotManifest(
         version=1,
-        created_at="",
+        created_at=created_at,
         stack=stack,
         template_version=template_version,
         components=tuple(
