@@ -11,12 +11,16 @@ Public surface:
 
 * :class:`S3RestoreSkipped` / :class:`S3RestoreApplied` — outcome
   marker classes returned by :func:`restore_from_s3`. Tests assert
-  on the type; pipeline.py logs a one-line summary using the
-  ``detail`` attribute.
-* :func:`build_endpoint_from_env` — read the five PERSISTENCE_S3_*
-  env vars, return a populated :class:`S3Endpoint`. Returns
-  ``None`` when any of them is unset — the caller treats that as
-  "S3 persistence not configured on this stack, skip the phase."
+  on the type; pipeline.py branches on ``isinstance()`` and reads
+  ``reason`` (Skipped) or ``snapshot_timestamp`` (Applied) for
+  the one-line stderr summary.
+* :func:`build_endpoint_from_env` — read the five required env
+  vars (three ``PERSISTENCE_S3_*`` — endpoint, region, bucket —
+  plus the project-wide ``R2_ACCESS_KEY_ID`` and
+  ``R2_SECRET_ACCESS_KEY``), return a populated
+  :class:`S3Endpoint`. Returns ``None`` when any of them is
+  unset — the caller treats that as "S3 persistence not
+  configured on this stack, skip the phase."
 * :func:`standard_targets` — produces the canonical tuple of
   postgres + rsync targets for the two stacks we persist
   (Gitea + Dify). Hard-coded for v1.0 because those are the only
@@ -136,8 +140,13 @@ _REQUIRED_ENV_VAR_NAMES = (
 
 
 def build_endpoint_from_env(env: dict[str, str] | None = None) -> _s3.S3Endpoint | None:
-    """Build a :class:`S3Endpoint` from the five PERSISTENCE_S3_*
-    env vars.
+    """Build a :class:`S3Endpoint` from the five required env vars.
+
+    Three are persistence-bucket coords (``PERSISTENCE_S3_ENDPOINT``,
+    ``PERSISTENCE_S3_REGION``, ``PERSISTENCE_S3_BUCKET``); the other
+    two are the project-wide R2 access credentials reused from
+    ``init-r2-state.sh`` (``R2_ACCESS_KEY_ID``,
+    ``R2_SECRET_ACCESS_KEY``).
 
     Returns ``None`` if any of them is missing — the caller treats
     that as "no S3 persistence configured for this stack, fall back
