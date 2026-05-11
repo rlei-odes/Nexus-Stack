@@ -7,11 +7,11 @@ sits above and around them:
 1. R2 credentials load + ``os.environ`` injection
 2. ``tofu state list`` pre-flight
 3. config.tfvars parse + Gitea identity derivation
-4. Read 7 tofu outputs (secrets, image_versions, enabled_services,
-   firewall_rules, ssh_service_token, server_ip, persistent_volume_id)
+4. Read 6 tofu outputs (secrets, image_versions, enabled_services,
+   firewall_rules, ssh_service_token, server_ip)
 5. SSH known_hosts cleanup (``ssh-keygen -R``)
 6. ``setup.configure_ssh`` → ``setup.wait_for_ssh`` →
-   ``setup.ensure_jq`` → ``setup.mount_persistent_volume``
+   ``setup.ensure_jq`` → ``s3_restore.restore_from_s3``
 7. Docker Hub login (when creds set)
 8. ``setup.setup_wetty_ssh_agent`` (when wetty enabled)
 9. ``Orchestrator.run_pre_bootstrap``
@@ -299,11 +299,10 @@ def run_pipeline(
             f"required tofu output missing or invalid: {exc} — "
             "state may be partially applied; re-run initial-setup",
         ) from exc
-    # ``server_ip`` and ``persistent_volume_id`` ARE optional —
-    # missing server_ip just means ssh-keygen cleanup has fewer
-    # targets; missing volume id falls back to "0" (= no volume).
+    # ``server_ip`` is optional — missing means ssh-keygen cleanup
+    # has fewer targets. ``persistent_volume_id`` is gone in the
+    # RFC 0001 cutover; persistence lives in R2 via s3_restore.
     server_ip = runner.output_raw("server_ip", default="")
-    persistent_volume_id = runner.output_raw("persistent_volume_id", default="0")
 
     if not isinstance(enabled_services_raw, list):
         raise PipelineError(
@@ -339,30 +338,22 @@ def run_pipeline(
 
         ssh = stack.enter_context(SSHClient("nexus"))
         _setup.ensure_jq(ssh)
-        # PR #535 R4 #4: capture the mount result and emit a stderr
-        # warning when the operator actually has a volume configured
-        # (volume_id != "0") but mounting fell through. Mirrors the
-        # legacy bash behavior where "fallback-failed" / "no parseable
-        # RESULT" lines were visible to the operator. Mount failure
-        # stays non-fatal (downstream stacks that don't need the
-        # volume can still come up) so we warn but don't raise.
-        mount_result = _setup.mount_persistent_volume(persistent_volume_id, ssh)
-        if persistent_volume_id not in ("", "0") and not mount_result.mounted:
-            sys.stderr.write(
-                f"⚠ persistent volume {persistent_volume_id} did NOT mount: "
-                f"{mount_result.detail or 'no detail'} — "
-                "downstream stacks that depend on /opt/data may misbehave\n",
-            )
 
-        # RFC 0001 phase A wire-up. Reads the NEXUS_S3_PERSISTENCE env
-        # var; when ``"true"`` the S3 restore path runs in addition to
-        # (not instead of) the volume mount above. For stacks that
-        # haven't migrated yet the function returns S3RestoreSkipped
-        # immediately and we pass through with no behavior change.
-        # The volume-mount path itself becomes a no-op once a stack's
-        # config drops ``persistent_volume_id`` (RFC PR-3); for now
-        # both paths coexist so cutover is per-stack and reversible.
+        # RFC 0001 cutover wire-up. Reads the NEXUS_S3_PERSISTENCE
+        # env var; when ``"true"`` the S3 restore path pulls
+        # snapshots/latest.txt from R2 and seeds /mnt/nexus-data on
+        # the local SSD. When unset or any other value, returns
+        # Skipped/feature_flag_off and we pass through with empty
+        # data dirs (compose still comes up; stateful services
+        # start fresh). The Hetzner volume that used to back this
+        # path was removed from Tofu in the same cutover PR —
+        # there's no volume-mount fallback to fall back to.
         s3_result = _s3_restore.restore_from_s3(ssh)
+        # rclone writes restored files as the SSH user (root), but
+        # gitea + postgres containers expect uid 1000:1000 / 70:70
+        # on their bind-mount sources. Idempotent — fine to run on
+        # an empty fresh-start tree too.
+        _setup.ensure_data_dirs(ssh)
         if isinstance(s3_result, _s3_restore.S3RestoreApplied):
             sys.stderr.write(
                 f"✓ s3-restore: applied snapshot {s3_result.snapshot_timestamp}\n",

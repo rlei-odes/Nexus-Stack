@@ -105,7 +105,7 @@ output "image_versions" {
 
 output "firewall_rules" {
   description = "Enabled firewall rules for external TCP access (for deploy script)"
-  value = var.firewall_rules
+  value       = var.firewall_rules
 }
 
 # =============================================================================
@@ -195,8 +195,8 @@ output "secrets" {
     pgadmin_password = random_password.pgadmin.result
 
     # RedPanda SASL (for external Kafka access)
-    redpanda_admin_password        = random_password.redpanda_admin.result
-    redpanda_kafka_public_url      = "redpanda-kafka.${var.domain}:9092"
+    redpanda_admin_password             = random_password.redpanda_admin.result
+    redpanda_kafka_public_url           = "redpanda-kafka.${var.domain}:9092"
     redpanda_schema_registry_public_url = "http://redpanda-schema-registry.${var.domain}:18081"
 
     # RustFS
@@ -210,18 +210,18 @@ output "secrets" {
     garage_rpc_secret  = random_id.garage_rpc_secret.hex
 
     # LakeFS
-    lakefs_db_password        = random_password.lakefs_db.result
-    lakefs_encrypt_secret     = random_password.lakefs_encrypt_secret.result
-    lakefs_admin_access_key   = random_string.lakefs_admin_access_key.result
-    lakefs_admin_secret_key   = random_password.lakefs_admin_secret_key.result
+    lakefs_db_password      = random_password.lakefs_db.result
+    lakefs_encrypt_secret   = random_password.lakefs_encrypt_secret.result
+    lakefs_admin_access_key = random_string.lakefs_admin_access_key.result
+    lakefs_admin_secret_key = random_password.lakefs_admin_secret_key.result
 
     # Filestash
     filestash_admin_password = random_password.filestash_admin.result
 
     # Windmill
-    windmill_admin_password     = random_password.windmill_admin.result
-    windmill_db_password        = random_password.windmill_db.result
-    windmill_superadmin_secret  = random_password.windmill_superadmin_secret.result
+    windmill_admin_password    = random_password.windmill_admin.result
+    windmill_db_password       = random_password.windmill_db.result
+    windmill_superadmin_secret = random_password.windmill_superadmin_secret.result
 
     # OpenMetadata
     openmetadata_admin_password   = random_password.openmetadata_admin.result
@@ -302,7 +302,5 @@ output "infisical_admin_password" {
   value       = random_password.infisical_admin.result
 }
 
-output "persistent_volume_id" {
-  description = "Persistent volume ID (for deploy script volume mounting)"
-  value       = var.persistent_volume_id
-}
+# persistent_volume_id output — REMOVED in RFC 0001 cutover.
+# Replaced by R2-backed snapshots (see tofu/control-plane/main.tf).

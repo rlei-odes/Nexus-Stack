@@ -182,19 +182,9 @@ jobs:
             fi
           fi
           echo "✅ Control Plane backend initialized"
-
-          # Get persistent volume ID from control-plane and add to stack config
-          PERSISTENT_VOLUME_ID=$(tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
-          # Validate ID is numeric (tofu wrapper may write ::error:: to stdout)
-          if [[ ! "$PERSISTENT_VOLUME_ID" =~ ^[0-9]+$ ]]; then
-            PERSISTENT_VOLUME_ID="0"
-          fi
           cd ../..
-          echo "" >> tofu/stack/config.tfvars
-          printf 'persistent_volume_id = %s\n' "$PERSISTENT_VOLUME_ID" >> tofu/stack/config.tfvars
-          if [ "$PERSISTENT_VOLUME_ID" != "0" ]; then
-            echo "💾 Persistent volume will be destroyed (ID: $PERSISTENT_VOLUME_ID)"
-          fi
+          # RFC 0001 cutover: persistent_volume_id no longer exists.
+          # Hetzner volumes were replaced by R2-backed snapshots.
 
       - name: Destroy Nexus Stack infrastructure
         if: env.SKIP_TOFU_DESTROY != 'true'
@@ -220,9 +210,11 @@ jobs:
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 
-          # Protect persistent volume from destruction (keeps Gitea repos etc.)
-          echo "💾 Protecting persistent volume from destroy..."
-          tofu state rm hcloud_volume.persistent 2>/dev/null || true
+          # RFC 0001 cutover: hcloud_volume.persistent no longer
+          # exists; persistence migrated to R2. The destroy-all
+          # workflow now does NOT protect anything volume-shaped —
+          # the R2 bucket holding snapshots is the new persistence
+          # boundary, and it lives outside Tofu state entirely.
 
           # Protect KV namespace from destruction (keeps Databricks config etc.)
           echo "💾 Protecting KV namespace from destroy..."

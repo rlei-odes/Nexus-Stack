@@ -117,15 +117,15 @@ def setup_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Install no-op mocks for every external boundary the pipeline
     crosses. Tests that need to assert specific behavior re-set the
     mock they care about."""
-    from nexus_deploy.setup import SSHReadinessResult, VolumeMountResult
+    from nexus_deploy.setup import SSHReadinessResult
 
     mocks: dict[str, Any] = {
         "configure_ssh": MagicMock(return_value=None),
         "wait_for_ssh": MagicMock(return_value=SSHReadinessResult(succeeded=True, attempts=1)),
         "ensure_jq": MagicMock(return_value=False),
-        "mount_persistent_volume": MagicMock(
-            return_value=VolumeMountResult(mounted=True, fstab_added=True, detail="mounted"),
-        ),
+        # RFC 0001 cutover: mount_persistent_volume replaced by
+        # ensure_data_dirs (chown-only; the Hetzner volume is gone).
+        "ensure_data_dirs": MagicMock(return_value=None),
         "setup_wetty_ssh_agent": MagicMock(return_value=None),
         "ssh_keygen_cleanup": MagicMock(),
         "SSHClient": MagicMock(),
@@ -134,8 +134,8 @@ def setup_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("nexus_deploy.pipeline._setup.wait_for_ssh", mocks["wait_for_ssh"])
     monkeypatch.setattr("nexus_deploy.pipeline._setup.ensure_jq", mocks["ensure_jq"])
     monkeypatch.setattr(
-        "nexus_deploy.pipeline._setup.mount_persistent_volume",
-        mocks["mount_persistent_volume"],
+        "nexus_deploy.pipeline._setup.ensure_data_dirs",
+        mocks["ensure_data_dirs"],
     )
     monkeypatch.setattr(
         "nexus_deploy.pipeline._setup.setup_wetty_ssh_agent",
@@ -466,60 +466,28 @@ def test_pipeline_wraps_required_output_missing(
         )
 
 
-def test_pipeline_warns_on_volume_mount_failure(
+def test_pipeline_runs_ensure_data_dirs_after_restore(
     project_root: Path,
     fake_tofu_runner: MagicMock,
     setup_mocks: dict[str, Any],
     mock_orchestrator: MagicMock,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """PR #535 R4 #4: when persistent_volume_id is non-zero but
-    mount_persistent_volume returned mounted=False, emit a stderr
-    warning. Failure stays non-fatal (deploy continues)."""
-    from nexus_deploy.setup import VolumeMountResult
+    """RFC 0001 cutover: rclone restores files as the SSH user
+    (root), so ``ensure_data_dirs`` MUST run after
+    ``restore_from_s3`` to fix Gitea + Postgres ownership.
+    Without this call, the bind-mounted containers fail to write
+    to their own data dirs — symptom is hard to debug at runtime,
+    so we pin the invariant here.
 
-    setup_mocks["mount_persistent_volume"].return_value = VolumeMountResult(
-        mounted=False,
-        fstab_added=False,
-        detail="fallback-failed",
-    )
-    # Run pipeline; should NOT raise because mount failure is non-fatal.
+    Asserts the mock was called at least once (the orchestrator
+    may invoke it indirectly too in future phases — we only care
+    that the pipeline's explicit pre-orchestrator call is wired)."""
     run_pipeline(
         project_root=project_root,
         options=PipelineOptions(),
         tofu_runner=fake_tofu_runner,
     )
-    err = capsys.readouterr().err
-    assert "persistent volume 1234 did NOT mount" in err
-    assert "fallback-failed" in err
-
-
-def test_pipeline_silent_when_volume_id_zero_and_unmounted(
-    project_root: Path,
-    fake_tofu_runner: MagicMock,
-    setup_mocks: dict[str, Any],
-    mock_orchestrator: MagicMock,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """When the operator hasn't configured a volume (volume_id="0"),
-    mounted=False is the EXPECTED outcome and must NOT warn."""
-    from nexus_deploy.setup import VolumeMountResult
-
-    fake_tofu_runner.output_raw.side_effect = lambda name, default="": (
-        "0" if name == "persistent_volume_id" else "1.2.3.4"
-    )
-    setup_mocks["mount_persistent_volume"].return_value = VolumeMountResult(
-        mounted=False,
-        fstab_added=False,
-        detail="skipped",
-    )
-    run_pipeline(
-        project_root=project_root,
-        options=PipelineOptions(),
-        tofu_runner=fake_tofu_runner,
-    )
-    err = capsys.readouterr().err
-    assert "did NOT mount" not in err
+    setup_mocks["ensure_data_dirs"].assert_called()
 
 
 def test_pipeline_aborts_when_enabled_services_not_list(

@@ -315,11 +315,8 @@ jobs:
           HETZNER_S3_BUCKET=$(tofu output -raw hetzner_s3_bucket 2>/dev/null || echo "")
           HETZNER_S3_BUCKET_GENERAL=$(tofu output -raw hetzner_s3_bucket_general 2>/dev/null || echo "")
           HETZNER_S3_BUCKET_PGDUCKLAKE=$(tofu output -raw hetzner_s3_bucket_pgducklake 2>/dev/null || echo "")
-          PERSISTENT_VOLUME_ID=$(tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
-          # Validate ID is numeric (tofu wrapper may write ::error:: to stdout)
-          if [[ ! "$PERSISTENT_VOLUME_ID" =~ ^[0-9]+$ ]]; then
-            PERSISTENT_VOLUME_ID="0"
-          fi
+          # RFC 0001 cutover: persistent_volume_id is gone — Hetzner
+          # volumes are no longer used; persistence lives in R2.
           cd ../..
 
           # Add Hetzner Object Storage config to stack
@@ -329,7 +326,6 @@ jobs:
           hetzner_s3_bucket             = "$HETZNER_S3_BUCKET"
           hetzner_s3_bucket_general     = "$HETZNER_S3_BUCKET_GENERAL"
           hetzner_s3_bucket_pgducklake  = "$HETZNER_S3_BUCKET_PGDUCKLAKE"
-          persistent_volume_id          = $PERSISTENT_VOLUME_ID
           EOF
           sed -i 's/^          //' tofu/stack/config.tfvars
 
@@ -337,10 +333,6 @@ jobs:
             echo "📦 Hetzner Object Storage configured (bucket: $HETZNER_S3_BUCKET)"
           else
             echo "⚠️  Hetzner Object Storage not configured (LakeFS will need manual setup)"
-          fi
-
-          if [ "$PERSISTENT_VOLUME_ID" != "0" ]; then
-            echo "💾 Persistent volume configured (ID: $PERSISTENT_VOLUME_ID)"
           fi
           
           # Generate services config from D1 (single source of truth)
@@ -560,12 +552,35 @@ jobs:
         # Python pipeline. Everything that was in deploy.sh now lives
         # in nexus_deploy.pipeline.run_pipeline (R2 creds, tofu reads,
         # tfvars parse, ssh setup, orchestrator phases, done banner).
+        #
+        # RFC 0001 cutover: the S3-persistence env vars below switch
+        # the spinup-side restore from a no-op into the active path —
+        # restore_from_s3 reads them, pulls snapshots/latest.txt from
+        # R2, and seeds /mnt/nexus-data BEFORE docker compose comes
+        # up. Mirrors the teardown.yml wiring; both ends of the cycle
+        # see the same 7-var env. With the flag on (default since
+        # this PR), the Hetzner volume is no longer used at all.
         env:
           SSH_PRIVATE_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY || inputs.ssh_private_key }}
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
           GH_MIRROR_REPOS: ${{ secrets.GH_MIRROR_REPOS }}
           DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          # Feature flag — exact "true" opts in. Default to "true"
+          # so every spinup uses S3 persistence; set the secret to
+          # any other value (or unset) to bypass for an experiment.
+          NEXUS_S3_PERSISTENCE: ${{ secrets.NEXUS_S3_PERSISTENCE || 'true' }}
+          # R2 persistence bucket coords.
+          PERSISTENCE_S3_ENDPOINT: ${{ secrets.PERSISTENCE_S3_ENDPOINT }}
+          PERSISTENCE_S3_REGION: ${{ secrets.PERSISTENCE_S3_REGION }}
+          PERSISTENCE_S3_BUCKET: ${{ secrets.PERSISTENCE_S3_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # Manifest fields — bucket-name slug + release tag.
+          # PERSISTENCE_STACK_SLUG: workflow override → repo name fallback.
+          # PERSISTENCE_TEMPLATE_VERSION: github.ref_name (the running ref).
+          PERSISTENCE_STACK_SLUG: ${{ secrets.PERSISTENCE_STACK_SLUG || github.event.repository.name }}
+          PERSISTENCE_TEMPLATE_VERSION: ${{ github.ref_name }}
         run: |
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy run-pipeline

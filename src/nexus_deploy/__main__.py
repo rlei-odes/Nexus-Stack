@@ -13,7 +13,7 @@ Subcommand dispatcher. Subcommands:
 - ``gitea configure`` / ``gitea woodpecker-oauth`` / ``gitea mirror-setup``
 - ``stack-sync --enabled <comma-list>``
 - ``setup ssh-config`` / ``setup wait-ssh`` / ``setup ensure-jq`` /
-  ``setup mount-volume``
+  ``setup wetty-ssh-agent``
 """
 
 from __future__ import annotations
@@ -66,7 +66,6 @@ from nexus_deploy.setup import (
     SSHConfigSpec,
     configure_ssh,
     ensure_jq,
-    mount_persistent_volume,
     setup_wetty_ssh_agent,
     wait_for_service_token,
     wait_for_ssh,
@@ -1722,78 +1721,14 @@ def _setup_ensure_jq(args: list[str]) -> int:
     return 0
 
 
-def _setup_mount_volume(args: list[str]) -> int:
-    """`nexus-deploy setup mount-volume`.
-
-    Mounts the Hetzner persistent volume at ``/mnt/nexus-data`` with
-    three-stage device discovery (scsi-id → automount → /dev/sdb
-    fallback) and idempotent fstab entry.
-
-    Required env: ``PERSISTENT_VOLUME_ID`` (Hetzner volume ID, or
-    ``0`` / empty to skip).
-    Optional env: ``SSH_HOST_ALIAS`` (default ``nexus``).
-
-    Exit codes:
-    - 0: mounted, OR skipped (volume_id empty/0), OR already-mounted
-    - 1: every device-discovery fallback failed (deploy continues —
-         downstream stacks that don't need the volume can still come
-         up healthy; operator gets a yellow warning)
-    - 2: invalid volume_id, transport failure, unexpected exception
-    """
-    if args:
-        print(f"setup mount-volume: unknown args {args!r}", file=sys.stderr)
-        return 2
-    volume_id = os.environ.get("PERSISTENT_VOLUME_ID", "").strip()
-    host_alias = os.environ.get("SSH_HOST_ALIAS") or "nexus"
-    try:
-        with SSHClient(host_alias) as ssh:
-            result = mount_persistent_volume(volume_id, ssh)
-    except SetupError as exc:
-        print(f"setup mount-volume: {exc}", file=sys.stderr)
-        return 2
-    except subprocess.CalledProcessError as exc:
-        # Round-5 PR #524: mount-volume failures are usually
-        # remote-script issues (mount permission denied, missing
-        # mount utility, fstab parse error), not transport. The
-        # rendered script contains no secrets — volume_id is
-        # validated as digits-only upstream, every other shell
-        # token is hardcoded — so forwarding the captured tail is
-        # safe and operationally useful. exc.cmd NOT echoed
-        # (defence in depth).
-        print(
-            f"setup mount-volume: remote script failed (rc={exc.returncode})",
-            file=sys.stderr,
-        )
-        if exc.output:
-            excerpt = exc.output[-2000:].rstrip()
-            for line in excerpt.splitlines():
-                sys.stderr.write(f"      {line}\n")
-        return 2
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        print(
-            f"setup mount-volume: transport failure ({type(exc).__name__})",
-            file=sys.stderr,
-        )
-        return 2
-    except Exception as exc:
-        print(
-            f"setup mount-volume: unexpected error ({type(exc).__name__})",
-            file=sys.stderr,
-        )
-        return 2
-    if result.detail == "skipped":
-        print("setup mount-volume: skipped (no PERSISTENT_VOLUME_ID)")
-        return 0
-    if result.mounted:
-        fstab = " (fstab updated)" if result.fstab_added else ""
-        print(f"setup mount-volume: mounted{fstab}")
-        return 0
-    # Every fallback failed — yellow warning, deploy continues.
-    print(
-        f"setup mount-volume: fallback-failed ({result.detail}); "
-        "deploy continues but stacks needing the volume may fail",
-    )
-    return 1
+# _setup_mount_volume — REMOVED in RFC 0001 cutover. The
+# ``nexus-deploy setup mount-volume`` subcommand mounted the
+# Hetzner persistent volume at /mnt/nexus-data; persistence
+# now lives in R2 via ``s3-restore`` (which writes to the same
+# local SSD path, but driven by R2 snapshots, not a block
+# volume). Any operator scripts that still call this subcommand
+# need to be updated to call ``nexus-deploy s3-snapshot`` for
+# the inverse direction (live state → R2).
 
 
 def _setup_wetty_ssh_agent(args: list[str]) -> int:
@@ -1896,8 +1831,7 @@ def _setup(args: list[str]) -> int:
     """Dispatch ``nexus-deploy setup <subcommand>``."""
     if not args:
         print(
-            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq "
-            "| mount-volume | wetty-ssh-agent)",
+            "setup: subcommand required (ssh-config | wait-ssh | ensure-jq | wetty-ssh-agent)",
             file=sys.stderr,
         )
         return 2
@@ -1909,10 +1843,10 @@ def _setup(args: list[str]) -> int:
         return _setup_wait_ssh(rest)
     if sub == "ensure-jq":
         return _setup_ensure_jq(rest)
-    if sub == "mount-volume":
-        return _setup_mount_volume(rest)
     if sub == "wetty-ssh-agent":
         return _setup_wetty_ssh_agent(rest)
+    # RFC 0001 cutover: `mount-volume` subcommand removed — see the
+    # placeholder comment above _setup_wetty_ssh_agent.
     print(f"setup: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
 
@@ -2823,10 +2757,10 @@ def _run_pipeline(args: list[str]) -> int:
     - R2 credentials env-injection from ``tofu/.r2-credentials``
     - ``tofu state list`` pre-flight
     - config.tfvars parse + Gitea identity derivation
-    - 7 ``tofu output`` reads
+    - 6 ``tofu output`` reads
     - ssh-keygen -R cleanup
-    - setup chain (configure_ssh / wait_for_ssh / ensure_jq /
-      mount_persistent_volume)
+    - setup chain (configure_ssh / wait_for_ssh / ensure_jq) +
+      ``s3_restore.restore_from_s3`` (RFC 0001 cutover)
     - Optional Docker Hub login + Wetty SSH-Agent setup
     - ``Orchestrator.run_pre_bootstrap``
     - ``Orchestrator.run_all``
@@ -2897,8 +2831,8 @@ def _run_pipeline(args: list[str]) -> int:
         return 2
     except SetupError as exc:
         # Setup-helper-specific errors (configure_ssh / wait_for_ssh /
-        # ensure_jq / mount_persistent_volume / setup_wetty_ssh_agent)
-        # carry a clear message — surface it directly.
+        # ensure_jq / setup_wetty_ssh_agent) carry a clear message —
+        # surface it directly.
         print(f"run-pipeline: setup step failed: {exc}", file=sys.stderr)
         return 2
     except OSError as exc:
@@ -3411,7 +3345,7 @@ def main() -> int:
         "gitea woodpecker-oauth (env-only; emits WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "
         "gitea mirror-setup (env-only; emits FORK_NAME + GITEA_REPO_OWNER iff a fork was provisioned), "
         "stack-sync --enabled <comma-list> [--stacks-dir PATH], "
-        "setup ssh-config | wait-ssh | ensure-jq | mount-volume | wetty-ssh-agent, "
+        "setup ssh-config | wait-ssh | ensure-jq | wetty-ssh-agent, "
         "service-env --enabled <comma-list> [--stacks-dir PATH] (reads SECRETS_JSON from stdin), "
         "run-all (reads SECRETS_JSON from stdin + env vars; emits eval-able stdout: "
         "RESTART_SERVICES + WOODPECKER_GITEA_CLIENT + WOODPECKER_GITEA_SECRET), "

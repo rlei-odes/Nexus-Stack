@@ -17,7 +17,7 @@ terraform {
   backend "s3" {
     # bucket is set dynamically via -backend-config=backend.hcl
     # Format: {domain-with-dashes}-terraform-state (e.g., nexus-stack-ch-terraform-state)
-    key    = "nexus-stack.tfstate"  # Main stack state (separate from control-plane.tfstate)
+    key    = "nexus-stack.tfstate" # Main stack state (separate from control-plane.tfstate)
     region = "auto"
 
     # Cloudflare R2 S3-compatible settings

@@ -141,27 +141,8 @@ jobs:
           EOF
           sed -i 's/^          //' tofu/stack/config.tfvars
 
-          # Get persistent volume ID from control-plane output
-          cd tofu/control-plane
-          source ../.r2-credentials
-          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
-          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-          tofu init -backend-config=../backend.hcl -backend-config="key=control-plane.tfstate" -input=false >/dev/null 2>&1 || true
-          PERSISTENT_VOLUME_ID=$(tofu output -raw persistent_volume_id 2>/dev/null || echo "0")
-          # Validate ID is numeric (tofu wrapper may write ::error:: to stdout)
-          if [[ ! "$PERSISTENT_VOLUME_ID" =~ ^[0-9]+$ ]]; then
-            PERSISTENT_VOLUME_ID="0"
-          fi
-          cd ../..
-
-          cat >> tofu/stack/config.tfvars << EOF
-          persistent_volume_id = $PERSISTENT_VOLUME_ID
-          EOF
-          sed -i 's/^          //' tofu/stack/config.tfvars
-
-          if [ "$PERSISTENT_VOLUME_ID" != "0" ]; then
-            echo "💾 Persistent volume preserved (ID: $PERSISTENT_VOLUME_ID)"
-          fi
+          # RFC 0001 cutover: persistent_volume_id is gone — Hetzner
+          # volumes are no longer used; persistence lives in R2.
 
           # Read services from D1 (single source of truth)
           echo "📋 Reading services from D1..."

@@ -316,20 +316,18 @@ resource "minio_s3_bucket" "pgducklake" {
 }
 
 # -----------------------------------------------------------------------------
-# Hetzner Cloud Persistent Volume
+# Persistent storage — REMOVED in RFC 0001 cutover
 # -----------------------------------------------------------------------------
-# This volume persists through teardown - only destroyed on destroy-all.
-# Used by services that need persistent storage (e.g., Gitea repositories).
-# Mounted at /mnt/nexus-data/ on the server with subdirectories per service.
-
-resource "hcloud_volume" "persistent" {
-  name     = "${local.resource_prefix}-data"
-  size     = var.persistent_volume_size
-  location = var.server_location
-  format   = "ext4"
-
-  labels = {
-    managed_by = "opentofu"
-    purpose    = "persistent-data"
-  }
-}
+# The hcloud_volume "persistent" resource that used to live here was
+# the per-tenant data volume mounted at /mnt/nexus-data/. RFC 0001
+# replaced it with R2-backed snapshots: spinup pulls latest.txt from
+# R2 onto the server's local SSD; teardown atomically snapshots the
+# live state to R2 before destroy. See:
+#   - src/nexus_deploy/s3_persistence.py  (rendering)
+#   - src/nexus_deploy/s3_restore.py      (orchestration)
+#   - .github/workflows/migrate-volume-to-r2.yml (one-off evacuation)
+#
+# Removing the resource here means the next `tofu apply` destroys
+# the existing volume. For tenants with live data, run the migration
+# workflow BEFORE merging the cutover PR (it snapshots the still-
+# mounted volume into R2 so spinup can restore from there).

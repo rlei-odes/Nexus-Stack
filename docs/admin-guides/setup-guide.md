@@ -138,6 +138,20 @@ Add these secrets to your GitHub repository:
 | `DOCKERHUB_USERNAME` | Docker Hub username (higher pull limits) |
 | `DOCKERHUB_TOKEN` | Docker Hub access token |
 
+### S3-Persistence Secrets (RFC 0001)
+
+Persistence moved from Hetzner block storage to R2 in RFC 0001. Spin-up and teardown both inject these env vars into `python -m nexus_deploy run-pipeline` / `s3-snapshot`; the feature flag defaults to on.
+
+| Secret Name | Description |
+|-------------|-------------|
+| `NEXUS_S3_PERSISTENCE` | Feature flag — exact `"true"` opts in. Defaults to `"true"` via the workflow `||` fallback; unset entirely (or set to anything else) to bypass for an experiment. |
+| `PERSISTENCE_S3_ENDPOINT` | R2 endpoint, e.g. `https://<account-id>.r2.cloudflarestorage.com` |
+| `PERSISTENCE_S3_REGION` | R2 region — use `auto` |
+| `PERSISTENCE_S3_BUCKET` | Bucket holding `snapshots/<timestamp>/` trees + `snapshots/latest.txt` |
+| `R2_ACCESS_KEY_ID` | R2 access key (same one used for the Tofu backend) |
+| `R2_SECRET_ACCESS_KEY` | R2 secret access key |
+| `PERSISTENCE_STACK_SLUG` | Manifest field; defaults to `github.event.repository.name`. Set only if you need a different slug. |
+
 #### GH_SECRETS_TOKEN
 
 This token allows the initial setup workflow to automatically save R2 credentials as GitHub Secrets. It is also used as the runtime `GITHUB_TOKEN` in Cloudflare (for the scheduled teardown worker and Control Plane), so it must be able to dispatch workflows. Without it, you must manually copy the credentials from the workflow logs after the first run, and Cloudflare-based automation that triggers GitHub Actions will fail.
@@ -353,6 +367,34 @@ LakeFS can use **Hetzner Object Storage** as a backend instead of local storage.
 **Without configuration:**
 - ⚠️ LakeFS falls back to local filesystem storage
 - ⚠️ Default `local-storage` repository created (data lost on teardown)
+
+---
+
+## 💾 Migrating from the Legacy Hetzner Volume (one-time)
+
+RFC 0001 replaced the Hetzner block-storage volume with R2-backed snapshots. If your stack was provisioned BEFORE the cutover landed, your existing Gitea data still lives on the volume. To preserve it across the cutover, run the **migrate-volume-to-r2** workflow once before the next spin-up:
+
+```bash
+# Run from the cutover feature branch BEFORE merging — this way
+# the volume is still in Tofu state during the evacuation. The
+# workflow_dispatch input "MIGRATE" is a typo-guard, identical to
+# the destroy-all confirmation pattern.
+gh workflow run migrate-volume-to-r2.yml \
+  --ref feat/s3-persistence-cutover \
+  -f confirm=MIGRATE
+```
+
+What it does:
+
+1. SSHes into the still-running server (volume still mounted at `/mnt/nexus-data`).
+2. Stops gitea + dify briefly so pg_dump sees a quiesced view.
+3. pg_dumps the two databases + rclone-syncs the file trees into `s3://<persistence-bucket>/snapshots/<timestamp>/`.
+4. Verifies every per-source rclone-check passes.
+5. Points `snapshots/latest.txt` at the new snapshot.
+
+After the workflow turns green: merge the cutover PR. The next spin-up will `restore_from_s3` the snapshot you just created, and the legacy Hetzner volume gets destroyed by the matching `tofu apply` (replaced by local SSD + R2). If you skip the migration, the cutover spin-up does a fresh-start: empty data dirs, you re-create Gitea repos / Kestra flows by hand.
+
+If anything goes sideways, the volume is still there until the next `tofu apply` — you can re-run the migration workflow until the snapshot succeeds.
 
 ---
 

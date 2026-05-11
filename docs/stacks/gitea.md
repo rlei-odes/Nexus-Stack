@@ -96,13 +96,13 @@ https://github.com/my-org/course-2025.git,https://github.com/my-org/examples.git
 
 ### Persistent Storage
 
-Gitea stores repository data and its database on a **persistent Hetzner Cloud Volume** that survives teardown:
-- Git repositories: `/mnt/nexus-data/gitea/repos`
-- LFS objects: `/mnt/nexus-data/gitea/lfs`
-- PostgreSQL data: `/mnt/nexus-data/gitea/db`
+Gitea stores repository data and its database on the server's **local SSD**, snapshotted to **Cloudflare R2** on teardown and restored on spin-up (RFC 0001):
+- Git repositories: `/mnt/nexus-data/gitea/repos` (uid 1000:1000)
+- LFS objects: `/mnt/nexus-data/gitea/lfs` (uid 1000:1000)
+- PostgreSQL data: `/mnt/nexus-data/gitea/db` (uid 70:70)
 
-The volume size is configurable via `persistent_volume_size` (default: 10 GB, minimum: 10 GB).
+On **teardown**: `python -m nexus_deploy s3-snapshot` runs BEFORE `tofu destroy`. It stops gitea + dify briefly, pg_dumps both databases, rclone-syncs the file trees to `s3://<persistence-bucket>/snapshots/<timestamp>/`, verifies every source, and only then points `snapshots/latest.txt` at the new snapshot. Any failure aborts the teardown — the server stays up, R2 stays unchanged.
 
-On **teardown**: Volume and all data are preserved.
-On **spin-up**: Existing data is automatically reattached. Gitea resumes with all repositories and metadata intact.
-On **destroy-all**: Volume is permanently deleted.
+On **spin-up**: `restore_from_s3` pulls `snapshots/latest.txt`, downloads the referenced tree into `/mnt/nexus-data/`, applies the pg_dumps, and chowns the data dirs to the container-expected UIDs. A first-ever spin-up against an empty bucket fresh-starts (no data restored; compose comes up with empty data dirs).
+
+On **destroy-all**: The Hetzner server is destroyed; the R2 bucket holding snapshots is preserved (it lives outside Tofu state). To wipe persistence too, delete the bucket separately via the Cloudflare dashboard.
