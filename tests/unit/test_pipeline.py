@@ -37,9 +37,12 @@ from nexus_deploy.pipeline import (
     PipelineError,
     PipelineOptions,
     PipelineResult,
+    SnapshotResult,
     format_done_banner,
     run_pipeline,
+    run_snapshot,
 )
+from nexus_deploy.s3_restore import S3SnapshotApplied, S3SnapshotSkipped
 from nexus_deploy.tofu import TofuRunner
 
 # ---------------------------------------------------------------------------
@@ -920,3 +923,156 @@ def test_pipeline_uses_separator_for_ssh_host_dns(
     # patterns even when the container is a fixture-controlled tuple.
     assert cleanup_mock.call_args.args == ("ssh-user1.example.com", "1.2.3.4")
     assert cleanup_mock.call_args.args[0] != "ssh.user1.example.com"
+
+
+# ---------------------------------------------------------------------------
+# run_snapshot — teardown-side preflight + SSH wiring (PR-4)
+# ---------------------------------------------------------------------------
+
+
+def test_run_snapshot_aborts_when_tofu_state_uninitialized(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Teardown counterpart to
+    :func:`test_pipeline_aborts_when_tofu_state_uninitialized`. No
+    state → nothing to snapshot → PipelineError → CLI rc=2 → teardown
+    workflow aborts BEFORE tofu destroy. We never want to run
+    destroy against a stack whose state file has gone walkabout
+    (could mean the previous teardown raced or the R2 backend is
+    flaky).
+
+    Feature flag MUST be set ``"true"`` here — the
+    feature-flag-off short-circuit at the top of ``run_snapshot``
+    would otherwise return ``Skipped(feature_flag_off)`` before
+    ever reading tofu state, masking the missing-state failure.
+    """
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    fake_tofu_runner.state_list_ok.return_value = False
+    fake_tofu_runner.diagnose_state.return_value = None
+    with pytest.raises(PipelineError, match="not initialised"):
+        run_snapshot(
+            project_root=project_root,
+            stack_slug="nexus-test",
+            template_version="v1.0.0",
+            tofu_runner=fake_tofu_runner,
+        )
+
+
+def test_run_snapshot_aborts_on_empty_domain(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty domain in config.tfvars makes ssh_host_dns unbuildable;
+    must be a hard PipelineError so the teardown caller maps to rc=2
+    instead of proceeding to a no-op snapshot + destroy. Feature
+    flag set to ``"true"`` so we bypass the top-of-function
+    short-circuit and reach the tfvars parse."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    tfvars_path = project_root / "tofu" / "stack" / "config.tfvars"
+    tfvars_path.write_text(
+        'domain = ""\nadmin_email = "a@example.com"\nuser_email = "u@example.com"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="domain"):
+        run_snapshot(
+            project_root=project_root,
+            stack_slug="nexus-test",
+            template_version="v1.0.0",
+            tofu_runner=fake_tofu_runner,
+        )
+
+
+def test_run_snapshot_short_circuits_before_tofu_when_flag_off(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Feature-flag short-circuit (PR-4 fix-pr-comments round 2):
+    when the flag is off, run_snapshot MUST return Skipped BEFORE
+    any tofu/SSH side-effect. Direct callers (programmatic use,
+    library import) bypass the CLI's own early gate, so this
+    invariant has to live inside run_snapshot itself. Concretely:
+    state_list_ok would normally raise if it returned False, but
+    here we set it to False AND expect a clean Skipped return —
+    proving tofu state was never touched."""
+    monkeypatch.delenv("NEXUS_S3_PERSISTENCE", raising=False)
+    fake_tofu_runner.state_list_ok.return_value = False
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "feature_flag_off"
+    # The short-circuit's whole point: state_list_ok was never read.
+    fake_tofu_runner.state_list_ok.assert_not_called()
+
+
+def test_run_snapshot_returns_skipped_when_flag_off(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With NEXUS_S3_PERSISTENCE unset (or != "true"), snapshot_to_s3
+    returns Skipped/feature_flag_off and run_snapshot surfaces that
+    upward without raising. CLI maps to rc=0 — the stack hasn't
+    opted in to S3 persistence; the workflow proceeds to tofu
+    destroy on the legacy volume-mount path."""
+    monkeypatch.delenv("NEXUS_S3_PERSISTENCE", raising=False)
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result, SnapshotResult)
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "feature_flag_off"
+
+
+def test_run_snapshot_returns_applied_when_full_env_set(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full feature-flag + env + ssh setup → snapshot_to_s3 ships
+    the rendered script → returns Applied. ssh_instance.run_script
+    is the boundary: assert it was called exactly once with a
+    string starting with the bash shebang."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    monkeypatch.setenv("PERSISTENCE_S3_ENDPOINT", "https://abc.r2.cloudflarestorage.com")
+    monkeypatch.setenv("PERSISTENCE_S3_REGION", "auto")
+    monkeypatch.setenv("PERSISTENCE_S3_BUCKET", "nexus-test")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "AKIA1234")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret-xyz")
+
+    import subprocess
+
+    setup_mocks["ssh_instance"].run_script.return_value = subprocess.CompletedProcess(
+        args=["ssh"],
+        returncode=0,
+        stdout="✓ snapshot complete\n",
+        stderr="",
+    )
+
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotApplied)
+    # Run-script was called once with a bash script (starts with shebang).
+    ssh_instance = setup_mocks["ssh_instance"]
+    ssh_instance.run_script.assert_called_once()
+    rendered_script = ssh_instance.run_script.call_args.args[0]
+    assert rendered_script.startswith("#!/usr/bin/env bash")

@@ -29,6 +29,8 @@ import requests
 from nexus_deploy import __version__, hello
 from nexus_deploy import hetzner_capacity as _hetzner
 from nexus_deploy import pipeline as _pipeline
+from nexus_deploy import s3_persistence as _s3_persistence
+from nexus_deploy import s3_restore as _s3_restore
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
 from nexus_deploy.gitea import (
@@ -2952,6 +2954,133 @@ def _run_pipeline(args: list[str]) -> int:
     return 0
 
 
+def _s3_snapshot(args: list[str]) -> int:
+    """`nexus-deploy s3-snapshot`.
+
+    Push the current persistent state to R2 atomically, before
+    ``tofu destroy``. The teardown workflow MUST call this and
+    fail-fast on non-zero exit; running ``tofu destroy`` against
+    an unverified snapshot would lose student data.
+
+    Required env (only when the feature flag is on):
+    - ``NEXUS_S3_PERSISTENCE`` (gate; exact ``"true"`` opts in)
+    - ``PERSISTENCE_S3_ENDPOINT`` / ``PERSISTENCE_S3_REGION`` /
+      ``PERSISTENCE_S3_BUCKET`` (the R2 coords)
+    - ``R2_ACCESS_KEY_ID`` / ``R2_SECRET_ACCESS_KEY``
+    - ``PERSISTENCE_STACK_SLUG`` (manifest field; bucket-name shape).
+      The teardown workflow injects this from
+      ``${{ secrets.PERSISTENCE_STACK_SLUG || github.event.repository.name }}``
+      so operators get a sensible CI fallback without code in this
+      handler. Local CLI invocations MUST set it explicitly — no
+      filesystem-side default applies.
+    - ``PERSISTENCE_TEMPLATE_VERSION`` (manifest field; release tag).
+      Workflow-injected from ``github.ref_name``; required for local
+      CLI invocations.
+
+    Optional env:
+    - ``PROJECT_ROOT`` — defaults to ``$PWD``; the repo checkout root
+
+    Exit codes:
+    - 0: snapshot applied OR feature flag off (nothing to snapshot;
+         teardown can proceed)
+    - 2: hard failure — pipeline pre-flight, SSH wait timeout,
+         CalledProcessError from the rendered bash, or feature flag
+         on with credentials missing. Teardown MUST abort.
+    """
+    if args:
+        print(f"s3-snapshot: unknown args {args!r}", file=sys.stderr)
+        return 2
+
+    # When the feature flag is off, return 0 without reading any
+    # other env or touching SSH — stacks that haven't opted in
+    # should never hit the SSH-setup / tofu-state preflight just
+    # because the workflow now always invokes this subcommand.
+    if not _s3_restore.is_enabled():
+        return 0
+
+    stack_slug = os.environ.get("PERSISTENCE_STACK_SLUG", "").strip()
+    template_version = os.environ.get("PERSISTENCE_TEMPLATE_VERSION", "").strip()
+    if not stack_slug or not template_version:
+        missing = [
+            name
+            for name, val in (
+                ("PERSISTENCE_STACK_SLUG", stack_slug),
+                ("PERSISTENCE_TEMPLATE_VERSION", template_version),
+            )
+            if not val
+        ]
+        print(
+            f"s3-snapshot: required env vars unset or empty: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    project_root_env = os.environ.get("PROJECT_ROOT")
+    project_root = Path(project_root_env) if project_root_env else Path.cwd()
+
+    try:
+        result = _pipeline.run_snapshot(
+            project_root=project_root,
+            stack_slug=stack_slug,
+            template_version=template_version,
+        )
+    except _pipeline.PipelineError as exc:
+        print(f"s3-snapshot: {exc}", file=sys.stderr)
+        return 2
+    except _s3_persistence.S3PersistenceError as exc:
+        # Structural validation failures from s3_persistence (bad
+        # endpoint charset, bucket-name shape, bad rsync subpath,
+        # etc.) — operator-actionable: surface a targeted message
+        # before the generic catch-all turns it into "unexpected
+        # error". Must come BEFORE the broad Exception handler.
+        print(f"s3-snapshot: invalid S3 persistence config: {exc}", file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError as exc:
+        # Atomicity contract: a remote-script failure (rclone drift,
+        # pg_dump error, compose-stop error) MUST abort the teardown.
+        # Surface a diagnostic tail without leaking cmd (which can
+        # carry env-var-prefixed secrets — same rule as run-pipeline).
+        tail = (exc.stderr or exc.stdout or "")[-500:].rstrip()
+        print(
+            f"s3-snapshot: remote script failed (rc={exc.returncode})"
+            + (f": {tail}" if tail else ""),
+            file=sys.stderr,
+        )
+        return 2
+    except SetupError as exc:
+        print(f"s3-snapshot: setup step failed: {exc}", file=sys.stderr)
+        return 2
+    except SSHError as exc:
+        print(f"s3-snapshot: ssh failure: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(
+            f"s3-snapshot: OS error ({type(exc).__name__}): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            f"s3-snapshot: unexpected error ({type(exc).__name__}): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    outcome = result.outcome
+    if isinstance(outcome, _s3_restore.S3SnapshotApplied):
+        sys.stderr.write(
+            f"✓ s3-snapshot: applied snapshot {outcome.timestamp}\n",
+        )
+        return 0
+    # Skipped — branch on reason. feature_flag_off is unreachable
+    # here (filtered above) but kept for symmetry.
+    if outcome.reason == "feature_flag_off":
+        return 0
+    # no_endpoint_env — snapshot_to_s3 already wrote its own
+    # diagnostic listing the missing env vars. Map to rc=2.
+    return 2
+
+
 def _run_pre_bootstrap(args: list[str]) -> int:
     """`nexus-deploy run-pre-bootstrap`.
 
@@ -3257,6 +3386,8 @@ def main() -> int:
         return _select_capacity(args[1:])
     if args[:1] == ["run-pipeline"]:
         return _run_pipeline(args[1:])
+    if args[:1] == ["s3-snapshot"]:
+        return _s3_snapshot(args[1:])
     if args[:1] == ["r2-tokens"]:
         return _r2_tokens(args[1:])
     if args[:2] == ["firewall", "configure"]:
@@ -3297,6 +3428,9 @@ def main() -> int:
         "config.tfvars; optional env: SSH_PRIVATE_KEY_CONTENT, "
         "GH_MIRROR_TOKEN, GH_MIRROR_REPOS, DOCKERHUB_USER, DOCKERHUB_TOKEN, "
         "INFISICAL_ENV, PROJECT_ROOT), "
+        "s3-snapshot (teardown-side; reads NEXUS_S3_PERSISTENCE + 5 PERSISTENCE_S3_*/R2_* "
+        "env vars + PERSISTENCE_STACK_SLUG + PERSISTENCE_TEMPLATE_VERSION; rc=0 when flag "
+        "off or snapshot applied, rc=2 on any failure — teardown MUST abort), "
         "r2-tokens list [--prefix STR] | cleanup --name|--prefix VALUE [--apply] "
         "(env: TF_VAR_cloudflare_api_token), "
         "firewall configure [--project-root PATH] [--domain DOMAIN] "

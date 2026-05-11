@@ -37,10 +37,14 @@ from nexus_deploy.s3_restore import (
     FEATURE_FLAG_ENV,
     S3RestoreApplied,
     S3RestoreSkipped,
+    S3SnapshotApplied,
+    S3SnapshotSkipped,
     build_endpoint_from_env,
     is_enabled,
     render_combined_restore_script,
+    render_combined_snapshot_script,
     restore_from_s3,
+    snapshot_to_s3,
     standard_targets,
 )
 
@@ -363,3 +367,196 @@ def test_restore_from_s3_propagates_called_process_error() -> None:
     )
     with pytest.raises(subprocess.CalledProcessError):
         restore_from_s3(ssh, env=_good_env())
+
+
+# ---------------------------------------------------------------------------
+# render_combined_snapshot_script — shape contract (PR-4)
+# ---------------------------------------------------------------------------
+
+
+def test_combined_snapshot_script_writes_config_and_body() -> None:
+    """Snapshot-side counterpart to
+    :func:`test_combined_script_contains_both_config_and_body` for
+    the restore direction. Single rendered script must:
+
+    1. Write the rclone config at mode 600 to
+       ``~/.config/rclone/rclone.conf`` via ``install /dev/stdin``.
+    2. Then include the snapshot body — namespaced ``STACK`` /
+       ``TEMPLATE_VERSION`` envs, the timestamp, the per-source
+       rclone-sync invocations, and the latest.txt pointer write.
+    """
+    endpoint = _endpoint()
+    postgres_targets, rsync_targets = standard_targets()
+    script = render_combined_snapshot_script(
+        endpoint=endpoint,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        timestamp="20260511T120000Z",
+        postgres_targets=postgres_targets,
+        rsync_targets=rsync_targets,
+    )
+    assert "install -m 600 /dev/stdin" in script
+    assert ".config/rclone/rclone.conf" in script
+    assert "STACK=nexus-test" in script
+    assert "TEMPLATE_VERSION=v1.0.0" in script
+    assert "20260511T120000Z" in script
+
+
+def test_combined_snapshot_script_orders_config_before_body() -> None:
+    """rclone config write must precede the snapshot body — body
+    invokes ``rclone`` which reads that config file."""
+    endpoint = _endpoint()
+    postgres_targets, rsync_targets = standard_targets()
+    script = render_combined_snapshot_script(
+        endpoint=endpoint,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        timestamp="20260511T120000Z",
+        postgres_targets=postgres_targets,
+        rsync_targets=rsync_targets,
+    )
+    config_pos = script.index("install -m 600 /dev/stdin")
+    body_pos = script.index("STACK=nexus-test")
+    assert 0 < config_pos < body_pos
+
+
+def test_combined_snapshot_script_starts_with_safety_pragmas() -> None:
+    """First lines must be shebang + ``set -euo pipefail`` so a
+    failure in the rclone-config write aborts before the snapshot
+    body runs against a missing/empty config."""
+    endpoint = _endpoint()
+    postgres_targets, rsync_targets = standard_targets()
+    script = render_combined_snapshot_script(
+        endpoint=endpoint,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        timestamp="20260511T120000Z",
+        postgres_targets=postgres_targets,
+        rsync_targets=rsync_targets,
+    )
+    lines = script.splitlines()
+    assert lines[0] == "#!/usr/bin/env bash"
+    assert "set -euo pipefail" in lines[:5]
+
+
+# ---------------------------------------------------------------------------
+# snapshot_to_s3 — outcome dispatch (PR-4)
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_to_s3_skips_when_feature_flag_off() -> None:
+    """No flag → no SSH round-trip. The teardown caller treats this
+    as "stack hasn't opted in" and proceeds with the legacy path."""
+    ssh = _fake_ssh("")
+    result = snapshot_to_s3(
+        ssh,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        env={"NEXUS_S3_PERSISTENCE": "false"},
+    )
+    assert isinstance(result, S3SnapshotSkipped)
+    assert result.reason == "feature_flag_off"
+    ssh.run_script.assert_not_called()
+
+
+def test_snapshot_to_s3_skips_with_warning_on_missing_env(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Flag on but a required env var missing — must warn loudly
+    (operator opted in to S3 but config is broken) and refuse to
+    proceed. CLI maps this to rc=2 → teardown aborts."""
+    env = _good_env()
+    del env["PERSISTENCE_S3_BUCKET"]
+    ssh = _fake_ssh("")
+    result = snapshot_to_s3(
+        ssh,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        env=env,
+    )
+    assert isinstance(result, S3SnapshotSkipped)
+    assert result.reason == "no_endpoint_env"
+    ssh.run_script.assert_not_called()
+    captured = capsys.readouterr()
+    # Must name the specific missing var so the operator doesn't
+    # have to grep their secret store for the full list.
+    assert "PERSISTENCE_S3_BUCKET" in captured.err
+    # Must surface the abort intent — "Refusing to teardown" is the
+    # phrase the CLI consumer relies on for log triage.
+    assert "Refusing to teardown" in captured.err
+
+
+def test_snapshot_to_s3_returns_applied_with_factory_timestamp() -> None:
+    """Successful snapshot → ``Applied`` carrying the timestamp
+    produced by ``timestamp_factory``. Tests inject a deterministic
+    factory so the assertion isn't time-dependent."""
+    ssh = _fake_ssh("✓ snapshot complete: snapshots/20260511T120000Z\n")
+    result = snapshot_to_s3(
+        ssh,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        env=_good_env(),
+        timestamp_factory=lambda: "20260511T120000Z",
+    )
+    assert isinstance(result, S3SnapshotApplied)
+    assert result.timestamp == "20260511T120000Z"
+    ssh.run_script.assert_called_once()
+
+
+def test_snapshot_to_s3_passes_stack_slug_into_rendered_script() -> None:
+    """The stack_slug + template_version provided by the caller
+    must reach the rendered bash — they end up in the manifest
+    written next to the snapshot, which is what the v1.1 "latest by
+    sort order" cleanup cron uses to identify same-stack snapshots."""
+    ssh = _fake_ssh("✓ snapshot complete\n")
+    snapshot_to_s3(
+        ssh,
+        stack_slug="nexus-stefan-hslu",
+        template_version="v1.4.2",
+        env=_good_env(),
+        timestamp_factory=lambda: "20260511T120000Z",
+    )
+    rendered_script = ssh.run_script.call_args.args[0]
+    assert "STACK=nexus-stefan-hslu" in rendered_script
+    assert "TEMPLATE_VERSION=v1.4.2" in rendered_script
+
+
+def test_snapshot_to_s3_propagates_called_process_error() -> None:
+    """Atomicity contract: any non-zero exit from the rendered bash
+    must propagate as CalledProcessError so the teardown caller
+    aborts before ``tofu destroy``. Without this, a partial
+    snapshot followed by a destroy would lose data."""
+    ssh = MagicMock()
+    ssh.run_script.side_effect = subprocess.CalledProcessError(
+        returncode=2,
+        cmd=["ssh", "nexus", "bash", "-s"],
+        output="✗ snapshot-failed: rclone check drift on gitea-data\n",
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        snapshot_to_s3(
+            ssh,
+            stack_slug="nexus-test",
+            template_version="v1.0.0",
+            env=_good_env(),
+            timestamp_factory=lambda: "20260511T120000Z",
+        )
+
+
+def test_snapshot_to_s3_uses_default_timestamp_factory_when_none() -> None:
+    """Production caller passes ``timestamp_factory=None`` →
+    snapshot_to_s3 falls back to the real
+    ``_build_snapshot_timestamp``. The fallback must produce a
+    string matching the ``YYYYMMDDTHHMMSSZ`` shape (the s3_persistence
+    snapshot script's strict charset accepts only ``[0-9A-Za-z_-]+``,
+    no colons)."""
+    import re
+
+    ssh = _fake_ssh("✓ snapshot complete\n")
+    result = snapshot_to_s3(
+        ssh,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        env=_good_env(),
+    )
+    assert isinstance(result, S3SnapshotApplied)
+    assert re.fullmatch(r"\d{8}T\d{6}Z", result.timestamp)
