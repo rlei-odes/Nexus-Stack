@@ -316,9 +316,9 @@ explicit sha256 verification, or move per-component checksums into
 | File | Change |
 |---|---|
 | `nexus-admin/packages/shared/src/db/schema.ts` | Add `s3PersistenceBucket` to classes / users (or compute from naming convention). |
-| `nexus-admin/packages/shared/src/operations/setup.ts` | Replace volume-creation API call with bucket-creation API call against Hetzner Storage Box / Object Storage. |
+| `nexus-admin/packages/shared/src/operations/setup.ts` | Replace volume-creation API call with R2-bucket-creation call against Cloudflare's R2 API (or shell out to `scripts/init-s3-bucket.sh`). Reuses the project-wide R2 token already minted by `init-r2-state.sh` — no new credential to provision per fork. |
 | `nexus-admin/packages/shared/src/operations/lifecycle.ts` | Remove volume-related preflight. |
-| Admin UI | Class-create form: drop "Persistent Volume Size" field, replace with "S3 Bucket Region" picker (fsn1/hel1/nbg1). |
+| Admin UI | Class-create form: drop "Persistent Volume Size" field. **No region picker needed** — R2 is region-agnostic (single global namespace; the optional EEUR jurisdiction hint is set once in Tofu, not exposed to the operator UI). The earlier Hetzner-OS revision of this RFC proposed a fsn1/hel1/nbg1 picker; that's obsolete with the R2 switch. |
 
 ## Migration path for the 26 existing stacks
 
@@ -410,9 +410,9 @@ Once all 26 stacks are on the new code path and a few weeks have passed without 
 
 5. **R2 Terraform provider support.** RESOLVED — the `cloudflare/cloudflare` provider has a first-class `cloudflare_r2_bucket` resource and is already configured in this repo for DNS / Tunnel / Access / Pages. The persistence bucket is just one more cloudflare resource per stack — no new provider, no new credentials. The shell scripts shipped in PR-1 of the implementation become migration tooling for the existing-stack evacuation phase, not the steady-state path.
 
-6. **Snapshot retention.** v1.0 ships with **30-day NoncurrentVersionExpiration** as the safety net (rough ceiling on storage cost, no precise N-of-each control). At typical tutorial-stack sizes (~5 GB current copy, plus same again in noncurrent versions for the most recent ~30 days of teardown→spinup churn) this lands around ~5-10 GB/stack peak — see Cost analysis table for the per-stack monthly impact. The "last 7 daily + last 4 weekly" pattern is a v1.1 follow-up that needs either tag-based lifecycle rules (not in the current minio provider) or a separate cleanup cron.
+6. **Snapshot retention.** v1.0 ships with **30-day NoncurrentVersionExpiration** as the safety net (rough ceiling on storage cost, no precise N-of-each control). At typical tutorial-stack sizes (~5 GB current copy, plus same again in noncurrent versions for the most recent ~30 days of teardown→spinup churn) this lands around ~5-10 GB/stack peak — see Cost analysis table for the per-stack monthly impact. The "last 7 daily + last 4 weekly" pattern is a v1.1 follow-up that needs either (a) Cloudflare R2 lifecycle support for tag-based rules — R2's S3 API exposes `PutBucketLifecycleConfiguration` but the rule shapes it accepts are a subset of AWS S3 (`Expiration`, `NoncurrentVersionExpiration`, prefix-filtered; *not* tag-filtered as of writing) — or (b) a separate cleanup cron that walks `snapshots/<timestamp>/` directories and deletes by ISO-8601 timestamp sort order. (b) is the more likely v1.1 implementation path.
 
-7. **What happens to `destroy-all`?** ✅ RESOLVED by Decision #6 (above): **bucket preserved by default**, with an opt-in `CONFIRM_DELETE_DATA=DESTROY` env var to actually delete. The early-RFC formulation here recommended the opposite default (delete-by-default with a `--keep-data` opt-out); the eventual decision flipped to preserve-by-default to mirror the existing `destroy-all.yml -f confirm=DESTROY` pattern and avoid silent data loss on operator typos. This entry left in the open-questions list for traceability of the design discussion; the resolved answer is canonical.
+7. **What happens to `destroy-all`?** ✅ **RESOLVED** — see Decision #6 above. The single canonical answer: **bucket preserved by default, opt-in delete via `CONFIRM_DELETE_DATA=DESTROY`**. (For historical traceability only — not the active recommendation — the original draft of this Q proposed the opposite default; that was abandoned in favour of the explicit-opt-in shape that mirrors the existing `destroy-all.yml -f confirm=DESTROY` pattern. The early-draft text has been removed to avoid confusion.)
 
 8. **How to surface S3 latency in spinup logs.** Add a `_phase_s3_restore` log section showing per-directory transfer rate so the operator can spot regressions.
 
