@@ -893,16 +893,36 @@ def render_restore_script(
         '(check R2 credentials / endpoint / bucket name)" >&2',
         "  exit 2",
         "fi",
-        # `rclone copyto` returns rc=0 even on missing source if we
-        # use `--ignore-checksum --error-on-no-transfer=false`, but
-        # the simplest probe is `rclone lsf` which exits non-zero
-        # if the file is missing. Wrap it in an explicit check so
-        # the absence-case branches cleanly.
-        'if ! rclone lsf "$BUCKET/snapshots/latest.txt" >/dev/null 2>&1; then',
+        # Detect "no snapshot yet" by checking lsf's STDOUT, not its
+        # exit code. Ubuntu 24.04's apt rclone (v1.60.1) returns
+        # rc=0 with empty stdout for a missing object — so an
+        # ``if ! rclone lsf ... >/dev/null`` check NEVER fires on
+        # this version and falls through to ``copyto``, which then
+        # also silently returns rc=0 without creating the local
+        # file. The first observable failure is the ``tr -d < ...``
+        # line below ("No such file or directory"), which is a
+        # confusing diagnostic and an ``rc=1`` instead of the
+        # intended ``rc=0`` fresh-start branch. Newer rclone
+        # versions DO return non-zero on missing source, but we
+        # can't depend on apt-version-skew, so check the listing
+        # output directly: empty = object missing = fresh-start.
+        'if [ -z "$(rclone lsf "$BUCKET/snapshots/latest.txt" 2>/dev/null)" ]; then',
         '  echo "fresh-start: no snapshot in S3, leaving local state empty"',
         "  exit 0",
         "fi",
         'rclone copyto "$BUCKET/snapshots/latest.txt" "$WORKDIR/latest.txt"',
+        # Defence in depth — same rclone-1.60.1 quirk: copyto can
+        # return rc=0 without writing the destination. If the lsf
+        # check above somehow passed but the file still isn't on
+        # disk, fail loud rather than letting the next ``tr -d``
+        # leak its kernel-level "No such file or directory" out
+        # as the only diagnostic.
+        'if [ ! -s "$WORKDIR/latest.txt" ]; then',
+        '  echo "✗ restore-failed: rclone copyto did not produce '
+        "$WORKDIR/latest.txt (or it's empty) — likely rclone version "
+        'mismatch or transient S3 issue" >&2',
+        "  exit 2",
+        "fi",
         'TIMESTAMP=$(tr -d "\\r\\n" < "$WORKDIR/latest.txt")',
         'if [[ ! "$TIMESTAMP" =~ ^[0-9A-Za-z_-]+$ ]]; then',
         '  echo "✗ restore-failed: latest.txt has invalid timestamp" >&2',

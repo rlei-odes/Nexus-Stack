@@ -473,8 +473,11 @@ def ensure_rclone(ssh: SSHClient) -> bool:
     BEFORE the probe runs, which is what this helper does.
 
     Raises :class:`subprocess.CalledProcessError` on install failure.
-    The Ubuntu 24.04 main repo carries rclone 1.65, which is recent
-    enough for the S3/R2 operations we use.
+    The Ubuntu 24.04 main repo carries rclone 1.60.1, which is old
+    enough that ``rclone lsf`` returns rc=0 with empty stdout for a
+    missing object (newer rclone versions return non-zero). The
+    rendered restore script in ``s3_persistence.render_restore_script``
+    accounts for this by checking lsf's STDOUT, not its exit code.
     """
     check = ssh.run("command -v rclone", check=False)
     if check.returncode == 0:

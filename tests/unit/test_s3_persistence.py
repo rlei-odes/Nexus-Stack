@@ -823,6 +823,36 @@ def test_restore_script_rejects_unknown_phase() -> None:
         )
 
 
+def test_restore_script_detects_missing_latest_via_lsf_stdout_not_exit_code() -> None:
+    """Ubuntu 24.04's apt rclone (v1.60.1) returns rc=0 with empty
+    stdout for a missing remote object, so an ``if ! rclone lsf ...``
+    check NEVER fires the fresh-start branch on that version — the
+    script falls through to ``copyto`` (also rc=0, no local file
+    created), and the first observable failure is the kernel-level
+    ``tr -d < missing-file`` line ("No such file or directory")
+    masquerading as rc=1. Use lsf's STDOUT instead: empty = missing.
+
+    This is the bug that broke PR #556's first-real-spinup test —
+    the rcfix unblocked the install, but the rclone-1.60.1 lsf
+    behaviour made every fresh bucket fail-instead-of-fresh-start."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    # The fresh-start guard must read lsf STDOUT (and treat empty as
+    # missing), not just the exit code. Pin the exact bash form so a
+    # future "simplification" can't regress us back to ``if ! rclone
+    # lsf ...``.
+    assert (
+        '[ -z "$(rclone lsf' in script
+    ), "fresh-start guard must inspect lsf STDOUT not just exit code"
+    # And a defence-in-depth check: even if lsf passed but copyto
+    # didn't actually produce the file, fail loud (exit 2) rather
+    # than letting the next ``tr -d`` leak its kernel error.
+    assert '[ ! -s "$WORKDIR/latest.txt" ]' in script
+
+
 def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
     """A bare ``rclone lsf latest.txt`` failure is ambiguous: missing
     object OR auth/network error. Treating both as "fresh-start"
@@ -837,9 +867,9 @@ def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
     )
     probe_pos = script.find('rclone lsd "$BUCKET"')
     fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/latest.txt"')
-    assert 0 < probe_pos < fresh_check_pos, (
-        "bucket reachability probe must precede the latest.txt check"
-    )
+    assert (
+        0 < probe_pos < fresh_check_pos
+    ), "bucket reachability probe must precede the latest.txt check"
     assert "not reachable" in script
     # The probe failure path must exit non-zero (clear error), the
     # latest.txt failure path must exit 0 (legitimate fresh-start).
