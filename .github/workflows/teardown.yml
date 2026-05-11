@@ -30,7 +30,7 @@ jobs:
       TF_VAR_infisical_token: ${{ secrets.INFISICAL_TOKEN }}
       TF_VAR_github_owner: ${{ github.repository_owner }}
       TF_VAR_github_repo: ${{ github.event.repository.name }}
-    
+
     steps:
       - name: Validate confirmation
         run: |
@@ -87,12 +87,40 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Generate SSH key for OpenTofu
+      - name: Install SSH key from GitHub Secrets
+        # Teardown's pre-destroy s3-snapshot step needs SSH into the
+        # live server (docker exec pg_dump + rclone sync). Before
+        # RFC 0001, teardown.yml only did `tofu destroy` (provider
+        # API, no SSH needed) so the legacy step generated a fresh
+        # ephemeral key that was never registered on the server —
+        # fine for tofu, useless for ssh. With the snapshot step
+        # the SSH must actually work, so install the PERSISTENT
+        # key from secrets (the same key spin-up.yml uses), which
+        # is already present in the server's authorized_keys.
         run: |
           mkdir -p ~/.ssh
-          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "github-actions@nexus-stack"
+          chmod 700 ~/.ssh
+          umask 077
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "❌ SSH_PRIVATE_KEY secret not set — teardown's s3-snapshot step needs SSH access to the live server."
+            echo "   Run the 'Initial Setup' workflow first to bootstrap the SSH key pair, or set SSH_PRIVATE_KEY manually."
+            exit 1
+          fi
+          # SSH key heredocs: expression placeholders must NOT start at column 0
+          # (breaks GitHub Actions YAML parser). Keep indented and strip leading
+          # whitespace with sed to ensure clean key content.
+          sed 's/^[[:space:]]*//' > ~/.ssh/id_ed25519 <<'EOF_PRIVATE_KEY'
+          ${{ secrets.SSH_PRIVATE_KEY }}
+          EOF_PRIVATE_KEY
           chmod 600 ~/.ssh/id_ed25519
+          # Public key — from secret if available, derived from private otherwise.
+          if [ -n "${{ secrets.SSH_PUBLIC_KEY }}" ]; then
+            echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_ed25519.pub
+          else
+            ssh-keygen -y -f ~/.ssh/id_ed25519 > ~/.ssh/id_ed25519.pub
+          fi
           chmod 644 ~/.ssh/id_ed25519.pub
+          echo "✅ SSH key installed from secrets (matches server's authorized_keys)"
 
       - name: Create R2 credentials from secrets
         run: |
@@ -150,13 +178,13 @@ jobs:
           ENABLED_SERVICES=$(npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
             --command "SELECT name FROM services WHERE enabled = 1" 2>/dev/null \
             | jq -r '.[0].results | map(.name) | join(",")' 2>/dev/null || echo "")
-          
+
           if [ -n "$ENABLED_SERVICES" ]; then
             echo "📋 Enabled services from D1: $ENABLED_SERVICES"
           else
             echo "📋 No services in D1 yet - core services will be enabled by default"
           fi
-          
+
           # Generate services config from services.yaml
           # Use shared script (same as spin-up.yml)
           chmod +x .github/scripts/generate-services-tfvars.py
@@ -201,6 +229,17 @@ jobs:
           DOMAIN_SLUG=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')
           export PERSISTENCE_S3_BUCKET="nexus-${DOMAIN_SLUG}-persistence"
 
+          # Lowercase PERSISTENCE_STACK_SLUG — the env-var value
+          # from the step's env: block falls back to
+          # github.event.repository.name (e.g. "Nexus-Stack" with
+          # a capital N), but the s3_persistence validator enforces
+          # S3 bucket-name shape on the slug (lowercase only).
+          # GitHub Actions has no lowercase filter on workflow-
+          # expression interpolations, so the cast happens here in
+          # the shell before the subcommand runs.
+          PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          export PERSISTENCE_STACK_SLUG
+
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy s3-snapshot
 
@@ -233,7 +272,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "📝 Writing teardown timestamp to D1..."
-          
+
           # Get D1 database name - need to init control-plane state first
           cd tofu/control-plane
           source ../.r2-credentials
@@ -242,12 +281,12 @@ jobs:
           tofu init -backend-config=../backend.hcl -backend-config="key=control-plane.tfstate" -input=false
           D1_DATABASE_NAME=$(tofu output -raw d1_database_name 2>/dev/null || echo "")
           cd ../..
-          
+
           if [ -z "$D1_DATABASE_NAME" ]; then
             echo "⚠️  Could not get D1 database name - skipping timestamp write"
             exit 0
           fi
-          
+
           npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --command "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('last_teardown', datetime('now'), datetime('now'))"
           echo "✅ Teardown timestamp written to D1"
 

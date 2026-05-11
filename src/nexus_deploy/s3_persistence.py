@@ -517,16 +517,27 @@ def render_snapshot_script(
     Steps the rendered script performs (in order, ``set -euo
     pipefail`` throughout — first failure aborts):
 
-    1. ``docker compose stop`` for every file in
+    1. ``pg_dump -F c | gzip`` for each postgres target into
+       ``/tmp/nexus-snapshot/postgres/<db>.dump.gz`` (custom
+       binary format, gzipped — works with the matching
+       ``gunzip | pg_restore`` on the spinup side). Runs FIRST
+       while the postgres containers are still running — pg_dump
+       is a client tool that requires a live server. The earlier
+       "stop first, dump second" form failed every snapshot
+       with "container is not running". pg_dump's MVCC gives a
+       consistent snapshot internally; the small window between
+       dump and stop may lose writes that happened in that gap
+       (acceptable for a teardown use case at low traffic).
+       Per-target skip if the container isn't running (``docker
+       inspect --format='{{.State.Running}}'``).
+    2. ``docker compose stop`` for every file in
        ``stop_compose_files``. Graceful drain with the default
        10s timeout: app processes finish in-flight requests and
        close DB connections cleanly. We deliberately do NOT use
        ``docker compose pause`` — that's a cgroup-freezer SIGSTOP
-       and hard-kills in-flight writes mid-transaction.
-    2. ``pg_dump -F c | gzip`` for each postgres target into
-       ``/tmp/nexus-snapshot/postgres/<db>.dump.gz`` (custom
-       binary format, gzipped — works with the matching
-       ``gunzip | pg_restore`` on the spinup side).
+       and hard-kills in-flight writes mid-transaction. Runs
+       AFTER pg_dump so the DB is up at dump time. Per-file skip
+       if the compose file isn't on disk (stack not deployed).
     3. ``rclone sync`` each rsync target's ``local_path`` into the
        timestamped R2 directory ``snapshots/<timestamp>/<s3_subpath>``.
        Only the listed targets are walked — db/ and redis/ subdirs
@@ -590,22 +601,83 @@ def render_snapshot_script(
         f"SNAPSHOT_PREFIX={snapshot_prefix}",
         "WORKDIR=/tmp/nexus-snapshot",
         "POSTGRES_DIR=$WORKDIR/postgres",
+        # Verify-phase scratch files (rclone-check stderr/stdout)
+        # MUST live OUTSIDE $WORKDIR — verify_one writes them and
+        # the first verify_one call compares $WORKDIR vs S3. If
+        # they lived in $WORKDIR they'd appear as untracked extras
+        # and rclone would report "differences found", failing
+        # every snapshot. Took until today's first real run to
+        # surface (no test exercised the bash-level verify path).
+        "LOG_DIR=/tmp/nexus-snapshot-logs",
         "",
         'echo "→ snapshot: preparing workdir"',
-        'rm -rf "$WORKDIR"',
-        'mkdir -p "$POSTGRES_DIR"',
+        'rm -rf "$WORKDIR" "$LOG_DIR"',
+        'mkdir -p "$POSTGRES_DIR" "$LOG_DIR"',
         "",
     ]
+
+    # Order matters here. pg_dump MUST run BEFORE compose-stop,
+    # not after — ``docker compose stop`` halts the postgres
+    # container, after which ``docker exec <container> pg_dump``
+    # fails with "container is not running". The original RFC-0001
+    # design (stop → drain → dump) assumed pg_dump could read the
+    # on-disk data dir directly after a graceful stop, but pg_dump
+    # is a CLIENT tool that needs a running server. We accept the
+    # small inconsistency window (apps may write new rows between
+    # pg_dump and compose-stop) — pg_dump's MVCC snapshot is
+    # internally consistent, and the post-dump writes are simply
+    # lost on restore. For the v1.0 teardown use case (deliberate
+    # shutdown at low traffic) this is acceptable; if a future
+    # use case needs hard-stop consistency, the right answer is
+    # filesystem-level snapshot of ``/mnt/nexus-data/<stack>/db``
+    # AFTER compose-stop, not pg_dump.
+    if pg_targets:
+        lines.append('echo "→ snapshot: dumping postgres databases (online)"')
+        for pg in pg_targets:
+            container = shlex.quote(pg.container)
+            db = shlex.quote(pg.database)
+            user = shlex.quote(pg.user)
+            # File naming: ``<database>.dump.gz`` (custom binary
+            # pg_dump format, gzipped) — matches the restore-side
+            # filename and the RFC's stated S3 layout. Earlier this
+            # said ``.sql.gz`` which was misleading since the body
+            # is NOT plain SQL (``-F c`` produces a binary archive).
+            dump_file = f"$POSTGRES_DIR/{pg.database}.dump.gz"
+            # Skip if the postgres container isn't RUNNING on this
+            # server. Two distinct skip cases:
+            #   - container doesn't exist (stack not deployed)
+            #   - container exists but is stopped (previous crashed
+            #     run, or operator stopped it manually)
+            # Both have the same outcome: no dump captured. We
+            # explicitly check ``.State.Running == "true"`` rather
+            # than just ``docker inspect`` because the latter
+            # succeeds for stopped containers, and we already hit
+            # that bug once (compose-stop happened before pg_dump
+            # in an earlier revision, leaving the container stopped
+            # but inspectable).
+            lines.append(
+                f"if [ \"$(docker inspect --format='{{{{.State.Running}}}}' "
+                f'{container} 2>/dev/null)" = "true" ]; then',
+            )
+            lines.append(
+                f"  docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
+            )
+            lines.append("else")
+            lines.append(
+                f'  echo "  (skip: container {pg.container} not running — stack not deployed or stopped)"',
+            )
+            lines.append("fi")
+        lines.append("")
 
     if stop_files:
         lines.append('echo "→ snapshot: stopping compose stacks (graceful 10s drain)"')
         for compose_file in stop_files:
             quoted = shlex.quote(compose_file)
-            # ``docker compose stop`` (not ``pause``) — the latter is
+            # ``docker compose stop`` (not ``pause``) — ``pause`` is
             # SIGSTOP via the cgroup freezer and hard-kills in-flight
             # writes. ``stop`` sends SIGTERM with a 10s grace window
-            # for the container to flush + close DB connections
-            # cleanly.
+            # for the container to flush + close. Runs AFTER pg_dump
+            # above (so the DB is still up when pg_dump runs).
             #
             # The previous form used a blanket ``|| echo "non-fatal"``
             # which would swallow every non-zero exit — missing
@@ -625,54 +697,51 @@ def render_snapshot_script(
             # the snapshot on any non-zero exit, surfacing missing-
             # compose-file / daemon-down / YAML-syntax errors as
             # the real failures they are.
-            #
-            # An earlier revision of this block evaluated only the
-            # stdout via ``[ -n "$(... 2>/dev/null)" ]`` — that
-            # silently mapped every ps failure (which produces
-            # empty stdout) to "stack already down" and continued
-            # the snapshot while services were still running.
-            # We now capture ps's exit code explicitly via
-            # ``set +e`` so the empty-stdout-from-failure case
-            # can't masquerade as the empty-stdout-from-no-
-            # containers case.
             lines.append(f"COMPOSE_FILE={quoted}")
-            lines.append("set +e")
-            lines.append('PS_OUT=$(docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null)')
-            lines.append("PS_RC=$?")
-            lines.append("set -e")
-            lines.append('if [ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]; then')
+            # Skip cleanly if the compose file isn't on disk —
+            # ``stop_compose_files`` is a static list of stacks the
+            # persistence layer KNOWS ABOUT; whether a given stack
+            # is actually deployed on this server is decided by D1
+            # (enabled_services). A stack absent from disk just
+            # means it isn't enabled here, not an error.
+            lines.append('if [ ! -f "$COMPOSE_FILE" ]; then')
             lines.append(
-                f'  echo "  (skip: compose stack at {compose_file} already down)"',
+                f'  echo "  (skip: compose file {compose_file} not on disk — stack not deployed)"',
             )
             lines.append("else")
-            lines.append('  docker compose -f "$COMPOSE_FILE" stop')
-            lines.append("fi")
-        lines.append("")
-
-    if pg_targets:
-        lines.append('echo "→ snapshot: dumping postgres databases"')
-        for pg in pg_targets:
-            container = shlex.quote(pg.container)
-            db = shlex.quote(pg.database)
-            user = shlex.quote(pg.user)
-            # File naming: ``<database>.dump.gz`` (custom binary
-            # pg_dump format, gzipped) — matches the restore-side
-            # filename and the RFC's stated S3 layout. Earlier this
-            # said ``.sql.gz`` which was misleading since the body
-            # is NOT plain SQL (``-F c`` produces a binary archive).
-            dump_file = f"$POSTGRES_DIR/{pg.database}.dump.gz"
+            lines.append("  set +e")
+            lines.append('  PS_OUT=$(docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null)')
+            lines.append("  PS_RC=$?")
+            lines.append("  set -e")
+            lines.append('  if [ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]; then')
             lines.append(
-                f"docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
+                f'    echo "  (skip: compose stack at {compose_file} already down)"',
             )
+            lines.append("  else")
+            lines.append('    docker compose -f "$COMPOSE_FILE" stop')
+            lines.append("  fi")
+            lines.append("fi")
         lines.append("")
 
     lines.append('echo "→ snapshot: uploading filesystem trees"')
     for rs in rs_targets:
         local = shlex.quote(rs.local_path)
         sub = shlex.quote(rs.s3_subpath)
+        # And again: skip if the source directory isn't on disk
+        # (stack not deployed → no data to snapshot). Without this
+        # guard rclone sync would fail with "directory not found"
+        # and abort the whole snapshot. ``--create-empty-src-dirs``
+        # below preserves the structure on the S3 side when the
+        # source IS present but empty (different case).
+        lines.append(f"if [ -d {local} ]; then")
         lines.append(
-            f'rclone sync --create-empty-src-dirs {local} "$BUCKET/$SNAPSHOT_PREFIX/{sub}"',
+            f'  rclone sync --create-empty-src-dirs {local} "$BUCKET/$SNAPSHOT_PREFIX/{sub}"',
         )
+        lines.append("else")
+        lines.append(
+            f'  echo "  (skip: data dir {rs.local_path} not on disk — stack not deployed)"',
+        )
+        lines.append("fi")
     lines.append("")
 
     if pg_targets:
@@ -722,6 +791,18 @@ def render_snapshot_script(
             '  local src="$1"',
             '  local dst="$2"',
             '  local label="$3"',
+            # Same skip-on-missing semantics as the snapshot blocks
+            # above. If the source dir isn't on disk (stack not
+            # deployed) the corresponding rclone sync was already
+            # skipped, so there's nothing for rclone check to
+            # compare — verifying a missing source against an empty
+            # S3 prefix would fail with "directory not found" and
+            # mark the whole verify as drifted. Treat absent source
+            # as benign-skip with an explicit log line.
+            '  if [ ! -d "$src" ]; then',
+            '    echo "  (skip verify: source $src not on disk — stack not deployed)"',
+            "    return",
+            "  fi",
             "  set +e",
             # Pipeline is three-stage: rclone | tee | grep. PIPESTATUS
             # indexes accordingly:
@@ -734,21 +815,34 @@ def render_snapshot_script(
             # every real teardown. Capturing [2] (grep) makes drift
             # detection actually correct.
             '  rclone check "$src" "$dst" '
-            '--one-way --combined - 2>"$WORKDIR/rclone-check.err" '
-            '| tee "$WORKDIR/rclone-check.out" '
+            '--one-way --combined - 2>"$LOG_DIR/rclone-check.err" '
+            '| tee "$LOG_DIR/rclone-check.out" '
             '| grep -qE "^[-*]"',
-            "  local rclone_rc=${PIPESTATUS[0]}",
-            "  local drift_rc=${PIPESTATUS[2]}",
+            # CRITICAL: copy PIPESTATUS to a local array IMMEDIATELY,
+            # in ONE command. Every subsequent command (including the
+            # ``local`` builtin) overwrites PIPESTATUS with its own
+            # single-element exit code, so doing two separate
+            # ``local rclone_rc=${PIPESTATUS[0]}; local drift_rc=
+            # ${PIPESTATUS[2]}`` would have ``set -u`` complain about
+            # ``PIPESTATUS[2]: unbound variable`` on the second line
+            # (the first ``local`` clobbered PIPESTATUS to a
+            # 1-element array). This was a latent bug since RFC-0001
+            # day 1 — bash -n syntax checks didn't catch it; pure-
+            # string tests didn't notice; nobody ever actually ran
+            # the verify phase against real S3 until today.
+            '  local pipeline_status=("${PIPESTATUS[@]}")',
+            "  local rclone_rc=${pipeline_status[0]}",
+            "  local drift_rc=${pipeline_status[2]}",
             "  set -e",
             '  if [ "$rclone_rc" -ne 0 ]; then',
             '    echo "✗ snapshot-failed: rclone check ${label} errored (rc=$rclone_rc)" >&2',
-            '    cat "$WORKDIR/rclone-check.err" >&2 || true',
+            '    cat "$LOG_DIR/rclone-check.err" >&2 || true',
             "    verify_failed=1",
             "    return",
             "  fi",
             '  if [ "$drift_rc" -eq 0 ]; then',
             '    echo "✗ snapshot-failed: rclone check ${label} found drift" >&2',
-            '    cat "$WORKDIR/rclone-check.out" >&2',
+            '    cat "$LOG_DIR/rclone-check.out" >&2',
             "    verify_failed=1",
             "    return",
             "  fi",
@@ -889,20 +983,57 @@ def render_restore_script(
         # genuine first-spin-up path still reaches the latest.txt
         # check below and exits 0 with the fresh-start message.
         'if ! rclone lsd "$BUCKET" --max-depth 1 >/dev/null 2>&1; then',
-        '  echo "✗ restore-failed: bucket $BUCKET is not reachable '
-        '(check R2 credentials / endpoint / bucket name)" >&2',
+        '  echo "✗ restore-failed: bucket $BUCKET is not reachable" >&2',
+        '  echo "  (check R2 credentials / endpoint / bucket name)" >&2',
         "  exit 2",
         "fi",
-        # `rclone copyto` returns rc=0 even on missing source if we
-        # use `--ignore-checksum --error-on-no-transfer=false`, but
-        # the simplest probe is `rclone lsf` which exits non-zero
-        # if the file is missing. Wrap it in an explicit check so
-        # the absence-case branches cleanly.
-        'if ! rclone lsf "$BUCKET/snapshots/latest.txt" >/dev/null 2>&1; then',
+        # Detect "no snapshot yet" by listing the parent prefix and
+        # checking whether ``latest.txt`` is among the entries.
+        # Critically: a non-zero exit from this listing is a HARD
+        # ERROR (rc=2), not "fresh-start" — otherwise a transient
+        # S3 blip between the bucket-reachability probe above and
+        # this call would silently empty local state, and the next
+        # teardown would overwrite real R2 data with empty snapshots.
+        #
+        # Two distinct empty-prefix vs missing-file paths:
+        #   - bucket reachable, prefix empty (no objects under
+        #     ``snapshots/``) → genuine first spin-up, fresh-start
+        #     (rc=0 from listing, empty stdout, grep returns
+        #     non-zero).
+        #   - bucket reachable, prefix has objects but no
+        #     ``latest.txt`` → orphan snapshot trees from a failed
+        #     ``snapshot_to_s3`` (atomicity guarantee: latest.txt is
+        #     the LAST thing written). Still fresh-start — the
+        #     orphans cost storage but don't affect restoration.
+        #   - listing itself fails (auth/network/perm) → exit 2
+        #     loud, so the operator sees the real cause instead of
+        #     a silent fresh-start that paves over real data.
+        #
+        # Don't suppress stderr — rclone's diagnostic on failure is
+        # what tells the operator whether it's auth, network, or
+        # bucket policy. Quiet on success.
+        'SNAPSHOT_LISTING=""',
+        'if ! SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/"); then',
+        '  echo "✗ restore-failed: cannot list $BUCKET/snapshots/" >&2',
+        '  echo "  (auth / network / bucket policy — see rclone error above)" >&2',
+        "  exit 2",
+        "fi",
+        'if ! printf "%s\\n" "$SNAPSHOT_LISTING" | grep -qxF "latest.txt"; then',
         '  echo "fresh-start: no snapshot in S3, leaving local state empty"',
         "  exit 0",
         "fi",
         'rclone copyto "$BUCKET/snapshots/latest.txt" "$WORKDIR/latest.txt"',
+        # Defence in depth — same rclone-1.60.1 quirk: copyto can
+        # return rc=0 without writing the destination. If the lsf
+        # check above somehow passed but the file still isn't on
+        # disk, fail loud rather than letting the next ``tr -d``
+        # leak its kernel-level "No such file or directory" out
+        # as the only diagnostic.
+        'if [ ! -s "$WORKDIR/latest.txt" ]; then',
+        '  echo "✗ restore-failed: rclone copyto did not produce $WORKDIR/latest.txt" >&2',
+        '  echo "  (file missing or empty — likely rclone version mismatch or transient S3 issue)" >&2',
+        "  exit 2",
+        "fi",
         'TIMESTAMP=$(tr -d "\\r\\n" < "$WORKDIR/latest.txt")',
         'if [[ ! "$TIMESTAMP" =~ ^[0-9A-Za-z_-]+$ ]]; then',
         '  echo "✗ restore-failed: latest.txt has invalid timestamp" >&2',
@@ -959,6 +1090,34 @@ def render_restore_script(
             db_sql = _quote_sql_ident(pg.database)
             user_sql = _quote_sql_ident(pg.user)
             dump_file = f"$WORKDIR/postgres/{pg.database}.dump.gz"
+            # Symmetric "stack not deployed" handling matching the
+            # snapshot-side guards. Two cases:
+            #   - No dump file under WORKDIR/postgres/ — the
+            #     snapshot side skipped this DB (container wasn't
+            #     running at snapshot time). Without the guard, the
+            #     subsequent ``gunzip`` would fail with "No such
+            #     file" and abort restore.
+            #   - Dump file exists but the container isn't running
+            #     on this stack (different stack composition between
+            #     snapshot and restore — e.g. dify enabled when
+            #     snapshotted but not when restored). Without the
+            #     guard, ``docker exec dify-db psql`` fails with
+            #     "No such container" rc=1 and aborts restore.
+            # Either case → skip with an explicit log line; the
+            # gitea-only restore path still proceeds normally.
+            lines.append(f"if [ ! -f {dump_file} ]; then")
+            lines.append(
+                f'  echo "  (skip: no dump for {pg.database} ' f'— stack not snapshotted)"',
+            )
+            lines.append(
+                f"elif [ \"$(docker inspect --format='{{{{.State.Running}}}}' "
+                f'{container} 2>/dev/null)" != "true" ]; then',
+            )
+            lines.append(
+                f'  echo "  (skip: container {pg.container} not running '
+                f'— stack not deployed on this restore target)"',
+            )
+            lines.append("else")
             # We drop+recreate the database to guarantee a clean
             # restore. pg_restore --clean would do something similar
             # but is fragile across PG versions; the explicit
@@ -967,18 +1126,19 @@ def render_restore_script(
             # ``-c '<SQL>'`` (single-quoted bash arg) so the inner
             # double-quoted SQL identifiers don't need escaping.
             lines.append(
-                f"docker exec {container} psql -U {user_cli} -d postgres "
+                f"  docker exec {container} psql -U {user_cli} -d postgres "
                 f"-c 'DROP DATABASE IF EXISTS {db_sql} WITH (FORCE);'",
             )
             lines.append(
-                f"docker exec {container} psql -U {user_cli} -d postgres "
+                f"  docker exec {container} psql -U {user_cli} -d postgres "
                 f"-c 'CREATE DATABASE {db_sql} OWNER {user_sql};'",
             )
             lines.append(
-                f"gunzip -c {dump_file} | "
+                f"  gunzip -c {dump_file} | "
                 f"docker exec -i {container} pg_restore -U {user_cli} -d {db_cli} "
                 "--no-owner --no-acl",
             )
+            lines.append("fi")
         lines.append("")
 
     lines.append('echo "✓ restore complete from $SNAPSHOT_PREFIX"')

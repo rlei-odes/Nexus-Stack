@@ -184,6 +184,11 @@ jobs:
           # See spin-up.yml's matching step for the rationale.
           DOMAIN_SLUG=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')
           export PERSISTENCE_S3_BUCKET="nexus-${DOMAIN_SLUG}-persistence"
+          # Lowercase the slug (see spin-up.yml / teardown.yml for
+          # the full rationale — workflow fallback is the camel-
+          # case repo name, validator wants S3 bucket-name shape).
+          PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          export PERSISTENCE_STACK_SLUG
 
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy s3-snapshot

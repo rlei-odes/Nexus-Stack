@@ -470,10 +470,14 @@ def test_snapshot_script_has_bash_safety_pragmas() -> None:
 
 
 def test_snapshot_script_orders_phases_correctly() -> None:
-    """The phase order is the atomicity contract: stop → dump →
-    upload → verify → point latest. Reorder would silently break
-    the guarantee that ``snapshots/latest.txt`` only updates after
-    upload succeeded.
+    """The phase order is the atomicity contract: **dump → stop →
+    upload → verify → point latest**. Note dump comes BEFORE stop —
+    pg_dump is a client tool that requires the postgres container
+    running, so stopping it first leaves dump with nothing to
+    connect to. The earlier "stop first, dump second" form failed
+    every real teardown with "container is not running". Reorder
+    would silently break the guarantee that ``snapshots/latest.txt``
+    only updates after upload succeeded.
 
     We use ``docker compose stop`` (graceful 10s drain), not
     ``pause`` (SIGSTOP via cgroup freezer, hard-kills in-flight
@@ -497,12 +501,14 @@ def test_snapshot_script_orders_phases_correctly() -> None:
         stop_compose_files=("/opt/docker-server/stacks/gitea/docker-compose.yml",),
     )
     # Locate each phase via a stable substring + assert ordering.
-    stop_pos = script.find("compose -f")
+    # **dump → stop** is the load-bearing ordering: pg_dump needs
+    # the container running, so it must come before compose-stop.
     dump_pos = script.find("pg_dump")
+    stop_pos = script.find("compose -f")
     upload_pos = script.find("rclone sync")
     check_pos = script.find("rclone check")
     latest_pos = script.find("snapshots/latest.txt")
-    assert stop_pos < dump_pos < upload_pos < check_pos < latest_pos
+    assert dump_pos < stop_pos < upload_pos < check_pos < latest_pos
     # Regression: stop, not pause, AND no `... || echo` blanket
     # error-swallowing (per CLAUDE.md "Never silently swallow
     # errors in critical operations"). The current implementation
@@ -524,6 +530,67 @@ def test_snapshot_script_orders_phases_correctly() -> None:
     # snapshot while services kept running.
     assert "PS_RC=$?" in stop_block
     assert '[ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]' in stop_block
+
+
+def test_snapshot_script_skips_compose_stop_when_file_missing() -> None:
+    """If a compose file isn't on disk the snapshot must skip its
+    stop step cleanly (stack-not-deployed) instead of letting
+    ``docker compose stop`` abort with 'no such file or directory'.
+    Same pattern for the rsync + pg_dump targets below. Real
+    incident: PR #557 first teardown of the cutover snapshotted
+    gitea successfully then failed on dify because dify wasn't
+    deployed on that server. The persistence layer can't assume
+    every stack in its target list is actually present."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+            PostgresDumpTarget(container="dify-db", database="dify", user="nexus-dify"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="gitea-repos",
+                local_path="/var/lib/nexus-data/gitea/repos",
+                s3_subpath="gitea/repos",
+            ),
+            RsyncTarget(
+                name="dify-db",
+                local_path="/var/lib/nexus-data/dify/db",
+                s3_subpath="dify/db",
+            ),
+        ),
+        stop_compose_files=(
+            "/opt/docker-server/stacks/gitea/docker-compose.yml",
+            "/opt/docker-server/stacks/dify/docker-compose.yml",
+        ),
+    )
+    # Compose-stop must guard with `[ -f "$COMPOSE_FILE" ]` before
+    # touching docker. The skip branch must log explicitly so
+    # operators see WHY the stack wasn't stopped.
+    assert 'if [ ! -f "$COMPOSE_FILE" ]; then' in script
+    assert "stack not deployed" in script
+    # pg_dump must guard with `docker inspect <container>` — a
+    # missing container today produces an opaque "Error: No such
+    # container" with rc=1 which set -e turns into a teardown
+    # abort.
+    # pg_dump must guard with `docker inspect --format='{{.State.Running}}'`
+    # — a missing container (not deployed) AND a stopped container
+    # (e.g. crashed earlier) both produce non-"true" output, both
+    # land in the skip branch. Bare `docker inspect <c>` would
+    # incorrectly succeed for stopped containers, then `docker
+    # exec` would fail with rc=1 and abort the snapshot.
+    assert "docker inspect --format='{{.State.Running}}' gitea-db" in script
+    assert "container dify-db not running" in script
+    # rsync sync must guard with `[ -d <path> ]`. The verify_one
+    # function (called for every rs_target) must short-circuit on
+    # missing source too — verifying a non-existent local dir
+    # against an empty S3 prefix would otherwise mark the snapshot
+    # as drifted and abort.
+    assert "if [ -d /var/lib/nexus-data/dify/db ]" in script
+    assert 'if [ ! -d "$src" ]; then' in script
 
 
 def test_snapshot_script_omits_compose_stop_when_no_files_passed() -> None:
@@ -582,6 +649,40 @@ def test_snapshot_script_rejects_unsafe_timestamp() -> None:
         )
 
 
+def test_snapshot_script_verify_logs_live_outside_workdir() -> None:
+    """The rclone-check stderr/stdout dumps MUST live OUTSIDE
+    ``$WORKDIR``. The first verify_one call compares ``$WORKDIR``
+    against S3; if the dumps lived inside $WORKDIR they'd appear
+    as untracked extras and rclone would report 'differences
+    found', failing every snapshot.
+
+    Real incident: PR #557 first end-to-end teardown surfaced this
+    after every other layer was patched — the verify gate fired
+    for the first time ever, the manifest+pg-dumps verify
+    reported 2 diffs (rclone-check.err + rclone-check.out), and
+    the snapshot aborted without flipping snapshots/latest.txt.
+    """
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+        ),
+        rsync_targets=(),
+    )
+    # Scratch dir for verify-phase logs must be declared separately
+    # and live outside $WORKDIR.
+    assert "LOG_DIR=/tmp/nexus-snapshot-logs" in script
+    # The rclone-check redirects must go to LOG_DIR, NOT WORKDIR.
+    assert '2>"$LOG_DIR/rclone-check.err"' in script
+    assert '"$LOG_DIR/rclone-check.out"' in script
+    # And NOTHING should write rclone-check.{err,out} into WORKDIR
+    # — the regression we're guarding against.
+    assert "WORKDIR/rclone-check" not in script
+
+
 def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> None:
     """The atomicity gate must distinguish (a) rclone-check itself
     erroring (auth/network/quota) from (b) drift found via the
@@ -597,15 +698,23 @@ def test_snapshot_script_atomicity_gate_distinguishes_two_failure_modes() -> Non
         rsync_targets=(),
     )
     assert "rclone check" in script
-    # Both PIPESTATUS captures must be present in the verify_one helper.
-    # Pipeline is `rclone | tee | grep`, so PIPESTATUS indexes are:
-    #   [0] = rclone (the integrity check), [1] = tee (always 0),
-    #   [2] = grep (0 = drift markers found, 1 = clean).
-    # An earlier revision had drift_rc=[1] (tee) which made the gate
-    # report "drift" on every snapshot — locking in [2] (grep) here
-    # is the regression test.
-    assert "rclone_rc=${PIPESTATUS[0]}" in script
-    assert "drift_rc=${PIPESTATUS[2]}" in script
+    # PIPESTATUS must be captured into a LOCAL ARRAY immediately
+    # after the pipeline runs, BEFORE any other command (including
+    # `local`). The `local` builtin overwrites PIPESTATUS with its
+    # own single-element exit-code array, so two separate
+    # `local rclone_rc=${PIPESTATUS[0]}; local drift_rc=${PIPESTATUS[2]}`
+    # would fail with "PIPESTATUS[2]: unbound variable" under
+    # set -u — the second `local` reads from the already-clobbered
+    # 1-element array.
+    #
+    # Regression pin for two distinct bugs in the same line block:
+    #   - drift_rc must read [2] (grep), not [1] (tee — always 0,
+    #     would make every snapshot report drift)
+    #   - the capture must be a single `local ps=("${PIPESTATUS[@]}")`
+    #     before the two reads, NOT two separate `local` lines
+    assert 'local pipeline_status=("${PIPESTATUS[@]}")' in script
+    assert "rclone_rc=${pipeline_status[0]}" in script
+    assert "drift_rc=${pipeline_status[2]}" in script
     # And both abort messages must distinguish the two modes.
     assert "snapshot-failed: rclone check ${label} errored" in script
     assert "snapshot-failed: rclone check ${label} found drift" in script
@@ -698,6 +807,51 @@ def test_restore_script_drops_database_before_pg_restore() -> None:
     # CLI args don't need SQL quoting — pg_restore's -U/-d take plain
     # values via argv, not embedded SQL.
     assert "pg_restore -U nexus-gitea -d gitea" in script
+
+
+def test_restore_script_skips_pg_restore_when_dump_missing_or_container_absent() -> None:
+    """Symmetric "stack not deployed" handling between snapshot
+    and restore. Two distinct skip cases on the restore side:
+
+    1. The dump file isn't in WORKDIR/postgres/ because the
+       snapshot side skipped that DB (container wasn't running
+       at snapshot time).
+    2. The dump exists but the target container isn't running
+       on this restore stack (snapshot composition differs from
+       restore composition — e.g. dify snapshotted but not
+       restored).
+
+    Without these guards, ``gunzip ... | docker exec dify-db
+    pg_restore`` aborts the whole restore with "No such file"
+    or "No such container". This is the symmetric fix to the
+    snapshot-side pg_dump skip guard.
+
+    Real incident: first end-to-end restore test of PR #557 —
+    snapshot correctly skipped dify-db (not deployed), but
+    restore tried to ``docker exec dify-db`` and aborted with
+    rc=1 → spin-up failed."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+            PostgresDumpTarget(container="dify-db", database="dify", user="nexus-dify"),
+        ),
+        rsync_targets=(),
+    )
+    # Both guards must be present, in the right shape, before the
+    # docker exec / gunzip lines that would otherwise crash.
+    assert "if [ ! -f $WORKDIR/postgres/gitea.dump.gz ]" in script
+    assert "if [ ! -f $WORKDIR/postgres/dify.dump.gz ]" in script
+    assert "no dump for dify" in script
+    assert "no dump for gitea" in script
+    assert "container dify-db not running" in script
+    assert "container gitea-db not running" in script
+    # And the skip path must be an EARLY return — no DROP DATABASE
+    # / gunzip / pg_restore on the dify side when container's gone.
+    # Pin the if-elif-else structure so the guards can't be silently
+    # bypassed by a future refactor.
+    assert "docker inspect --format='{{.State.Running}}' dify-db" in script
+    assert "docker inspect --format='{{.State.Running}}' gitea-db" in script
 
 
 def test_restore_script_pulls_filesystem_trees_before_postgres() -> None:
@@ -823,6 +977,52 @@ def test_restore_script_rejects_unknown_phase() -> None:
         )
 
 
+def test_restore_script_detects_missing_latest_via_lsf_stdout_not_exit_code() -> None:
+    """Ubuntu 24.04's apt rclone (v1.60.1) returns rc=0 with empty
+    stdout for a missing remote object, so an ``if ! rclone lsf ...``
+    check NEVER fires the fresh-start branch on that version — the
+    script falls through to ``copyto`` (also rc=0, no local file
+    created), and the first observable failure is the kernel-level
+    ``tr -d < missing-file`` line ("No such file or directory")
+    masquerading as rc=1. Use lsf's STDOUT instead: empty = missing.
+
+    This is the bug that broke PR #556's first-real-spinup test —
+    the rcfix unblocked the install, but the rclone-1.60.1 lsf
+    behaviour made every fresh bucket fail-instead-of-fresh-start."""
+    script = render_restore_script(
+        endpoint=_endpoint(),
+        postgres_targets=(),
+        rsync_targets=(),
+    )
+    # The fresh-start guard must list the PARENT prefix (so empty
+    # listing = empty bucket = fresh-start) and treat a non-zero
+    # exit from the listing as a HARD ERROR (not fresh-start) —
+    # otherwise a transient S3 blip after the bucket-reachability
+    # probe would silently empty local state, and the next teardown
+    # would overwrite real R2 data. Pin the exact bash shape so a
+    # future "simplification" can't regress us into any of the
+    # previous broken forms:
+    #   - ``if ! rclone lsf .../latest.txt >/dev/null`` (rclone-1.60
+    #     returns rc=0 on missing → never enters branch)
+    #   - ``[ -z "$(rclone lsf ...)" ]`` (depends on errexit-in-
+    #     cmd-sub semantics that flip with inherit_errexit)
+    #   - ``if ! VAR=$(rclone lsf .../latest.txt); then VAR=""`` →
+    #     treats transient errors as fresh-start (round-2 form)
+    assert (
+        'SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/")' in script
+    ), "fresh-start guard must list the parent prefix, not the file directly"
+    assert (
+        'grep -qxF "latest.txt"' in script
+    ), "fresh-start guard must check for latest.txt as a whole-line fixed match"
+    # Hard error path — listing failure must exit 2, NOT fresh-start.
+    assert "cannot list" in script
+    # And a defence-in-depth check: even if listing passed and
+    # copyto ran but copyto didn't actually produce the file, fail
+    # loud (exit 2) rather than letting the next ``tr -d`` leak
+    # its kernel error.
+    assert '[ ! -s "$WORKDIR/latest.txt" ]' in script
+
+
 def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
     """A bare ``rclone lsf latest.txt`` failure is ambiguous: missing
     object OR auth/network error. Treating both as "fresh-start"
@@ -836,10 +1036,10 @@ def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
         rsync_targets=(),
     )
     probe_pos = script.find('rclone lsd "$BUCKET"')
-    fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/latest.txt"')
-    assert 0 < probe_pos < fresh_check_pos, (
-        "bucket reachability probe must precede the latest.txt check"
-    )
+    fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/"')
+    assert (
+        0 < probe_pos < fresh_check_pos
+    ), "bucket reachability probe must precede the snapshot-prefix listing"
     assert "not reachable" in script
     # The probe failure path must exit non-zero (clear error), the
     # latest.txt failure path must exit 0 (legitimate fresh-start).
