@@ -603,12 +603,27 @@ def render_snapshot_script(
             # SIGSTOP via the cgroup freezer and hard-kills in-flight
             # writes. ``stop`` sends SIGTERM with a 10s grace window
             # for the container to flush + close DB connections
-            # cleanly. ``|| echo`` keeps this non-fatal if a stack
-            # is already down (e.g. partial-failure retry).
+            # cleanly.
+            #
+            # The previous form used a blanket ``|| echo "non-fatal"``
+            # which would swallow every non-zero exit — missing
+            # compose file, docker-daemon down, permission issue,
+            # syntax error in YAML, etc. Those are all real failures
+            # that should abort the snapshot, not warnings the
+            # operator quietly ignores. Per CLAUDE.md "Never silently
+            # swallow errors in critical operations."
+            #
+            # We now branch on the SPECIFIC happy "stack is already
+            # down" case via ``docker compose ps -q`` (returns empty
+            # when no containers are running). Any other ``stop``
+            # failure bubbles up via ``set -e``.
             lines.append(
-                f"docker compose -f {quoted} stop || "
-                'echo "  (compose stop non-fatal: stack may already be down)"',
+                f'if [ -n "$(docker compose -f {quoted} ps -q 2>/dev/null)" ]; then',
             )
+            lines.append(f"  docker compose -f {quoted} stop")
+            lines.append("else")
+            lines.append(f'  echo "  (skip: compose stack at {compose_file} already down)"')
+            lines.append("fi")
         lines.append("")
 
     if pg_targets:

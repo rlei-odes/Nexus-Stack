@@ -68,6 +68,15 @@ BUCKET="$STACK_SLUG"
 if ! command -v aws >/dev/null 2>&1; then
   err "aws CLI not found in PATH"
 fi
+# The pagination loop below parses ``list-object-versions`` JSON
+# output via python3. Check up-front so a missing interpreter
+# fails the script BEFORE we start deleting; without the check, the
+# loop would tear through one page of versions, then error half-way
+# with ``python3: command not found`` leaving the bucket in a
+# partially-emptied state.
+if ! command -v python3 >/dev/null 2>&1; then
+  err "python3 not found in PATH — needed for paginated version-list parsing. Install Python 3 or use a runner image that includes it."
+fi
 
 export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"

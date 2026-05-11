@@ -20,15 +20,17 @@
 # partial failure (e.g. lifecycle policy didn't stick) succeed cleanly.
 #
 # Required environment variables:
-#   CLOUDFLARE_API_TOKEN     - Cloudflare API token with R2:Edit scope
 #   CLOUDFLARE_ACCOUNT_ID    - Cloudflare account ID
+#                              (used to derive the R2 endpoint URL:
+#                              https://<account_id>.r2.cloudflarestorage.com)
 #   R2_ACCESS_KEY_ID         - R2 S3-API access key (from init-r2-state.sh
 #                              output; reused across all R2 buckets in the
 #                              project)
 #   R2_SECRET_ACCESS_KEY     - matching secret
 #   STACK_SLUG               - Per-stack slug, e.g. "nexus-stefan-hslu"
 #                              (used as bucket name; must match R2 naming
-#                              rules: lowercase alnum + hyphen, 3-63 chars)
+#                              rules: lowercase alnum + hyphens + dots,
+#                              3-63 chars, must start/end with alnum)
 #   INFISICAL_PROJECT_ID     - Where to push the bucket coordinates (optional;
 #                              skipped with a warning if unset)
 #   INFISICAL_TOKEN          - Infisical service-account token (optional)
@@ -61,7 +63,14 @@ err()  { echo -e "${RED}[init-s3-bucket] ✗${NC}  $*" >&2; exit 1; }
 # Argument validation
 # -----------------------------------------------------------------------------
 
-: "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
+# Note: CLOUDFLARE_API_TOKEN is NOT required here — all operations
+# go through the S3-compatible API at the R2 endpoint with the
+# R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY pair. The token would be
+# needed for non-S3 Cloudflare API operations (e.g. minting a new
+# R2 token, configuring buckets via the CF management API), but
+# v1.0 doesn't do any of that — the token from init-r2-state.sh
+# already exists and is reused. Requiring an unused token here
+# would just make the script harder to call.
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 : "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required (reuse the one from init-r2-state.sh)}"
 : "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}"

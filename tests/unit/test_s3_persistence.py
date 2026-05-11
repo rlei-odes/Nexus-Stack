@@ -503,13 +503,17 @@ def test_snapshot_script_orders_phases_correctly() -> None:
     check_pos = script.find("rclone check")
     latest_pos = script.find("snapshots/latest.txt")
     assert stop_pos < dump_pos < upload_pos < check_pos < latest_pos
-    # Regression: stop, not pause.
-    assert "compose -f" in script
-    assert "stop" in script.split("compose -f")[1].split("\n")[0]
+    # Regression: stop, not pause, AND no `... || echo` blanket
+    # error-swallowing (per CLAUDE.md "Never silently swallow
+    # errors in critical operations"). The current implementation
+    # uses ``if docker compose ps -q ... then stop`` so a genuine
+    # `stop` failure bubbles via ``set -e``.
     assert "docker compose -f" in script
-    assert " pause " not in script.replace(
-        '"compose pause non-fatal: stack may already be down"', ""
-    )
+    assert "stop" in script  # rendered command verb is `stop`
+    assert "pause" not in script
+    # No blanket "|| echo non-fatal" masking on the stop step.
+    stop_block = script.split("→ snapshot: stopping compose stacks")[1].split("→ snapshot:")[0]
+    assert "stop || echo" not in stop_block
 
 
 def test_snapshot_script_omits_compose_stop_when_no_files_passed() -> None:
