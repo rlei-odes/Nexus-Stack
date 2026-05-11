@@ -93,8 +93,10 @@ Load package 1778429304.0475023 is LOADED and contains no failed jobs
 Check which tables dlt created:
 
 ```bash
-PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres -c "\dt wikipedia.*"
+psql -h postgres -U nexus-postgres -d postgres -c "\dt wikipedia.*"
 ```
+
+psql will prompt for the password. If you prefer to skip the prompt in your session, run `export PGPASSWORD="your_password"` once in the terminal first — but never inline it in a committed script.
 
 ```
    Schema   |        Name         | Type  |     Owner
@@ -108,7 +110,7 @@ PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres -c "\d
 Query the first few rows:
 
 ```bash
-PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres \
+psql -h postgres -U nexus-postgres -d postgres \
   -c "SELECT article, timestamp, views FROM wikipedia.pageviews ORDER BY article, timestamp LIMIT 10;"
 ```
 

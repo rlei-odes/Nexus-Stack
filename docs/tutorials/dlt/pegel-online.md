@@ -222,7 +222,7 @@ python pegel_online_pipeline.py --stations
 Check what dlt created in the `pegel_online` schema:
 
 ```bash
-PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres -c "\dt pegel_online.*"
+psql -h postgres -U nexus-postgres -d postgres -c "\dt pegel_online.*"
 ```
 
 ```
@@ -254,7 +254,7 @@ dlt sees the nested `timeseries` array and automatically creates a child table �
 Row counts:
 
 ```bash
-PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres \
+psql -h postgres -U nexus-postgres -d postgres \
   -c "SELECT count(*) FROM pegel_online.stations;" \
   -c "SELECT count(*) FROM pegel_online.stations__timeseries;"
 ```
@@ -275,7 +275,7 @@ PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres \
 
 **Chunked pagination** — the measurements API returns at most a few hundred records per request and rejects very long date ranges. The while loop splits the full window into 30-day chunks and advances `chunk_start` until it reaches `end_dt`. A full refresh from January 2024 takes 29 requests instead of one huge one that would time out.
 
-**Timezone-aware cursor** — the API returns CET/CEST timestamps that shift between `+01:00` and `+02:00` depending on the season. If you stored those strings as-is and compared them lexicographically, the cursor would jump backwards when DST switches. Converting everything to UTC on the way in (`astimezone(timezone.utc)`) keeps the cursor monotonically increasing regardless of season.
+**Timezone-aware cursor** — the API returns CET/CEST timestamps that shift between `+01:00` and `+02:00` depending on the season. Each `item["timestamp"]` is parsed into a `datetime` and converted to UTC via `astimezone(timezone.utc)` before being compared to `max_ts_dt`, so the comparison stays in a stable timezone and remains monotonic across DST changes. The stored cursor (`state["last_timestamp"]`) is also written as a UTC ISO string for the same reason. The yielded `timestamp` field keeps the original API representation — only the internal bookkeeping is normalized, not the payload.
 
 **Two resources, two strategies** — `pegel_measurements` uses `merge` because new readings arrive constantly and you only want to fetch what's new. `pegel_stations` uses `replace` because station metadata rarely changes and a full refresh is cheaper than tracking diffs for 785 stations. Both resources live in the same pipeline and write to the same schema.
 

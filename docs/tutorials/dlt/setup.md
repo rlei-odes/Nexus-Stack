@@ -77,7 +77,7 @@ The host `postgres` is the Docker service name — it resolves inside the server
 `secrets.toml` contains your database password. Add it to `.gitignore` so it's never committed to your workspace repo:
 
 ```bash
-echo '.dlt/secrets.toml' > .gitignore
+grep -qxF '.dlt/secrets.toml' .gitignore 2>/dev/null || echo '.dlt/secrets.toml' >> .gitignore
 ```
 
 ## What's next

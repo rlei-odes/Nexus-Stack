@@ -173,7 +173,7 @@ sudo apt-get update && sudo apt-get install -y postgresql-client
 Then query:
 
 ```bash
-PGPASSWORD="your_password" psql -h postgres -U nexus-postgres -d postgres \
+psql -h postgres -U nexus-postgres -d postgres \
   -c "SELECT article, timestamp, views FROM wikipedia.pageviews ORDER BY article, timestamp LIMIT 10;"
 ```
 
