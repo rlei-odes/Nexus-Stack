@@ -657,7 +657,8 @@ jobs:
           # validate stack_slug so this would only surface on
           # teardown — but keeping the two sides symmetric is
           # cheap insurance.
-          export PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          export PERSISTENCE_STACK_SLUG
 
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy run-pipeline

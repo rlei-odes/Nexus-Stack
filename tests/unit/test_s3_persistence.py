@@ -526,6 +526,61 @@ def test_snapshot_script_orders_phases_correctly() -> None:
     assert '[ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]' in stop_block
 
 
+def test_snapshot_script_skips_compose_stop_when_file_missing() -> None:
+    """If a compose file isn't on disk the snapshot must skip its
+    stop step cleanly (stack-not-deployed) instead of letting
+    ``docker compose stop`` abort with 'no such file or directory'.
+    Same pattern for the rsync + pg_dump targets below. Real
+    incident: PR #557 first teardown of the cutover snapshotted
+    gitea successfully then failed on dify because dify wasn't
+    deployed on that server. The persistence layer can't assume
+    every stack in its target list is actually present."""
+    script = render_snapshot_script(
+        endpoint=_endpoint(),
+        stack_slug="nexus-test",
+        template_version="v0.56.0",
+        timestamp="20260510T120000Z",
+        postgres_targets=(
+            PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
+            PostgresDumpTarget(container="dify-db", database="dify", user="nexus-dify"),
+        ),
+        rsync_targets=(
+            RsyncTarget(
+                name="gitea-repos",
+                local_path="/var/lib/nexus-data/gitea/repos",
+                s3_subpath="gitea/repos",
+            ),
+            RsyncTarget(
+                name="dify-db",
+                local_path="/var/lib/nexus-data/dify/db",
+                s3_subpath="dify/db",
+            ),
+        ),
+        stop_compose_files=(
+            "/opt/docker-server/stacks/gitea/docker-compose.yml",
+            "/opt/docker-server/stacks/dify/docker-compose.yml",
+        ),
+    )
+    # Compose-stop must guard with `[ -f "$COMPOSE_FILE" ]` before
+    # touching docker. The skip branch must log explicitly so
+    # operators see WHY the stack wasn't stopped.
+    assert 'if [ ! -f "$COMPOSE_FILE" ]; then' in script
+    assert "stack not deployed" in script
+    # pg_dump must guard with `docker inspect <container>` — a
+    # missing container today produces an opaque "Error: No such
+    # container" with rc=1 which set -e turns into a teardown
+    # abort.
+    assert "docker inspect gitea-db" in script
+    assert "container dify-db not present" in script
+    # rsync sync must guard with `[ -d <path> ]`. The verify_one
+    # function (called for every rs_target) must short-circuit on
+    # missing source too — verifying a non-existent local dir
+    # against an empty S3 prefix would otherwise mark the snapshot
+    # as drifted and abort.
+    assert "if [ -d /var/lib/nexus-data/dify/db ]" in script
+    assert 'if [ ! -d "$src" ]; then' in script
+
+
 def test_snapshot_script_omits_compose_stop_when_no_files_passed() -> None:
     """No compose files passed → no docker compose calls at all.
     Avoids the ``no compose files`` echo-only no-op block."""

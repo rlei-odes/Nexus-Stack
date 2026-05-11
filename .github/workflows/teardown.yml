@@ -237,7 +237,8 @@ jobs:
           # GitHub Actions has no lowercase filter on workflow-
           # expression interpolations, so the cast happens here in
           # the shell before the subcommand runs.
-          export PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          export PERSISTENCE_STACK_SLUG
 
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy s3-snapshot

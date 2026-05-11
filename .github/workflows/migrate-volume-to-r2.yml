@@ -187,7 +187,8 @@ jobs:
           # Lowercase the slug (see spin-up.yml / teardown.yml for
           # the full rationale — workflow fallback is the camel-
           # case repo name, validator wants S3 bucket-name shape).
-          export PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          PERSISTENCE_STACK_SLUG=$(echo "$PERSISTENCE_STACK_SLUG" | tr '[:upper:]' '[:lower:]')
+          export PERSISTENCE_STACK_SLUG
 
           uv run --quiet --project "$GITHUB_WORKSPACE" \
             python -m nexus_deploy s3-snapshot

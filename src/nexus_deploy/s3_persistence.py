@@ -636,16 +636,31 @@ def render_snapshot_script(
             # can't masquerade as the empty-stdout-from-no-
             # containers case.
             lines.append(f"COMPOSE_FILE={quoted}")
-            lines.append("set +e")
-            lines.append('PS_OUT=$(docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null)')
-            lines.append("PS_RC=$?")
-            lines.append("set -e")
-            lines.append('if [ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]; then')
+            # Skip cleanly if the compose file isn't on disk —
+            # ``stop_compose_files`` is a static list of stacks the
+            # persistence layer KNOWS ABOUT; whether a given stack
+            # is actually deployed on this server is decided by D1
+            # (enabled_services). A stack absent from disk just
+            # means it isn't enabled here, not an error. Treating
+            # this as benign-skip (with an explicit log line so
+            # operators see it) keeps the snapshot deterministic
+            # across partially-deployed configurations.
+            lines.append('if [ ! -f "$COMPOSE_FILE" ]; then')
             lines.append(
-                f'  echo "  (skip: compose stack at {compose_file} already down)"',
+                f'  echo "  (skip: compose file {compose_file} not on disk — stack not deployed)"',
             )
             lines.append("else")
-            lines.append('  docker compose -f "$COMPOSE_FILE" stop')
+            lines.append("  set +e")
+            lines.append('  PS_OUT=$(docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null)')
+            lines.append("  PS_RC=$?")
+            lines.append("  set -e")
+            lines.append('  if [ "$PS_RC" -eq 0 ] && [ -z "$PS_OUT" ]; then')
+            lines.append(
+                f'    echo "  (skip: compose stack at {compose_file} already down)"',
+            )
+            lines.append("  else")
+            lines.append('    docker compose -f "$COMPOSE_FILE" stop')
+            lines.append("  fi")
             lines.append("fi")
         lines.append("")
 
@@ -661,18 +676,40 @@ def render_snapshot_script(
             # said ``.sql.gz`` which was misleading since the body
             # is NOT plain SQL (``-F c`` produces a binary archive).
             dump_file = f"$POSTGRES_DIR/{pg.database}.dump.gz"
+            # Same "stack not deployed" handling as the compose-stop
+            # block: skip if the postgres container isn't even
+            # running on this server, so partially-deployed stacks
+            # don't fail teardown.
+            lines.append(f"if docker inspect {container} >/dev/null 2>&1; then")
             lines.append(
-                f"docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
+                f"  docker exec {container} pg_dump -U {user} -d {db} -F c | gzip -9 > {dump_file}",
             )
+            lines.append("else")
+            lines.append(
+                f'  echo "  (skip: container {pg.container} not present — stack not deployed)"',
+            )
+            lines.append("fi")
         lines.append("")
 
     lines.append('echo "→ snapshot: uploading filesystem trees"')
     for rs in rs_targets:
         local = shlex.quote(rs.local_path)
         sub = shlex.quote(rs.s3_subpath)
+        # And again: skip if the source directory isn't on disk
+        # (stack not deployed → no data to snapshot). Without this
+        # guard rclone sync would fail with "directory not found"
+        # and abort the whole snapshot. ``--create-empty-src-dirs``
+        # below preserves the structure on the S3 side when the
+        # source IS present but empty (different case).
+        lines.append(f"if [ -d {local} ]; then")
         lines.append(
-            f'rclone sync --create-empty-src-dirs {local} "$BUCKET/$SNAPSHOT_PREFIX/{sub}"',
+            f'  rclone sync --create-empty-src-dirs {local} "$BUCKET/$SNAPSHOT_PREFIX/{sub}"',
         )
+        lines.append("else")
+        lines.append(
+            f'  echo "  (skip: data dir {rs.local_path} not on disk — stack not deployed)"',
+        )
+        lines.append("fi")
     lines.append("")
 
     if pg_targets:
@@ -722,6 +759,18 @@ def render_snapshot_script(
             '  local src="$1"',
             '  local dst="$2"',
             '  local label="$3"',
+            # Same skip-on-missing semantics as the snapshot blocks
+            # above. If the source dir isn't on disk (stack not
+            # deployed) the corresponding rclone sync was already
+            # skipped, so there's nothing for rclone check to
+            # compare — verifying a missing source against an empty
+            # S3 prefix would fail with "directory not found" and
+            # mark the whole verify as drifted. Treat absent source
+            # as benign-skip with an explicit log line.
+            '  if [ ! -d "$src" ]; then',
+            '    echo "  (skip verify: source $src not on disk — stack not deployed)"',
+            "    return",
+            "  fi",
             "  set +e",
             # Pipeline is three-stage: rclone | tee | grep. PIPESTATUS
             # indexes accordingly:
@@ -889,8 +938,8 @@ def render_restore_script(
         # genuine first-spin-up path still reaches the latest.txt
         # check below and exits 0 with the fresh-start message.
         'if ! rclone lsd "$BUCKET" --max-depth 1 >/dev/null 2>&1; then',
-        '  echo "✗ restore-failed: bucket $BUCKET is not reachable '
-        '(check R2 credentials / endpoint / bucket name)" >&2',
+        '  echo "✗ restore-failed: bucket $BUCKET is not reachable" >&2',
+        '  echo "  (check R2 credentials / endpoint / bucket name)" >&2',
         "  exit 2",
         "fi",
         # Detect "no snapshot yet" by listing the parent prefix and
