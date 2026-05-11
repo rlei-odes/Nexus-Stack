@@ -1107,7 +1107,7 @@ def render_restore_script(
             # gitea-only restore path still proceeds normally.
             lines.append(f"if [ ! -f {dump_file} ]; then")
             lines.append(
-                f'  echo "  (skip: no dump for {pg.database} ' f'— stack not snapshotted)"',
+                f'  echo "  (skip: no dump for {pg.database} — stack not snapshotted)"',
             )
             lines.append(
                 f"elif [ \"$(docker inspect --format='{{{{.State.Running}}}}' "

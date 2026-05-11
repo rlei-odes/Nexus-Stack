@@ -2176,9 +2176,9 @@ def test_phase_service_env_skips_gitea_block_on_incomplete_coords(
     result = orchestrator._phase_service_env()
     assert result.status == "ok"
     assert "gitea_appended=0" in result.detail
-    assert (
-        append_called is False
-    ), "append_gitea_workspace_block must NOT be called when any coord is empty"
+    assert append_called is False, (
+        "append_gitea_workspace_block must NOT be called when any coord is empty"
+    )
 
 
 # ---------------------------------------------------------------------------
