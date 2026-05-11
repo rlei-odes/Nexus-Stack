@@ -211,9 +211,21 @@ def standard_targets() -> tuple[tuple[_s3.PostgresDumpTarget, ...], tuple[_s3.Rs
     * Dify container ``dify-db`` — database ``dify``, role
       ``nexus-dify``.
 
-    Rsync layout matches RFC 0001 §"Storage layout":
+    Local paths land at **``/mnt/nexus-data/...``** — that's
+    where the actual docker-compose bind-mounts live (see
+    ``stacks/gitea/docker-compose.yml:45`` and
+    ``stacks/dify/docker-compose.yml:84`` for the canonical
+    references). An earlier draft of this function restored to
+    ``/var/lib/nexus-data/...``, which would have landed the
+    snapshot in a directory NO container ever sees — restore
+    would appear to succeed but Gitea/Dify would come up empty.
+
+    S3-side layout matches RFC 0001 §"Storage layout":
     ``snapshots/<timestamp>/gitea/{repos,lfs}/`` and
     ``snapshots/<timestamp>/dify/{storage,weaviate,plugins}/``.
+    ``db/`` and ``redis/`` deliberately NOT in the list — Postgres
+    state goes through ``pg_dump`` separately, Redis is
+    regeneratable on container start.
     """
     postgres = (
         _s3.PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
@@ -222,27 +234,27 @@ def standard_targets() -> tuple[tuple[_s3.PostgresDumpTarget, ...], tuple[_s3.Rs
     rsync = (
         _s3.RsyncTarget(
             name="gitea-repos",
-            local_path="/var/lib/nexus-data/gitea/repos",
+            local_path="/mnt/nexus-data/gitea/repos",
             s3_subpath="gitea/repos",
         ),
         _s3.RsyncTarget(
             name="gitea-lfs",
-            local_path="/var/lib/nexus-data/gitea/lfs",
+            local_path="/mnt/nexus-data/gitea/lfs",
             s3_subpath="gitea/lfs",
         ),
         _s3.RsyncTarget(
             name="dify-storage",
-            local_path="/var/lib/nexus-data/dify/storage",
+            local_path="/mnt/nexus-data/dify/storage",
             s3_subpath="dify/storage",
         ),
         _s3.RsyncTarget(
             name="dify-weaviate",
-            local_path="/var/lib/nexus-data/dify/weaviate",
+            local_path="/mnt/nexus-data/dify/weaviate",
             s3_subpath="dify/weaviate",
         ),
         _s3.RsyncTarget(
             name="dify-plugins",
-            local_path="/var/lib/nexus-data/dify/plugins",
+            local_path="/mnt/nexus-data/dify/plugins",
             s3_subpath="dify/plugins",
         ),
     )
@@ -259,13 +271,21 @@ def render_combined_restore_script(
     endpoint: _s3.S3Endpoint,
     postgres_targets: tuple[_s3.PostgresDumpTarget, ...],
     rsync_targets: tuple[_s3.RsyncTarget, ...],
-    local_root: str = "/var/lib/nexus-data",
+    local_root: str = "/mnt/nexus-data",
 ) -> str:
     """Render a single bash script that does BOTH:
 
-    1. Writes the rclone config to ``~/.config/rclone/rclone.conf``
-       (atomic temp-file → rename, mode 600 because it contains
-       the secret access key).
+    1. Writes the rclone config to
+       ``~/.config/rclone/rclone.conf`` via ``install -m 600
+       /dev/stdin``. ``install`` creates the file with the
+       requested permission bits in one syscall — no ``open()
+       then chmod()`` race window where another process on the
+       host could read the credentials with default 644
+       permissions. The write itself is NOT a temp-file +
+       rename (an earlier docstring revision claimed it was);
+       it's a direct write at the target path with safe perms
+       set on creation. That's sufficient for our threat model
+       (single-user server, no concurrent writers).
     2. Runs the restore body produced by
        :func:`s3_persistence.render_restore_script`.
 
@@ -273,12 +293,6 @@ def render_combined_restore_script(
     invocation. This is the cheapest plumbing: a single SSH
     round-trip, no temp-file management on the orchestrator side,
     no risk of a partial write between config and body.
-
-    The config write uses ``install -m 600 /dev/stdin`` so the
-    file's permission bits are set atomically — no
-    ``chmod`` race window where the file exists with default
-    644 and another process on the host could read the
-    credentials.
     """
     rclone_config = _s3.render_rclone_config(endpoint)
     restore_body = _s3.render_restore_script(
@@ -363,9 +377,19 @@ def restore_from_s3(
 
     endpoint = build_endpoint_from_env(env)
     if endpoint is None:
+        # Identify the specific missing/empty names so the operator
+        # doesn't have to grep their secret store for the entire list.
+        # Reading os.environ here (not the parameter ``env``) is
+        # intentional — the production caller passes ``env=None`` and
+        # this diagnostic should match what build_endpoint_from_env
+        # actually saw. Tests pass an explicit ``env`` dict, which
+        # we re-use here.
+        source = env if env is not None else os.environ
+        missing = [name for name in _REQUIRED_ENV_VAR_NAMES if not source.get(name)]
         sys.stderr.write(
-            f"⚠ s3-restore: feature flag {FEATURE_FLAG_ENV}=true but one or more of "
-            f"{_REQUIRED_ENV_VAR_NAMES} is unset; skipping S3 restore.\n",
+            f"⚠ s3-restore: feature flag {FEATURE_FLAG_ENV}=true but the following "
+            f"required env vars are unset or empty: {', '.join(missing)}. "
+            "Skipping S3 restore.\n",
         )
         return S3RestoreSkipped(reason="no_endpoint_env")
 

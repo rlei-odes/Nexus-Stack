@@ -129,6 +129,7 @@ def test_build_endpoint_from_env_returns_none_on_any_missing(missing_var: str) -
     "missing_var",
     [
         "PERSISTENCE_S3_ENDPOINT",
+        "PERSISTENCE_S3_REGION",
         "PERSISTENCE_S3_BUCKET",
         "R2_ACCESS_KEY_ID",
         "R2_SECRET_ACCESS_KEY",
@@ -136,7 +137,10 @@ def test_build_endpoint_from_env_returns_none_on_any_missing(missing_var: str) -
 )
 def test_build_endpoint_from_env_treats_empty_as_missing(missing_var: str) -> None:
     """Empty-string env var is the same as missing — guards against
-    operators accidentally setting ``EXPORT VAR=`` (no value)."""
+    operators accidentally setting ``EXPORT VAR=`` (no value).
+    Parametrized over ALL five required vars so a regression that
+    treats any single one differently (e.g. ``REGION`` having a
+    fallback default) gets caught."""
     env = _good_env()
     env[missing_var] = ""
     assert build_endpoint_from_env(env) is None
@@ -306,7 +310,10 @@ def test_restore_from_s3_skips_when_env_incomplete(capsys: pytest.CaptureFixture
     ssh.run_script.assert_not_called()
     captured = capsys.readouterr()
     assert "feature flag" in captured.err
-    assert "skipping" in captured.err
+    # Message now lists the SPECIFIC missing vars (instead of dumping
+    # the entire required-vars tuple) — regression for round-3 #3217012538.
+    assert "PERSISTENCE_S3_BUCKET" in captured.err
+    assert "Skipping S3 restore" in captured.err
 
 
 def test_restore_from_s3_returns_fresh_start_when_bucket_empty() -> None:

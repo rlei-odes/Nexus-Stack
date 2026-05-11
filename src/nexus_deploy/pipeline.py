@@ -372,9 +372,13 @@ def run_pipeline(
                 "→ s3-restore: bucket empty, fresh-start (first spinup of new "
                 "persistence bucket)\n",
             )
-        # The other two skip reasons (feature_flag_off / no_endpoint_env)
-        # already wrote their own stderr lines from inside restore_from_s3;
-        # nothing more to log here.
+        # The other two skip reasons are intentionally not logged here:
+        #   - feature_flag_off: silent by design — the stack hasn't
+        #     opted in to S3 persistence, so logging would just add
+        #     noise to every spinup of stacks that don't use it.
+        #   - no_endpoint_env: restore_from_s3 already wrote its own
+        #     stderr line (it lists the specific missing env vars,
+        #     which is the actionable info the operator needs).
 
         if options.dockerhub_user and options.dockerhub_token:
             login_fn = docker_hub_login if docker_hub_login is not None else _docker_hub_login
