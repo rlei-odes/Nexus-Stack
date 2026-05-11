@@ -931,7 +931,10 @@ def test_pipeline_uses_separator_for_ssh_host_dns(
 
 
 def test_run_snapshot_aborts_when_tofu_state_uninitialized(
-    project_root: Path, fake_tofu_runner: MagicMock, setup_mocks: dict[str, Any]
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Teardown counterpart to
     :func:`test_pipeline_aborts_when_tofu_state_uninitialized`. No
@@ -939,7 +942,14 @@ def test_run_snapshot_aborts_when_tofu_state_uninitialized(
     workflow aborts BEFORE tofu destroy. We never want to run
     destroy against a stack whose state file has gone walkabout
     (could mean the previous teardown raced or the R2 backend is
-    flaky)."""
+    flaky).
+
+    Feature flag MUST be set ``"true"`` here — the
+    feature-flag-off short-circuit at the top of ``run_snapshot``
+    would otherwise return ``Skipped(feature_flag_off)`` before
+    ever reading tofu state, masking the missing-state failure.
+    """
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
     fake_tofu_runner.state_list_ok.return_value = False
     fake_tofu_runner.diagnose_state.return_value = None
     with pytest.raises(PipelineError, match="not initialised"):
@@ -952,11 +962,17 @@ def test_run_snapshot_aborts_when_tofu_state_uninitialized(
 
 
 def test_run_snapshot_aborts_on_empty_domain(
-    project_root: Path, fake_tofu_runner: MagicMock, setup_mocks: dict[str, Any]
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty domain in config.tfvars makes ssh_host_dns unbuildable;
     must be a hard PipelineError so the teardown caller maps to rc=2
-    instead of proceeding to a no-op snapshot + destroy."""
+    instead of proceeding to a no-op snapshot + destroy. Feature
+    flag set to ``"true"`` so we bypass the top-of-function
+    short-circuit and reach the tfvars parse."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
     tfvars_path = project_root / "tofu" / "stack" / "config.tfvars"
     tfvars_path.write_text(
         'domain = ""\nadmin_email = "a@example.com"\nuser_email = "u@example.com"\n',
@@ -969,6 +985,34 @@ def test_run_snapshot_aborts_on_empty_domain(
             template_version="v1.0.0",
             tofu_runner=fake_tofu_runner,
         )
+
+
+def test_run_snapshot_short_circuits_before_tofu_when_flag_off(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Feature-flag short-circuit (PR-4 fix-pr-comments round 2):
+    when the flag is off, run_snapshot MUST return Skipped BEFORE
+    any tofu/SSH side-effect. Direct callers (programmatic use,
+    library import) bypass the CLI's own early gate, so this
+    invariant has to live inside run_snapshot itself. Concretely:
+    state_list_ok would normally raise if it returned False, but
+    here we set it to False AND expect a clean Skipped return —
+    proving tofu state was never touched."""
+    monkeypatch.delenv("NEXUS_S3_PERSISTENCE", raising=False)
+    fake_tofu_runner.state_list_ok.return_value = False
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "feature_flag_off"
+    # The short-circuit's whole point: state_list_ok was never read.
+    fake_tofu_runner.state_list_ok.assert_not_called()
 
 
 def test_run_snapshot_returns_skipped_when_flag_off(

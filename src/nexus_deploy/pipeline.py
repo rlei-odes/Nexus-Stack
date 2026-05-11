@@ -497,7 +497,26 @@ def run_snapshot(
       abort to avoid data loss.
     - Snapshot returns ``S3SnapshotApplied`` → rc=0, safe to
       proceed with ``tofu destroy``.
+
+    **Feature-flag short-circuit:** when ``NEXUS_S3_PERSISTENCE``
+    is not exactly ``"true"`` we return the ``feature_flag_off``
+    outcome immediately, before touching R2 creds / tofu state /
+    SSH. This keeps the function callable on stacks that haven't
+    opted in (e.g. local tests, direct imports outside the CLI):
+    a caller that bypasses the ``_s3_snapshot`` CLI's own early
+    check would otherwise hit ``PipelineError`` for a missing
+    tofu state on a torn-down stack that was never going to
+    snapshot in the first place.
     """
+    # 0. Feature-flag short-circuit — must be the very first
+    #    check, before any R2 / tofu / SSH side-effects, so direct
+    #    callers (tests, programmatic use) get the same skip
+    #    semantics the CLI handler provides.
+    if not _s3_restore.is_enabled():
+        return SnapshotResult(
+            outcome=_s3_restore.S3SnapshotSkipped(reason="feature_flag_off"),
+        )
+
     # 1. R2 credentials (identical to run_pipeline step 1).
     creds_file = project_root / "tofu" / ".r2-credentials"
     try:

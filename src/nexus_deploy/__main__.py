@@ -29,6 +29,7 @@ import requests
 from nexus_deploy import __version__, hello
 from nexus_deploy import hetzner_capacity as _hetzner
 from nexus_deploy import pipeline as _pipeline
+from nexus_deploy import s3_persistence as _s3_persistence
 from nexus_deploy import s3_restore as _s3_restore
 from nexus_deploy.compose_runner import run_compose_up
 from nexus_deploy.config import ConfigError, NexusConfig
@@ -3025,6 +3026,14 @@ def _s3_snapshot(args: list[str]) -> int:
         )
     except _pipeline.PipelineError as exc:
         print(f"s3-snapshot: {exc}", file=sys.stderr)
+        return 2
+    except _s3_persistence.S3PersistenceError as exc:
+        # Structural validation failures from s3_persistence (bad
+        # endpoint charset, bucket-name shape, bad rsync subpath,
+        # etc.) — operator-actionable: surface a targeted message
+        # before the generic catch-all turns it into "unexpected
+        # error". Must come BEFORE the broad Exception handler.
+        print(f"s3-snapshot: invalid S3 persistence config: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:
         # Atomicity contract: a remote-script failure (rclone drift,
