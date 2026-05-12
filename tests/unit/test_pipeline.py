@@ -997,6 +997,72 @@ def test_run_snapshot_aborts_when_tofu_state_uninitialized(
         )
 
 
+def test_run_snapshot_skips_when_state_file_missing(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #564: partially-deployed forks (setup-control-plane
+    succeeded, spin-up aborted before any ``tofu apply``) have a
+    state-list failure with the specific stderr "No state file was
+    found!". This is materially different from a real state-list
+    failure (binary missing, R2 auth/timeout) — there is genuinely
+    nothing on the server to snapshot, so teardown should proceed.
+
+    The narrow ``"No state file was found"`` substring match is
+    what distinguishes this skip from a hard PipelineError. Once
+    this branch fires we must NOT reach output_json (no outputs
+    to read) and we must NOT touch SSH (no server to snapshot
+    from)."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    fake_tofu_runner.state_list_ok.return_value = False
+    fake_tofu_runner.diagnose_state.return_value = (
+        "state list failed (rc=1): No state file was found!"
+    )
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "no_state_to_snapshot"
+    # Skip path must short-circuit before reading outputs or
+    # touching SSH — otherwise we'd ironically fail the very
+    # teardown we're trying to unblock.
+    fake_tofu_runner.output_json.assert_not_called()
+    setup_mocks["configure_ssh"].assert_not_called()
+    setup_mocks["wait_for_ssh"].assert_not_called()
+    setup_mocks["SSHClient"].assert_not_called()
+
+
+def test_run_snapshot_aborts_on_other_state_failures(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #564 counterpart: every state-list failure that does
+    NOT contain ``"No state file was found"`` must still raise
+    PipelineError → CLI rc=2 → teardown aborts. The carve-out is
+    *narrow*: a missing tofu binary, an R2 backend timeout, an
+    auth failure — these are all unsafe to ignore because we
+    can't know whether state actually exists or just isn't
+    reachable, and a tofu destroy against unverifiable state
+    could lose data."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    fake_tofu_runner.state_list_ok.return_value = False
+    fake_tofu_runner.diagnose_state.return_value = "tofu binary not found on PATH"
+    with pytest.raises(PipelineError, match=r"tofu binary not found on PATH"):
+        run_snapshot(
+            project_root=project_root,
+            stack_slug="nexus-test",
+            template_version="v1.0.0",
+            tofu_runner=fake_tofu_runner,
+        )
+
+
 def test_run_snapshot_aborts_on_empty_domain(
     project_root: Path,
     fake_tofu_runner: MagicMock,
