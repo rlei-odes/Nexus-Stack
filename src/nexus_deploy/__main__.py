@@ -3010,6 +3010,15 @@ def _s3_snapshot(args: list[str]) -> int:
     # here (filtered above) but kept for symmetry.
     if outcome.reason == "feature_flag_off":
         return 0
+    if outcome.reason == "no_state_to_snapshot":
+        # Issue #564: partially-deployed fork (setup-control-plane
+        # succeeded, spin-up aborted before any tofu apply). Nothing
+        # on the server to snapshot; teardown should proceed.
+        sys.stderr.write(
+            "s3-snapshot: stack has no Tofu state - nothing to snapshot "
+            "(partial deploy?). Teardown will proceed.\n",
+        )
+        return 0
     # no_endpoint_env — snapshot_to_s3 already wrote its own
     # diagnostic listing the missing env vars. Map to rc=2.
     return 2

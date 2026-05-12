@@ -131,9 +131,28 @@ class S3SnapshotSkipped:
       state. CLI rc=2 enforces this. The :func:`snapshot_to_s3`
       caller has already written an operator-actionable
       ``Refusing to teardown`` line to stderr listing the
-      missing env vars."""
+      missing env vars.
+    * ``"no_state_to_snapshot"`` — opted in, credentials present,
+      but ``tofu state list`` reports ``No state file was found!``
+      (i.e. ``tofu apply`` never ran against ``tofu/stack``). This
+      is the partially-deployed-fork case from issue #564: the
+      Spin-Up workflow failed BEFORE any stack resources were
+      provisioned (e.g. Hetzner capacity selection aborted), so
+      there is literally nothing on the server to snapshot. The
+      legitimate no-op — teardown proceeds (the subsequent ``tofu
+      destroy`` will also be a no-op against the empty state) and
+      operators can recover without needing ``destroy-all`` to
+      wipe the whole fork. CLI rc=0. NOTE: This is *narrowly*
+      matched on the ``"No state file was found"`` substring from
+      ``diagnose_state()`` — any other state-list failure (binary
+      missing, R2 backend timeout, auth error) still raises
+      ``PipelineError`` and aborts the teardown."""
 
-    reason: Literal["feature_flag_off", "no_endpoint_env"]
+    reason: Literal[
+        "feature_flag_off",
+        "no_endpoint_env",
+        "no_state_to_snapshot",
+    ]
 
 
 @dataclasses.dataclass(frozen=True)

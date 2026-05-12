@@ -566,12 +566,31 @@ def run_snapshot(
         os.environ["AWS_ACCESS_KEY_ID"] = creds.access_key_id
         os.environ["AWS_SECRET_ACCESS_KEY"] = creds.secret_access_key
 
-    # 2. tofu state pre-flight (identical to run_pipeline step 2).
+    # 2. tofu state pre-flight (identical to run_pipeline step 2,
+    #    plus an issue-#564 carve-out for the "stack was never
+    #    spun up" case).
     tofu_dir = project_root / "tofu" / "stack"
     runner = tofu_runner if tofu_runner is not None else _tofu.TofuRunner(tofu_dir=tofu_dir)
     if not runner.state_list_ok():
         reason_obj = runner.diagnose_state() if hasattr(runner, "diagnose_state") else None
         reason: str | None = reason_obj if isinstance(reason_obj, str) else None
+        # Issue #564: distinguish "no state to snapshot" (partial
+        # deploy: setup-control-plane succeeded, spin-up aborted
+        # before tofu apply — e.g. Hetzner capacity exhausted)
+        # from a real state-list failure (binary missing, R2
+        # auth/timeout, etc.). The former is a legitimate no-op:
+        # the subsequent tofu destroy will also be a no-op, and
+        # teardown should be allowed to complete green so the
+        # operator can recover without falling back to
+        # destroy-all. We narrowly match on the "No state file
+        # was found" substring that diagnose_state() surfaces
+        # verbatim from tofu's stderr.
+        if reason and "No state file was found" in reason:
+            return SnapshotResult(
+                outcome=_s3_restore.S3SnapshotSkipped(
+                    reason="no_state_to_snapshot",
+                ),
+            )
         if reason:
             raise PipelineError(
                 f"OpenTofu state at {tofu_dir} not usable: {reason} — "
