@@ -276,14 +276,18 @@ def test_select_capacity_aborts_when_all_unavailable(
     assert "every preference is out of stock" in err
     assert "✗ 1. cx43:fsn1" in err
     assert "✗ 2. cx43:nbg1" in err
-    # Assert against the full documentation URL rather than the bare
+    # Assert against the full Hetzner Console URL rather than the bare
     # hostname — same intent (verify the operator-facing pointer is
     # in the log) but more specific. Defensive against CodeQL's
     # py/incomplete-url-substring-sanitization rule, which flags
     # bare-domain matches as a class even in test assertions
     # (false-positive context — this is log-content verification,
-    # not URL validation).
-    assert "https://radar.iodev.org/cloud-status" in err
+    # not URL validation). Replaced radar.iodev.org with console.hetzner.cloud
+    # in 2026-05: the third-party tracker started bot-blocking
+    # (HTTP 403 to non-browser requests) and operators couldn't
+    # always reach it, while the official Hetzner Console always
+    # works for any operator who already has an HCLOUD_TOKEN.
+    assert "https://console.hetzner.cloud/" in err
     # Original file MUST stay untouched on failure.
     assert 'server_type     = "cx43"' in tfvars_with_legacy_pair.read_text()
 
