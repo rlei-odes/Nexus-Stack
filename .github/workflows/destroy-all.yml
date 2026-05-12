@@ -326,37 +326,34 @@ jobs:
           echo "🔥 delete_data=DESTROY — wiping R2 buckets"
           echo "   endpoint: $ENDPOINT"
 
-          # Validate credentials BEFORE the head-bucket loop. The
-          # loop's `head-bucket ... 2>/dev/null` form would otherwise
-          # swallow auth / endpoint / region errors as "bucket
-          # doesn't exist" → every bucket would silently skip and
-          # the workflow would print "All R2 buckets wiped" without
-          # touching anything. The operator explicitly opted in to
-          # the wipe via delete_data=DESTROY; a silent no-op is a
-          # data-safety footgun (same class as the s3_persistence
-          # round-6 bucket-reachability probe).
-          #
-          # ``s3api list-buckets`` succeeds for any authenticated
-          # call against the R2 endpoint, even when none of our
-          # specific buckets exist. Fails loud on auth / endpoint /
-          # region misconfig so the operator knows to fix creds
-          # rather than assume the wipe ran.
-          if ! aws --endpoint-url="$ENDPOINT" s3api list-buckets >/dev/null 2>&1; then
-            echo "  ❌ ERROR: cannot authenticate to R2"
+          # Single source-of-truth for bucket existence: read the
+          # complete list of buckets in the R2 account ONCE, then
+          # decide skip-or-wipe via set-membership lookup. This
+          # eliminates the per-bucket head-bucket probe entirely
+          # and with it a whole class of "did this fail because
+          # the bucket doesn't exist, or for a transient reason?"
+          # ambiguities (network blip, per-bucket policy mismatch,
+          # 429 rate-limit, etc.). If list-buckets itself fails →
+          # fail loud here, no buckets touched. Same data-safety
+          # contract as the s3_persistence round-6 reachability
+          # probe.
+          if ! EXISTING_BUCKETS=$(aws --endpoint-url="$ENDPOINT" s3api list-buckets --query 'Buckets[].Name' --output text 2>&1); then
+            echo "  ❌ ERROR: cannot list R2 buckets — $EXISTING_BUCKETS"
             echo "     (check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / endpoint / region)"
             echo "     No buckets wiped — fix credentials and re-run."
             exit 1
           fi
-          echo "  ✓ R2 credentials validated"
+          echo "  ✓ R2 reachable; account has $(echo "$EXISTING_BUCKETS" | wc -w | tr -d ' ') bucket(s)"
 
           for BUCKET in \
             "nexus-${DOMAIN_SLUG}-persistence" \
             "$DATA_BUCKET" \
             "${DOMAIN_SLUG}-terraform-state"; do
-            # Credentials proven valid above, so a non-zero exit
-            # from head-bucket here means the bucket genuinely
-            # doesn't exist (already gone, or never created).
-            if aws --endpoint-url="$ENDPOINT" s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            # Exact set-membership match. ``EXISTING_BUCKETS`` is
+            # space-separated (aws --output text); pad both sides
+            # with spaces so a bucket name that's a substring of
+            # another can't false-positive.
+            if echo " $EXISTING_BUCKETS " | grep -qF " $BUCKET "; then
               echo "  → wiping $BUCKET ..."
               # `s3 rb --force` empties then removes the bucket.
               if ! aws --endpoint-url="$ENDPOINT" s3 rb "s3://$BUCKET" --force; then
@@ -366,7 +363,7 @@ jobs:
               fi
               echo "  ✅ $BUCKET deleted"
             else
-              echo "  (skip: $BUCKET does not exist)"
+              echo "  (skip: $BUCKET not in account)"
             fi
           done
           echo "✅ All R2 buckets wiped"
