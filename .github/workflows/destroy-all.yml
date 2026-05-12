@@ -337,23 +337,36 @@ jobs:
           # fail loud here, no buckets touched. Same data-safety
           # contract as the s3_persistence round-6 reachability
           # probe.
-          if ! EXISTING_BUCKETS=$(aws --endpoint-url="$ENDPOINT" s3api list-buckets --query 'Buckets[].Name' --output text 2>&1); then
-            echo "  ❌ ERROR: cannot list R2 buckets — $EXISTING_BUCKETS"
+          if ! EXISTING_BUCKETS_RAW=$(aws --endpoint-url="$ENDPOINT" s3api list-buckets --query 'Buckets[].Name' --output text 2>&1); then
+            echo "  ❌ ERROR: cannot list R2 buckets — $EXISTING_BUCKETS_RAW"
             echo "     (check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / endpoint / region)"
             echo "     No buckets wiped — fix credentials and re-run."
             exit 1
           fi
-          echo "  ✓ R2 reachable; account has $(echo "$EXISTING_BUCKETS" | wc -w | tr -d ' ') bucket(s)"
+          # Normalize to one-bucket-per-line. ``aws --output text``
+          # with a list-of-strings query yields TAB-separated values
+          # (sometimes mixed with newlines); without explicit
+          # normalization the downstream membership check would
+          # rely on bash's default-IFS splitting trick — works by
+          # accident, but is fragile and easy to break by future
+          # edits. Explicit ``tr`` makes the separator obvious;
+          # ``grep -xF`` below pins an exact whole-line match so
+          # a bucket name that's a substring of another can't
+          # false-positive.
+          EXISTING_BUCKETS=$(printf '%s\n' "$EXISTING_BUCKETS_RAW" | tr '[:space:]' '\n' | grep -v '^$' || true)
+          BUCKET_COUNT=$(printf '%s\n' "$EXISTING_BUCKETS" | grep -c . || true)
+          echo "  ✓ R2 reachable; account has ${BUCKET_COUNT} bucket(s)"
 
           for BUCKET in \
             "nexus-${DOMAIN_SLUG}-persistence" \
             "$DATA_BUCKET" \
             "${DOMAIN_SLUG}-terraform-state"; do
-            # Exact set-membership match. ``EXISTING_BUCKETS`` is
-            # space-separated (aws --output text); pad both sides
-            # with spaces so a bucket name that's a substring of
-            # another can't false-positive.
-            if echo " $EXISTING_BUCKETS " | grep -qF " $BUCKET "; then
+            # Exact whole-line match via ``grep -xF``: ``-x`` rules
+            # out substring matches (so e.g. ``nexus-foo`` can't
+            # match ``nexus-foo-data``), ``-F`` treats the bucket
+            # name literally (so dots/hyphens aren't regex
+            # metacharacters).
+            if printf '%s\n' "$EXISTING_BUCKETS" | grep -qxF "$BUCKET"; then
               echo "  → wiping $BUCKET ..."
               # `s3 rb --force` empties then removes the bucket.
               if ! aws --endpoint-url="$ENDPOINT" s3 rb "s3://$BUCKET" --force; then
