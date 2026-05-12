@@ -1008,12 +1008,12 @@ def test_restore_script_detects_missing_latest_via_lsf_stdout_not_exit_code() ->
     #     cmd-sub semantics that flip with inherit_errexit)
     #   - ``if ! VAR=$(rclone lsf .../latest.txt); then VAR=""`` →
     #     treats transient errors as fresh-start (round-2 form)
-    assert (
-        'SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/")' in script
-    ), "fresh-start guard must list the parent prefix, not the file directly"
-    assert (
-        'grep -qxF "latest.txt"' in script
-    ), "fresh-start guard must check for latest.txt as a whole-line fixed match"
+    assert 'SNAPSHOT_LISTING=$(rclone lsf "$BUCKET/snapshots/")' in script, (
+        "fresh-start guard must list the parent prefix, not the file directly"
+    )
+    assert 'grep -qxF "latest.txt"' in script, (
+        "fresh-start guard must check for latest.txt as a whole-line fixed match"
+    )
     # Hard error path — listing failure must exit 2, NOT fresh-start.
     assert "cannot list" in script
     # And a defence-in-depth check: even if listing passed and
@@ -1037,9 +1037,9 @@ def test_restore_script_probes_bucket_reachability_before_fresh_start() -> None:
     )
     probe_pos = script.find('rclone lsd "$BUCKET"')
     fresh_check_pos = script.find('rclone lsf "$BUCKET/snapshots/"')
-    assert (
-        0 < probe_pos < fresh_check_pos
-    ), "bucket reachability probe must precede the snapshot-prefix listing"
+    assert 0 < probe_pos < fresh_check_pos, (
+        "bucket reachability probe must precede the snapshot-prefix listing"
+    )
     assert "not reachable" in script
     # The probe failure path must exit non-zero (clear error), the
     # latest.txt failure path must exit 0 (legitimate fresh-start).

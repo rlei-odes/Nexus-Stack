@@ -7,6 +7,18 @@ on:
         description: 'Type "DESTROY" (uppercase) to confirm FULL destruction'
         required: true
         type: string
+      delete_data:
+        # Opt-in extra step that wipes the R2 buckets after tofu
+        # destroy: persistence (snapshots), data (datalake), and
+        # state (tofu state) buckets. Without this, those buckets
+        # survive destroy-all so a later initial-setup + spin-up
+        # reattaches to existing snapshot history (RFC 0001 decision
+        # #6). Setting this to "DESTROY" turns destroy-all into a
+        # true one-shot wipe.
+        description: 'Type "DESTROY" to ALSO wipe R2 buckets (snapshots + data + tofu state). Leave empty to preserve them.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -69,16 +81,16 @@ jobs:
       - name: Create R2 credentials from secrets
         run: |
           mkdir -p tofu tofu/control-plane tofu/stack
-          
+
           # Generate dynamic bucket name from domain
           BUCKET_NAME=$(echo "${{ secrets.DOMAIN }}" | tr '.' '-')-terraform-state
           echo "📦 Using bucket: $BUCKET_NAME"
-          
+
           cat > tofu/.r2-credentials << EOF
           R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}"
           R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}"
           EOF
-          
+
           cat > tofu/backend.hcl << EOF
           endpoints = {
             s3 = "https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
@@ -106,25 +118,25 @@ jobs:
           github_owner   = "${{ github.repository_owner }}"
           github_repo    = "${{ github.event.repository.name }}"
           EOF
-          
+
           # Read services from D1 (single source of truth)
           echo "📋 Reading services from D1..."
           D1_DATABASE_NAME="nexus-${DOMAIN//./-}-db"
           ENABLED_SERVICES=$(npx wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
             --command "SELECT name FROM services WHERE enabled = 1" 2>/dev/null \
             | jq -r '.[0].results | map(.name) | join(",")' 2>/dev/null || echo "")
-          
+
           if [ -n "$ENABLED_SERVICES" ]; then
             echo "📋 Enabled services from D1: $ENABLED_SERVICES"
           else
             echo "📋 No services in D1 yet - core services will be enabled by default"
           fi
-          
+
           # Generate services config from services.yaml
           # Use shared script to avoid code duplication
           chmod +x .github/scripts/generate-services-tfvars.py
           ENABLED_SERVICES="$ENABLED_SERVICES" python3 .github/scripts/generate-services-tfvars.py
-          
+
           # Control Plane config
           cat > tofu/control-plane/config.tfvars << EOF
           server_type         = "${{ vars.SERVER_TYPE || 'cx43' }}"
@@ -222,15 +234,12 @@ jobs:
           # latest.txt pointer. Re-running initial-setup +
           # spin-up later picks them back up via restore_from_s3.
           #
-          # To truly wipe ALL state (including R2 snapshots), the
-          # operator runs `scripts/cleanup-s3-bucket.sh` with
-          # `CONFIRM_DELETE_DATA=DESTROY` set in the environment.
-          # That script is the audited deletion path per RFC 0001
-          # decision #6 — it iterates the bucket via S3 API and
-          # deletes every object before issuing the bucket-delete,
-          # mirroring the same `confirm=DESTROY` opt-in pattern as
-          # this workflow. The Cloudflare dashboard works too but
-          # leaves no audit trail.
+          # To wipe these too, re-run destroy-all with the
+          # `delete_data=DESTROY` workflow input — the
+          # "Delete R2 buckets" step at the end of this workflow
+          # handles persistence + data + state buckets in one
+          # shot. The standalone `scripts/cleanup-s3-bucket.sh`
+          # still exists for manual single-bucket cleanup.
 
           # Protect KV namespace from destruction (keeps Databricks config etc.)
           echo "💾 Protecting KV namespace from destroy..."
@@ -259,6 +268,118 @@ jobs:
       # preserved so that destroy-all can be re-run safely. The Terraform
       # state files inside the bucket are stale after destroy but harmless —
       # init-r2-state.sh reuses the bucket on next initial-setup.
+      #
+      # To wipe them too, run with `delete_data=DESTROY` — handled by
+      # the next step.
+
+      - name: Delete R2 buckets (opt-in via delete_data=DESTROY)
+        # Optional second destructive step that wipes the R2 buckets
+        # destroy-all otherwise preserves. Runs ONLY when the
+        # operator explicitly opts in via the `delete_data` input,
+        # mirroring the same `confirm`-must-equal-DESTROY pattern
+        # the script-level cleanup-s3-bucket.sh uses.
+        #
+        # Three buckets to wipe (in dependency order):
+        #  1. Persistence bucket (`nexus-<slug>-persistence`) —
+        #     holds the snapshot history; without this they survive
+        #     destroy-all by design (RFC 0001 decision #6).
+        #  2. Data bucket (`nexus-<slug>-data`) — the datalake;
+        #     services have already been destroyed by the steps
+        #     above, so safe to wipe.
+        #  3. Tofu state bucket (`<slug>-terraform-state`) — holds
+        #     the (now-empty) state files. Wiped LAST because
+        #     tofu init may have re-touched it during the destroy
+        #     steps above.
+        #
+        # Each bucket is wiped via `aws s3 rb --force` against the
+        # R2 S3-API endpoint, with the same R2 credentials the
+        # rest of the workflow already uses.
+        if: github.event.inputs.delete_data == 'DESTROY'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          # Project supports custom data-bucket names via the
+          # R2_DATA_BUCKET secret (see setup-control-plane.yaml's
+          # custom-bucket-preservation logic). When the secret is
+          # unset we fall back to the convention nexus-<slug>-data.
+          # Without this, an operator who set a non-default bucket
+          # name would have the wipe step silently skip their real
+          # data bucket — and possibly delete a stale bucket living
+          # at the default name.
+          R2_DATA_BUCKET: ${{ secrets.R2_DATA_BUCKET }}
+        run: |
+          set -euo pipefail
+          source tofu/.r2-credentials
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+          # R2's signing requires `region=auto`; without it the aws
+          # CLI defaults to its profile's region (or us-east-1) and
+          # R2 rejects the signature with an unhelpful 403.
+          export AWS_DEFAULT_REGION=auto
+          ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          DOMAIN_SLUG=$(echo "$DOMAIN" | tr '.' '-')
+          # Use the configured data-bucket name when set; fall back
+          # to the default convention otherwise. Mirrors what
+          # spin-up.yml + setup-control-plane.yaml already do.
+          DATA_BUCKET="${R2_DATA_BUCKET:-nexus-${DOMAIN_SLUG}-data}"
+
+          echo "🔥 delete_data=DESTROY — wiping R2 buckets"
+          echo "   endpoint: $ENDPOINT"
+
+          # Single source-of-truth for bucket existence: read the
+          # complete list of buckets in the R2 account ONCE, then
+          # decide skip-or-wipe via set-membership lookup. This
+          # eliminates the per-bucket head-bucket probe entirely
+          # and with it a whole class of "did this fail because
+          # the bucket doesn't exist, or for a transient reason?"
+          # ambiguities (network blip, per-bucket policy mismatch,
+          # 429 rate-limit, etc.). If list-buckets itself fails →
+          # fail loud here, no buckets touched. Same data-safety
+          # contract as the s3_persistence round-6 reachability
+          # probe.
+          if ! EXISTING_BUCKETS_RAW=$(aws --endpoint-url="$ENDPOINT" s3api list-buckets --query 'Buckets[].Name' --output text 2>&1); then
+            echo "  ❌ ERROR: cannot list R2 buckets — $EXISTING_BUCKETS_RAW"
+            echo "     (check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / endpoint / region)"
+            echo "     No buckets wiped — fix credentials and re-run."
+            exit 1
+          fi
+          # Normalize to one-bucket-per-line. ``aws --output text``
+          # with a list-of-strings query yields TAB-separated values
+          # (sometimes mixed with newlines); without explicit
+          # normalization the downstream membership check would
+          # rely on bash's default-IFS splitting trick — works by
+          # accident, but is fragile and easy to break by future
+          # edits. Explicit ``tr`` makes the separator obvious;
+          # ``grep -xF`` below pins an exact whole-line match so
+          # a bucket name that's a substring of another can't
+          # false-positive.
+          EXISTING_BUCKETS=$(printf '%s\n' "$EXISTING_BUCKETS_RAW" | tr '[:space:]' '\n' | grep -v '^$' || true)
+          BUCKET_COUNT=$(printf '%s\n' "$EXISTING_BUCKETS" | grep -c . || true)
+          echo "  ✓ R2 reachable; account has ${BUCKET_COUNT} bucket(s)"
+
+          for BUCKET in \
+            "nexus-${DOMAIN_SLUG}-persistence" \
+            "$DATA_BUCKET" \
+            "${DOMAIN_SLUG}-terraform-state"; do
+            # Exact whole-line match via ``grep -xF``: ``-x`` rules
+            # out substring matches (so e.g. ``nexus-foo`` can't
+            # match ``nexus-foo-data``), ``-F`` treats the bucket
+            # name literally (so dots/hyphens aren't regex
+            # metacharacters).
+            if printf '%s\n' "$EXISTING_BUCKETS" | grep -qxF "$BUCKET"; then
+              echo "  → wiping $BUCKET ..."
+              # `s3 rb --force` empties then removes the bucket.
+              if ! aws --endpoint-url="$ENDPOINT" s3 rb "s3://$BUCKET" --force; then
+                echo "  ❌ ERROR: failed to delete $BUCKET — bucket may still hold objects"
+                echo "     Manual cleanup: AWS_DEFAULT_REGION=auto aws --endpoint-url=$ENDPOINT s3 rb s3://$BUCKET --force"
+                exit 1
+              fi
+              echo "  ✅ $BUCKET deleted"
+            else
+              echo "  (skip: $BUCKET not in account)"
+            fi
+          done
+          echo "✅ All R2 buckets wiped"
 
       - name: Confirm destruction
         run: |
@@ -270,9 +391,18 @@ jobs:
           echo "   - Cloudflare Access policies"
           echo "   - Control Plane (Pages + Worker + D1)"
           echo "   - Hetzner Object Storage buckets (LakeFS, General)"
-          echo ""
-          echo "   Preserved (reused on next initial-setup):"
-          echo "   - R2 state bucket and credentials"
-          echo "   - R2 datalake bucket and credentials"
+          if [ "${{ github.event.inputs.delete_data }}" = "DESTROY" ]; then
+            echo "   - R2 persistence bucket (snapshots) — wiped via delete_data=DESTROY"
+            echo "   - R2 datalake bucket — wiped via delete_data=DESTROY"
+            echo "   - R2 tofu state bucket — wiped via delete_data=DESTROY"
+          else
+            echo ""
+            echo "   Preserved (reused on next initial-setup):"
+            echo "   - R2 state bucket and credentials"
+            echo "   - R2 datalake bucket and credentials"
+            echo "   - R2 persistence bucket (snapshots)"
+            echo ""
+            echo "   To wipe these too, re-run with delete_data=DESTROY."
+          fi
           echo ""
           echo "To redeploy, run the Initial Setup workflow."
