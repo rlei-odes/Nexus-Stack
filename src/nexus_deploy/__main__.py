@@ -2728,9 +2728,12 @@ def _select_capacity(args: list[str]) -> int:
         sys.stderr.write(
             "Either widen the preference list — set `SERVER_PREFERENCES` repo "
             "variable (highest priority) or the `server_preferences` line in "
-            "config.tfvars to a longer comma list (try ccx*, fsn1/nbg1/hel1, "
-            "cpx32 fallbacks, etc.) — or wait. Hetzner stock fluctuates hour "
-            "by hour. Live tracker: https://radar.iodev.org/cloud-status\n",
+            "config.tfvars to a longer comma list — or wait. Hetzner stock "
+            "fluctuates hour by hour. Recommended fallback order: cx43, cx53, "
+            "cpx42, cpx52, cpx62 across hel1/fsn1/nbg1 (the built-in default). "
+            "Check live stock per region in the Hetzner Cloud Console "
+            "(https://console.hetzner.cloud/) — the create-server UI greys out "
+            "out-of-stock combinations.\n",
         )
         return 2
 

@@ -52,22 +52,27 @@ _API_BASE = "https://api.hetzner.cloud/v1"
 _DEFAULT_TIMEOUT = 30.0
 
 # Default preference list — picked in Issue #536, expanded 2026-05
-# after the May stock crunch left whole tiers OOS in all three EU
-# locations simultaneously. Strategy: shared-only (no dedicated, no
-# ARM), four type-tiers in cost order, three regions per tier.
+# (post-May-stock-crunch tiers), revised mid-2026-05 by the operator
+# of the Education fork after a class-wide spin-up failed against
+# the prior list (cx43 / cpx41 / cx42 / cx52). Strategy unchanged:
+# shared-only (no dedicated, no ARM), five type-tiers in cost order,
+# three EU regions per tier.
 #
 #   Tier 1: cx43 (Intel shared, 8 vCPU / 16 GB / 160 GB, project
 #           default since 2026-05). The cheapest box that still fits
 #           the 40+ Docker stacks workload.
-#   Tier 2: cpx41 (AMD shared, 8 vCPU / 16 GB / 240 GB). Same
-#           workload class, different silicon — independent stock
-#           pool. linux/amd64 images run on Intel and AMD without
-#           distinction (per CLAUDE.md), so no compat risk.
-#   Tier 3: cx42 (Intel shared, prior generation, 8 vCPU / 16 GB).
-#           Cheap fallback if cx43 is out everywhere.
-#   Tier 4: cx52 (Intel shared, 16 vCPU / 32 GB / 240 GB). Last
-#           resort when nothing else has stock — bigger and pricier
-#           but keeps the spinup unblocked.
+#   Tier 2: cx53 (Intel shared, 16 vCPU / 32 GB / 320 GB). One step
+#           up if cx43 is dry across all three EU regions — keeps
+#           Intel + shared, just gives more headroom.
+#   Tier 3: cpx42 (AMD shared, 8 vCPU / 16 GB / 240 GB). Same
+#           8/16 class as cx43, different silicon → independent
+#           stock pool. linux/amd64 images run on Intel and AMD
+#           without distinction (per CLAUDE.md).
+#   Tier 4: cpx52 (AMD shared, 16 vCPU / 32 GB / 360 GB). AMD
+#           equivalent of cx53.
+#   Tier 5: cpx62 (AMD shared, 32 vCPU / 64 GB / 720 GB). Last
+#           resort when nothing else has stock — generously oversized
+#           but keeps the spin-up unblocked.
 #
 # Region order hel1 → fsn1 → nbg1 within every tier — matches the
 # historical project default ``server_location = "hel1"`` from
@@ -85,23 +90,30 @@ _DEFAULT_TIMEOUT = 30.0
 #     (typically 8-16 cores total), so a class of N students
 #     spinning up in parallel hits the cap immediately. Also ~2.5-3x
 #     the price of the equivalent shared tier.
+#   * Older shared gens (cx42, cpx41) — dropped from the default in
+#     this revision; if you need them as extra fallbacks, set
+#     ``SERVER_PREFERENCES`` on the repo to a longer list.
 DEFAULT_PREFERENCES = (
-    # Tier 1: cx43 (Intel shared, recommended)
+    # Tier 1: cx43 (Intel shared, 8/16, project default)
     "cx43:hel1",
     "cx43:fsn1",
     "cx43:nbg1",
-    # Tier 2: cpx41 (AMD shared, same 8/16 class)
-    "cpx41:hel1",
-    "cpx41:fsn1",
-    "cpx41:nbg1",
-    # Tier 3: cx42 (Intel shared, prior gen)
-    "cx42:hel1",
-    "cx42:fsn1",
-    "cx42:nbg1",
-    # Tier 4: cx52 (Intel shared, bigger 16/32) — last resort
-    "cx52:hel1",
-    "cx52:fsn1",
-    "cx52:nbg1",
+    # Tier 2: cx53 (Intel shared, 16/32, headroom)
+    "cx53:hel1",
+    "cx53:fsn1",
+    "cx53:nbg1",
+    # Tier 3: cpx42 (AMD shared, 8/16, independent stock pool)
+    "cpx42:hel1",
+    "cpx42:fsn1",
+    "cpx42:nbg1",
+    # Tier 4: cpx52 (AMD shared, 16/32)
+    "cpx52:hel1",
+    "cpx52:fsn1",
+    "cpx52:nbg1",
+    # Tier 5: cpx62 (AMD shared, 32/64) — last resort
+    "cpx62:hel1",
+    "cpx62:fsn1",
+    "cpx62:nbg1",
 )
 
 

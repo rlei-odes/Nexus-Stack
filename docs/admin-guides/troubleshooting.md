@@ -126,7 +126,7 @@ or, more generically, a `resource_unavailable` rejection during `tofu apply`.
 
 ### Automatic fallback (default since #536)
 
-The `Select Hetzner capacity` step that runs *before* `Apply infrastructure` queries Hetzner's Cloud API (`/v1/server_types` to resolve type-name to internal ID, then `/v1/datacenters` for per-datacenter live availability keyed by those IDs) and picks the first available `<server_type>:<location>` pair from a preference list. The default list — `cx43:hel1, cx43:fsn1, cx43:nbg1, ccx33:hel1, ccx33:fsn1, ccx33:nbg1` — covers three EU regions for two server-type classes, so a typical capacity crunch is handled without operator intervention. The order keeps the historical project-default region (`hel1`) first so a fresh install without `SERVER_PREFERENCES` lands in the same location (`hel1`) as before this feature was added. The actual datacenter within that location (`hel1-dc2`, etc.) is still chosen by Hetzner — `server_location` only pins the location, not a specific DC.
+The `Select Hetzner capacity` step that runs *before* `Apply infrastructure` queries Hetzner's Cloud API (`/v1/server_types` to resolve type-name to internal ID, then `/v1/datacenters` for per-datacenter live availability keyed by those IDs) and picks the first available `<server_type>:<location>` pair from a preference list. The default list — `cx43`, `cx53`, `cpx42`, `cpx52`, `cpx62`, each across `hel1`/`fsn1`/`nbg1` (15 combinations, see [src/nexus_deploy/hetzner_capacity.py](../../src/nexus_deploy/hetzner_capacity.py)) — covers three EU regions across five shared-CPU tiers (cheapest first, Intel→AMD silicon failover), so a typical capacity crunch is handled without operator intervention. The order keeps the historical project-default region (`hel1`) first so a fresh install without `SERVER_PREFERENCES` lands in the same location (`hel1`) as before this feature was added. The actual datacenter within that location (`hel1-dc2`, etc.) is still chosen by Hetzner — `server_location` only pins the location, not a specific DC.
 
 You can see what the step picked in the workflow log. The lines mirror the default preference list above (or whatever override is configured), one entry per pair, in priority order:
 
@@ -135,26 +135,26 @@ You can see what the step picked in the workflow log. The lines mirror the defau
   ✗ 1. cx43:hel1
   → 2. cx43:fsn1
   ✓ 3. cx43:nbg1
-  ✓ 4. ccx33:hel1
-  ✓ 5. ccx33:fsn1
-  ✓ 6. ccx33:nbg1
+  ✓ 4. cx53:hel1
+  ✓ 5. cx53:fsn1
+  ...
 ```
 
 `✗` = sold out, `✓` = available, `→` = picked.
 
 ### When every preference is out of stock
 
-If every entry in the preference list is sold out, the step fails the workflow with the per-pair status block AND a pointer to the live tracker. To unblock:
+If every entry in the preference list is sold out, the step fails the workflow with the per-pair status block AND a pointer to the Hetzner Cloud Console. To unblock:
 
-1. Open [radar.iodev.org/cloud-status](https://radar.iodev.org/cloud-status) and find a region × instance type combination that is green.
-2. Override the preference list by setting `SERVER_PREFERENCES` in your GitHub repository's variables (Settings → Secrets and variables → Actions → Variables → `SERVER_PREFERENCES`) to a comma-separated list, e.g. `cpx32:fsn1, cpx32:nbg1, cpx51:hel1`. The first available pair wins, so order entries by preference.
+1. Open the [Hetzner Cloud Console](https://console.hetzner.cloud/) → your project → **Add Server**. The create-server UI greys out out-of-stock `<type>:<location>` combinations live, so you immediately see what's available right now. (The Hetzner API the workflow queries is the same data source — but the Console adds it up visually.)
+2. Override the preference list by setting `SERVER_PREFERENCES` in your GitHub repository's variables (Settings → Secrets and variables → Actions → Variables → `SERVER_PREFERENCES`) to a comma-separated list, e.g. `cpx62:fsn1, cpx62:nbg1, cx53:hel1`. The first available pair wins, so order entries by preference.
 3. Re-run the workflow.
 
 ### Operator overrides
 
 | Variable | Effect |
 |---|---|
-| `SERVER_PREFERENCES` (repo variable, comma list) | Highest priority. `cx43:fsn1, ccx33:nbg1, cpx51:hel1` etc. |
+| `SERVER_PREFERENCES` (repo variable, comma list) | Highest priority. `cx43:fsn1, cpx52:nbg1, cpx62:hel1` etc. |
 | `server_preferences = "..."` line in `config.tfvars` | Used if `SERVER_PREFERENCES` is unset. |
 | `SERVER_TYPE` + `SERVER_LOCATION` (legacy single pair) | Used if neither of the above is set. Effectively a 1-element preference list — the workflow still hard-fails when that one pair is out of stock; widen to a list to get capacity-fallback. |
 | Built-in default | Last resort — see list above. |
