@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.2...v0.58.3) (2026-05-12)
+
+
+### 🐛 Bug Fixes
+
+* **teardown:** Wire subdomain_separator through stack tfvars ([0f9943e](https://github.com/stefanko-ch/Nexus-Stack/commit/0f9943eade2e142dc21bb30ce4c526c98f588ba6))
+* **teardown:** Wire subdomain_separator through stack tfvars ([3af0330](https://github.com/stefanko-ch/Nexus-Stack/commit/3af0330a15febbd985874916595ec4b5e60d006a)), closes [#567](https://github.com/stefanko-ch/Nexus-Stack/issues/567)
+
 ## [0.58.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.1...v0.58.2) (2026-05-12)
 
 
