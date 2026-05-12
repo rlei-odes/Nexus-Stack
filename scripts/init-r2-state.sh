@@ -23,6 +23,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Generate bucket name from domain: nexus-stack.ch -> nexus-stack-ch-terraform-state
@@ -205,11 +206,11 @@ if [ -f "$R2_CREDENTIALS_FILE" ]; then
     source "$R2_CREDENTIALS_FILE"
     if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
         echo -e "  ${GREEN}✓${NC} R2 credentials already configured"
-        
+
         # Export for current session
         export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
         export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-        
+
         # Generate backend.hcl with dynamic bucket name
         echo ""
         echo -e "${BLUE}Step 3/4: Generating backend configuration...${NC}"
@@ -222,7 +223,7 @@ endpoints = {
 bucket = "${BUCKET_NAME}"
 EOF
         echo -e "  ${GREEN}✓${NC} Generated tofu/backend.hcl (bucket: ${BUCKET_NAME})"
-        
+
         echo ""
         echo -e "${GREEN}✅ R2 bootstrap complete!${NC}"
         echo ""
@@ -327,15 +328,15 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
                 }
             ]
         }")
-    
+
     if echo "$TOKEN_RESPONSE" | grep -q '"success":true'; then
         break
     fi
-    
+
     # Extract error message and code
     ERROR_MSG=$(extract_error "$TOKEN_RESPONSE")
     ERROR_CODE=$(echo "$TOKEN_RESPONSE" | grep -o '"code":[0-9]*' | head -1 | cut -d: -f2)
-    
+
     # Token already exists — delete it and retry (credentials can't be retrieved after creation)
     if echo "$TOKEN_RESPONSE" | grep -q "already exists"; then
         RETRY=$((RETRY + 1))
@@ -374,7 +375,7 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
             exit 1
         fi
     fi
-    
+
     # Retry on 500 errors or rate limits (retryable)
     if [ "$ERROR_CODE" = "500" ] || [ "$ERROR_CODE" = "429" ] || [ -z "$ERROR_CODE" ]; then
         RETRY=$((RETRY + 1))
@@ -386,7 +387,7 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
             continue
         fi
     fi
-    
+
     # Non-retryable error or max retries reached
     ERROR_MSG=$(extract_error "$TOKEN_RESPONSE")
     echo -e "  ${RED}❌ Failed to create token: ${ERROR_MSG:-Unknown error}${NC}"
