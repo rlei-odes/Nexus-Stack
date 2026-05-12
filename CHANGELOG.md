@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.2](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.1...v0.58.2) (2026-05-12)
+
+
+### 🐛 Bug Fixes
+
+* **deploy:** Address PR review comments — CLI docstring drift ([a2ba98f](https://github.com/stefanko-ch/Nexus-Stack/commit/a2ba98f994a09fc593a0f0d83b12faecdaade998))
+* **deploy:** Address PR review comments — docstring drift + grammar ([fb88ab8](https://github.com/stefanko-ch/Nexus-Stack/commit/fb88ab85634a5e9a8be5d1337124e761d4d0bba4))
+* **teardown:** Skip s3-snapshot when stack has no Tofu state ([51ff5d5](https://github.com/stefanko-ch/Nexus-Stack/commit/51ff5d5ee8cc9a711074ad697b527b8607bd5596))
+* **teardown:** Skip s3-snapshot when stack has no Tofu state ([4648d01](https://github.com/stefanko-ch/Nexus-Stack/commit/4648d01b8e84e85a8c075f39d977ee873f6fc4d3)), closes [#564](https://github.com/stefanko-ch/Nexus-Stack/issues/564)
+
+
+### 🔧 Maintenance
+
+* Trigger CI rerun (codeload.github.com 429 on prior CodeQL run) ([6b34404](https://github.com/stefanko-ch/Nexus-Stack/commit/6b34404451ca0539b848638c9b1d775b71e0f72f))
+
 ## [0.58.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.0...v0.58.1) (2026-05-12)
 
 
