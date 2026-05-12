@@ -298,6 +298,15 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          # Project supports custom data-bucket names via the
+          # R2_DATA_BUCKET secret (see setup-control-plane.yaml's
+          # custom-bucket-preservation logic). When the secret is
+          # unset we fall back to the convention nexus-<slug>-data.
+          # Without this, an operator who set a non-default bucket
+          # name would have the wipe step silently skip their real
+          # data bucket — and possibly delete a stale bucket living
+          # at the default name.
+          R2_DATA_BUCKET: ${{ secrets.R2_DATA_BUCKET }}
         run: |
           set -euo pipefail
           source tofu/.r2-credentials
@@ -309,6 +318,10 @@ jobs:
           export AWS_DEFAULT_REGION=auto
           ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
           DOMAIN_SLUG=$(echo "$DOMAIN" | tr '.' '-')
+          # Use the configured data-bucket name when set; fall back
+          # to the default convention otherwise. Mirrors what
+          # spin-up.yml + setup-control-plane.yaml already do.
+          DATA_BUCKET="${R2_DATA_BUCKET:-nexus-${DOMAIN_SLUG}-data}"
 
           echo "🔥 delete_data=DESTROY — wiping R2 buckets"
           echo "   endpoint: $ENDPOINT"
@@ -338,7 +351,7 @@ jobs:
 
           for BUCKET in \
             "nexus-${DOMAIN_SLUG}-persistence" \
-            "nexus-${DOMAIN_SLUG}-data" \
+            "$DATA_BUCKET" \
             "${DOMAIN_SLUG}-terraform-state"; do
             # Credentials proven valid above, so a non-zero exit
             # from head-bucket here means the bucket genuinely
