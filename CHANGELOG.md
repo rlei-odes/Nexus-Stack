@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.4](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.3...v0.58.4) (2026-05-12)
+
+
+### 🐛 Bug Fixes
+
+* **deploy:** Revise Hetzner DEFAULT_PREFERENCES + drop dead tracker URL ([396afb7](https://github.com/stefanko-ch/Nexus-Stack/commit/396afb7ae25994148f6ce86294938ecd290be13d))
+* **deploy:** Revise Hetzner DEFAULT_PREFERENCES + drop dead tracker URL ([0264b52](https://github.com/stefanko-ch/Nexus-Stack/commit/0264b521436e4d3af8a1e640e2d95cb4cdfcad55))
+
 ## [0.58.3](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.2...v0.58.3) (2026-05-12)
 
 
