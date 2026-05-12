@@ -532,6 +532,12 @@ def run_snapshot(
     - Snapshot returns ``S3SnapshotSkipped(reason='no_endpoint_env')``
       → rc=2, flag is on but credentials missing; teardown MUST
       abort to avoid data loss.
+    - Snapshot returns ``S3SnapshotSkipped(reason='no_state_to_snapshot')``
+      → rc=0, partially-deployed fork (no ``tofu apply`` ever
+      ran against ``tofu/stack``, e.g. spin-up aborted at the
+      Hetzner capacity step). Nothing on the server to snapshot;
+      teardown proceeds and ``tofu destroy`` is also a no-op
+      against the empty state. See issue #564.
     - Snapshot returns ``S3SnapshotApplied`` → rc=0, safe to
       proceed with ``tofu destroy``.
 

@@ -138,8 +138,8 @@ class S3SnapshotSkipped:
       is the partially-deployed-fork case from issue #564: the
       Spin-Up workflow failed BEFORE any stack resources were
       provisioned (e.g. Hetzner capacity selection aborted), so
-      there is literally nothing on the server to snapshot. The
-      legitimate no-op — teardown proceeds (the subsequent ``tofu
+      there is literally nothing on the server to snapshot. A
+      legitimate no-op; teardown proceeds (the subsequent ``tofu
       destroy`` will also be a no-op against the empty state) and
       operators can recover without needing ``destroy-all`` to
       wipe the whole fork. CLI rc=0. NOTE: This is *narrowly*
