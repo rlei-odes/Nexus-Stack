@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.1](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.58.0...v0.58.1) (2026-05-12)
+
+
+### 🐛 Bug Fixes
+
+* **scripts:** Define CYAN color var to fix init-r2-state.sh crash ([9d51042](https://github.com/stefanko-ch/Nexus-Stack/commit/9d510423aa825b7a169358e3d1356f1a99bd918c))
+* **scripts:** Define CYAN to unblock init-r2-state.sh on fresh forks ([7ade699](https://github.com/stefanko-ch/Nexus-Stack/commit/7ade699ad6a82f117f5854ad2b86cbd33e20b555))
+
 ## [0.58.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.57.0...v0.58.0) (2026-05-12)
 
 
