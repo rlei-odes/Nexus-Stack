@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.57.0...v0.58.0) (2026-05-12)
+
+
+### 🚀 Features
+
+* **kestra:** Bi-directional flow sync — push UI edits back to Gitea fork ([37c8307](https://github.com/stefanko-ch/Nexus-Stack/commit/37c83074c96a8846b7d3ea96ac5120ca94c4402d))
+* **kestra:** Bi-directional flow sync — system.flow-export + namespace split ([33753fd](https://github.com/stefanko-ch/Nexus-Stack/commit/33753fd3962942df7e877fe82e8942778e936b41))
+
+
+### 🐛 Bug Fixes
+
+* **ci:** Honor R2_DATA_BUCKET secret in delete_data wipe step ([9f6e4ab](https://github.com/stefanko-ch/Nexus-Stack/commit/9f6e4abfbb151a3c429f894eae921231d3558848))
+* **ci:** Make R2-wipe set-membership explicit (tr + grep -xF) ([91314f9](https://github.com/stefanko-ch/Nexus-Stack/commit/91314f9e7ae61e6a97e13847a91f3116d80a3409))
+* **ci:** Replace per-bucket head-bucket probe with single list-buckets lookup ([02bec48](https://github.com/stefanko-ch/Nexus-Stack/commit/02bec489a49d975bf7687a2f5bee181b6eed8dc9))
+* **ci:** Validate R2 creds before head-bucket loop + set region=auto ([94a59b1](https://github.com/stefanko-ch/Nexus-Stack/commit/94a59b1ff766e0e6a0c7f3ded5a56cdb38e139a2))
+
+
+### 📚 Documentation
+
+* **kestra:** Address PR review comments — frontmatter + clarify revert semantics ([a04283b](https://github.com/stefanko-ch/Nexus-Stack/commit/a04283b99c34f237792391fd49306d0dc757a1b8))
+
+
+### 🔧 Maintenance
+
+* Housekeeping — coverage, mypy hook, destroy-all delete_data flag ([c71e34e](https://github.com/stefanko-ch/Nexus-Stack/commit/c71e34e9942afbe18bc1322afee130432888fdf3))
+* **pre-commit:** Bump ruff hook v0.7.4 → v0.15.12 + apply format ([d1aeb5b](https://github.com/stefanko-ch/Nexus-Stack/commit/d1aeb5b0d5217e89e31920b29cdbeaccccdec29b))
+* Two housekeeping fixes — mypy pre-commit hook + destroy-all delete_data flag ([88a8bad](https://github.com/stefanko-ch/Nexus-Stack/commit/88a8bad95f9e5ca3286e3cd498cb56ad1d45925b))
+
 ## [0.57.0](https://github.com/stefanko-ch/Nexus-Stack/compare/v0.56.0...v0.57.0) (2026-05-11)
 
 
