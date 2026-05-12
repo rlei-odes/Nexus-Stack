@@ -2915,8 +2915,13 @@ def _s3_snapshot(args: list[str]) -> int:
     - ``PROJECT_ROOT`` — defaults to ``$PWD``; the repo checkout root
 
     Exit codes:
-    - 0: snapshot applied OR feature flag off (nothing to snapshot;
-         teardown can proceed)
+    - 0: snapshot applied OR a legitimate no-op (teardown proceeds):
+         * feature flag off (nothing to snapshot; stack hasn't opted
+           in to S3 persistence)
+         * no Tofu state to snapshot (issue #564: partial deploy —
+           setup-control-plane succeeded but spin-up aborted before
+           any ``tofu apply`` ran, so there's nothing on the server
+           to back up; subsequent ``tofu destroy`` is also a no-op)
     - 2: hard failure — pipeline pre-flight, SSH wait timeout,
          CalledProcessError from the rendered bash, or feature flag
          on with credentials missing. Teardown MUST abort.
