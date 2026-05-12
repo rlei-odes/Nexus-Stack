@@ -1,3 +1,9 @@
+---
+title: "Editing Kestra flows"
+description: "How to make edits to Kestra flows that survive a stack restart — the copy-before-edit rule"
+order: 9
+---
+
 # Editing Kestra flows
 
 Nexus-Stack syncs your Kestra flows bi-directionally with your Gitea workspace fork. Two distinct namespaces live in Kestra, each tied to a separate directory in your fork:
@@ -11,11 +17,11 @@ Nexus-Stack syncs your Kestra flows bi-directionally with your Gitea workspace f
 
 The seeded `nexus-tutorials.*` flows are the same for every student who deploys Nexus-Stack. They are not your personal workspace — they are the upstream-distributed tutorial baseline. If you edit one in-place in the Kestra UI:
 
-- Your edit **does** survive across spin-ups via Kestra's DB snapshot mechanism.
-- Your edit is **not** in Git, so it's not backed up via the R2 snapshot of your fork.
-- The next time `system.flow-sync` runs (at spin-up), Kestra reconciles `nexus-tutorials.*` back to whatever is in `nexus_seeds/kestra/flows/` — i.e. the original seeded version. **Your edit is reverted.**
+- **During the current session** (until the next spin-up): your edit is live in Kestra's DB and you can run it.
+- **At the next spin-up**: `system.flow-sync` reconciles the `nexus-tutorials.*` namespace back to whatever is in `nexus_seeds/kestra/flows/` (i.e. the upstream-distributed version). Your in-place edit is **reverted**.
+- Your edit is **not** captured in Git either — `flow-export` deliberately excludes `nexus-tutorials.*` so it cannot corrupt the upstream tutorial baseline.
 
-To make your edits persistent and Git-tracked: **copy the seeded flow into the `my-flows` namespace first.**
+**Net outcome:** in-place edits to `nexus-tutorials.*` flows do NOT survive a spin-up cycle. To make your changes permanent, **copy the seeded flow into the `my-flows` namespace first.**
 
 ### How to copy a seeded flow
 
