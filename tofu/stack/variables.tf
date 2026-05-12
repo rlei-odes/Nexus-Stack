@@ -116,6 +116,24 @@ variable "domain" {
   }
 }
 
+# Mirror of tofu/control-plane/variables.tf:subdomain_separator. Issue
+# #567: stack-side workflows write this var into config.tfvars but the
+# stack variables file didn't declare it, so OpenTofu emitted a
+# "Value for undeclared variable" warning on every spin-up / teardown.
+# No stack-side resource references var.subdomain_separator today —
+# the Python pipeline reads it from config.tfvars directly to build
+# the SSH host DNS name. Declaring it here keeps the stack tfvars
+# surface in sync with control-plane and silences the warning.
+variable "subdomain_separator" {
+  description = "Separator between service subdomain and base domain. '.' for standard dot-subdomains (default, requires wildcard cert at 3rd level), '-' for flat subdomains used when provisioning tenants under a shared base domain."
+  type        = string
+  default     = "."
+  validation {
+    condition     = contains([".", "-"], var.subdomain_separator)
+    error_message = "subdomain_separator must be '.' or '-'."
+  }
+}
+
 variable "admin_email" {
   description = "Admin email for Cloudflare Access (full access including SSH)"
   type        = string
