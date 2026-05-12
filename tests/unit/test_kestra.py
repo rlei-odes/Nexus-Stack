@@ -17,6 +17,7 @@ import responses
 
 from nexus_deploy.config import NexusConfig
 from nexus_deploy.kestra import (
+    FLOW_EXPORT_FLOW_TEMPLATE,
     FLOW_SYNC_FLOW_TEMPLATE,
     GIT_SYNC_FLOW_TEMPLATE,
     KestraClient,
@@ -445,10 +446,17 @@ def test_render_git_sync_substitutes_placeholders() -> None:
 
 
 def test_render_flow_sync_pins_target_namespace() -> None:
-    """v1.0 plugin requires targetNamespace; our template MUST set it
-    to nexus-tutorials. A regression here would bring back the
-    'tasks[0].targetNamespace: must not be null' deploy failure
-    that PR (cited in the caller comments) chased down."""
+    """v1.0 plugin requires targetNamespace on every SyncFlows
+    task. Both tasks (sync-seeds and sync-user) must specify it,
+    and they MUST map to DIFFERENT namespaces so the two
+    delete:true reconciles don't fight each other:
+
+      - sync-seeds: nexus_seeds/kestra/flows → nexus-tutorials.*
+      - sync-user:  kestra/flows             → my-flows.*
+
+    A future regression that collapses both into the same
+    namespace would have each reconcile wiping the other's
+    flows; both being non-null is the v1.0 plugin requirement."""
     yaml_body = render_system_flow_yaml(
         FLOW_SYNC_FLOW_TEMPLATE,
         repo_owner="bob",
@@ -456,19 +464,182 @@ def test_render_flow_sync_pins_target_namespace() -> None:
         branch="dev",
         admin_username="admin",
     )
+    # Both targetNamespace mappings present.
     assert "targetNamespace: nexus-tutorials" in yaml_body
-    assert "includeChildNamespaces: true" in yaml_body
-    assert "delete: true" in yaml_body
+    assert "targetNamespace: my-flows" in yaml_body
+    # Both source paths.
     assert "gitDirectory: nexus_seeds/kestra/flows" in yaml_body
+    assert "gitDirectory: kestra/flows" in yaml_body
+    # Two task IDs distinguish seeds from user.
+    assert "id: sync-seeds" in yaml_body
+    assert "id: sync-user" in yaml_body
+    # Both reconcile with delete:true (Git canonical at restore time),
+    # safe because they target separate namespaces.
+    assert yaml_body.count("delete: true") == 2
+    assert yaml_body.count("includeChildNamespaces: true") == 2
 
 
-def test_render_system_flows_returns_both() -> None:
+def test_render_flow_sync_seeds_and_user_paths_in_correct_tasks() -> None:
+    """Pin the path-to-namespace pairing so a future copy-paste
+    can't accidentally swap them (e.g. user-path → tutorials
+    namespace, which would let UI-edited flows leak into the
+    seeded reference namespace and clobber upstream examples)."""
+    yaml_body = render_system_flow_yaml(
+        FLOW_SYNC_FLOW_TEMPLATE,
+        repo_owner="o",
+        repo_name="r",
+        branch="b",
+        admin_username="a",
+    )
+    # Find each task block by id and assert its gitDirectory +
+    # targetNamespace are paired correctly.
+    seeds_block = yaml_body.split("id: sync-seeds")[1].split("id: sync-user")[0]
+    user_block = yaml_body.split("id: sync-user")[1]
+    assert "gitDirectory: nexus_seeds/kestra/flows" in seeds_block
+    assert "targetNamespace: nexus-tutorials" in seeds_block
+    assert "gitDirectory: kestra/flows" in user_block
+    assert "targetNamespace: my-flows" in user_block
+
+
+def test_render_system_flows_returns_all_three() -> None:
+    """The bi-directional sync system has three flows: two pull-direction
+    (git-sync for namespace files, flow-sync for flows) and one push-
+    direction (flow-export). All three must be rendered together so
+    the registration loop in run_register_system_flows registers
+    all of them in one batch."""
     flows = render_system_flows(
         repo_owner="alice", repo_name="r", branch="main", admin_username="admin"
     )
-    assert set(flows.keys()) == {"system.git-sync", "system.flow-sync"}
+    assert set(flows.keys()) == {
+        "system.git-sync",
+        "system.flow-sync",
+        "system.flow-export",
+    }
     assert "git-sync" in flows["system.git-sync"]
     assert "flow-sync" in flows["system.flow-sync"]
+    assert "flow-export" in flows["system.flow-export"]
+    # Each carries the correct task type — guards against accidental
+    # template copy-paste swaps.
+    assert "SyncNamespaceFiles" in flows["system.git-sync"]
+    assert "SyncFlows" in flows["system.flow-sync"]
+    assert "PushFlows" in flows["system.flow-export"]
+
+
+def test_pull_direction_flows_have_no_schedule_trigger() -> None:
+    """Pull-direction flows (git-sync + flow-sync) MUST NOT have a
+    schedule trigger. The previous form (cron */15) caused two bugs:
+
+    1. Silent overwrite of UI edits: SyncFlows with delete=true would
+       reconcile away student edits in nexus-tutorials.* every 15 min,
+       invisibly.
+    2. Ping-pong with flow-export (the push direction): pull+push on
+       similar cadences caused commit churn loops.
+
+    These flows now run ONLY at spin-up via the onboarding kick-offs.
+    A future maintainer adding a schedule back would regress both
+    bugs — this test is the regression gate."""
+    flows = render_system_flows(repo_owner="o", repo_name="r", branch="b", admin_username="a")
+    assert "triggers:" not in flows["system.git-sync"], (
+        "git-sync must have no schedule — pull-direction at spin-up only"
+    )
+    assert "triggers:" not in flows["system.flow-sync"], (
+        "flow-sync must have no schedule — pull-direction at spin-up only"
+    )
+    # And no cron string smuggled into the tasks section either.
+    assert "cron:" not in flows["system.git-sync"]
+    assert "cron:" not in flows["system.flow-sync"]
+
+
+def test_render_flow_export_pins_source_namespace_for_echo_break() -> None:
+    """flow-export's ``sourceNamespace`` is the echo-prevention
+    invariant under the two-namespace design (Option C):
+
+      - ``system.*`` excluded → exporter doesn't push itself
+      - ``nexus-tutorials.*`` excluded → seeded reference flows
+        stay untouched in Git (corrupting upstream reference
+        material via UI-edits would lose the tutorial baseline)
+      - ``my-flows.*`` is the ONLY pushed namespace → student's
+        own work, copy-before-edit pattern
+
+    The PushFlows plugin has no exclude-list, so positive-only
+    scoping is the only way to enforce all three constraints."""
+    yaml_body = render_system_flow_yaml(
+        FLOW_EXPORT_FLOW_TEMPLATE,
+        repo_owner="carol",
+        repo_name="ws",
+        branch="main",
+        admin_username="admin",
+    )
+    assert "type: io.kestra.plugin.git.PushFlows" in yaml_body
+    assert "sourceNamespace: my-flows" in yaml_body
+    # Anti-regression: under no circumstances should the seeded-
+    # reference namespace appear as the source namespace — that
+    # would corrupt the tutorial baseline by pushing student
+    # edits over upstream files.
+    assert "sourceNamespace: nexus-tutorials" not in yaml_body
+    assert "includeChildNamespaces: true" in yaml_body
+    # Target path is the USER path, not the seeds path.
+    assert "gitDirectory: kestra/flows" in yaml_body
+    assert "gitDirectory: nexus_seeds/kestra/flows" not in yaml_body
+    assert "url: http://gitea:3000/carol/ws.git" in yaml_body
+    assert "branch: main" in yaml_body
+    assert "username: admin" in yaml_body
+    # Pebble secret reference passes through unchanged.
+    assert "{{ secret('GITEA_TOKEN') }}" in yaml_body
+
+
+def test_render_flow_export_is_additive_not_destructive() -> None:
+    """``delete: false`` because a UI deletion shouldn't auto-rewrite
+    Git history. To permanently delete a flow, the operator commits
+    the deletion directly in the Gitea fork. Pinning this prevents
+    a future copy-paste from flow-sync (which uses ``delete: true``
+    for the reverse direction) from accidentally enabling destructive
+    Git rewrites here."""
+    yaml_body = render_system_flow_yaml(
+        FLOW_EXPORT_FLOW_TEMPLATE,
+        repo_owner="o",
+        repo_name="r",
+        branch="b",
+        admin_username="a",
+    )
+    assert "delete: false" in yaml_body
+    assert "delete: true" not in yaml_body
+    assert "dryRun: false" in yaml_body
+
+
+def test_render_flow_export_uses_synthetic_commit_identity() -> None:
+    """Commits land with a synthetic author ('Kestra Auto-Export') so
+    Git blame doesn't attribute student work to whoever owns the
+    push-token (admin). Real students see 'Kestra Auto-Export' as
+    the commit author, distinguishing UI-pushed commits from
+    operator-direct commits in the fork."""
+    yaml_body = render_system_flow_yaml(
+        FLOW_EXPORT_FLOW_TEMPLATE,
+        repo_owner="o",
+        repo_name="r",
+        branch="b",
+        admin_username="a",
+    )
+    assert 'authorName: "Kestra Auto-Export"' in yaml_body
+    assert 'authorEmail: "kestra@nexus-stack.local"' in yaml_body
+    assert 'commitMessage: "Auto-export from Kestra UI"' in yaml_body
+
+
+def test_render_flow_export_has_10min_schedule() -> None:
+    """flow-export runs every 10 min so a stack crash loses at most
+    ~10 minutes of student work. Faster (e.g. */5) would multiply
+    commits / R2 egress for marginal recovery; slower (e.g. hourly)
+    would lose unacceptable amounts of student work. The 10-min
+    cadence is the sweet spot — pinning this guards against a
+    future 'optimize cron' that breaks the recovery contract."""
+    yaml_body = render_system_flow_yaml(
+        FLOW_EXPORT_FLOW_TEMPLATE,
+        repo_owner="o",
+        repo_name="r",
+        branch="b",
+        admin_username="a",
+    )
+    assert 'cron: "*/10 * * * *"' in yaml_body
 
 
 def test_render_system_flows_does_not_double_substitute_secret_pebble() -> None:
@@ -496,10 +667,15 @@ def test_render_system_flows_does_not_double_substitute_secret_pebble() -> None:
 def test_register_all_system_flows_returns_one_result_per_flow() -> None:
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
     flows = render_system_flows(repo_owner="o", repo_name="r", branch="b", admin_username="a")
     results = register_all_system_flows(_client(), flows)
-    assert len(results) == 2
-    assert {r.name for r in results} == {"system.git-sync", "system.flow-sync"}
+    assert len(results) == 3
+    assert {r.name for r in results} == {
+        "system.git-sync",
+        "system.flow-sync",
+        "system.flow-export",
+    }
     assert all(r.status == "created" for r in results)
 
 
@@ -527,10 +703,28 @@ def test_trigger_flow_sync_onboarding_returns_terminal_state() -> None:
 
 @responses.activate
 def test_run_register_system_flows_happy_path_with_onboarding() -> None:
-    """Wait → register both → execute flow-sync → poll SUCCESS → seed-flow visible."""
+    """Wait → register all three → execute git-sync (namespace files) →
+    execute flow-sync → poll SUCCESS → seed-flow visible."""
     responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
+    # Three register POSTs (git-sync, flow-sync, flow-export).
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
     responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    # git-sync onboarding (fires BEFORE flow-sync so namespace files
+    # are in place when flows that reference them run).
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/git-sync",
+        status=201,
+        json={"id": "exec-git"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/exec-git",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    # flow-sync onboarding.
     responses.add(
         responses.POST,
         f"{BASE_URL}/api/v1/executions/system/flow-sync",
@@ -543,7 +737,7 @@ def test_run_register_system_flows_happy_path_with_onboarding() -> None:
         status=200,
         json={"state": {"current": "SUCCESS"}},
     )
-    # Post-execute verification: seed flow IS visible
+    # Post-execute verification: seed flow IS visible.
     responses.add(
         responses.GET,
         f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
@@ -585,6 +779,129 @@ def test_run_register_system_flows_kestra_not_ready_returns_failed_results() -> 
     assert all(f.status == "failed" for f in result.flows)
     assert all("not ready" in f.detail for f in result.flows)
     assert result.execution_state is None  # no execute attempt
+
+
+@responses.activate
+def test_run_register_system_flows_triggers_git_sync_before_flow_sync() -> None:
+    """The git-sync onboarding (namespace files) must fire BEFORE
+    the flow-sync onboarding (flows). A flow that references a
+    namespace file would otherwise fail on its first execution
+    because the file isn't in Kestra's storage yet. Pin the
+    ordering via call-history inspection on responses.calls."""
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/git-sync",
+        status=201,
+        json={"id": "g"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/g",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/flow-sync",
+        status=201,
+        json={"id": "f"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/f",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
+        status=200,
+        json={"id": "r2-taxi-pipeline"},
+    )
+
+    run_register_system_flows(
+        _make_config(),
+        base_url=BASE_URL,
+        repo_owner="o",
+        repo_name="r",
+        branch="main",
+        admin_email="admin@example.com",
+        ready_timeout_s=0.05,
+        onboarding_timeout_s=2.0,
+    )
+
+    # Find the execute-POSTs in call order and assert git-sync came
+    # before flow-sync. ``PreparedRequest.url`` is typed ``str | None``;
+    # coalesce to "" so the substring + endswith checks are
+    # unambiguously string ops.
+    execute_urls: list[str] = []
+    for c in responses.calls:
+        url = c.request.url or ""
+        if "/api/v1/executions/system/" in url and c.request.method == "POST":
+            execute_urls.append(url)
+    assert execute_urls[0].endswith("/executions/system/git-sync"), (
+        f"git-sync must execute first; got {execute_urls}"
+    )
+    assert execute_urls[1].endswith("/executions/system/flow-sync"), (
+        f"flow-sync must execute second; got {execute_urls}"
+    )
+
+
+@responses.activate
+def test_run_register_system_flows_git_sync_onboarding_failure_is_non_blocking() -> None:
+    """git-sync onboarding is BEST-EFFORT. If the namespace-files sync
+    fails, flow-sync (the primary onboarding) MUST still run — the
+    operator can manually retrigger git-sync from the UI later.
+    Without this guarantee a transient git-sync hiccup would block
+    the entire deploy from reaching success."""
+    responses.add(responses.GET, f"{BASE_URL}/api/v1/flows", status=200)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    responses.add(responses.POST, f"{BASE_URL}/api/v1/flows", status=201)
+    # git-sync execute fails with 5xx (transport error → KestraError).
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/git-sync",
+        status=503,
+    )
+    # flow-sync execute succeeds — this is what we want to prove.
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/api/v1/executions/system/flow-sync",
+        status=201,
+        json={"id": "f"},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/executions/f",
+        status=200,
+        json={"state": {"current": "SUCCESS"}},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/api/v1/flows/nexus-tutorials/r2-taxi-pipeline",
+        status=200,
+        json={"id": "r2-taxi-pipeline"},
+    )
+
+    result = run_register_system_flows(
+        _make_config(),
+        base_url=BASE_URL,
+        repo_owner="o",
+        repo_name="r",
+        branch="main",
+        admin_email="admin@example.com",
+        ready_timeout_s=0.05,
+        onboarding_timeout_s=2.0,
+    )
+    # Deploy still succeeds — flow-sync state is the canonical
+    # success signal, not git-sync.
+    assert result.is_success
+    assert result.execution_state == "SUCCESS"
 
 
 @responses.activate

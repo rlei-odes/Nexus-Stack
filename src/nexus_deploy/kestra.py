@@ -36,6 +36,7 @@ no service-side credentials in argv).
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -436,9 +437,32 @@ class KestraClient:
 # targetNamespace / namespace fields on v1.0).
 # ---------------------------------------------------------------------------
 
+# Pull-direction flows (Gitea → Kestra) deliberately have NO
+# schedule trigger. They run ONCE at spin-up via the onboarding
+# kick-offs in ``run_register_system_flows`` and can additionally
+# be triggered manually from the Kestra UI. The previous form
+# (cron */15) caused two problems:
+#
+# 1. **Silent overwrite of UI edits.** Every 15 min the SyncFlows
+#    task with ``delete: true`` would reconcile Kestra's
+#    ``nexus-tutorials`` namespace to whatever's in the Gitea
+#    fork. A student editing a flow in the Kestra UI had a
+#    15-min window before their changes vanished — invisible
+#    data loss with no error log.
+#
+# 2. **Ping-pong with flow-export below.** Push-direction
+#    (Kestra → Gitea, ``system.flow-export``) and pull-direction
+#    running on similar cadences caused commit churn: every push
+#    triggered a pull which re-pushed identical content.
+#
+# Steady-state source of truth: Kestra UI for student edits,
+# Gitea for upstream/seeded flows. ``flow-export`` (push) keeps
+# Gitea in sync with UI; ``flow-sync`` (pull) re-hydrates Kestra
+# from Gitea ONLY at spin-up so cross-stack restoration works.
 GIT_SYNC_FLOW_TEMPLATE = """\
 id: git-sync
 namespace: system
+description: Pull namespace files (SQL/scripts/queries) from internal Gitea on spin-up. No schedule — UI edits would otherwise be silently reconciled away.
 tasks:
   - id: sync
     type: io.kestra.plugin.git.SyncNamespaceFiles
@@ -448,18 +472,14 @@ tasks:
     password: "{{{{ secret('GITEA_TOKEN') }}}}"
     namespace: "{{{{ flow.namespace }}}}"
     gitDirectory: nexus_seeds/kestra/workflows
-triggers:
-  - id: schedule
-    type: io.kestra.core.models.triggers.types.Schedule
-    cron: "*/15 * * * *"
 """
 
 FLOW_SYNC_FLOW_TEMPLATE = """\
 id: flow-sync
 namespace: system
-description: Pull flow definitions from internal Gitea, register them in Kestra. Git is source of truth.
+description: Pull flow definitions from internal Gitea on spin-up. Two-task design separates seeded reference flows from the student's own work — seeds at nexus_seeds/kestra/flows/ → nexus-tutorials.*, student work at kestra/flows/ → my-flows.*. Both load with delete:true so Git is canonical at restore-time; namespaces don't collide so the two reconciles don't interfere.
 tasks:
-  - id: sync
+  - id: sync-seeds
     type: io.kestra.plugin.git.SyncFlows
     url: http://gitea:3000/{repo_owner}/{repo_name}.git
     branch: {branch}
@@ -469,10 +489,83 @@ tasks:
     targetNamespace: nexus-tutorials
     includeChildNamespaces: true
     delete: true
+  - id: sync-user
+    type: io.kestra.plugin.git.SyncFlows
+    url: http://gitea:3000/{repo_owner}/{repo_name}.git
+    branch: {branch}
+    username: {admin_username}
+    password: "{{{{ secret('GITEA_TOKEN') }}}}"
+    gitDirectory: kestra/flows
+    targetNamespace: my-flows
+    includeChildNamespaces: true
+    delete: true
+"""
+
+# Push direction: Kestra UI → Gitea fork. Runs every 10 minutes
+# so a stack crash loses at most ~10 minutes of student work.
+#
+# **Scope: ``my-flows.*`` only.** Two namespaces with two
+# different meanings under Option C of the bi-directional sync
+# design:
+#   - ``nexus-tutorials.*``  — seeded reference material. Lives
+#     at ``nexus_seeds/kestra/flows/`` in Git. Read-mostly from
+#     the student's perspective. NEVER pushed back from Kestra
+#     UI (would corrupt the upstream-distributed examples).
+#   - ``my-flows.*``         — the student's own work. Lives at
+#     ``kestra/flows/`` in Git (no ``nexus_seeds/`` prefix
+#     because it's NOT Nexus-Stack-shipped content). Pushed
+#     here by this flow every 10 min.
+#
+# Recommended student workflow: clone-then-edit. Open the seeded
+# tutorial flow, save-as with a fresh id under the ``my-flows``
+# namespace. The clone gets auto-exported here; the original
+# stays untouched in Git as reference material.
+#
+# Echo-prevention: ``sourceNamespace: my-flows`` excludes both
+# ``system.*`` (infrastructure flows including this exporter)
+# AND ``nexus-tutorials.*`` (seeded reference material). The
+# PushFlows plugin has no exclude-list, so positive-only
+# scoping is the ONLY way to prevent the exporter from
+# pushing itself or corrupting upstream seeds.
+#
+# ``delete: false`` because a UI delete shouldn't auto-rewrite
+# Git history. To permanently delete a my-flows.* flow,
+# the operator commits the deletion directly in the Gitea fork.
+#
+# Synthetic commit identity (``Kestra Auto-Export`` /
+# ``kestra@nexus-stack.local``) so commits aren't attributed to
+# a real user. The Gitea push log still shows the admin token
+# holder as the pusher — acceptable trade-off.
+#
+# Conflict behaviour: PushFlows fails loud on
+# ``REJECTED_NONFASTFORWARD`` (no force-push, no rebase). A
+# parallel direct-to-Gitea commit from the operator would
+# cause this — visible in the Kestra execution log, manually
+# resolvable.
+FLOW_EXPORT_FLOW_TEMPLATE = """\
+id: flow-export
+namespace: system
+description: Push UI-edited flows from the my-flows.* namespace back to the internal Gitea fork every 10 min. Source-of-truth direction for student work; loses at most ~10 min on stack crash. Seeded tutorial flows in nexus-tutorials.* are NOT pushed (would corrupt upstream reference material) — copy into my-flows.* first to make edits persistent.
+tasks:
+  - id: export
+    type: io.kestra.plugin.git.PushFlows
+    url: http://gitea:3000/{repo_owner}/{repo_name}.git
+    branch: {branch}
+    username: {admin_username}
+    password: "{{{{ secret('GITEA_TOKEN') }}}}"
+    sourceNamespace: my-flows
+    includeChildNamespaces: true
+    flows: "**"
+    gitDirectory: kestra/flows
+    delete: false
+    dryRun: false
+    commitMessage: "Auto-export from Kestra UI"
+    authorName: "Kestra Auto-Export"
+    authorEmail: "kestra@nexus-stack.local"
 triggers:
   - id: schedule
     type: io.kestra.core.models.triggers.types.Schedule
-    cron: "*/15 * * * *"
+    cron: "*/10 * * * *"
 """
 
 
@@ -506,7 +599,13 @@ def render_system_flows(
     branch: str,
     admin_username: str,
 ) -> dict[str, str]:
-    """Return ``{full_name: yaml_body}`` for both system flows."""
+    """Return ``{full_name: yaml_body}`` for all three system flows.
+
+    Three flows in the bi-directional sync system:
+      - ``system.git-sync`` (pull, namespace files; spin-up only)
+      - ``system.flow-sync`` (pull, flows; spin-up only)
+      - ``system.flow-export`` (push, flows; every 10 min)
+    """
     common = {
         "repo_owner": repo_owner,
         "repo_name": repo_name,
@@ -516,6 +615,7 @@ def render_system_flows(
     return {
         "system.git-sync": render_system_flow_yaml(GIT_SYNC_FLOW_TEMPLATE, **common),
         "system.flow-sync": render_system_flow_yaml(FLOW_SYNC_FLOW_TEMPLATE, **common),
+        "system.flow-export": render_system_flow_yaml(FLOW_EXPORT_FLOW_TEMPLATE, **common),
     }
 
 
@@ -531,6 +631,28 @@ def register_all_system_flows(
     return tuple(results)
 
 
+def trigger_git_sync_onboarding(
+    client: KestraClient,
+    *,
+    timeout_s: float = 60.0,
+) -> ExecutionState:
+    """One-shot execute ``system.git-sync`` (namespace files) at spin-up.
+
+    Symmetric to :func:`trigger_flow_sync_onboarding`. Since the
+    pull-direction flows lost their schedule trigger, this is the
+    ONLY automated path for namespace files (SQL/scripts/queries)
+    to reach Kestra from the Gitea fork. Without it, seeded
+    namespace files would only appear if an operator manually
+    triggered the flow from the UI.
+
+    Run BEFORE :func:`trigger_flow_sync_onboarding` so any flow
+    that references a namespace file finds its dependency in
+    place on first execution.
+    """
+    exec_id = client.execute_flow("system", "git-sync")
+    return client.wait_for_execution(exec_id, timeout_s=timeout_s)
+
+
 def trigger_flow_sync_onboarding(
     client: KestraClient,
     *,
@@ -539,12 +661,13 @@ def trigger_flow_sync_onboarding(
     """One-shot execute ``system.flow-sync`` and wait for terminal state.
 
     Without this, user-seeded flows in ``nexus_seeds/kestra/flows/`` only
-    appear after the next 15-min cron tick — the deploy would print
+    appear after a manual UI trigger (since the schedule was removed
+    to prevent silent overwrite of UI edits) — the deploy would print
     "Deployment Complete" with no user flows visible in the Kestra UI,
     causing reasonable "where are my flows?" confusion. The trigger here
-    is best-effort: if the execute call or polling fails, the cron will
-    still tick eventually, so we surface the failure as a warning, not
-    a deploy abort.
+    is best-effort: if the execute call or polling fails, the operator
+    can still trigger manually from the UI, so we surface the failure
+    as a warning, not a deploy abort.
 
     Raises :class:`KestraError` only on the initial execute_flow call;
     polling failures coalesce to ``"UNKNOWN"`` then ``"RUNNING"`` at
@@ -584,13 +707,16 @@ def run_register_system_flows(
         password=config.kestra_admin_password or "",
     )
     if not client.wait_ready(timeout_s=ready_timeout_s):
-        # Kestra never reached basic-auth-accepted state. Both flows
-        # would 401; surface a clean partial result so the caller
-        # sees rc=1 (yellow warning, continue).
+        # Kestra never reached basic-auth-accepted state. All three
+        # flows would 401; surface a clean partial result so the
+        # caller sees rc=1 (yellow warning, continue).
         return SystemFlowsResult(
             flows=(
                 RegisterResult(name="system.git-sync", status="failed", detail="kestra not ready"),
                 RegisterResult(name="system.flow-sync", status="failed", detail="kestra not ready"),
+                RegisterResult(
+                    name="system.flow-export", status="failed", detail="kestra not ready"
+                ),
             ),
         )
 
@@ -605,11 +731,23 @@ def run_register_system_flows(
     if not trigger_onboarding:
         return SystemFlowsResult(flows=register_results)
 
-    # Only trigger the onboarding execute when both register calls
-    # succeeded — otherwise we'd execute a flow-sync against a stale
+    # Only trigger the onboarding executes when all register calls
+    # succeeded — otherwise we'd execute syncs against a stale
     # flow definition.
     if any(r.status == "failed" for r in register_results):
         return SystemFlowsResult(flows=register_results)
+
+    # Trigger git-sync FIRST so namespace files (SQL/scripts) are
+    # in place before any flow that might reference them runs.
+    # Best-effort: a failure here does NOT block flow-sync below.
+    # Namespace files are auxiliary; flows can still register and
+    # execute, just might fail at runtime if they reference a
+    # not-yet-synced file. Operator sees that via the per-flow
+    # Kestra execution log, not here. (contextlib.suppress is the
+    # canonical Python form for "intentionally ignore this
+    # exception class".)
+    with contextlib.suppress(KestraError):
+        trigger_git_sync_onboarding(client, timeout_s=onboarding_timeout_s)
 
     try:
         exec_state: ExecutionState = trigger_flow_sync_onboarding(
