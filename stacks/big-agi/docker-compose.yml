@@ -1,0 +1,48 @@
+# =============================================================================
+# Big-AGI - Multi-LLM Web UI
+# =============================================================================
+# Browser-based UI for interacting with multiple LLM providers (OpenAI,
+# Anthropic, local Ollama, custom endpoints). Stateless — conversation
+# history lives in the browser's LocalStorage, no server-side database.
+# Access via: https://big-agi.your-domain.com
+# Default port: 3006
+#
+# SECURITY:
+# - Protected by Cloudflare Access (email OTP authentication)
+# - HTTPS only via Cloudflare Tunnel
+# - No authentication required at application level
+# - LLM provider API keys (OpenAI / Anthropic / etc.) are entered in
+#   the browser and persisted only in the browser's LocalStorage. The
+#   Big-AGI container does NOT have a database, env file, or any other
+#   on-disk store for these keys. However: Big-AGI is a Next.js app
+#   and uses server-side API routes to proxy LLM calls (browsers can't
+#   call OpenAI / Anthropic directly because of CORS), so the key is
+#   POSTed from the browser to the container in each request body and
+#   then forwarded from the container to the upstream provider. The
+#   container does not log or persist the key — it's in memory only
+#   for the duration of the request — but it is in the request path.
+# =============================================================================
+
+services:
+  big-agi:
+    image: ${IMAGE_BIG_AGI:-ghcr.io/enricoros/big-agi:v2.0.4}
+    container_name: big-agi
+    restart: unless-stopped
+    ports:
+      - "3006:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true
