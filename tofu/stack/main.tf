@@ -512,27 +512,27 @@ resource "hcloud_server" "main" {
   user_data = <<-EOT
     #!/bin/bash
     set -e
-    
+
     # Update system
     apt-get update && apt-get upgrade -y
-    
+
     # Install Docker
     curl -fsSL https://get.docker.com | sh
     command -v docker >/dev/null 2>&1 || { echo "FATAL: Docker installation failed" >&2; exit 1; }
 
     # Install security tools
     apt-get install -y fail2ban unattended-upgrades jq
-    
+
     # Configure automatic security updates
     cat > /etc/apt/apt.conf.d/20auto-upgrades << 'EOF'
     APT::Periodic::Update-Package-Lists "1";
     APT::Periodic::Unattended-Upgrade "1";
     APT::Periodic::AutocleanInterval "7";
     EOF
-    
+
     systemctl enable fail2ban unattended-upgrades
     systemctl start fail2ban unattended-upgrades
-    
+
     # Detect architecture and install cloudflared
     ARCH=$(dpkg --print-architecture)
     if [ "$ARCH" = "arm64" ]; then
@@ -547,10 +547,10 @@ resource "hcloud_server" "main" {
 
     # Create app directories
     mkdir -p /opt/docker-server/stacks
-    
+
     # Create Docker network
     docker network create app-network || true
-    
+
     # Signal completion
     touch /opt/docker-server/.setup-complete
   EOT

@@ -1,0 +1,69 @@
+# =============================================================================
+# Chroma - Embedding (Vector) Database
+# =============================================================================
+# Developer-friendly vector database for LLM / RAG pipelines.
+# Stores text + embeddings, returns top-k similarity matches for retrieval.
+# Browser entry: https://chroma.your-domain.com/docs/   (Swagger UI)
+#   Chroma is API-only — root '/' returns 404. The Control Plane's
+#   'Open' button uses the services.yaml `landing_path: /docs/` field
+#   to link directly at the Swagger UI. Direct API calls
+#   (`/api/v2/...`, the Python client `chromadb.HttpClient(...)`)
+#   bypass landing_path and work as normal.
+# Default port: 8099 (internal 8000)
+#
+# SECURITY:
+# - Protected by Cloudflare Access (email OTP authentication)
+# - HTTPS only via Cloudflare Tunnel
+# - No authentication required at application level (Chroma's built-in
+#   auth providers are disabled — CF Access fronts the API).
+#
+# OPERATIONAL NOTES:
+# - PERSISTENCE: data is stored in the `chroma_data` Docker volume on
+#   the Hetzner disk. It SURVIVES container restarts and spin-up cycles,
+#   but NOT a full teardown (Hetzner server gets destroyed → volume gone).
+#   For workshop / classroom use this is fine — students rebuild
+#   embeddings per session. If you need cross-teardown persistence,
+#   that requires explicit registration in src/nexus_deploy/s3_restore.py
+#   (the rsync_targets tuple), which is a deliberate opt-in change.
+# - IS_PERSISTENT=true flips Chroma from in-memory to file-backed mode,
+#   writing to /data (the canonical upstream path as of the 1.x Rust
+#   rewrite; older 0.x docs sometimes show /chroma/chroma, which is
+#   stale).
+# - Healthcheck uses bash's built-in /dev/tcp probe instead of curl
+#   or wget — the chromadb/chroma image ships bash + Debian userland
+#   but no HTTP client. The probe checks that port 8000 accepts
+#   TCP, which is sufficient because chroma writes a complete
+#   startup banner before opening the listener.
+# =============================================================================
+
+services:
+  chroma:
+    image: ${IMAGE_CHROMA:-chromadb/chroma:1.5.9}
+    container_name: chroma
+    restart: unless-stopped
+    ports:
+      - "8099:8000"
+    environment:
+      IS_PERSISTENT: "true"
+      ANONYMIZED_TELEMETRY: "false"
+    volumes:
+      - chroma_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8000 && exit 0 || exit 1'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - app-network
+
+volumes:
+  chroma_data:
+
+networks:
+  app-network:
+    external: true

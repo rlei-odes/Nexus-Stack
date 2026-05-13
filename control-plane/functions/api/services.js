@@ -2,8 +2,12 @@
  * Manage services configuration
  * GET /api/services - Get all services from D1 (single source of truth)
  * POST /api/services - Enable/disable a service (staged in D1, not deployed)
- * 
- * Service metadata is synced to D1 via /api/services/init (called by spin-up workflow).
+ *
+ * Service metadata is synced to D1 by .github/scripts/sync-deployed-state.sh, which
+ * runs at the end of the spin-up workflow. D1 column migrations (e.g. landing_path)
+ * run in setup-control-plane.yaml's "Apply D1 schema" step + idempotently from the
+ * sync script too — so the new Pages frontend never reads a column that doesn't
+ * exist in D1 yet.
  * D1 is the single source of truth for service state:
  *   - enabled: what the user wants (staged state)
  *   - deployed: what is currently running
@@ -56,14 +60,14 @@ export async function onRequestGet(context) {
     let stmt;
     if (categoryFilter) {
       stmt = env.NEXUS_DB.prepare(`
-        SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description
+        SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description, landing_path
         FROM services
         WHERE category = ?
         ORDER BY name
       `).bind(categoryFilter);
     } else {
       stmt = env.NEXUS_DB.prepare(`
-        SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description
+        SELECT name, enabled, deployed, subdomain, port, public, core, admin_only, description, category, website, long_description, landing_path
         FROM services
         ORDER BY name
       `);
@@ -104,6 +108,7 @@ export async function onRequestGet(context) {
         category,
         website: row.website || '',
         long_description: row.long_description || '',
+        landing_path: row.landing_path || '',
         enabled,
         deployed,
         pending: hasPendingChange,
