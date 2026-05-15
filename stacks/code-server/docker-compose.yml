@@ -20,6 +20,10 @@ services:
     restart: unless-stopped
     entrypoint: >
       bash -c "
+        if grep -q 'Auto-activate Nexus-Stack' /home/coder/.bashrc 2>/dev/null; then
+          sed -i '/# Auto-activate Nexus-Stack/,/^fi$$/d' /home/coder/.bashrc;
+          echo '[code-server] Removed legacy bashrc auto-activate block (now via /etc/bash.bashrc + /opt/nexus-venv)';
+        fi;
         if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
           echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > /home/coder/.netrc;
           chmod 600 /home/coder/.netrc;
