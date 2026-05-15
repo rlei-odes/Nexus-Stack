@@ -307,6 +307,14 @@ def _make_synthetic_stacks(root: Path, *, with_redpanda_template: bool = True) -
     (root / "stacks" / "redpanda" / "docker-compose.yml").write_text(
         "services:\n  redpanda:\n    image: redpandadata/redpanda:v23.3.5\n",
     )
+    (root / "stacks" / "clickhouse").mkdir(parents=True)
+    (root / "stacks" / "clickhouse" / "docker-compose.yml").write_text(
+        "services:\n  clickhouse:\n    image: clickhouse/clickhouse-server:25.8\n",
+    )
+    (root / "stacks" / "rustfs").mkdir(parents=True)
+    (root / "stacks" / "rustfs" / "docker-compose.yml").write_text(
+        "services:\n  rustfs:\n    image: rustfs/rustfs:1.0.0-alpha\n",
+    )
     if with_redpanda_template:
         (root / "stacks" / "redpanda" / REDPANDA_TEMPLATE_PATH).write_text(
             "advertised_kafka_api: " + REDPANDA_TEMPLATE_TOKEN + "\n",
@@ -368,6 +376,58 @@ def test_compile_overrides_redpanda_full_path(tmp_path: Path) -> None:
     assert "8081:8081" in rp.override.yaml_content
     assert REDPANDA_DOMAIN_PREFIX + "example.com" in rp.config_yaml
     assert REDPANDA_TEMPLATE_TOKEN not in rp.config_yaml
+
+
+def test_compile_overrides_clickhouse_asymmetric_native_port(tmp_path: Path) -> None:
+    """ClickHouse's native protocol listens on container 9000, exposed
+    as host 9004. The override must encode this asymmetry — host:host
+    would route to a closed container port. Regression test for #488."""
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps({"clickhouse-1": {"port": 9004}})
+    result = compile_overrides(
+        firewall_json=json_str,
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert len(result.compiled) == 1
+    yaml_content = result.compiled[0].yaml_content
+    assert "9004:9000" in yaml_content
+    # The naive host:host mapping that was emitted before the fix
+    # would have routed firewall traffic to a closed container port.
+    assert "9004:9004" not in yaml_content
+
+
+def test_compile_overrides_rustfs_asymmetric_s3_api_port(tmp_path: Path) -> None:
+    """RustFS exposes its S3 API on host 9003 → container 9000 — same
+    asymmetric shape as ClickHouse. Without an explicit table entry the
+    override would emit '9003:9003', routing firewall traffic to a
+    closed container port. Regression test for the second case raised
+    in PR #584 review."""
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps({"rustfs-1": {"port": 9003}})
+    result = compile_overrides(
+        firewall_json=json_str,
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert len(result.compiled) == 1
+    yaml_content = result.compiled[0].yaml_content
+    assert "9003:9000" in yaml_content
+    assert "9003:9003" not in yaml_content
+
+
+def test_compile_overrides_non_asymmetric_port_stays_identity(tmp_path: Path) -> None:
+    """Stacks not in ASYMMETRIC_PORT_MAPPINGS keep the legacy host:host
+    mapping — the asymmetric table is a per-service opt-in, not a
+    global behaviour change."""
+    _make_synthetic_stacks(tmp_path, with_redpanda_template=False)
+    json_str = json.dumps({"postgres-1": {"port": 5432}})
+    result = compile_overrides(
+        firewall_json=json_str,
+        stacks_dir=tmp_path,
+        domain="example.com",
+    )
+    assert "5432:5432" in result.compiled[0].yaml_content
 
 
 def test_compile_overrides_skips_service_without_compose(tmp_path: Path) -> None:

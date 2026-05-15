@@ -11,8 +11,12 @@ expose TCP ports through the Cloudflare Tunnel. Three responsibilities:
    service name.
 
 2. **Render** per-service ``docker-compose.firewall.yml`` overrides.
-   Each non-RedPanda service gets a single-listener override that
-   maps ``host:container`` 1:1. RedPanda gets a dual-listener
+   Each non-RedPanda service defaults to a ``host:container`` 1:1
+   single-listener override. Stacks listed in
+   :data:`ASYMMETRIC_PORT_MAPPINGS` get their declared container
+   port instead — needed when a stack's daemon listens on a port
+   that differs from the host port advertised in
+   ``services.yaml``'s ``tcp_ports``. RedPanda gets a dual-listener
    override:
      * 9092 (host) → 19092 (container, SASL listener)
      * 8081 / 18081 (host) → 8081 (container, Schema Registry)
@@ -72,6 +76,20 @@ COMPOSE_FILENAME = "docker-compose.yml"
 OVERRIDE_FILENAME = "docker-compose.firewall.yml"
 REDPANDA_TEMPLATE_PATH = "config/redpanda-firewall.yaml.template"
 REDPANDA_RENDERED_PATH = "config/redpanda-firewall.yaml"
+
+# Per-(service, host-port) overrides for stacks where the host port
+# advertised in ``services.yaml``'s ``tcp_ports`` differs from the
+# container port the daemon actually listens on. Default is identity
+# (host == container) and matches the legacy bash behaviour. Adding
+# an entry here makes the firewall override emit the correct
+# ``host:container`` line for that stack; the base ``docker-compose.yml``
+# should drop the corresponding ``ports:`` entry at the same time so
+# the firewall override is the single source of the host binding (no
+# duplicate-host-port merge collision). See GH issue #488.
+ASYMMETRIC_PORT_MAPPINGS: dict[tuple[str, int], int] = {
+    ("clickhouse", 9004): 9000,
+    ("rustfs", 9003): 9000,
+}
 
 # Suffix-strip regex: ``-<digits>`` at end of key, e.g. ``redpanda-1`` → ``redpanda``.
 _SUFFIX_RE = re.compile(r"-\d+$")
@@ -343,8 +361,11 @@ def compile_overrides(
         if first_service is None:
             skipped.append(service)
             continue
-        # Legacy bash mapped p:p for non-redpanda services.
-        mappings = [(p, p) for p in sorted(set(ports))]
+        # Default to identity host:container mapping (legacy bash
+        # behaviour). Stacks listed in ASYMMETRIC_PORT_MAPPINGS get
+        # their declared container port — needed for any stack whose
+        # base compose maps host:container asymmetrically.
+        mappings = [(p, ASYMMETRIC_PORT_MAPPINGS.get((service, p), p)) for p in sorted(set(ports))]
         yaml_content = render_compose_override(first_service, mappings)
         target = stacks_dir / "stacks" / service / OVERRIDE_FILENAME
         compiled.append(
