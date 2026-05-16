@@ -76,6 +76,31 @@ The sync writes to a dedicated `.infisical.env` file (not `.env`) so secret keys
 
 **Not covered by this sync:** Databricks credentials (`databricks_host` / `databricks_token`) live in Cloudflare KV via the Control Plane's Databricks page, not in Infisical — see the Databricks caveat under "Pre-installed data tooling" below for the manual steps to wire them into `~/.dbt/profiles.yml`.
 
+### Pre-installed VS Code extensions
+
+The image stages the following extensions to `/opt/code-server-extensions/` (image-baked, survives volume-mask masking — same rationale as `/opt/nexus-venv`):
+
+| Extension | Why |
+|---|---|
+| `mtxr.sqltools` | Connection manager + SQL query editor with schema browser + IntelliSense. The standard "I want to look at a Postgres table from VS Code" extension. |
+| `mtxr.sqltools-driver-pg` | Postgres / CockroachDB / Redshift driver for SQLTools. Required for SQLTools to actually talk to Postgres. |
+
+**How they reach the running container:** on first container start (or whenever `~/.local/share/code-server/extensions/` is empty), the entrypoint copies the baked extensions from `/opt/` into that user dir. After the initial seed, the user dir is the authoritative location for both baked AND user-installed extensions, so anything a student installs via the UI persists across container recreate and image rebuilds (the user dir is in the `code-server-data` volume).
+
+> **Trade-off** of this seed-once strategy: if a future image rebuild adds a NEW baked extension, existing volumes don't auto-pick it up — the empty-check skips the re-seed to avoid overwriting user-modified extension state. Operators who add a new baked extension and want it on all existing volumes can either instruct students to install via the UI or wipe the volume for a fresh seed.
+
+### SQLTools auto-connect to Nexus Postgres
+
+When the `postgres` stack is enabled in the Control Plane alongside code-server, the compose entrypoint merges a pre-configured SQLTools connection into `~/.local/share/code-server/User/settings.json` on container start. Students see "Nexus Postgres" in the SQLTools sidebar immediately — one-click connect, no manual driver pick, no password copy-paste from Infisical.
+
+Wiring:
+1. `service_env.py` renders `NEXUS_POSTGRES_ENABLED=1` into `stacks/code-server/.env` when `postgres` is in the D1 enabled-services list.
+2. The Infisical secret-sync phase (added in #586) populates `POSTGRES_PASSWORD` in `.infisical.env`.
+3. The entrypoint reads both, and only writes `settings.json` when **both** are present — otherwise it logs `[code-server] Skipping SQLTools auto-connect (...)` and continues without the connection. (Note: `${env:POSTGRES_PASSWORD}` does NOT work in SQLTools connection configs — the password is substituted as a plain string at container-start time.)
+4. The write is a **merge**, not a full overwrite: if `settings.json` already has other keys (custom editor settings, other extensions' config), they're preserved — only the `sqltools.connections` key is replaced.
+
+If `postgres` is not enabled, the auto-connect is dormant — students can still add connections manually via SQLTools "Add New Connection".
+
 ### Pre-installed data tooling
 
 The code-server image (`stacks/code-server/Dockerfile`) ships with a Python virtual environment at **`/opt/nexus-venv`** that's auto-activated in every terminal you open. Inspired by [stefanko-ch/dbt_codespace_demo](https://github.com/stefanko-ch/dbt_codespace_demo)'s devcontainer, adapted for Nexus-Stack:
@@ -107,7 +132,9 @@ The code-server image (`stacks/code-server/Dockerfile`) ships with a Python virt
 
 **Databricks caveat:** `dbt-databricks` is installed, but the adapter alone does not give you authenticated access. The Nexus-Stack Databricks integration (Control Plane → Databricks page → KV-stored `databricks_host` + `databricks_token`; `/api/databricks-sync` worker) pushes Infisical secrets *into* a Databricks scope so notebooks running **on** Databricks can read them — it does **not** inject `databricks_host` / `databricks_token` into code-server (or any local stack). To use `dbt-databricks` here, save host + token in the Control Plane's Databricks page, then add them to `~/.dbt/profiles.yml` manually (copy from the Control Plane's KV view).
 
-**Why `/opt/` instead of `~`?** code-server's `docker-compose.yml` mounts `code-server-data:/home/coder` as a persistent volume. Anything the image puts at `/home/coder/<X>` is **masked** by that volume on every container start, so a rebuilt image's freshly-installed venv would never reach an existing volume — students would be stuck on whatever version was installed when their volume was first created. Putting the venv at `/opt/nexus-venv` keeps it outside the volume mount: every image rebuild guarantees the latest venv reaches every container, fresh or not. The auto-activation is appended to `/etc/bash.bashrc` (system-wide, also image-baked) for the same reason — `/home/coder/.bashrc` would be masked.
+**Why `/opt/` instead of `~`?** code-server's `docker-compose.yml` mounts `code-server-data:/home/coder` as a persistent volume. Anything the image puts at `/home/coder/<X>` is **masked** by that volume on every container start, so a rebuilt image's freshly-installed venv would never reach an existing volume — students would be stuck on whatever version was installed when their volume was first created. Putting the venv at `/opt/nexus-venv` keeps it outside the volume mount: every image rebuild guarantees the latest venv reaches every container, fresh or not.
+
+**How the auto-activation is wired:** the activate-line is appended to `~/.bashrc` by the compose entrypoint on container start (idempotent — only adds if not already present). `~/.bashrc` lives in the volume, so the line persists across restarts. We can't use `/etc/bash.bashrc` here because code-server launches its xterm with `bash --init-file …` (VS Code's shellIntegration-bash.sh), and bash explicitly skips `/etc/bash.bashrc` when an `--init-file` is given — the init-file sources `~/.bashrc` only.
 
 **Version stability note:** all Python packages above + the DuckDB CLI are pulled at **latest** on every image rebuild. Trade-off: stays current with security fixes and new features, but new minor/major versions may introduce breaking changes mid-semester if you trigger a rebuild during a course run. If you want reproducibility for a specific semester, add explicit constraints in `stacks/code-server/Dockerfile` (e.g. `dbt-core>=1.9,<1.10`) and rebuild — the image then constrains the venv contents to that range until you change them again. Note: range constraints don't fully lock — patch releases and transitive dependencies can still drift between rebuilds. For a fully reproducible venv, use exact pins (`==1.9.7`) or a `constraints.txt` / lock file passed to `uv pip install`.
 

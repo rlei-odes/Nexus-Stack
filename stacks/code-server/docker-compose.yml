@@ -20,9 +20,9 @@ services:
     restart: unless-stopped
     entrypoint: >
       bash -c "
-        if grep -q 'Auto-activate Nexus-Stack' /home/coder/.bashrc 2>/dev/null; then
-          sed -i '/# Auto-activate Nexus-Stack/,/^fi$$/d' /home/coder/.bashrc;
-          echo '[code-server] Removed legacy bashrc auto-activate block (now via /etc/bash.bashrc + /opt/nexus-venv)';
+        if ! grep -q 'Auto-activate Nexus-Stack' /home/coder/.bashrc 2>/dev/null; then
+          printf '\\n# Auto-activate Nexus-Stack pre-installed dbt + notebook venv\\nif [ -f /opt/nexus-venv/bin/activate ]; then\\n  . /opt/nexus-venv/bin/activate\\nfi\\n' >> /home/coder/.bashrc;
+          echo '[code-server] Appended nexus-venv auto-activate block to ~/.bashrc';
         fi;
         if [ -n \"$$GITEA_USERNAME\" ] && [ -n \"$$GITEA_PASSWORD\" ]; then
           echo \"machine gitea login $$GITEA_USERNAME password $$GITEA_PASSWORD\" > /home/coder/.netrc;
@@ -34,6 +34,18 @@ services:
           else
             echo '[code-server] Warning: Failed to clone '$$GITEA_REPO_URL >&2;
           fi;
+        fi;
+        USER_EXT_DIR=/home/coder/.local/share/code-server/extensions;
+        mkdir -p \"$$USER_EXT_DIR\";
+        if [ -z \"$$(ls -A \"$$USER_EXT_DIR\" 2>/dev/null)\" ]; then
+          cp -a /opt/code-server-extensions/. \"$$USER_EXT_DIR/\";
+          echo '[code-server] Seeded baked extensions into user dir (first-start or empty volume)';
+        fi;
+        if [ \"$$NEXUS_POSTGRES_ENABLED\" = \"1\" ] && [ -n \"$$POSTGRES_PASSWORD\" ]; then
+          mkdir -p /home/coder/.local/share/code-server/User;
+          python3 /opt/code-server-scripts/write-sqltools-settings.py && echo '[code-server] Wrote SQLTools Nexus Postgres connection (NEXUS_POSTGRES_ENABLED=1)';
+        else
+          echo '[code-server] Skipping SQLTools auto-connect (NEXUS_POSTGRES_ENABLED unset or POSTGRES_PASSWORD empty)';
         fi;
         OPEN_DIR=/home/coder;
         if [ -d /home/coder/$$REPO_NAME ]; then OPEN_DIR=/home/coder/$$REPO_NAME; fi;
@@ -55,7 +67,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512m
+          # Bumped from 512m: with SQLTools + Postgres-driver +
+          # extension-host + workspace-indexer all running as Node
+          # subprocesses, 512m hit OOM in practice — symptoms were
+          # silent extension-host crashes (white webview panels for
+          # SQLTools-Settings) and the file-tree disappearing
+          # mid-session. Verified on a live container that the new
+          # baseline sits around 350-500 MiB with extensions active.
+          memory: 2g
     volumes:
       - code-server-data:/home/coder
     networks:
