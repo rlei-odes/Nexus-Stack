@@ -181,8 +181,19 @@ def test_standard_targets_returns_canonical_pair() -> None:
     assert pg_by_container["dify-db"].user == "nexus-dify"
 
     rsync_by_name = {r.name: r for r in rsync}
-    # All five subdirs the storage-layout section of RFC 0001 lists
-    for required in ("gitea-repos", "gitea-lfs", "dify-storage", "dify-weaviate", "dify-plugins"):
+    # All six rsync targets returned by standard_targets() — gitea x2
+    # + dify x3 are the original RFC 0001 set; metabase x1 was added
+    # for issue #528 and extends the same layout convention (the RFC
+    # document itself still lists only gitea + dify until a future
+    # storage-layout revision lands).
+    for required in (
+        "gitea-repos",
+        "gitea-lfs",
+        "dify-storage",
+        "dify-weaviate",
+        "dify-plugins",
+        "metabase-data",
+    ):
         assert required in rsync_by_name, f"missing required rsync target: {required}"
 
     # db/ and redis/ subdirs deliberately NOT in the list — they're
@@ -194,10 +205,12 @@ def test_standard_targets_returns_canonical_pair() -> None:
 
 
 def test_standard_targets_s3_subpaths_match_rfc_layout() -> None:
-    """The S3 subpaths must match RFC 0001's storage-layout
-    section: ``gitea/repos``, ``gitea/lfs``, ``dify/storage``,
-    ``dify/weaviate``, ``dify/plugins``. Mismatch would put data
-    under the wrong prefix and break restore."""
+    """The S3 subpaths must match the established storage-layout
+    convention: ``gitea/repos``, ``gitea/lfs``, ``dify/storage``,
+    ``dify/weaviate``, ``dify/plugins`` (RFC 0001 §"Storage layout"),
+    and ``metabase/data`` (extends the same convention, added in
+    issue #528). Mismatch would put data under the wrong prefix and
+    break restore."""
     _, rsync = standard_targets()
     sub_by_name = {r.name: r.s3_subpath for r in rsync}
     assert sub_by_name["gitea-repos"] == "gitea/repos"
@@ -205,6 +218,18 @@ def test_standard_targets_s3_subpaths_match_rfc_layout() -> None:
     assert sub_by_name["dify-storage"] == "dify/storage"
     assert sub_by_name["dify-weaviate"] == "dify/weaviate"
     assert sub_by_name["dify-plugins"] == "dify/plugins"
+    assert sub_by_name["metabase-data"] == "metabase/data"
+
+
+def test_standard_targets_metabase_has_no_postgres_dump() -> None:
+    """Metabase uses an internal H2 DB stored under /metabase-data,
+    captured via rsync. The OSS image deliberately does NOT run a
+    sidecar Postgres — pinning that here so a future 'switch metabase
+    to Postgres' refactor remembers to ALSO add a PostgresDumpTarget."""
+    postgres, _ = standard_targets()
+    pg_containers = {p.container for p in postgres}
+    assert "metabase-db" not in pg_containers
+    assert "metabase" not in pg_containers
 
 
 # ---------------------------------------------------------------------------

@@ -5,11 +5,33 @@
 # Metabase is an easy-to-use, open-source business intelligence tool.
 # Create dashboards, ask questions about your data, and share insights.
 # Default login: admin@metabase.local / (generated password in Infisical)
+#
+# Data persistence (issue #528, RFC 0001 architecture):
+# /metabase-data is bind-mounted onto /mnt/nexus-data/metabase/. The
+# bind-mount itself is ephemeral host storage — /mnt/nexus-data/ is
+# NOT a persistent Hetzner Volume anymore (RFC 0001 cutover replaced
+# the block volume with R2 snapshot/restore). For Metabase artefacts
+# to survive teardown + spin-up, the path is registered as an rsync
+# target in src/nexus_deploy/s3_restore.py::standard_targets alongside
+# gitea + dify: teardown rsyncs /mnt/nexus-data/metabase to R2 under
+# snapshots/<ts>/metabase/data/; next spin-up rsyncs it back, then
+# Metabase opens the H2 DB pre-populated.
+#
+# What survives: normal `teardown` + `spin-up`, `tofu destroy` +
+# `tofu apply`, scheduled teardown/spin-up workflows (all use the
+# R2 snapshot/restore cycle).
+# What does NOT survive: `gh workflow run destroy-all.yml` when the
+# operator also wipes the R2 bucket (the default preserves it).
 # =============================================================================
 
 services:
   metabase:
-    image: ${IMAGE_METABASE:-metabase/metabase:latest}
+    # Pinned per CLAUDE.md ("pin Docker image versions for stateful
+    # services") — Metabase persists H2/DB + user-created artefacts
+    # under /metabase-data via the R2 snapshot/restore cycle above.
+    # A silent :latest jump on the next pull could ship an
+    # incompatible H2 schema migration on top of a restored snapshot.
+    image: ${IMAGE_METABASE:-metabase/metabase:v0.60.6.2}
     container_name: metabase
     restart: unless-stopped
     ports:
@@ -25,7 +47,7 @@ services:
         limits:
           memory: 1g
     volumes:
-      - metabase_data:/metabase-data
+      - /mnt/nexus-data/metabase:/metabase-data
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
       interval: 30s
@@ -34,9 +56,6 @@ services:
       start_period: 60s
     networks:
       - app-network
-
-volumes:
-  metabase_data:
 
 networks:
   app-network:
