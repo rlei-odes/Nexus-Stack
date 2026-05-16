@@ -142,53 +142,57 @@ RUN uv venv /opt/nexus-venv && \
 #
 # Strategy: bake the extensions into /opt/ at image-build time,
 # then have the compose entrypoint copy them into the default user
-# extension dir (~/.local/share/code-server/extensions/) on first
-# container start — but only when the user dir is empty (fresh
-# volume). After that initial seed, the user dir is the authoritative
-# location for both baked AND user-installed extensions:
+# extension dir (~/.local/share/code-server/extensions/) when BOTH
+# (a) the user dir is empty AND (b) /opt/ has content. After a
+# successful seed, the user dir is the authoritative location for
+# both baked AND user-installed extensions:
 #
 # - Both kinds live in the volume → user installs are persisted
 #   across container recreate and image rebuilds.
 # - code-server runs WITHOUT --extensions-dir, so the default
 #   directory is used (no read/write split).
-# - If a future image rebuild adds a NEW baked extension, existing
-#   volumes won't auto-pick it up (the empty-check skips the seed).
-#   That's a deliberate trade-off: predictable user state > silent
-#   re-seeding that could overwrite user-modified extension state.
-#   Operators who add a new baked extension and want it on all
-#   existing volumes can either (a) instruct students to install
-#   via the UI or (b) wipe the volumes for a fresh seed.
+# - Volumes with user-installed extensions are never re-seeded
+#   (the empty-check skips the copy) — preserves user state across
+#   image rebuilds.
+# - Volumes with an empty user dir (no installs yet) DO get the
+#   seed when /opt/ has content. So if /opt/ is empty today (#593
+#   state) and a future image adds a baked extension, deployments
+#   that haven't installed anything yet pick it up automatically;
+#   deployments that already have extensions in the volume don't.
+#   That's a deliberate trade-off: protect user state, but stay
+#   permissive for genuinely-empty volumes so a future baked
+#   extension reaches vanilla deployments.
 #
-# Extensions baked here:
-# - mtxr.sqltools: connection manager + SQL query editor with schema
-#   browser + IntelliSense. The go-to "I want to look at a Postgres
-#   table from VS Code" extension.
-# - mtxr.sqltools-driver-pg: Postgres driver plugin for SQLTools.
-#   Required for SQLTools to actually talk to Postgres.
-#
-# Auto-wiring of the connection lives in the compose entrypoint —
-# it merges a SQLTools connection block into
-# ~/.local/share/code-server/User/settings.json on container start
-# when NEXUS_POSTGRES_ENABLED=1 in .env (rendered by the orchestrator
-# from D1 enabled-services state). The merge preserves any other
-# settings the user (or other extensions) may have added.
+# No extensions are currently baked. The infrastructure is kept so
+# adding one later is a single line after the USER coder switch below:
+#   RUN code-server --extensions-dir /opt/code-server-extensions \
+#         --install-extension <id>
+# The --extensions-dir flag is mandatory — without it, install-extension
+# lands the extension in the default ~/.local/share/code-server/extensions/
+# which gets masked by the code-server-data volume mount on container
+# start, so the extension disappears on first run. SQLTools + sqltools-driver-pg
+# were pre-installed in #588 but removed again: every SQL-Tools-style
+# extension (SQLTools, cweijan database-client, …) breaks in the
+# code-server-through-CF-Tunnel setup. SQLTools' "Add New Connection"
+# panel renders blank (coder/code-server#7302, "wontfix" upstream);
+# cweijan's query/result page is blank because the extension spins up
+# a localhost helper server on :12315 that the browser-side webview
+# can't reach without remote-port-forwarding (cweijan #373, also
+# unfixed). Students who need a SQL GUI use pgAdmin or CloudBeaver
+# (separate stacks with proper web UIs) instead.
 RUN mkdir -p /opt/code-server-extensions && \
     chown -R coder:coder /opt/code-server-extensions
 
-# Entrypoint helper scripts. Kept in /opt/ (image-baked, outside the
-# code-server-data volume mount that masks /home/coder/) and called
-# from the compose entrypoint. Lives in a separate file because YAML's
-# folded scalar `>` collapses newlines, which prevents embedding any
-# multi-line Python (e.g. try/except) inside the inline entrypoint.
+# Migration scripts called from the compose entrypoint. Currently
+# only the one-time #593 sqltools-settings cleanup (atomic temp-file +
+# rename rewrite of settings.json to strip leftover credential keys).
+# Kept in /opt/ — outside the code-server-data volume mount that
+# masks /home/coder/ — so the script is reachable on every container
+# start regardless of volume state.
 COPY scripts/ /opt/code-server-scripts/
 RUN chmod -R a+r /opt/code-server-scripts
 
 USER coder
-
-RUN code-server --extensions-dir /opt/code-server-extensions \
-      --install-extension mtxr.sqltools && \
-    code-server --extensions-dir /opt/code-server-extensions \
-      --install-extension mtxr.sqltools-driver-pg
 
 # Keep uv-tool's local bin on PATH for any user-level uv-tool installs
 # they may do later (the venv at /opt/nexus-venv prepends its own bin

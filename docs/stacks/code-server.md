@@ -78,28 +78,25 @@ The sync writes to a dedicated `.infisical.env` file (not `.env`) so secret keys
 
 ### Pre-installed VS Code extensions
 
-The image stages the following extensions to `/opt/code-server-extensions/` (image-baked, survives volume-mask masking — same rationale as `/opt/nexus-venv`):
+None at the moment. The image stages an empty `/opt/code-server-extensions/` directory and the entrypoint copies its contents into `~/.local/share/code-server/extensions/` on first start. Adding a baked extension is a single line in the Dockerfile after the `USER coder` switch:
 
-| Extension | Why |
-|---|---|
-| `mtxr.sqltools` | Connection manager + SQL query editor with schema browser + IntelliSense. The standard "I want to look at a Postgres table from VS Code" extension. |
-| `mtxr.sqltools-driver-pg` | Postgres / CockroachDB / Redshift driver for SQLTools. Required for SQLTools to actually talk to Postgres. |
+```dockerfile
+RUN code-server --extensions-dir /opt/code-server-extensions --install-extension <id>
+```
 
-**How they reach the running container:** on first container start (or whenever `~/.local/share/code-server/extensions/` is empty), the entrypoint copies the baked extensions from `/opt/` into that user dir. After the initial seed, the user dir is the authoritative location for both baked AND user-installed extensions, so anything a student installs via the UI persists across container recreate and image rebuilds (the user dir is in the `code-server-data` volume).
+The `--extensions-dir` flag is mandatory — without it, `code-server --install-extension` lands the extension in the default `~/.local/share/code-server/extensions/`, which gets masked by the volume mount at runtime and disappears on first container start. With the flag, the extension is baked into `/opt/` and the entrypoint copies it into the volume on first start.
 
-> **Trade-off** of this seed-once strategy: if a future image rebuild adds a NEW baked extension, existing volumes don't auto-pick it up — the empty-check skips the re-seed to avoid overwriting user-modified extension state. Operators who add a new baked extension and want it on all existing volumes can either instruct students to install via the UI or wipe the volume for a fresh seed.
+> **Why no SQL-Tools-style extension is baked:** SQLTools (`mtxr.sqltools`) and cweijan's Database Client (`cweijan.vscode-database-client2`) both break in the code-server-through-CF-Tunnel setup. SQLTools' "Add New Connection" panel renders blank ([coder/code-server#7302](https://github.com/coder/code-server/issues/7302), upstream "wontfix"); cweijan's query/result page is blank because the extension spins up a localhost helper server on port 12315 that the browser-side webview can't reach without remote-port-forwarding ([cweijan/vscode-database-client#373](https://github.com/cweijan/vscode-database-client/issues/373), also unfixed). Both are structural — any webview that needs to fetch from a container-local helper port fails the same way in a browser-served IDE. For SQL exploration use the dedicated stacks instead — **pgAdmin** for Postgres-only, **CloudBeaver** for multi-DB (Postgres, ClickHouse, MySQL, …). Both are real web UIs and don't need a code-server detour.
 
-### SQLTools auto-connect to Nexus Postgres
+**How baked extensions reach the running container:** on first container start (when the user extension dir is empty AND `/opt/code-server-extensions/` has content), the entrypoint copies the baked extensions from `/opt/` into the user dir. With `/opt/` currently empty there's nothing to seed and the copy is skipped silently (no log line). After the initial seed (or once a future baked extension is added), the user dir is the authoritative location for both baked AND user-installed extensions, so anything a student installs via the UI persists across container recreate and image rebuilds (the user dir is in the `code-server-data` volume).
 
-When the `postgres` stack is enabled in the Control Plane alongside code-server, the compose entrypoint merges a pre-configured SQLTools connection into `~/.local/share/code-server/User/settings.json` on container start. Students see "Nexus Postgres" in the SQLTools sidebar immediately — one-click connect, no manual driver pick, no password copy-paste from Infisical.
-
-Wiring:
-1. `service_env.py` renders `NEXUS_POSTGRES_ENABLED=1` into `stacks/code-server/.env` when `postgres` is in the D1 enabled-services list.
-2. The Infisical secret-sync phase (added in #586) populates `POSTGRES_PASSWORD` in `.infisical.env`.
-3. The entrypoint reads both, and only writes `settings.json` when **both** are present — otherwise it logs `[code-server] Skipping SQLTools auto-connect (...)` and continues without the connection. (Note: `${env:POSTGRES_PASSWORD}` does NOT work in SQLTools connection configs — the password is substituted as a plain string at container-start time.)
-4. The write is a **merge**, not a full overwrite: if `settings.json` already has other keys (custom editor settings, other extensions' config), they're preserved — only the `sqltools.connections` key is replaced.
-
-If `postgres` is not enabled, the auto-connect is dormant — students can still add connections manually via SQLTools "Add New Connection".
+> **Behavior on a fresh baked extension being added later:** the seed gate fires whenever the user extension dir is empty AND `/opt/` has content. So:
+>
+> - Volumes that ALREADY had baked extensions (from the pre-#593 image) — user dir is non-empty → seed gate skipped → new baked extensions do NOT show up. Operator action needed: instruct the student to install via the UI, or wipe the volume.
+> - Volumes that have been running since #593 with no extensions installed — user dir is still empty → seed gate fires next start → new baked extensions DO get installed automatically. This is the desired outcome (nothing to overwrite, so the seed is safe).
+> - Volumes with user-installed extensions (post-#593) — user dir is non-empty → seed gate skipped → preserves user state.
+>
+> Net effect: the seed gate protects user-installed extensions but stays permissive for genuinely-empty volumes, so a future baked extension reaches "vanilla" deployments automatically.
 
 ### Pre-installed data tooling
 

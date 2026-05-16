@@ -37,15 +37,92 @@ services:
         fi;
         USER_EXT_DIR=/home/coder/.local/share/code-server/extensions;
         mkdir -p \"$$USER_EXT_DIR\";
-        if [ -z \"$$(ls -A \"$$USER_EXT_DIR\" 2>/dev/null)\" ]; then
+        # Seed baked extensions from /opt/ into the user dir when
+        # BOTH gates pass: user dir empty AND /opt/ has content.
+        # Note: NOT strictly first-start — fires whenever the user
+        # dir happens to be empty, which means a volume that never
+        # had extensions installed will pick up a future baked
+        # extension the first time /opt/ gains content. That's
+        # intentional (vanilla volumes pick up new defaults); volumes
+        # with user-installed extensions are skipped because the
+        # user dir isn't empty. The /opt/-non-empty gate exists so
+        # the log line doesn't lie when there's nothing to seed
+        # (today's state since #593 removed the SQLTools bakes).
+        if [ -z \"$$(ls -A \"$$USER_EXT_DIR\" 2>/dev/null)\" ] && [ -n \"$$(ls -A /opt/code-server-extensions 2>/dev/null)\" ]; then
           cp -a /opt/code-server-extensions/. \"$$USER_EXT_DIR/\";
-          echo '[code-server] Seeded baked extensions into user dir (first-start or empty volume)';
+          echo '[code-server] Seeded baked extensions into user dir (empty volume + non-empty /opt/)';
         fi;
-        if [ \"$$NEXUS_POSTGRES_ENABLED\" = \"1\" ] && [ -n \"$$POSTGRES_PASSWORD\" ]; then
-          mkdir -p /home/coder/.local/share/code-server/User;
-          python3 /opt/code-server-scripts/write-sqltools-settings.py && echo '[code-server] Wrote SQLTools Nexus Postgres connection (NEXUS_POSTGRES_ENABLED=1)';
-        else
-          echo '[code-server] Skipping SQLTools auto-connect (NEXUS_POSTGRES_ENABLED unset or POSTGRES_PASSWORD empty)';
+        # Migration cleanup for upgrades from the pre-#593 image: the
+        # old image baked SQLTools + sqltools-driver-pg and the
+        # entrypoint wrote a sqltools.connections block with the
+        # Postgres admin password into settings.json. Both live in
+        # the persistent code-server-data volume, so just removing
+        # them from the image doesn't clean existing deployments.
+        #
+        # ONE-TIME via marker file at /home/coder/.nexus-stack-sqltools-cleanup-done
+        # — once both cleanup steps succeed, the marker is touched and
+        # subsequent starts skip the cleanup entirely. Without the
+        # marker, a user who later decides to install mtxr.sqltools
+        # manually (knowing it's blank-panel-broken in code-server but
+        # willing to live with it) would have their install nuked on
+        # every restart, and their re-added 'sqltools.*' settings keys
+        # would be stripped again. With the marker, post-cleanup user
+        # state is honored.
+        #
+        # Both cleanup steps log a SECURITY WARNING (visible in
+        # 'docker logs code-server') on failure so an operator notices
+        # — but don't abort startup. If the cleanup fails, code-server
+        # still serves the IDE; the leaked password just stays in the
+        # volume until the operator intervenes. Hard-failing the start
+        # would prevent the operator from logging in to investigate.
+        # The marker is only touched when both steps succeeded; a
+        # failure causes the cleanup to retry on the next start.
+        MIGRATION_MARKER=/home/coder/.nexus-stack-sqltools-cleanup-done;
+        if [ ! -f \"$$MIGRATION_MARKER\" ]; then
+          CLEANUP_OK=1;
+          for D in \"$$USER_EXT_DIR\"/mtxr.sqltools-*; do
+            if [ -d \"$$D\" ]; then
+              BN=\"$$(basename $$D)\";
+              if rm -rf \"$$D\"; then
+                echo '[code-server] Removed leftover SQLTools extension from volume (#593 migration):' \"$$BN\";
+              else
+                echo \"[code-server] SECURITY WARNING: failed to rm leftover SQLTools extension $$D — check permissions; old extension still in volume\" >&2;
+                CLEANUP_OK=0;
+              fi;
+            fi;
+          done;
+          # Strip leftover sqltools.* keys (including the leaked Postgres
+          # password) from settings.json. Delegated to a real Python
+          # script for atomicity: it writes to a same-directory temp file
+          # and os.replace()s onto the target, so the file is never
+          # half-written even if the container is killed mid-rewrite.
+          # An inline python3 -c oneliner would 'open(p, w)' (truncates
+          # immediately) before reserialising and could leave settings.json
+          # empty on interruption.
+          #
+          # No grep prefilter here. An earlier version had
+          # 'if grep -q sqltools $SETTINGS; then ...' as a perf
+          # optimization to skip python3 startup, but grep conflates
+          # 'no match' (exit 1) with 'read error' (exit 2): a transient
+          # read failure would skip the cleanup AND leave CLEANUP_OK=1,
+          # so the marker would be touched even though the file was
+          # never inspected. Running the script unconditionally costs
+          # ~50ms of python3 startup per first-start, which is fine
+          # since the marker gates the entire block to one run.
+          SETTINGS=/home/coder/.local/share/code-server/User/settings.json;
+          if ! python3 /opt/code-server-scripts/strip-sqltools-settings.py \"$$SETTINGS\"; then
+            echo \"[code-server] SECURITY WARNING: strip-sqltools-settings.py failed at $$SETTINGS — Postgres password may still be present, operator action required\" >&2;
+            CLEANUP_OK=0;
+          fi;
+          if [ \"$$CLEANUP_OK\" = \"1\" ]; then
+            if touch \"$$MIGRATION_MARKER\"; then
+              echo '[code-server] #593 sqltools cleanup complete — marker touched, will skip on subsequent starts';
+            else
+              echo \"[code-server] SECURITY WARNING: cleanup succeeded but failed to touch $$MIGRATION_MARKER — migration will rerun on every restart (deletes user-added sqltools.* state). Check volume permissions.\" >&2;
+            fi;
+          else
+            echo '[code-server] #593 sqltools cleanup had failures — will retry on next start (marker NOT touched)' >&2;
+          fi;
         fi;
         OPEN_DIR=/home/coder;
         if [ -d /home/coder/$$REPO_NAME ]; then OPEN_DIR=/home/coder/$$REPO_NAME; fi;
@@ -67,13 +144,12 @@ services:
     deploy:
       resources:
         limits:
-          # Bumped from 512m: with SQLTools + Postgres-driver +
-          # extension-host + workspace-indexer all running as Node
-          # subprocesses, 512m hit OOM in practice — symptoms were
-          # silent extension-host crashes (white webview panels for
-          # SQLTools-Settings) and the file-tree disappearing
-          # mid-session. Verified on a live container that the new
-          # baseline sits around 350-500 MiB with extensions active.
+          # Bumped from 512m: with the dbt venv + JupyterLab + DuckDB
+          # CLI + extension-host + workspace-indexer all loaded, 512m
+          # hit OOM in practice — symptoms were silent extension-host
+          # crashes (white webview panels) and the file-tree
+          # disappearing mid-session. Verified on a live container
+          # that the new baseline sits around 350-500 MiB at idle.
           memory: 2g
     volumes:
       - code-server-data:/home/coder
