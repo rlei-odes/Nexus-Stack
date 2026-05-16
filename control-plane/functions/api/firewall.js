@@ -46,10 +46,20 @@ function validateSourceIps(sourceIps) {
 
 /**
  * GET /api/firewall
- * Returns all firewall rules from D1
+ * Returns all firewall rules from D1.
+ *
+ * Query params:
+ *   ?count_only=true — short-circuit response: just `{success, pendingChangesCount}`,
+ *   no `rules` payload. Used by PendingBar.astro which mounts on every page
+ *   and only needs the count for the banner — full payload was ~5KB per page
+ *   load. Reduces response size and skips the per-rule iteration + payload
+ *   build (the HTTP request itself still happens, just cheaper on both
+ *   sides).
  */
 export async function onRequestGet(context) {
-  const { env } = context;
+  const { env, request } = context;
+  const url = new URL(request.url);
+  const countOnly = url.searchParams.get('count_only') === 'true';
 
   if (!env.NEXUS_DB) {
     return new Response(JSON.stringify({
@@ -63,6 +73,34 @@ export async function onRequestGet(context) {
   }
 
   try {
+    // count_only path: SELECT COUNT(*) WHERE enabled != deployed.
+    // Doesn't load row data, doesn't iterate-and-build a JSON array.
+    //
+    // Known gap: pending detection only compares enabled vs deployed.
+    // A source_ips-only edit (saved via POST without flipping enabled)
+    // still requires a Spin Up to take effect — Terraform reads
+    // source_ips fresh from D1 on every apply — but the banner won't
+    // surface that because the schema has no `deployed_source_ips`
+    // column to diff against. Operators who change IPs without
+    // toggling enabled need to remember to Spin Up. Tracked for a
+    // proper fix in a follow-up (schema migration to snapshot
+    // source_ips on the most recent successful apply).
+    if (countOnly) {
+      const countResult = await env.NEXUS_DB.prepare(`
+        SELECT COUNT(*) AS c FROM firewall_rules WHERE enabled != deployed
+      `).first();
+      // Number() coercion: D1's COUNT(*) result has been observed to
+      // come back as a string in some runtimes. PendingBar.astro
+      // requires `typeof pendingChangesCount === 'number'` or it
+      // falls back to 0, which would silently break the banner.
+      return new Response(JSON.stringify({
+        success: true,
+        pendingChangesCount: Number(countResult?.c) || 0,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const results = await env.NEXUS_DB.prepare(`
       SELECT service_name, port, protocol, label, enabled, deployed, source_ips, dns_record
       FROM firewall_rules
@@ -214,7 +252,10 @@ export async function onRequestPost(context) {
     const pendingResult = await env.NEXUS_DB.prepare(`
       SELECT COUNT(*) as count FROM firewall_rules WHERE enabled != deployed
     `).first();
-    const pendingChangesCount = pendingResult?.count || 0;
+    // Number() coercion — same rationale as the count_only GET path:
+    // D1 has been observed to return COUNT(*) as a string in some
+    // runtimes, and downstream clients check `typeof === 'number'`.
+    const pendingChangesCount = Number(pendingResult?.count) || 0;
 
     return new Response(JSON.stringify({
       success: true,
