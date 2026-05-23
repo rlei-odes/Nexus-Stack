@@ -294,7 +294,7 @@ See the **[SSH Access Guide](ssh-access.md)**.
 
 By default, users cannot disable the automatic daily teardown feature via the Control Plane. This ensures cost control for shared environments (e.g., student labs).
 
-**To change this behavior**, edit `tofu/control-plane/variables.tf` or set via environment variable:
+**To change this behavior**, edit `tofu/control-plane/variables.tf` or set the GitHub Actions repository variable `ALLOW_DISABLE_AUTO_SHUTDOWN=true`:
 
 ```hcl
 # Allow users to disable auto-shutdown

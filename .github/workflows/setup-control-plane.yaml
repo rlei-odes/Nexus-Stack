@@ -172,6 +172,7 @@ jobs:
           user_email          = "${{ secrets.TF_VAR_user_email }}"
           github_owner        = "${{ github.repository_owner }}"
           github_repo         = "${{ github.event.repository.name }}"
+          allow_disable_auto_shutdown = ${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN == 'true' }}
           EOF
           sed -i 's/^          //' tofu/control-plane/config.tfvars
 
@@ -1146,6 +1147,12 @@ jobs:
           if ! echo "${{ vars.SERVER_LOCATION || 'hel1' }}" | npx wrangler@4 pages secret put SERVER_LOCATION \
             --project-name="$PROJECT_NAME" 2>&1; then
             echo "⚠️  Failed to set SERVER_LOCATION"
+          fi
+
+          echo "  Setting ALLOW_DISABLE_AUTO_SHUTDOWN secret..."
+          if ! echo "${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN == 'true' }}" | npx wrangler@4 pages secret put ALLOW_DISABLE_AUTO_SHUTDOWN \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "⚠️  Failed to set ALLOW_DISABLE_AUTO_SHUTDOWN"
           fi
 
           if [ -n "$RESEND_API_KEY" ]; then
