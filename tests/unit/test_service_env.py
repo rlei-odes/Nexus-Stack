@@ -64,6 +64,7 @@ def full_config() -> NexusConfig:
         superset_db_password="superset-db",
         superset_secret_key="superset-key",
         cloudbeaver_admin_password="cb-pw",
+        meilisearch_master_key="meili-master-key-32chars-xxxxxxx",
         mage_admin_password="mage-pw",
         minio_root_password="minio-pw",
         sftpgo_admin_password="sftpgo-admin",
@@ -179,6 +180,27 @@ def test_format_env_line_no_quoting_newline_terminated() -> None:
 def test_render_env_file_content_in_dict_order() -> None:
     out = _render_env_file_content({"A": "1", "B": "2", "C": "3"})
     assert out == "A=1\nB=2\nC=3\n"
+
+
+# ---------------------------------------------------------------------------
+# Meilisearch — fail-fast guard
+# ---------------------------------------------------------------------------
+
+
+def test_meilisearch_raises_on_empty_master_key(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """R-guard: empty master key aborts the deploy with a fail-fast
+    ServiceEnvError rather than silently writing MEILI_MASTER_KEY=''
+    into the .env. Compose has MEILI_ENV=production, so Meilisearch
+    would refuse to start and the container would restart-loop with
+    a cryptic error — much harder to diagnose than a clear deploy-
+    time abort pointing at the missing Tofu apply / Infisical sync."""
+    from nexus_deploy.service_env import _render_meilisearch
+
+    config = full_config.model_copy(update={"meilisearch_master_key": ""})
+    with pytest.raises(ServiceEnvError, match="MEILI_MASTER_KEY"):
+        _render_meilisearch(config, full_env)
 
 
 # ---------------------------------------------------------------------------
@@ -971,6 +993,7 @@ def test_simple_render_functions_smoke(full_config: NexusConfig, full_env: Boots
         _render_infisical,
         _render_kestra,
         _render_mage,
+        _render_meilisearch,
         _render_meltano,
         _render_minio,
         _render_nocodb,
@@ -997,6 +1020,7 @@ def test_simple_render_functions_smoke(full_config: NexusConfig, full_env: Boots
         _render_kestra,
         _render_cloudbeaver,
         _render_mage,
+        _render_meilisearch,
         _render_minio,
         _render_redpanda_console,
         _render_hoppscotch,
