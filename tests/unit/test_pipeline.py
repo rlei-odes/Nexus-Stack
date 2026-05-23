@@ -95,6 +95,11 @@ def fake_tofu_runner(fake_secrets_payload: dict[str, str]) -> MagicMock:
     runner = MagicMock(spec=TofuRunner)
     runner.tofu_dir = Path("/fake")
     runner.state_list_ok.return_value = True
+    # Default: hcloud_server.main NOT in state. The snapshot pipeline
+    # uses state_contains() as a safety check before treating a
+    # missing ssh_service_token as graceful no-op — tests that want
+    # to simulate "server in state but token missing" override this.
+    runner.state_contains.return_value = False
     json_map: dict[str, Any] = {
         "secrets": fake_secrets_payload,
         "image_versions": {"kestra": "v0.51"},
@@ -1037,6 +1042,53 @@ def test_run_snapshot_skips_when_state_file_missing(
     setup_mocks["SSHClient"].assert_not_called()
 
 
+def test_run_snapshot_skips_when_ssh_service_token_missing(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #564 follow-up (mid-2026-05 partial-state case): SOME
+    state is present in tofu/stack — so ``state_list_ok()`` returns
+    True — but the ``ssh_service_token`` output isn't in it because
+    the Hetzner server + Cloudflare Access Service Token resource
+    never got applied (setup ran, Spin Up never did). Observed on a
+    deads7 fork whose scheduled daily 21:00-UTC teardown went red
+    for five days straight, generating noise without snapshotting
+    anything.
+
+    Right behaviour: graceful Skipped with reason
+    ``no_snapshot_source``, the same way the "no state file at all"
+    case in :func:`test_run_snapshot_skips_when_state_file_missing`
+    is treated — there is nothing on the server to back up either
+    way. The subsequent ``tofu destroy`` still runs to reap any
+    partial state.
+
+    Tests that the short-circuit fires BEFORE any SSH side-effect
+    (configure_ssh / wait_for_ssh / SSHClient) — same invariant as
+    the file-missing test, but at one branch deeper into the
+    pipeline."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    # State list works (the partial state is real) but the specific
+    # output we need is absent. Mirror the fixture's default signature
+    # so other outputs (server_ip, etc.) still resolve via raw_map.
+    fake_tofu_runner.output_json.side_effect = lambda name, default=None: (
+        None if name == "ssh_service_token" else {"any": "other"}
+    )
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "no_snapshot_source"
+    # SSH path must not have been entered — short-circuit invariant.
+    setup_mocks["configure_ssh"].assert_not_called()
+    setup_mocks["wait_for_ssh"].assert_not_called()
+    setup_mocks["SSHClient"].assert_not_called()
+
+
 def test_run_snapshot_aborts_on_other_state_failures(
     project_root: Path,
     fake_tofu_runner: MagicMock,
@@ -1061,6 +1113,181 @@ def test_run_snapshot_aborts_on_other_state_failures(
             template_version="v1.0.0",
             tofu_runner=fake_tofu_runner,
         )
+
+
+def test_run_snapshot_skips_when_output_not_declared_in_state(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same logical no-op as the null-value case above, but exercised
+    via tofu's real error path: when an output isn't declared in state,
+    `tofu output -json X` exits 1 with stderr "The output variable
+    requested could not be found in the state file." TofuRunner wraps
+    that as TofuError; pipeline.py must distinguish this specific
+    case (graceful skip) from other TofuError causes (re-raise as
+    PipelineError) instead of collapsing both into None via default."""
+    import subprocess
+
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    from nexus_deploy import tofu as _tofu
+
+    def raise_tofu_error(name: str, default: Any = ...) -> Any:
+        if name == "ssh_service_token":
+            err = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["tofu", "output", "-json", "ssh_service_token"],
+                output="",
+                stderr="The output variable requested could not be found in the state file.",
+            )
+            raise _tofu.TofuError("tofu output failed") from err
+        return {"any": "other"}
+
+    fake_tofu_runner.output_json.side_effect = raise_tofu_error
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "no_snapshot_source"
+    setup_mocks["configure_ssh"].assert_not_called()
+
+
+def test_run_snapshot_skips_on_capitalized_no_outputs_found_marker(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenTofu emits ``"No outputs found"`` with a capital N
+    (opentofu/internal/command/views/output.go:297). A case-sensitive
+    ``"no outputs found" in stderr`` check would miss this and force
+    the hard-failure branch, defeating the no_snapshot_source skip on
+    a state file with no outputs declared at all. Regression guard
+    for the case-folding fix — pipeline.py now lowercases stderr
+    before marker matching, so the real Capital-N string still
+    triggers the graceful skip."""
+    import subprocess
+
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    from nexus_deploy import tofu as _tofu
+
+    def raise_tofu_error(name: str, default: Any = ...) -> Any:
+        if name == "ssh_service_token":
+            err = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["tofu", "output", "-json", "ssh_service_token"],
+                output="",
+                # Verbatim OpenTofu wording — capital N, Warning prefix.
+                stderr="Warning: No outputs found\n\nThe state file either has no outputs defined...",
+            )
+            raise _tofu.TofuError("tofu output failed") from err
+        return {"any": "other"}
+
+    fake_tofu_runner.output_json.side_effect = raise_tofu_error
+    result = run_snapshot(
+        project_root=project_root,
+        stack_slug="nexus-test",
+        template_version="v1.0.0",
+        tofu_runner=fake_tofu_runner,
+    )
+    assert isinstance(result.outcome, S3SnapshotSkipped)
+    assert result.outcome.reason == "no_snapshot_source"
+    setup_mocks["configure_ssh"].assert_not_called()
+
+
+def test_run_snapshot_aborts_when_server_in_state_but_token_missing(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SAFETY-CRITICAL: if ssh_service_token is missing BUT
+    hcloud_server.main is in state, the server may have data on it
+    that the pipeline can't reach via SSH. A silent graceful-skip
+    here would let `tofu destroy` nuke the server with data — must
+    raise PipelineError instead so the operator investigates."""
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    # Token output missing (null in state)
+    fake_tofu_runner.output_json.side_effect = lambda name, default=None: (
+        None if name == "ssh_service_token" else {"any": "other"}
+    )
+    # But hcloud_server.main IS in state
+    fake_tofu_runner.state_contains.return_value = True
+
+    with pytest.raises(PipelineError, match="Dangerous partial state"):
+        run_snapshot(
+            project_root=project_root,
+            stack_slug="nexus-test",
+            template_version="v1.0.0",
+            tofu_runner=fake_tofu_runner,
+        )
+    setup_mocks["configure_ssh"].assert_not_called()
+
+
+def test_run_snapshot_aborts_on_other_tofu_output_failures(
+    project_root: Path,
+    fake_tofu_runner: MagicMock,
+    setup_mocks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The carve-out for `output_json("ssh_service_token")` failures
+    is narrow: only "output not declared" stderr triggers the graceful
+    no_snapshot_source skip. Every other TofuError cause (binary
+    missing, transient R2 backend timeout / 5xx, JSON parse failure,
+    auth failure) must re-raise as PipelineError so the operator sees
+    a hard abort instead of a silently-skipped snapshot followed by
+    a destroy that loses data.
+
+    SECURITY: tofu stderr can contain provider/backend credential
+    material (Cloudflare API tokens shown in plan diffs, Hetzner
+    auth tokens, R2 SignatureDoesNotMatch leaking partial keys).
+    The PipelineError surfaced here must NOT contain that stderr —
+    same convention as TofuRunner's own error wrapping (see
+    ``test_output_raw_error_message_does_not_leak_subprocess_stderr``).
+    This test asserts the abort happens but pins the
+    no-stderr-in-message invariant rather than locking in the
+    sensitive content."""
+    import subprocess
+
+    monkeypatch.setenv("NEXUS_S3_PERSISTENCE", "true")
+    from nexus_deploy import tofu as _tofu
+
+    leaky_stderr = (
+        "Error: Failed to query available provider packages — "
+        "AccessKeyId=AKIA-do-not-leak-this-token-eyJhb..."
+    )
+
+    def raise_transient(name: str, default: Any = ...) -> Any:
+        if name == "ssh_service_token":
+            err = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["tofu", "output", "-json", "ssh_service_token"],
+                output="",
+                stderr=leaky_stderr,
+            )
+            raise _tofu.TofuError("tofu output failed") from err
+        return {"any": "other"}
+
+    fake_tofu_runner.output_json.side_effect = raise_transient
+    # Abort behaviour: PipelineError raised, SSH side-effects skipped.
+    with pytest.raises(PipelineError) as exc_info:
+        run_snapshot(
+            project_root=project_root,
+            stack_slug="nexus-test",
+            template_version="v1.0.0",
+            tofu_runner=fake_tofu_runner,
+        )
+    setup_mocks["configure_ssh"].assert_not_called()
+    # SECURITY: the user-facing exception message must NOT contain
+    # the credential-looking content from tofu stderr.
+    assert "AKIA-do-not-leak-this-token" not in str(exc_info.value)
+    assert "eyJhb" not in str(exc_info.value)
+    # But the message should still be operator-actionable.
+    assert "ssh_service_token" in str(exc_info.value)
 
 
 def test_run_snapshot_aborts_on_empty_domain(

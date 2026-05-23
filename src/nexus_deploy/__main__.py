@@ -2952,6 +2952,17 @@ def _s3_snapshot(args: list[str]) -> int:
            setup-control-plane succeeded but spin-up aborted before
            any ``tofu apply`` ran, so there's nothing on the server
            to back up; subsequent ``tofu destroy`` is also a no-op)
+         * partial state without snapshot source — state exists
+           (some Cloudflare-side resource WAS applied) AND the
+           ``ssh_service_token`` output is absent from state AND
+           ``hcloud_server.main`` is NOT in state. All three
+           conditions verified explicitly: the missing-output check
+           is what surfaces the case, the missing-server check is
+           the safety gate that rules out the dangerous "server has
+           data but we can't SSH" scenario (which would raise
+           PipelineError → rc=2 to abort teardown instead). The
+           subsequent ``tofu destroy`` will reap whatever stack-side
+           Cloudflare resources ARE in state.
     - 2: hard failure — pipeline pre-flight, SSH wait timeout,
          CalledProcessError from the rendered bash, or feature flag
          on with credentials missing. Teardown MUST abort.
@@ -3052,6 +3063,19 @@ def _s3_snapshot(args: list[str]) -> int:
         sys.stderr.write(
             "s3-snapshot: stack has no Tofu state - nothing to snapshot "
             "(partial deploy?). Teardown will proceed.\n",
+        )
+        return 0
+    if outcome.reason == "no_snapshot_source":
+        # Mid-2026-05 deads7-fork case: state exists but neither
+        # hcloud_server.main nor ssh_service_token are in it.
+        # `run_snapshot` already verified there's no server with
+        # data to lose (state_contains check), so this is a safe
+        # no-op — let teardown proceed to reap whatever partial
+        # Cloudflare-side resources ARE in state.
+        sys.stderr.write(
+            "s3-snapshot: no server in state - nothing to snapshot "
+            "(partial deploy, server resources never applied). "
+            "Teardown will proceed.\n",
         )
         return 0
     # no_endpoint_env — snapshot_to_s3 already wrote its own

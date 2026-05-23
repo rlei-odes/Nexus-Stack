@@ -355,6 +355,102 @@ def test_state_list_ok_false_on_timeout(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert TofuRunner(tmp_path).state_list_ok() is False
 
 
+# ---- TofuRunner.state_contains (PR #600 partial-state safety check) ----
+
+
+def test_state_contains_true_when_address_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Address matches a line in `tofu state list` output → True."""
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(
+            stdout="hcloud_server.main\ncloudflare_tunnel.main\ncloudflare_record.foo\n",
+        ),
+    )
+    assert TofuRunner(tmp_path).state_contains("hcloud_server.main") is True
+
+
+def test_state_contains_false_when_address_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Address NOT in state list → False."""
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(stdout="cloudflare_zero_trust_tunnel_cloudflared.main\n"),
+    )
+    runner = TofuRunner(tmp_path)
+    assert runner.state_contains("hcloud_server.main") is False
+
+
+def test_state_contains_does_not_substring_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Substring matches must not count: querying for ``hcloud`` must
+    NOT match the line ``hcloud_server.main``, even when that line is
+    present in state. This is the regression guard against a future
+    impl that uses ``in stdout`` instead of exact-line matching —
+    that bug would silently swallow real "server in state" cases under
+    a query like 'hcloud' and re-introduce the data-loss vulnerability
+    state_contains was added to prevent."""
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        lambda *_a, **_kw: _completed(
+            stdout="hcloud_server.main\ncloudflare_record.ssh\n",
+        ),
+    )
+    runner = TofuRunner(tmp_path)
+    # Bare 'hcloud' is a substring of 'hcloud_server.main' but NOT a
+    # full-line match — must return False.
+    assert runner.state_contains("hcloud") is False
+    # Sanity: the actual exact line still matches.
+    assert runner.state_contains("hcloud_server.main") is True
+    # Partial-line prefix that's a real Tofu address fragment also
+    # must NOT match (the line in state is "cloudflare_record.ssh",
+    # not "cloudflare_record").
+    assert runner.state_contains("cloudflare_record") is False
+
+
+def test_state_contains_raises_tofuerror_on_command_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The safe default for an unreachable backend is NOT silently
+    returning False (would hide a resource about to be destroyed) —
+    raise TofuError so the caller can decide."""
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(
+            side_effect=subprocess.CalledProcessError(
+                1, ["tofu", "state", "list"], output="", stderr="backend timeout"
+            )
+        ),
+    )
+    with pytest.raises(TofuError, match="cannot determine"):
+        TofuRunner(tmp_path).state_contains("hcloud_server.main")
+
+
+def test_state_contains_raises_tofuerror_on_missing_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=FileNotFoundError("tofu")),
+    )
+    with pytest.raises(TofuError, match="cannot determine"):
+        TofuRunner(tmp_path).state_contains("hcloud_server.main")
+
+
+def test_state_contains_raises_tofuerror_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "nexus_deploy.tofu.subprocess.run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["tofu"], 60.0)),
+    )
+    with pytest.raises(TofuError, match="timed out"):
+        TofuRunner(tmp_path).state_contains("hcloud_server.main")
+
+
 # ---- TofuRunner.diagnose_state (PR #535 R2 #2) ----
 
 
