@@ -92,10 +92,11 @@ import Layout from '../layouts/Layout.astro';
 
   .silent-banner.visible { display: block; }
 
-  .history-item {
-    display: flex;
-    justify-content: space-between;
+  :global(.history-item) {
+    display: grid;
+    grid-template-columns: 5.5rem 4.5rem 1fr auto;
     align-items: center;
+    gap: 0 1rem;
     padding: 0.6rem 0.8rem;
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid rgba(0, 255, 136, 0.1);
@@ -103,13 +104,14 @@ import Layout from '../layouts/Layout.astro';
     font-size: 0.8rem;
   }
 
-  .history-item .name { color: var(--text-secondary); }
-  .history-item .status { font-weight: 700; }
-  .history-item .status.success { color: var(--accent); }
-  .history-item .status.failure { color: var(--error); }
-  .history-item .status.in_progress { color: var(--warning); }
-  .history-item a { color: var(--info); text-decoration: none; font-size: 0.75rem; }
-  .history-item a:hover { text-decoration: underline; }
+  :global(.history-item .name) { color: var(--text-secondary); }
+  :global(.history-item .status) { font-weight: 700; }
+  :global(.history-item .status.success) { color: var(--accent); }
+  :global(.history-item .status.failure) { color: var(--error); }
+  :global(.history-item .status.in_progress) { color: var(--warning); }
+  :global(.history-item .time) { color: var(--text-muted); font-size: 0.7rem; }
+  :global(.history-item a) { color: var(--text-muted); text-decoration: none; font-size: 0.75rem; justify-self: end; }
+  :global(.history-item a:hover) { color: var(--accent); }
 </style>
 
 <script is:inline>
@@ -349,7 +351,7 @@ import Layout from '../layouts/Layout.astro';
         div.innerHTML =
           '<span class="name">' + item.name + '</span>' +
           '<span class="status ' + statusClass + '">' + (status || 'unknown') + '</span>' +
-          '<span style="color: #607080; font-size: 0.7rem;">' + time + '</span>' +
+          '<span class="time">' + time + '</span>' +
           link;
         historyList.appendChild(div);
       });
