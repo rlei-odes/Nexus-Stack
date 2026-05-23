@@ -431,6 +431,118 @@ def _render_meilisearch(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     return RenderedEnv(env_vars={"MEILI_MASTER_KEY": c.meilisearch_master_key or ""})
 
 
+def _render_hedgedoc(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+    """HedgeDoc: needs CMD_DOMAIN (composed from BootstrapEnv.domain
+    + subdomain_separator), the random_password-backed session
+    secret, and a dedicated Postgres password.
+
+    Fail-fast guard (same pattern as Meilisearch / SFTPGo): both the
+    session secret AND the DB password must be non-empty. Without
+    HEDGEDOC_SESSION_SECRET the container starts but sessions are
+    silently insecure; without HEDGEDOC_DB_PASSWORD the Postgres
+    init crashes the container with a cryptic auth error. Surface
+    both as a clear deploy-time abort pointing at the missing
+    Tofu/Infisical sync."""
+    if _empty(c.hedgedoc_session_secret) or _empty(c.hedgedoc_db_password):
+        missing = []
+        if _empty(c.hedgedoc_session_secret):
+            missing.append("HEDGEDOC_SESSION_SECRET")
+        if _empty(c.hedgedoc_db_password):
+            missing.append("HEDGEDOC_DB_PASSWORD")
+        raise ServiceEnvError(
+            f"HedgeDoc enabled but {', '.join(missing)} empty — run "
+            "`tofu apply` (initial-setup workflow) to generate "
+            "random_password.hedgedoc_session_secret + "
+            "random_password.hedgedoc_db_password "
+            "+ push to Infisical, then re-run spin-up. Aborting to avoid "
+            "an insecure-sessions / DB-auth-failure container.",
+        )
+    domain_host = service_host("hedgedoc", e.domain or "", e.subdomain_separator)
+    return RenderedEnv(
+        env_vars={
+            "HEDGEDOC_SESSION_SECRET": c.hedgedoc_session_secret or "",
+            "HEDGEDOC_DB_PASSWORD": c.hedgedoc_db_password or "",
+            "HEDGEDOC_DOMAIN": domain_host,
+        },
+    )
+
+
+def _render_litellm(
+    c: NexusConfig, e: BootstrapEnv, *, litellm_config_template: str | None = None
+) -> RenderedEnv:
+    """LiteLLM Proxy: env vars + a generated ``config.yaml`` sidecar
+    that maps OpenAI-compatible model names to backend providers.
+
+    The shipped ``config.yaml.template`` (in ``stacks/litellm/``) is the
+    operator-editable source of truth — committed to git, survives
+    spin-up cycles. The renderer copies it verbatim to the generated
+    ``config.yaml`` (gitignored, bind-mounted into the container).
+    Alternative operator workflow: add models via the /ui at runtime;
+    STORE_MODEL_IN_DB persists those in Postgres across restarts.
+
+    Template is normally injected by ``render_all_env_files`` (parallel
+    to Grafana's ``prometheus_template`` dispatch) so it works with
+    the repo checkout, with installed wheels, and with custom
+    stacks_dir fixtures. The ``_load_litellm_config_template()``
+    fallback is kept for direct test callers that bypass orchestration.
+
+    Fail-fast guard: master key + salt key + DB password must all be
+    set. Without master_key LiteLLM rejects all requests; without
+    salt_key the DB-stored derived keys can't be verified; without
+    db_password the Postgres init crashes.
+    """
+    if _empty(c.litellm_master_key) or _empty(c.litellm_salt_key) or _empty(c.litellm_db_password):
+        missing = [
+            name
+            for name, value in (
+                ("LITELLM_MASTER_KEY", c.litellm_master_key),
+                ("LITELLM_SALT_KEY", c.litellm_salt_key),
+                ("LITELLM_DB_PASSWORD", c.litellm_db_password),
+            )
+            if _empty(value)
+        ]
+        raise ServiceEnvError(
+            f"LiteLLM enabled but {', '.join(missing)} empty — run "
+            "`tofu apply` (initial-setup workflow) to generate the "
+            "random_password.litellm_master_key + random_password.litellm_salt_key + "
+            "random_password.litellm_db_password resources + push to "
+            "Infisical, then re-run spin-up. Aborting to avoid an "
+            "auth-bypass / DB-auth-failure container.",
+        )
+    config_yaml = (
+        litellm_config_template
+        if litellm_config_template is not None
+        else _load_litellm_config_template()
+    )
+    return RenderedEnv(
+        env_vars={
+            "LITELLM_MASTER_KEY": c.litellm_master_key or "",
+            "LITELLM_SALT_KEY": c.litellm_salt_key or "",
+            "LITELLM_DB_PASSWORD": c.litellm_db_password or "",
+            "LITELLM_UI_USERNAME": c.admin_username or "admin",
+        },
+        sidecars=(
+            # mode 0o644: bind-mounted into the litellm container which
+            # runs as non-root; the api_keys in this file (if any) are
+            # protected by the host-access barrier (SSH behind CF Tunnel
+            # + email OTP) just like .env files for other services.
+            SidecarFile(relative_path="config.yaml", content=config_yaml, mode=0o644),
+        ),
+    )
+
+
+def _load_litellm_config_template() -> str:
+    """Load ``stacks/litellm/config.yaml.template`` from the repo.
+
+    Resolved relative to this Python file. Tests can monkey-patch
+    this function to inject a fixture template (same pattern as
+    :func:`_load_prometheus_template`).
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    template_path = project_root / "stacks" / "litellm" / "config.yaml.template"
+    return template_path.read_text(encoding="utf-8")
+
+
 def _render_mage(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     return RenderedEnv(env_vars={"MAGE_ADMIN_PASSWORD": c.mage_admin_password or ""})
 
@@ -1154,6 +1266,8 @@ _SPECS: tuple[EnvSpec, ...] = (
     EnvSpec("kestra", _is_enabled("kestra"), _render_kestra),
     EnvSpec("cloudbeaver", _is_enabled("cloudbeaver"), _render_cloudbeaver),
     EnvSpec("meilisearch", _is_enabled("meilisearch"), _render_meilisearch),
+    EnvSpec("hedgedoc", _is_enabled("hedgedoc"), _render_hedgedoc),
+    EnvSpec("litellm", _is_enabled("litellm"), _render_litellm),
     EnvSpec("mage", _is_enabled("mage"), _render_mage),
     EnvSpec("minio", _is_enabled("minio"), _render_minio),
     EnvSpec("sftpgo", _is_enabled("sftpgo"), _render_sftpgo),
@@ -1283,6 +1397,27 @@ def render_all_env_files(
                 "grafana before retrying.",
             ) from exc
 
+    # LiteLLM: same template-loading pattern as Grafana — config.yaml
+    # lives at stacks_dir/litellm/config.yaml.template (operator-editable
+    # source of truth) and the renderer copies it to the generated
+    # config.yaml. Fail-fast if grafana-style: template MUST be present
+    # when the service is enabled.
+    litellm_config_template: str | None = None
+    if "litellm" in enabled:
+        litellm_template_path = stacks_dir / "litellm" / "config.yaml.template"
+        try:
+            litellm_config_template = litellm_template_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ServiceEnvError(
+                f"litellm enabled but config.yaml.template is unreadable at "
+                f"{litellm_template_path} ({type(exc).__name__}). The template "
+                "ships with stacks/litellm/ and must be present in the "
+                "stacks_dir passed to render_all_env_files. Restore the file "
+                "(re-clone the repo or git checkout "
+                "stacks/litellm/config.yaml.template) or disable litellm "
+                "before retrying.",
+            ) from exc
+
     for spec in _SPECS:
         if not spec.enabled_check(enabled):
             results.append(
@@ -1296,6 +1431,8 @@ def render_all_env_files(
             rendered = _render_jupyter(config, env, spark_enabled=spark_enabled)
         elif spec.service_name == "grafana":
             rendered = _render_grafana(config, env, prometheus_template=prometheus_template)
+        elif spec.service_name == "litellm":
+            rendered = _render_litellm(config, env, litellm_config_template=litellm_config_template)
         else:
             rendered = spec.render(config, env)
 
