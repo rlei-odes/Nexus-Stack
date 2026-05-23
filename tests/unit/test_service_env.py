@@ -28,8 +28,10 @@ from nexus_deploy.service_env import (
     _format_env_line,
     _render_env_file_content,
     _render_filestash,
+    _render_grafana,
     _render_lakefs,
     _render_pg_ducklake,
+    _render_prometheus_remote_write_block,
     _render_seaweedfs,
     _render_sftpgo,
     _strip_gitea_block,
@@ -201,6 +203,242 @@ def test_meilisearch_raises_on_empty_master_key(
     config = full_config.model_copy(update={"meilisearch_master_key": ""})
     with pytest.raises(ServiceEnvError, match="MEILI_MASTER_KEY"):
         _render_meilisearch(config, full_env)
+
+
+# ---------------------------------------------------------------------------
+# Grafana — prometheus.yml remote_write rendering (issue #607)
+# ---------------------------------------------------------------------------
+#
+# Backwards-compatibility contract: when MONITORING_ENDPOINT or
+# MONITORING_TOKEN is unset, prometheus.yml must contain a single
+# "# remote_write disabled" comment (no remote_write block) so today's
+# behaviour is preserved for every stack without Conductor enrolment.
+# When BOTH are set, the rendered config must contain a valid
+# remote_write block with Bearer auth, the (go_|process_|promhttp_)
+# cardinality-drop relabel (Conductor #23 highest-pri defuse), and a
+# tenant label. Sidecar is mode 0o644 (NOT 0o600) because it's
+# bind-mounted into the non-root prometheus container — see the
+# _is_0o644 test below for the full reasoning.
+
+
+def test_grafana_remote_write_disabled_when_both_unset(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """No env vars → disabled comment, no remote_write block."""
+    env = full_env  # full_env has neither monitoring_endpoint nor monitoring_token
+    rendered = _render_grafana(full_config, env)
+    sidecar = next((s for s in rendered.sidecars if s.relative_path == "prometheus.yml"), None)
+    assert sidecar is not None
+    assert "# remote_write disabled" in sidecar.content
+    assert "remote_write:" not in sidecar.content
+
+
+def test_grafana_remote_write_disabled_when_only_endpoint_set(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Endpoint without token → still disabled (no auth = no push).
+    Both are required; partial config silently no-ops the push side."""
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_endpoint": "https://metrics.example.com",
+        }
+    )
+    rendered = _render_grafana(full_config, env)
+    sidecar = next(s for s in rendered.sidecars if s.relative_path == "prometheus.yml")
+    assert "remote_write:" not in sidecar.content
+
+
+def test_grafana_remote_write_disabled_when_only_token_set(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Token without endpoint → still disabled (no destination)."""
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_token": "fake-token-xxx",
+        }
+    )
+    rendered = _render_grafana(full_config, env)
+    sidecar = next(s for s in rendered.sidecars if s.relative_path == "prometheus.yml")
+    assert "remote_write:" not in sidecar.content
+
+
+def test_grafana_remote_write_block_when_both_set(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Happy path: endpoint + token → full remote_write block with
+    /api/v1/write path, Bearer auth, cardinality-drop relabel, tenant
+    label (defaulting to domain)."""
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_endpoint": "https://metrics.example.com",
+            "monitoring_token": "fake-token-xxx",
+        }
+    )
+    rendered = _render_grafana(full_config, env)
+    sidecar = next(s for s in rendered.sidecars if s.relative_path == "prometheus.yml")
+    content = sidecar.content
+    assert "remote_write:" in content
+    # url / credentials / replacement are emitted as JSON-quoted YAML
+    # scalars so YAML-significant characters in operator-supplied
+    # values (#, : , leading {/[) can't break the rendered config.
+    assert '- url: "https://metrics.example.com/api/v1/write"' in content
+    assert "type: Bearer" in content
+    assert 'credentials: "fake-token-xxx"' in content
+    # Cardinality defuse — Conductor #23 highest-priority.
+    assert "(go_|process_|promhttp_).*" in content
+    assert "action: drop" in content
+    # Tenant label defaults to domain when tenant_id is unset.
+    assert "target_label: tenant" in content
+    assert 'replacement: "example.com"' in content
+
+
+def test_grafana_tenant_id_overrides_domain_when_set(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Conductor can pin a different tenant_id (e.g. class-id) — the
+    renderer must use it instead of falling back to domain."""
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_endpoint": "https://metrics.example.com",
+            "monitoring_token": "fake-token",
+            "tenant_id": "class-2026-spring-cohort-a",
+        }
+    )
+    rendered = _render_grafana(full_config, env)
+    sidecar = next(s for s in rendered.sidecars if s.relative_path == "prometheus.yml")
+    assert 'replacement: "class-2026-spring-cohort-a"' in sidecar.content
+    assert 'replacement: "example.com"' not in sidecar.content
+
+
+def test_grafana_trailing_slash_on_endpoint_is_stripped(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Operator might paste https://metrics.example.com/ with a slash.
+    The renderer must not produce //api/v1/write (would 404)."""
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_endpoint": "https://metrics.example.com/",
+            "monitoring_token": "fake-token",
+        }
+    )
+    rendered = _render_grafana(full_config, env)
+    sidecar = next(s for s in rendered.sidecars if s.relative_path == "prometheus.yml")
+    assert '- url: "https://metrics.example.com/api/v1/write"' in sidecar.content
+    assert "//api/v1/write" not in sidecar.content
+
+
+def test_grafana_prometheus_sidecar_mode_is_0o644(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Mode must be 0o644: this file is bind-mounted into the
+    prometheus container which runs as a non-root UID (65534 in
+    prom/prometheus 2.x+). A stricter mode like 0o600 owned by the
+    host deploy user would lock the container's prometheus process
+    out of its own config and the container would fail to start with
+    "permission denied". The token-in-cleartext concern is offset by
+    the host-access barrier (SSH behind CF Tunnel + email OTP) +
+    the token's redundant presence in Infisical + Actions secrets."""
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_endpoint": "https://metrics.example.com",
+            "monitoring_token": "fake-token",
+        }
+    )
+    rendered = _render_grafana(full_config, env)
+    sidecar = next(s for s in rendered.sidecars if s.relative_path == "prometheus.yml")
+    assert sidecar.mode == 0o644
+
+
+def test_grafana_raises_when_template_placeholder_missing(
+    full_config: NexusConfig, full_env: BootstrapEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SAFETY: if the prometheus.yml.template is edited and the
+    {{ REMOTE_WRITE_BLOCK }} placeholder gets removed/renamed,
+    str.replace silently no-ops — the rendered prometheus.yml would
+    contain no remote_write block even when the operator has set
+    MONITORING_ENDPOINT + MONITORING_TOKEN expecting metrics to flow.
+    Renderer must fail-fast with a clear ServiceEnvError pointing at
+    the template so the deploy aborts instead of silently dropping
+    monitoring data."""
+    import nexus_deploy.service_env as svc_env
+
+    # Monkey-patch the template loader to return a template WITHOUT
+    # the placeholder — simulates an operator who hand-edited the
+    # file and accidentally stripped the marker line.
+    monkeypatch.setattr(
+        svc_env,
+        "_load_prometheus_template",
+        lambda: "global:\n  scrape_interval: 15s\n# (placeholder accidentally removed)\n",
+    )
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "monitoring_endpoint": "https://metrics.example.com",
+            "monitoring_token": "fake-token",
+        }
+    )
+    with pytest.raises(ServiceEnvError, match="REMOTE_WRITE_BLOCK"):
+        _render_grafana(full_config, env)
+
+
+def test_grafana_remote_write_block_unit_no_tenant_falls_back_empty() -> None:
+    """Edge case unit-test on the helper: when BOTH tenant_id and
+    domain are None, the tenant replacement field is an empty string
+    (operator misconfig — would still write but show up as `tenant=`
+    in vmauth, easy to spot in Grafana). Pass-through, not aborted."""
+    e = BootstrapEnv(
+        monitoring_endpoint="https://metrics.example.com",
+        monitoring_token="fake-token",
+        # domain explicitly None, tenant_id None
+    )
+    block = _render_prometheus_remote_write_block(e)
+    # JSON-quoted empty string: "" — still valid YAML, no spoof risk.
+    assert 'replacement: ""\n' in block
+
+
+def test_grafana_remote_write_block_yaml_quotes_dangerous_chars() -> None:
+    """Operator-supplied values may contain YAML-significant chars
+    (#, ': ', leading {/[, backslashes, quotes). Each must be emitted
+    as a JSON-quoted YAML scalar so the rendered prometheus.yml stays
+    valid no matter what's in the secrets. Without this, Prometheus
+    would refuse to start with a parse error pointing at our generated
+    file — operator-debugging-nightmare territory.
+
+    Pins the invariant against any future refactor that switches back
+    to bare string interpolation."""
+    import json as _json
+
+    e = BootstrapEnv(
+        monitoring_endpoint="https://metrics.example.com/api: hello # comment",
+        monitoring_token='evil"token\\with{leading-brace',
+        tenant_id="weird: tenant #with comment",
+    )
+    block = _render_prometheus_remote_write_block(e)
+    # JSON quoting is the contract — every problematic value is wrapped
+    # in "..." with proper escaping. Verify by parsing the JSON-quoted
+    # field back and confirming the original value round-trips.
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- url:"):
+            quoted = stripped[len("- url:") :].strip()
+            # Round-trip via json.loads — would raise if the YAML
+            # scalar wasn't a valid JSON string.
+            value = _json.loads(quoted)
+            assert "api: hello # comment" in value
+        elif stripped.startswith("credentials:"):
+            quoted = stripped[len("credentials:") :].strip()
+            value = _json.loads(quoted)
+            assert value == 'evil"token\\with{leading-brace'
+        elif stripped.startswith("replacement:"):
+            quoted = stripped[len("replacement:") :].strip()
+            value = _json.loads(quoted)
+            assert value == "weird: tenant #with comment"
 
 
 # ---------------------------------------------------------------------------

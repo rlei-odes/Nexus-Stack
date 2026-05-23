@@ -208,13 +208,174 @@ def _render_infisical(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
     )
 
 
-def _render_grafana(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
+_PROMETHEUS_REMOTE_WRITE_PLACEHOLDER = "# {{ REMOTE_WRITE_BLOCK }}"
+
+
+def _render_prometheus_remote_write_block(e: BootstrapEnv) -> str:
+    """Build the Prometheus ``remote_write`` config block for the
+    grafana stack's prometheus.yml, or a no-op comment when the
+    monitoring env vars are unset.
+
+    Two guards must BOTH hold for an active ``remote_write`` block:
+    (1) endpoint set, (2) token set. Either missing → the block becomes
+    a single-line ``# remote_write disabled`` comment so Prometheus
+    happily starts with today's behaviour. This is the
+    backwards-compatibility contract from #607: existing stacks
+    without Conductor-injected secrets see zero behaviour change.
+    (``tenant_id`` is NOT a guard — it has a domain fallback at
+    render time, so an unset tenant_id never disables the block.)
+
+    SECURITY: the Bearer token lives inline in the rendered
+    prometheus.yml. The file is mode 0o644 (must be readable by the
+    non-root Prometheus container process — see :func:`_render_grafana`);
+    secrecy rests on the host-access barrier (SSH behind CF Tunnel +
+    email OTP). Tenant-label injection happens at the central vmauth
+    proxy server-side; the relabel rule below is informational
+    defense-in-depth (a malicious tenant can NOT use it to spoof
+    another tenant's bucket).
+
+    CARDINALITY: the ``go_*`` / ``process_*`` / ``promhttp_*`` drop
+    relabel is the highest-priority cardinality defuse from
+    Nexus-Conductor #23 — those series are useless for cross-stack
+    monitoring and inflate the central VM's series count per stack.
+    """
+    endpoint = (e.monitoring_endpoint or "").strip()
+    token = (e.monitoring_token or "").strip()
+    if not endpoint or not token:
+        return "# remote_write disabled — set MONITORING_ENDPOINT and MONITORING_TOKEN to enable"
+    # Tenant defaults to the stack's domain when TENANT_ID is unset —
+    # matches Conductor's expectation that each stack maps 1:1 to a
+    # distinct token + tenant pair (its token IS what authorizes the
+    # tenant label assignment at vmauth).
+    tenant = (e.tenant_id or e.domain or "").strip()
+    # Strip trailing slash on the endpoint so we don't end up with
+    # `https://host//api/v1/write` — Prometheus would 404 on that.
+    endpoint = endpoint.rstrip("/")
+    # YAML quoting: emit url / credentials / replacement as JSON-quoted
+    # strings. YAML 1.2 is a JSON superset, so any json.dumps(str)
+    # output is a valid YAML scalar and handles every problematic
+    # character (\" embedded quotes, \\ backslashes, leading {[!,
+    # `: ` mapping separators, trailing `#` comment markers, control
+    # chars). Without this, an operator-supplied endpoint or token
+    # with a YAML-significant character would silently produce an
+    # invalid prometheus.yml — Prometheus would refuse to start with
+    # a parse error pointing at our generated file. Tokens from some
+    # providers contain `=` padding and `_` / `-` which are safe, but
+    # we don't want to hand-audit every possible token format.
+    url_yaml = json.dumps(f"{endpoint}/api/v1/write")
+    token_yaml = json.dumps(token)
+    tenant_yaml = json.dumps(tenant)
+    return (
+        "remote_write:\n"
+        f"  - url: {url_yaml}\n"
+        "    authorization:\n"
+        "      type: Bearer\n"
+        f"      credentials: {token_yaml}\n"
+        "    write_relabel_configs:\n"
+        "      # Cardinality defuse (Conductor #23): drop Prometheus-runtime\n"
+        "      # series that have no value for cross-stack monitoring.\n"
+        "      - source_labels: [__name__]\n"
+        "        regex: '(go_|process_|promhttp_).*'\n"
+        "        action: drop\n"
+        "      # Informational tenant label — vmauth enforces the real one\n"
+        "      # server-side from the token mapping; this is defense-in-depth.\n"
+        "      - target_label: tenant\n"
+        f"        replacement: {tenant_yaml}\n"
+    )
+
+
+def _render_grafana(
+    c: NexusConfig, e: BootstrapEnv, *, prometheus_template: str | None = None
+) -> RenderedEnv:
+    """Grafana env vars + generated ``prometheus.yml`` sidecar.
+
+    Prometheus' YAML config doesn't support env-var substitution in
+    ``remote_write.url`` / ``authorization.credentials`` (only
+    ``external_labels`` + a couple of narrow places, per the
+    Prometheus docs), so the URL + Bearer token must be baked into
+    the config file at render time. We read ``prometheus.yml.template``
+    from the grafana stack dir (the human-editable source) and replace
+    the single ``{{ REMOTE_WRITE_BLOCK }}`` placeholder with either a
+    real ``remote_write`` config or a one-line disabled comment.
+
+    The template file itself is NOT consumed at runtime by Prometheus —
+    only the generated ``prometheus.yml`` (gitignored) is bind-mounted
+    into the container. Re-generated on every spin-up with the current
+    env vars.
+
+    Mode 0o644 (not 0o600 despite the token-in-cleartext): this file
+    is bind-mounted into the prometheus container which runs as a
+    non-root UID — a stricter mode would lock Prometheus itself out
+    of its own config. Token secrecy still rests on the host-access
+    barrier (SSH behind CF Tunnel + email OTP).
+    """
+    # Template content is normally injected by ``render_all_env_files``
+    # via a special-case dispatch (parallel to jupyter's spark_enabled
+    # kwarg) so the template lives under the same ``stacks_dir`` the
+    # rest of the renderer writes into — works with the repo checkout,
+    # with installed wheels (where ``stacks/`` is NOT in the
+    # site-packages), and with non-standard stacks_dir paths (custom
+    # test fixtures). The ``_load_prometheus_template()`` fallback is
+    # kept for direct test callers that invoke ``_render_grafana``
+    # without going through the orchestration layer.
+    template = (
+        prometheus_template if prometheus_template is not None else _load_prometheus_template()
+    )
+    # Fail-fast on template drift: if the placeholder is missing,
+    # str.replace silently no-ops and the renderer would produce a
+    # prometheus.yml without ANY remote_write block — even when the
+    # operator has set MONITORING_ENDPOINT + MONITORING_TOKEN expecting
+    # metrics to flow. Catch this at render time so the deploy aborts
+    # with an actionable message instead of silently failing to push.
+    if _PROMETHEUS_REMOTE_WRITE_PLACEHOLDER not in template:
+        raise ServiceEnvError(
+            "stacks/grafana/prometheus.yml.template is missing the "
+            f"{_PROMETHEUS_REMOTE_WRITE_PLACEHOLDER!r} placeholder — "
+            "remote_write rendering can't proceed. Restore the placeholder "
+            "(usually at the very bottom of the template) or revert local "
+            "edits to that file. Aborting to avoid a silent monitoring-off "
+            "deploy.",
+        )
+    remote_write_block = _render_prometheus_remote_write_block(e)
+    prometheus_yml = template.replace(
+        _PROMETHEUS_REMOTE_WRITE_PLACEHOLDER, remote_write_block.rstrip("\n")
+    )
     return RenderedEnv(
         env_vars={
             "GRAFANA_ADMIN_USER": c.admin_username or "admin",
             "GRAFANA_ADMIN_PASSWORD": c.grafana_admin_password or "",
         },
+        sidecars=(
+            # mode 0o644: this file is bind-mounted INTO the prometheus
+            # container (see stacks/grafana/docker-compose.yml's
+            # `./prometheus.yml:/etc/prometheus/prometheus.yml:ro`), and
+            # the prom/prometheus image runs as a non-root UID (65534
+            # since 2.x). A 0o600 file owned by the host deploy user
+            # would be unreadable inside the container, causing
+            # Prometheus to fail to start with "permission denied".
+            # The Bearer token in this file is still protected by:
+            # (a) host-level access requires SSH which is locked behind
+            # the Cloudflare Tunnel + email OTP, (b) the same token is
+            # already pushed to Infisical + lives in Actions secrets —
+            # the file is not the only place it exists. Matches the
+            # mode of other bind-mounted configs in this stack
+            # (loki-config.yml, promtail-config.yml).
+            SidecarFile(relative_path="prometheus.yml", content=prometheus_yml, mode=0o644),
+        ),
     )
+
+
+def _load_prometheus_template() -> str:
+    """Load ``stacks/grafana/prometheus.yml.template`` from the repo.
+
+    Resolved relative to this Python file: the package layout has
+    ``src/nexus_deploy/service_env.py`` and ``stacks/grafana/...`` as
+    siblings under the project root. Tests can monkey-patch this
+    function to inject a fixture template.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    template_path = project_root / "stacks" / "grafana" / "prometheus.yml.template"
+    return template_path.read_text(encoding="utf-8")
 
 
 def _render_dagster(c: NexusConfig, e: BootstrapEnv) -> RenderedEnv:
@@ -1099,6 +1260,28 @@ def render_all_env_files(
     """
     results: list[ServiceRenderResult] = []
     spark_enabled = "spark" in enabled
+    # Grafana renders ``prometheus.yml`` from a template that lives
+    # alongside the docker-compose at ``stacks_dir/grafana/``. Read it
+    # ONCE here so the renderer stays a pure (config, env) → result
+    # function and operationally works regardless of where the package
+    # was installed from. If grafana is enabled, the template MUST be
+    # in stacks_dir — silent fallback to a repo-relative loader would
+    # either fail with a confusing site-packages path or render from
+    # a totally different file than the operator is editing.
+    prometheus_template: str | None = None
+    if "grafana" in enabled:
+        template_path = stacks_dir / "grafana" / "prometheus.yml.template"
+        try:
+            prometheus_template = template_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ServiceEnvError(
+                f"grafana enabled but prometheus.yml.template is unreadable at "
+                f"{template_path} ({type(exc).__name__}). The template ships with "
+                "stacks/grafana/ and must be present in the stacks_dir passed to "
+                "render_all_env_files. Restore the file (re-clone the repo or "
+                "git checkout stacks/grafana/prometheus.yml.template) or disable "
+                "grafana before retrying.",
+            ) from exc
 
     for spec in _SPECS:
         if not spec.enabled_check(enabled):
@@ -1107,9 +1290,12 @@ def render_all_env_files(
             )
             continue
 
-        # Cross-spec dependencies: jupyter needs spark_enabled.
+        # Cross-spec dependencies: jupyter needs spark_enabled, grafana
+        # needs the prometheus.yml.template loaded from stacks_dir.
         if spec.service_name == "jupyter":
             rendered = _render_jupyter(config, env, spark_enabled=spark_enabled)
+        elif spec.service_name == "grafana":
+            rendered = _render_grafana(config, env, prometheus_template=prometheus_template)
         else:
             rendered = spec.render(config, env)
 
