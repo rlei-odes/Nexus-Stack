@@ -4,6 +4,7 @@ import Layout from '../layouts/Layout.astro';
 
 <Layout title="Category" activeNav="stacks">
   <div class="category-header">
+    <button type="button" class="btn-back" onclick="document.referrer && document.referrer.startsWith(location.origin) ? history.back() : (location.href='/stacks')">&#8592; Back to Stacks</button>
     <h2 id="page-title">Loading...</h2>
     <div id="category-description" class="category-description"></div>
     <div id="category-stats" class="category-stats"></div>
@@ -17,6 +18,26 @@ import Layout from '../layouts/Layout.astro';
 <style>
   .category-header {
     margin-bottom: 2rem;
+  }
+
+  .btn-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 1rem;
+    padding: 0.4rem 0.9rem;
+    background: rgba(0, 170, 255, 0.1);
+    color: var(--info);
+    border: 1px solid rgba(0, 170, 255, 0.3);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+  }
+
+  .btn-back:hover {
+    background: rgba(0, 170, 255, 0.2);
+    border-color: rgba(0, 170, 255, 0.5);
   }
 
   .category-description {
