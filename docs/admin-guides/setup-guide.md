@@ -133,7 +133,8 @@ Add these secrets to your GitHub repository:
 | Secret Name | Description |
 |-------------|-------------|
 | `GH_SECRETS_TOKEN` | GitHub PAT for R2 auto-save and Cloudflare runtime (see below) |
-| `TF_VAR_user_email` | User - all services except SSH |
+| `TF_VAR_user_email` | User - all services except SSH (also receives notifications) |
+| `TF_VAR_guest_emails` | Comma-separated guests - Access whitelist only, no notifications |
 | `RESEND_API_KEY` | Email notifications via Resend |
 | `DOCKERHUB_USERNAME` | Docker Hub username (higher pull limits) |
 | `DOCKERHUB_TOKEN` | Docker Hub access token |

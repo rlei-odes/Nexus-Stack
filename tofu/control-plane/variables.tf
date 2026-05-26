@@ -60,6 +60,12 @@ variable "user_email" {
   default     = ""
 }
 
+variable "guest_emails" {
+  description = "Comma-separated guest emails for Cloudflare Access (no SSH, no notifications). Optional."
+  type        = string
+  default     = ""
+}
+
 variable "server_type" {
   description = "Hetzner server type (passed to Control Plane for display)"
   type        = string
