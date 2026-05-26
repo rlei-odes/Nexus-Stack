@@ -73,7 +73,9 @@ export async function onRequestPost(context) {
     const fallbackUserEmail = userEmails[0] || null;
     const userEmail = accessEmail || fallbackUserEmail;
     if (!accessEmail) {
-      console.warn('send-credentials: CF-Access-Authenticated-User-Email missing or invalid, falling back to USER_EMAIL[0]');
+      // TEMP DIAGNOSTIC — revert before merging upstream.
+      const cfHeaders = [...request.headers.entries()].filter(([k]) => k.toLowerCase().startsWith('cf-'));
+      console.warn('send-credentials: CF-Access-Authenticated-User-Email missing or invalid. Raw value:', JSON.stringify(accessEmailHeader), 'All Cf-* headers seen by Function:', JSON.stringify(cfHeaders));
     }
     const infisicalUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
     const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${domain}`);
