@@ -8,6 +8,7 @@
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
 import { safeHttpsUrl } from './_utils/url.js';
+import { getAccessUserEmail } from './_utils/cf-access-email.js';
 
 // Resend-accepted email formats. Hoisted to module scope so the regex
 // objects are created once per Worker boot instead of once per request.
@@ -61,9 +62,9 @@ export async function onRequestPost(context) {
     const adminEmail = env.ADMIN_EMAIL;
 
     // TO is the Access-authenticated caller, so each user gets their own copy.
-    // Header is missing only in preview / misconfigured Access — fall back then.
-    const accessEmailHeader = (request.headers.get('CF-Access-Authenticated-User-Email') || '').trim();
-    const accessEmail = isValidResendEmail(accessEmailHeader) ? accessEmailHeader : null;
+    // Falls back to USER_EMAIL[0] when no Access identity can be resolved.
+    const accessEmailRaw = getAccessUserEmail(request);
+    const accessEmail = accessEmailRaw && isValidResendEmail(accessEmailRaw) ? accessEmailRaw : null;
 
     // USER_EMAIL may be a single address or a comma-separated list.
     const userEmails = (env.USER_EMAIL || '')
@@ -73,9 +74,7 @@ export async function onRequestPost(context) {
     const fallbackUserEmail = userEmails[0] || null;
     const userEmail = accessEmail || fallbackUserEmail;
     if (!accessEmail) {
-      // TEMP DIAGNOSTIC — revert before merging upstream.
-      const cfHeaders = [...request.headers.entries()].filter(([k]) => k.toLowerCase().startsWith('cf-'));
-      console.warn('send-credentials: CF-Access-Authenticated-User-Email missing or invalid. Raw value:', JSON.stringify(accessEmailHeader), 'All Cf-* headers seen by Function:', JSON.stringify(cfHeaders));
+      console.warn('send-credentials: no Access identity resolved, falling back to USER_EMAIL[0]');
     }
     const infisicalUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
     const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${domain}`);
