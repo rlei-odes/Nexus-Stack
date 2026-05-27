@@ -139,7 +139,7 @@ export async function onRequestPost(context) {
       subject: '🔐 Nexus-Stack Credentials',
       html: emailHTML
     };
-    if (userEmail && userEmail !== adminEmail) {
+    if (userEmail && userEmail.toLowerCase() !== adminEmail.toLowerCase()) {
       emailPayload.cc = [adminEmail];
     }
 

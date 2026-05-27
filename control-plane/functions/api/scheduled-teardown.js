@@ -8,6 +8,7 @@
 
 import { logApiCall, logError } from './_utils/logger.js';
 import { getAccessUserEmail } from './_utils/cf-access-email.js';
+import { requireAdmin } from './_utils/require-admin.js';
 
 // D1 Helper Functions
 async function getConfig(db, key, defaultValue = null) {
@@ -236,6 +237,8 @@ export async function onRequestGet(context) {
 
 export async function onRequestPost(context) {
   const { env, request } = context;
+  const denial = requireAdmin(env, request);
+  if (denial) return denial;
   const userEmail = getAccessUserEmail(request) || '';
   const maxExtensionsPerDay = parsePositiveInt(env.MAX_EXTENSIONS_PER_DAY, 3);
   const maxDelayHours = parsePositiveInt(env.MAX_DELAY_HOURS, 4);

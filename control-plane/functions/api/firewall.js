@@ -10,6 +10,7 @@
  */
 
 import { logApiCall, logError } from './_utils/logger.js';
+import { requireAdmin } from './_utils/require-admin.js';
 
 /**
  * Validate service name to prevent injection attacks
@@ -162,6 +163,8 @@ export async function onRequestGet(context) {
  */
 export async function onRequestPost(context) {
   const { env, request } = context;
+  const denial = requireAdmin(env, request);
+  if (denial) return denial;
 
   if (!env.NEXUS_DB) {
     return new Response(JSON.stringify({
