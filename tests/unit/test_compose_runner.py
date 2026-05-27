@@ -427,6 +427,136 @@ def test_run_compose_up_metabase_explicit_override_beats_enabled_inference() -> 
 
 
 # ---------------------------------------------------------------------------
+# ollama-internal cross-stack network prep (shared by ollama + litellm)
+# ---------------------------------------------------------------------------
+
+
+def test_render_ollama_internal_network_prep_only_when_flagged() -> None:
+    """Both `stacks/ollama` and `stacks/litellm` declare `ollama-internal`
+    as an `external: true` network. Without the network already created,
+    `docker compose up` aborts BEFORE the container is created. The
+    pre-compose block creates the network idempotently when either stack
+    is enabled (or omitted otherwise)."""
+    without = _render_default(ollama_internal_network_prep=False)
+    assert "ollama-internal" not in without
+    assert "docker network create" not in without
+
+    with_prep = _render_default(ollama_internal_network_prep=True)
+    assert "docker network inspect ollama-internal" in with_prep
+    assert "docker network create --label managed-by=nexus-stack ollama-internal" in with_prep
+
+
+def test_render_ollama_internal_network_prep_is_idempotent() -> None:
+    """The inspect-then-create guard short-circuits if the network
+    already exists. A bare `docker network create` would fail with
+    a non-zero exit on the second deploy under `set -euo pipefail`
+    and abort the entire compose-up loop.
+
+    Tests the full inspect→create chain as one contiguous expression
+    rather than just `||` presence: a future refactor that splits
+    the guard into two unrelated statements (e.g. `inspect; if [ $?
+    -ne 0 ]; then create; fi`) would lose the short-circuit semantics
+    under `set -e` and silently break idempotency. Whitespace is
+    normalised so the test isn't brittle to backslash-newline
+    continuation tweaks bash treats as one logical line.
+    """
+    script = _render_default(ollama_internal_network_prep=True)
+    # Normalise whitespace AND strip the bash line-continuation
+    # backslash (`\` followed by newline) so the substring matcher
+    # doesn't depend on the renderer's exact line-wrap choice.
+    normalised = " ".join(script.replace("\\\n", " ").split())
+    assert (
+        "docker network inspect ollama-internal >/dev/null 2>&1 || "
+        "docker network create --label managed-by=nexus-stack ollama-internal"
+    ) in normalised
+
+
+def test_run_compose_up_network_prep_default_when_litellm_in_enabled() -> None:
+    """ollama_internal_network_prep defaults to True iff 'litellm' OR
+    'ollama' is in enabled. Mirrors the dify/metabase storage-prep
+    default semantics."""
+    captured_script: dict[str, str] = {}
+
+    def capture(script: str) -> subprocess.CompletedProcess[str]:
+        captured_script["script"] = script
+        return subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="RESULT started=1 failed=0", stderr=""
+        )
+
+    run_compose_up(["jupyter", "litellm"], script_runner=capture)
+    assert "docker network inspect ollama-internal" in captured_script["script"]
+
+
+def test_run_compose_up_network_prep_default_when_ollama_in_enabled() -> None:
+    """Ollama-only deployment (LiteLLM disabled) still needs the
+    pre-create because ollama's own compose declares the network as
+    `external: true` — symmetric ownership with litellm."""
+    captured_script: dict[str, str] = {}
+
+    def capture(script: str) -> subprocess.CompletedProcess[str]:
+        captured_script["script"] = script
+        return subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="RESULT started=1 failed=0", stderr=""
+        )
+
+    run_compose_up(["jupyter", "ollama"], script_runner=capture)
+    assert "docker network inspect ollama-internal" in captured_script["script"]
+
+
+def test_run_compose_up_network_prep_renders_once_in_joint_case() -> None:
+    """Joint LiteLLM + Ollama deployment: only one pre-create block,
+    not duplicated. The `inspect || create` guard is idempotent at
+    runtime regardless, but rendering the block twice would be a
+    silent code smell — confirms the inference doesn't double-add."""
+    captured_script: dict[str, str] = {}
+
+    def capture(script: str) -> subprocess.CompletedProcess[str]:
+        captured_script["script"] = script
+        return subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="RESULT started=2 failed=0", stderr=""
+        )
+
+    run_compose_up(["litellm", "ollama"], script_runner=capture)
+    assert (
+        captured_script["script"].count(
+            "docker network create --label managed-by=nexus-stack ollama-internal"
+        )
+        == 1
+    )
+
+
+def test_run_compose_up_network_prep_omitted_when_neither_in_enabled() -> None:
+    """Neither litellm nor ollama → no network-prep block (also no
+    spurious network created on stacks that don't need it)."""
+    captured_script: dict[str, str] = {}
+
+    def capture(script: str) -> subprocess.CompletedProcess[str]:
+        captured_script["script"] = script
+        return subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="RESULT started=1 failed=0", stderr=""
+        )
+
+    run_compose_up(["jupyter"], script_runner=capture)
+    assert "ollama-internal" not in captured_script["script"]
+
+
+def test_run_compose_up_network_prep_explicit_override_beats_enabled_inference() -> None:
+    """Caller can force ollama_internal_network_prep=False even when
+    'litellm' or 'ollama' is in enabled — operator escape hatch if the
+    network handling needs to be deferred to a different mechanism."""
+    captured_script: dict[str, str] = {}
+
+    def capture(script: str) -> subprocess.CompletedProcess[str]:
+        captured_script["script"] = script
+        return subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="RESULT started=1 failed=0", stderr=""
+        )
+
+    run_compose_up(["litellm"], script_runner=capture, ollama_internal_network_prep=False)
+    assert "ollama-internal" not in captured_script["script"]
+
+
+# ---------------------------------------------------------------------------
 # CLI integration
 # ---------------------------------------------------------------------------
 

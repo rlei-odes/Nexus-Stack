@@ -149,6 +149,7 @@ def render_remote_script(
     leaves: list[str],
     dify_storage_prep: bool = False,
     metabase_storage_prep: bool = False,
+    ollama_internal_network_prep: bool = False,
     stacks_dir: str = _REMOTE_STACKS_DIR,
     global_env: str = _REMOTE_GLOBAL_ENV,
 ) -> str:
@@ -197,6 +198,34 @@ mkdir -p /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
 chown -R 1001:1001 /mnt/nexus-data/dify/storage /mnt/nexus-data/dify/plugins
 """
 
+    # `ollama-internal` is the cross-stack bridge LiteLLM uses to reach
+    # the Ollama container by service name when both stacks are enabled.
+    # Both compose files (stacks/ollama, stacks/litellm) declare the
+    # network as `external: true` so neither owns the lifecycle —
+    # without a pre-existing network of that name, `docker compose up`
+    # aborts with "network ollama-internal declared as external, but
+    # could not be found" BEFORE the container is even created. We
+    # pre-create here, idempotently, whenever either stack is enabled.
+    #
+    # The symmetric `external: true` design (vs. having Ollama own the
+    # network as compose-managed) avoids a subtle race in the joint
+    # LiteLLM+Ollama case: parallel `docker compose up` for both
+    # parents would otherwise have one project try to create a network
+    # the other one expects to find, and Compose's tolerance for
+    # pre-existing networks varies by version.
+    #
+    # `docker network create --label` is idempotent enough for our
+    # purposes via the inspect-guard (exit 0 if exists, exit 1 if
+    # not — wrapped in a short-circuit `||`). The label lets ops
+    # tell apart nexus-managed networks from operator-created ones
+    # when troubleshooting.
+    ollama_internal_block = ""
+    if ollama_internal_network_prep:
+        ollama_internal_block = """
+docker network inspect ollama-internal >/dev/null 2>&1 || \\
+    docker network create --label managed-by=nexus-stack ollama-internal
+"""
+
     metabase_block = ""
     if metabase_storage_prep:
         # Metabase runs as uid 2000 (since v0.46 official image) and
@@ -234,7 +263,7 @@ fi
 
 PARENTS=({parents_q})
 LEAVES=({leaves_q})
-{dify_block}{metabase_block}
+{ollama_internal_block}{dify_block}{metabase_block}
 STARTED=0
 FAILED=0
 PIDS=()
@@ -332,6 +361,7 @@ def run_compose_up(
     host: str = "nexus",
     dify_storage_prep: bool | None = None,
     metabase_storage_prep: bool | None = None,
+    ollama_internal_network_prep: bool | None = None,
     script_runner: ScriptRunner | None = None,
 ) -> ComposeUpResult:
     """Render → exec → parse.
@@ -366,12 +396,18 @@ def run_compose_up(
     actual_metabase = (
         metabase_storage_prep if metabase_storage_prep is not None else "metabase" in enabled
     )
+    actual_ollama_internal = (
+        ollama_internal_network_prep
+        if ollama_internal_network_prep is not None
+        else ("litellm" in enabled or "ollama" in enabled)
+    )
 
     script = render_remote_script(
         parents=parents,
         leaves=leaves,
         dify_storage_prep=actual_dify,
         metabase_storage_prep=actual_metabase,
+        ollama_internal_network_prep=actual_ollama_internal,
     )
 
     run_script = script_runner or (lambda s: _remote.ssh_run_script(s, host=host))
