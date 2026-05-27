@@ -34,6 +34,7 @@ import pytest
 
 from nexus_deploy import s3_persistence as _s3
 from nexus_deploy.s3_restore import (
+    _STANDARD_STOP_COMPOSE_FILES,
     FEATURE_FLAG_ENV,
     S3RestoreApplied,
     S3RestoreSkipped,
@@ -179,13 +180,18 @@ def test_standard_targets_returns_canonical_pair() -> None:
     # Dify — matches stacks/dify/docker-compose.yml line 180/182
     assert pg_by_container["dify-db"].database == "dify"
     assert pg_by_container["dify-db"].user == "nexus-dify"
+    # HedgeDoc — matches stacks/hedgedoc/docker-compose.yml. Added in
+    # issue #618 alongside the admin-auth fix because a teardown
+    # without persistence would discard every note + upload.
+    assert pg_by_container["hedgedoc-db"].database == "hedgedoc"
+    assert pg_by_container["hedgedoc-db"].user == "nexus-hedgedoc"
 
     rsync_by_name = {r.name: r for r in rsync}
-    # All six rsync targets returned by standard_targets() — gitea x2
+    # All seven rsync targets returned by standard_targets() — gitea x2
     # + dify x3 are the original RFC 0001 set; metabase x1 was added
-    # for issue #528 and extends the same layout convention (the RFC
+    # for issue #528, hedgedoc-uploads x1 for issue #618. The RFC
     # document itself still lists only gitea + dify until a future
-    # storage-layout revision lands).
+    # storage-layout revision lands.
     for required in (
         "gitea-repos",
         "gitea-lfs",
@@ -193,6 +199,7 @@ def test_standard_targets_returns_canonical_pair() -> None:
         "dify-weaviate",
         "dify-plugins",
         "metabase-data",
+        "hedgedoc-uploads",
     ):
         assert required in rsync_by_name, f"missing required rsync target: {required}"
 
@@ -219,6 +226,7 @@ def test_standard_targets_s3_subpaths_match_rfc_layout() -> None:
     assert sub_by_name["dify-weaviate"] == "dify/weaviate"
     assert sub_by_name["dify-plugins"] == "dify/plugins"
     assert sub_by_name["metabase-data"] == "metabase/data"
+    assert sub_by_name["hedgedoc-uploads"] == "hedgedoc/uploads"
 
 
 def test_standard_targets_metabase_has_no_postgres_dump() -> None:
@@ -230,6 +238,45 @@ def test_standard_targets_metabase_has_no_postgres_dump() -> None:
     pg_containers = {p.container for p in postgres}
     assert "metabase-db" not in pg_containers
     assert "metabase" not in pg_containers
+
+
+def test_standard_stop_compose_files_matches_rsync_targets() -> None:
+    """Symmetry invariant: every stack with an RsyncTarget in
+    standard_targets() MUST be stopped before the snapshot, otherwise
+    rsync sees torn writes / half-uploaded files. The reverse is also
+    enforced — no stop entry without a matching rsync consumer, so the
+    stop list doesn't quietly accumulate dead entries.
+
+    Postgres-only stacks (no rsync target) are intentionally NOT in
+    the stop list — pg_dump is MVCC-safe against live writers.
+
+    Regression guard for #619: HedgeDoc was added to standard_targets()
+    with an `hedgedoc-uploads` RsyncTarget but the corresponding stop
+    entry was missed in the first commit, leaving the uploads dir
+    racing with rsync on every snapshot."""
+    _, rsync = standard_targets()
+
+    # Each rsync target's name is `<stack>-<subdir>` (gitea-repos,
+    # hedgedoc-uploads, ...). Stack name = first segment.
+    stacks_with_rsync = {r.name.split("-", 1)[0] for r in rsync}
+
+    # Each compose-file path is `/opt/docker-server/stacks/<stack>/docker-compose.yml`.
+    stacks_in_stop_list = {
+        path.removeprefix("/opt/docker-server/stacks/").removesuffix("/docker-compose.yml")
+        for path in _STANDARD_STOP_COMPOSE_FILES
+    }
+
+    missing_from_stop = stacks_with_rsync - stacks_in_stop_list
+    assert not missing_from_stop, (
+        f"Stacks have an RsyncTarget but no stop entry — "
+        f"snapshot will race against live writes: {sorted(missing_from_stop)}"
+    )
+
+    dead_stop_entries = stacks_in_stop_list - stacks_with_rsync
+    assert not dead_stop_entries, (
+        f"Stop list contains stacks with no RsyncTarget — "
+        f"unnecessary downtime during snapshot: {sorted(dead_stop_entries)}"
+    )
 
 
 # ---------------------------------------------------------------------------

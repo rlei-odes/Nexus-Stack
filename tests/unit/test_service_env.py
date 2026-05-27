@@ -69,6 +69,7 @@ def full_config() -> NexusConfig:
         meilisearch_master_key="meili-master-key-32chars-xxxxxxx",
         hedgedoc_session_secret="hedgedoc-session-32chars-xxxxxxx",
         hedgedoc_db_password="hedgedoc-db-pw",
+        hedgedoc_admin_password="hedgedoc-admin-pw",
         litellm_master_key="litellm-master-32chars-xxxxxxxxx",
         litellm_salt_key="litellm-salt-32chars-xxxxxxxxxxx",
         litellm_db_password="litellm-db-pw",
@@ -481,16 +482,71 @@ def test_hedgedoc_raises_on_empty_db_password(
 def test_hedgedoc_raises_lists_all_missing_at_once(
     full_config: NexusConfig, full_env: BootstrapEnv
 ) -> None:
-    """If BOTH secrets are missing, the error message names BOTH so
-    the operator does one Tofu apply + spin-up cycle instead of
-    iterating one missing-secret at a time."""
+    """If all four required secrets are missing, the error message
+    names all four so the operator does one Tofu apply + spin-up
+    cycle instead of iterating one missing-secret at a time."""
     from nexus_deploy.service_env import _render_hedgedoc
 
     config = full_config.model_copy(
-        update={"hedgedoc_session_secret": "", "hedgedoc_db_password": ""}
+        update={
+            "hedgedoc_session_secret": "",
+            "hedgedoc_db_password": "",
+            "hedgedoc_admin_password": "",
+        }
     )
-    with pytest.raises(ServiceEnvError, match=r"HEDGEDOC_SESSION_SECRET.*HEDGEDOC_DB_PASSWORD"):
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "admin_email": "",
+        }
+    )
+    # Error message uses the Infisical key names so operators
+    # grepping for the failure find the secret directly without
+    # having to translate between renderer-internal vs Infisical
+    # naming.
+    with pytest.raises(
+        ServiceEnvError,
+        match=(
+            r"HEDGEDOC_SESSION_SECRET.*HEDGEDOC_DB_PASSWORD.*"
+            r"HEDGEDOC_PASSWORD.*HEDGEDOC_USERNAME"
+        ),
+    ):
+        _render_hedgedoc(config, env)
+
+
+def test_hedgedoc_raises_on_empty_admin_password(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Empty admin password (Infisical /hedgedoc/HEDGEDOC_PASSWORD)
+    with CMD_ALLOW_EMAIL_REGISTER=false would leave HedgeDoc with
+    no way to log in — the only seedable account is the one this
+    renderer feeds. Fail fast at deploy time so the operator runs
+    the Tofu sync before the container comes up locked-out."""
+    from nexus_deploy.service_env import _render_hedgedoc
+
+    config = full_config.model_copy(update={"hedgedoc_admin_password": ""})
+    with pytest.raises(ServiceEnvError, match="HEDGEDOC_PASSWORD"):
         _render_hedgedoc(config, full_env)
+
+
+def test_hedgedoc_raises_on_empty_admin_email(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Empty admin_email (BootstrapEnv → Infisical
+    /hedgedoc/HEDGEDOC_USERNAME) means the services-configure hook
+    would try to seed a user with an empty email — manage_users CLI
+    would reject it. Surface upstream instead of letting the deploy
+    go red later."""
+    from nexus_deploy.service_env import _render_hedgedoc
+
+    env = BootstrapEnv(
+        **{
+            **{k: getattr(full_env, k) for k in full_env.__dataclass_fields__},
+            "admin_email": "",
+        }
+    )
+    with pytest.raises(ServiceEnvError, match="HEDGEDOC_USERNAME"):
+        _render_hedgedoc(full_config, env)
 
 
 def test_hedgedoc_renders_domain_from_bootstrap_env(
@@ -499,13 +555,23 @@ def test_hedgedoc_renders_domain_from_bootstrap_env(
     """HEDGEDOC_DOMAIN must be derived from BootstrapEnv (subdomain
     'hedgedoc' + DOMAIN via service_host). HedgeDoc bakes the domain
     into absolute URLs (image attachments, OAuth callback links) at
-    container-start time — wrong value breaks all share links."""
+    container-start time — wrong value breaks all share links.
+
+    Admin email + password are NOT rendered to .env (the
+    docker-compose doesn't reference them and the
+    services-configure hook reads them straight from NexusConfig /
+    BootstrapEnv) — the guard checks them for non-emptyness only.
+    """
     from nexus_deploy.service_env import _render_hedgedoc
 
     rendered = _render_hedgedoc(full_config, full_env)
     assert rendered.env_vars["HEDGEDOC_DOMAIN"] == "hedgedoc.example.com"
     assert rendered.env_vars["HEDGEDOC_SESSION_SECRET"]
     assert rendered.env_vars["HEDGEDOC_DB_PASSWORD"]
+    # Admin email + password deliberately NOT in rendered .env
+    # (dead vars — nothing consumes them).
+    assert "HEDGEDOC_ADMIN_EMAIL" not in rendered.env_vars
+    assert "HEDGEDOC_ADMIN_PASSWORD" not in rendered.env_vars
 
 
 def test_hedgedoc_domain_respects_subdomain_separator(

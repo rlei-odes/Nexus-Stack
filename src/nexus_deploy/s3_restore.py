@@ -346,6 +346,7 @@ def standard_targets() -> tuple[tuple[_s3.PostgresDumpTarget, ...], tuple[_s3.Rs
     postgres = (
         _s3.PostgresDumpTarget(container="gitea-db", database="gitea", user="nexus-gitea"),
         _s3.PostgresDumpTarget(container="dify-db", database="dify", user="nexus-dify"),
+        _s3.PostgresDumpTarget(container="hedgedoc-db", database="hedgedoc", user="nexus-hedgedoc"),
     )
     rsync = (
         _s3.RsyncTarget(
@@ -380,6 +381,17 @@ def standard_targets() -> tuple[tuple[_s3.PostgresDumpTarget, ...], tuple[_s3.Rs
             name="metabase-data",
             local_path="/mnt/nexus-data/metabase",
             s3_subpath="metabase/data",
+        ),
+        # HedgeDoc: user-uploaded images (Markdown attachments).
+        # The Postgres state goes through the PostgresDumpTarget
+        # above; this rsync target captures the binary uploads that
+        # live outside the DB. Bind-mount path chowned to 10000:10000
+        # (the in-container hedgedoc user) by compose_runner's
+        # hedgedoc_uploads_prep block. Issue #618.
+        _s3.RsyncTarget(
+            name="hedgedoc-uploads",
+            local_path="/mnt/nexus-data/hedgedoc/uploads",
+            s3_subpath="hedgedoc/uploads",
         ),
     )
     return postgres, rsync
@@ -596,12 +608,21 @@ def restore_from_s3(
 # ---------------------------------------------------------------------------
 
 
-# Compose-file list for the stop-before-snapshot step. v1.0 stops the
-# three stateful stacks (Gitea, Dify, Metabase) before pg_dump + rsync
-# so we get a quiesced filesystem view. Other stacks aren't stopped —
-# they don't carry state, and the longer we keep them up the shorter
-# the spinup-side downtime window. If a future stack gains state,
-# extend this list AND add to standard_targets().
+# Compose-file list for the stop-before-snapshot step. Stops every
+# stack that has an RsyncTarget in standard_targets() so we get a
+# quiesced filesystem view before rsync runs. Postgres-only stacks
+# don't need to appear here — pg_dump is safe against live writers
+# (MVCC), so the PostgresDumpTarget snapshot path is race-free on its
+# own. Any stack with bind-mounted live data, however, must be stopped
+# first, or rsync sees a torn write / half-uploaded file.
+#
+# v1.0 stops Gitea (repos + lfs), Dify (storage + weaviate + plugins),
+# Metabase (H2 + Lucene), HedgeDoc (uploads). Other stacks aren't
+# stopped — they don't carry rsync-tracked state, and the longer we
+# keep them up the shorter the spinup-side downtime window. If a
+# future stack gains an RsyncTarget, extend this list AND add to
+# standard_targets() — the invariant is enforced by
+# test_standard_stop_compose_files_matches_rsync_targets().
 #
 # Why Metabase needs to be in the stop-list even though it has no
 # Postgres sidecar: the OSS image keeps a H2 database under
@@ -611,6 +632,8 @@ def restore_from_s3(
 # half-writes both produce a snapshot that restores to "DB cannot
 # open" on next spin-up. Stopping the container ensures all in-flight
 # writes flushed + file handles closed before rclone touches the dir.
+# Same logic applies to HedgeDoc's uploads dir (half-uploaded
+# attachments) and Gitea's repos (mid-push pack files).
 #
 # Paths match the on-server layout the orchestrator already uses
 # elsewhere (compose_runner.py writes each stack to
@@ -619,6 +642,7 @@ _STANDARD_STOP_COMPOSE_FILES = (
     "/opt/docker-server/stacks/gitea/docker-compose.yml",
     "/opt/docker-server/stacks/dify/docker-compose.yml",
     "/opt/docker-server/stacks/metabase/docker-compose.yml",
+    "/opt/docker-server/stacks/hedgedoc/docker-compose.yml",
 )
 
 
