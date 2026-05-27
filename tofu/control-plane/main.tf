@@ -12,11 +12,12 @@ locals {
   # Resource prefix derived from domain (e.g., "example.com" → "nexus-example-com")
   resource_prefix = "nexus-${replace(var.domain, ".", "-")}"
 
-  # List of emails allowed to access control plane (admin + optional user)
-  # user_email may be comma-separated, so split and trim into individual entries
+  # List of emails allowed to access control plane (admin + optional user + optional guests)
+  # user_email and guest_emails may be comma-separated, so split and trim into individual entries
   allowed_emails = distinct(compact(concat(
     [trimspace(var.admin_email)],
-    [for email in split(",", var.user_email) : trimspace(email)]
+    [for email in split(",", var.user_email) : trimspace(email)],
+    [for email in split(",", var.guest_emails) : trimspace(email)]
   )))
 
   # Control Plane URLs. Built from the base domain and the subdomain separator

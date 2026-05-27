@@ -8,6 +8,7 @@
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
 import { safeHttpsUrl } from './_utils/url.js';
+import { getAccessUserEmail } from './_utils/cf-access-email.js';
 
 // Resend-accepted email formats. Hoisted to module scope so the regex
 // objects are created once per Worker boot instead of once per request.
@@ -18,7 +19,7 @@ const BRACKETED_EMAIL_RE = /^\S[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>$/;
 const isValidResendEmail = (e) => PLAIN_EMAIL_RE.test(e) || BRACKETED_EMAIL_RE.test(e);
 
 export async function onRequestPost(context) {
-  const { env } = context;
+  const { env, request } = context;
 
   // Validate environment variables
   const requiredEnv = ['RESEND_API_KEY', 'ADMIN_EMAIL', 'DOMAIN'];
@@ -60,18 +61,21 @@ export async function onRequestPost(context) {
     const fromDomain = env.BASE_DOMAIN || domain;
     const adminEmail = env.ADMIN_EMAIL;
 
-    // USER_EMAIL may be a single address or a comma-separated list
-    // (e.g. when multiple admin emails are piped through from the admin panel).
-    // Split + trim + validate against the Resend-accepted email regex
-    // (hoisted to module scope above).
+    // TO is the Access-authenticated caller, so each user gets their own copy.
+    // Falls back to USER_EMAIL[0] when no Access identity can be resolved.
+    const accessEmailRaw = getAccessUserEmail(request);
+    const accessEmail = accessEmailRaw && isValidResendEmail(accessEmailRaw) ? accessEmailRaw : null;
+
+    // USER_EMAIL may be a single address or a comma-separated list.
     const userEmails = (env.USER_EMAIL || '')
       .split(',')
       .map((e) => e.trim())
       .filter(isValidResendEmail);
-    const primaryUserEmail = userEmails[0] || null;
-    const extraUserEmails = userEmails.slice(1);
-    // Back-compat: keep `userEmail` as the primary for downstream logic.
-    const userEmail = primaryUserEmail;
+    const fallbackUserEmail = userEmails[0] || null;
+    const userEmail = accessEmail || fallbackUserEmail;
+    if (!accessEmail) {
+      console.warn('send-credentials: no Access identity resolved, falling back to USER_EMAIL[0]');
+    }
     const infisicalUrl = safeHttpsUrl(env.INFISICAL_URL, `https://infisical.${domain}`);
     const controlPlaneUrl = safeHttpsUrl(env.CONTROL_PLANE_URL, `https://control.${domain}`);
 
@@ -129,15 +133,14 @@ export async function onRequestPost(context) {
 </div>
     `;
 
-    // Send email via Resend (User as primary, Admin + extra users in CC)
     const emailPayload = {
       from: `Nexus-Stack <nexus@${fromDomain}>`,
       to: userEmail ? [userEmail] : [adminEmail],
       subject: '🔐 Nexus-Stack Credentials',
       html: emailHTML
     };
-    if (userEmail) {
-      emailPayload.cc = [adminEmail, ...extraUserEmails];
+    if (userEmail && userEmail.toLowerCase() !== adminEmail.toLowerCase()) {
+      emailPayload.cc = [adminEmail];
     }
 
     const resendResponse = await fetchWithTimeout('https://api.resend.com/emails', {
