@@ -8,6 +8,7 @@
 
 import { logApiCall, logError } from './_utils/logger.js';
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
+import { requireAdmin } from './_utils/require-admin.js';
 
 export async function onRequestGet(context) {
   const { env } = context;
@@ -43,6 +44,8 @@ export async function onRequestGet(context) {
 
 export async function onRequestPost(context) {
   const { env, request } = context;
+  const denial = requireAdmin(env, request);
+  if (denial) return denial;
 
   try {
     if (!env.NEXUS_KV) {
