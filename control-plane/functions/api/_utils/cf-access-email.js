@@ -4,9 +4,12 @@
 // app configurations also emit `Cf-Access-Authenticated-User-Email` as a
 // plain header — newer apps tend not to. Decoding the JWT's email claim is
 // the only universally reliable path. Origin-supplied `Cf-Access-*` headers
-// are stripped and re-set at Cloudflare's edge, so any value reaching the
-// Worker can only have been written by the edge — no signature verification
-// needed.
+// are stripped and re-set at Cloudflare's edge, so values reaching the
+// Worker were written by the edge — but only as long as the request
+// actually passed through Access. That holds for Pages Functions on this
+// project today; a misconfig or alternate route would break the assumption.
+// Proper defense-in-depth would verify the JWT signature against the
+// Access JWKS endpoint.
 export function getAccessUserEmail(request) {
   const direct = (request.headers.get('Cf-Access-Authenticated-User-Email') || '').trim();
   if (direct) return direct;
