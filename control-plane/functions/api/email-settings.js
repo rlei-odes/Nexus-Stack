@@ -6,6 +6,7 @@
  * Configuration stored in Cloudflare D1 database
  */
 import { logApiCall, logError } from './_utils/logger.js';
+import { requireAdmin } from './_utils/require-admin.js';
 
 async function getConfig(db, key, defaultValue = null) {
   try {
@@ -56,6 +57,9 @@ export async function onRequestGet(context) {
 }
 
 export async function onRequestPost(context) {
+  const denial = requireAdmin(context.env, context.request);
+  if (denial) return denial;
+
   const db = context.env.NEXUS_DB;
   if (!db) {
     return new Response(JSON.stringify({ success: false, error: 'D1 database not configured' }), {

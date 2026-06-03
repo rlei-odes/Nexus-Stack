@@ -22,6 +22,7 @@ import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { safeHttpsUrl } from './_utils/url.js';
 import { logApiCall, logError } from './_utils/logger.js';
 import { fetchAllInfisicalSecrets } from './_utils/infisical.js';
+import { requireAdmin } from './_utils/require-admin.js';
 
 const SCOPE_NAME = 'nexus';
 const UPSERT_BATCH = 10;
@@ -135,7 +136,10 @@ export async function onRequestGet(context) {
 }
 
 export async function onRequestPost(context) {
-  const { env } = context;
+  const { env, request } = context;
+  const denial = requireAdmin(env, request);
+  if (denial) return denial;
+
   const auth = await readDatabricksAuth(env);
   if (auth.error) {
     return jsonResponse({ success: false, error: auth.error }, 400);

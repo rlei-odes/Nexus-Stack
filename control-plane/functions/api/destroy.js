@@ -7,10 +7,13 @@
  */
 import { fetchWithTimeout } from './_utils/fetch-with-timeout.js';
 import { logApiCall, logError } from './_utils/logger.js';
+import { requireAdmin } from './_utils/require-admin.js';
 
 export async function onRequestPost(context) {
   const { env, request } = context;
-  
+  const denial = requireAdmin(env, request);
+  if (denial) return denial;
+
   // Validate environment variables
   if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO) {
     return new Response(JSON.stringify({ 

@@ -170,6 +170,7 @@ jobs:
           subdomain_separator = "${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}"
           admin_email         = "${{ secrets.TF_VAR_admin_email }}"
           user_email          = "${{ secrets.TF_VAR_user_email }}"
+          guest_emails        = "${{ secrets.TF_VAR_guest_emails }}"
           github_owner        = "${{ github.repository_owner }}"
           github_repo         = "${{ github.event.repository.name }}"
           allow_disable_auto_shutdown = ${{ vars.ALLOW_DISABLE_AUTO_SHUTDOWN == 'true' }}

@@ -150,6 +150,12 @@ variable "user_email" {
   default     = ""
 }
 
+variable "guest_emails" {
+  description = "Comma-separated guest emails for Cloudflare Access (no SSH, no notifications). Optional."
+  type        = string
+  default     = ""
+}
+
 variable "admin_username" {
   description = "Admin username for services like Portainer, Uptime Kuma (default: nexus)"
   type        = string
