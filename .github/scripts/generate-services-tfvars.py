@@ -34,24 +34,24 @@ def validate_service_name(name):
 def validate_services_yaml(data):
     """Validate services.yaml structure and required fields."""
     errors = []
-    
+
     if not data:
         errors.append("services.yaml is empty")
         return errors
-    
+
     if 'services' not in data:
         errors.append("Missing 'services' key in services.yaml")
         return errors
-    
+
     services = data['services']
     if not isinstance(services, dict):
         errors.append("'services' must be a dictionary/map")
         return errors
-    
+
     if len(services) == 0:
         errors.append("No services defined in services.yaml")
         return errors
-    
+
     # Required fields for each service
     # Note: subdomain is not required for internal_only services
     required_fields = ['port', 'image']
@@ -75,32 +75,32 @@ def validate_services_yaml(data):
         is_internal_only = config.get('internal_only', False)
         if not is_internal_only and 'subdomain' not in config:
             errors.append(f"Service '{name}': missing required field 'subdomain' (required for non-internal services)")
-        
+
         # Validate field types and values
         if 'subdomain' in config:
             subdomain = config['subdomain']
             if not isinstance(subdomain, str) or not validate_service_name(subdomain):
                 errors.append(f"Service '{name}': invalid subdomain '{subdomain}' (must be valid service name format)")
-        
+
         if 'port' in config:
             port = config['port']
             if not isinstance(port, int) or port < 1 or port > 65535:
                 errors.append(f"Service '{name}': port must be an integer between 1 and 65535, got {port}")
-        
+
         if 'public' in config and not isinstance(config['public'], bool):
             errors.append(f"Service '{name}': 'public' must be a boolean")
-        
+
         if 'core' in config and not isinstance(config['core'], bool):
             errors.append(f"Service '{name}': 'core' must be a boolean")
-        
+
         if 'description' in config and not isinstance(config['description'], str):
             errors.append(f"Service '{name}': 'description' must be a string")
-        
+
         if 'image' in config:
             image = config['image']
             if not isinstance(image, str) or len(image) == 0:
                 errors.append(f"Service '{name}': 'image' must be a non-empty string")
-    
+
     return errors
 
 def main():
@@ -134,7 +134,7 @@ def main():
         core = config.get('core', False)
         description = config.get('description', '').replace('"', '\\"')
         image = config.get('image', '')
-        
+
         # Core services are always enabled, others follow D1 state
         # If no D1 state yet (empty enabled_set), only core services are enabled
         is_core = core
@@ -143,9 +143,9 @@ def main():
         else:
             # No D1 state - only enable core services
             should_enable = is_core
-        
+
         enabled = 'true' if should_enable else 'false'
-        
+
         output_lines.append(f'  {name} = {{')
         output_lines.append(f'    enabled     = {enabled}')
         output_lines.append(f'    subdomain   = "{subdomain}"')
@@ -155,7 +155,7 @@ def main():
             output_lines.append(f'    core        = true')
         output_lines.append(f'    description = "{description}"')
         output_lines.append(f'    image       = "{image}"')
-        
+
         # Handle support_images
         support_images = config.get('support_images', {})
         if support_images:
@@ -163,7 +163,7 @@ def main():
             for img_name, img_value in support_images.items():
                 output_lines.append(f'      "{img_name}" = "{img_value}"')
             output_lines.append('    }')
-        
+
         output_lines.append('  }')
         output_lines.append('')
 
@@ -180,18 +180,34 @@ def main():
             entry = entry.strip()
             if not entry:
                 continue
-            parts = entry.split(':')
-            if len(parts) < 2:
-                print(f"Warning: Invalid firewall rule entry: {entry}", file=sys.stderr)
-                continue
-            service_name = parts[0]
+            # Wire format: ALWAYS 4 colon-separated fields,
+            # "service:port:source_ips:dns_record". Trailing fields
+            # are emitted as empty strings (never omitted) — spin-up.yml's
+            # jq always renders `\(.dns_record // "")` which yields the
+            # trailing colon even for empty values. We rely on that
+            # invariant here, because source_ips itself can contain
+            # colons when it includes IPv6 CIDRs (e.g. "0.0.0.0/0,::/0").
+            # Strategy: peel service:port off the front (split with
+            # maxsplit=2 to keep the rest intact), then peel dns_record
+            # off the back via rsplit on the final ':'. The middle is
+            # the verbatim source_ips, IPv6 and all.
             try:
-                port = int(parts[1])
+                service_name, port_text, remainder = entry.split(':', 2)
+                source_ips, dns_record = remainder.rsplit(':', 1)
+            except ValueError:
+                print(
+                    f"Warning: Invalid firewall rule entry: {entry!r} — "
+                    "expected 4 colon-separated fields "
+                    "'service:port:source_ips:dns_record' (empty fields "
+                    "must still be present, e.g. 'svc:9092:0.0.0.0/0:').",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                port = int(port_text)
             except ValueError:
                 print(f"Warning: Invalid port in firewall rule: {entry}", file=sys.stderr)
                 continue
-            source_ips = parts[2] if len(parts) > 2 else ''
-            dns_record = parts[3] if len(parts) > 3 else ''
 
             # Validate that the port belongs to the service's tcp_ports
             if service_name in services:
@@ -213,6 +229,23 @@ def main():
 
     for rule in firewall_rules:
         source_ips_list = [ip.strip() for ip in rule['source_ips'].split(',') if ip.strip()] if rule['source_ips'] else []
+        # Migration shim: the OpenTofu module's firewall_rules variable
+        # now hard-fails on empty source_ips (previously it silently
+        # defaulted to ["0.0.0.0/0", "::/0"]). Existing D1 rows that
+        # were populated when the empty-means-allow-all behaviour was
+        # in effect still have source_ips = '' — translate them to
+        # explicit allow-all here so existing deploys don't break on
+        # next spin-up, and emit a deprecation warning the operator
+        # sees in the workflow log.
+        if not source_ips_list:
+            source_ips_list = ['0.0.0.0/0', '::/0']
+            print(
+                f"⚠️  Firewall rule '{rule['key']}' has empty source_ips — "
+                f"defaulting to 0.0.0.0/0 + ::/0 (open to the internet). "
+                f"Set explicit source_ips in the Control Plane UI; this "
+                f"auto-default will be removed in a future release.",
+                file=sys.stderr,
+            )
         source_ips_tf = ', '.join(f'"{ip}"' for ip in source_ips_list)
 
         output_lines.append(f'  "{rule["key"]}" = {{')
