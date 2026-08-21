@@ -328,3 +328,58 @@ output "infisical_admin_password" {
 
 # persistent_volume_id output — REMOVED in RFC 0001 cutover.
 # Replaced by R2-backed snapshots (see tofu/control-plane/main.tf).
+
+# =============================================================================
+# Credential Epoch
+# =============================================================================
+
+# Identifies the generation of the generated-secret set, so a Hetzner
+# disk snapshot can be checked against the state that will be used to
+# talk to it.
+#
+# Why this is needed: a snapshot captures Postgres roles and app admin
+# accounts as they existed when it was taken. The snapshot-based
+# teardown keeps the random_* resources alive (it destroys only
+# hcloud_server.main), so credentials normally stay stable forever.
+# But the legacy teardown runs an untargeted `tofu destroy`, which
+# destroys all 81 random_* resources and regenerates every secret on
+# the next spin-up. Restoring a pre-rotation snapshot against
+# post-rotation state produces a stack that boots and then fails to
+# authenticate anywhere — a confusing, hard-to-diagnose half-failure.
+#
+# Teardown stamps this value onto the snapshot; spin-up compares before
+# restoring and falls back to a fresh build on mismatch.
+#
+# Safe to expose: it is a hash of hashes, never a secret, so it can be
+# read with `tofu output -raw`, stored as a Hetzner label and logged.
+#
+# Five canaries rather than all 81: every generated secret shares one
+# lifecycle — they are created together and destroyed together — so any
+# rotation moves all of them. Deliberately NOT derived from the
+# `secrets` output, which also carries pass-through values from GitHub
+# secrets (hetzner_s3_*, dockerhub_*, r2_data_*) that can legitimately
+# change without invalidating a snapshot.
+#
+# Truncated to 32 characters because Hetzner label values are limited
+# to 63 and a full sha256 hex digest is 64.
+#
+# `sensitive = true` is required by OpenTofu, not by the value itself.
+# Sensitivity propagates syntactically: the inputs are
+# random_password.*.result, and tofu carries that taint through
+# sha256() and join() because it has no notion that a digest is
+# one-way. Without the marking, `tofu apply` fails with "Output refers
+# to sensitive values". The digest is not actually a secret — it is
+# stamped onto a Hetzner label and logged — and `tofu output -raw`
+# reads it fine, exactly as spin-up.yml already reads the equally
+# sensitive tunnel_token.
+output "credential_fingerprint" {
+  description = "Stable digest of the generated-secret set; a snapshot is only valid for a matching epoch"
+  sensitive   = true
+  value = substr(sha256(join("|", [
+    sha256(random_password.postgres.result),
+    sha256(random_password.gitea_db.result),
+    sha256(random_password.dify_db.result),
+    sha256(random_password.infisical_encryption_key.result),
+    sha256(random_password.gitea_admin.result),
+  ])), 0, 32)
+}
