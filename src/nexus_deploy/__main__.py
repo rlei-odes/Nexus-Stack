@@ -2634,6 +2634,8 @@ def _select_capacity(args: list[str]) -> int:
     """
     # Crude arg-parse — keeps us out of argparse for one-flag handlers.
     tfvars_path: Path | None = None
+    min_disk_gb = 0
+    arch: str | None = None
     i = 0
     while i < len(args):
         if args[i] == "--tfvars":
@@ -2648,6 +2650,43 @@ def _select_capacity(args: list[str]) -> int:
                 )
                 return 2
             tfvars_path = Path(args[i + 1])
+            i += 2
+            continue
+        # Snapshot-restore constraints. A Hetzner snapshot is
+        # architecture-locked and needs a target disk at least as large
+        # as the image's, so the snapshot spin-up narrows the preference
+        # walk. Omitted on the normal path, where behaviour is unchanged.
+        if args[i] == "--min-disk-gb":
+            if i + 1 >= len(args):
+                print("select-capacity: --min-disk-gb requires a value", file=sys.stderr)
+                return 2
+            try:
+                min_disk_gb = int(args[i + 1])
+            except ValueError:
+                print(
+                    f"select-capacity: --min-disk-gb must be an integer, got {args[i + 1]!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            # 0 and negatives must be refused, not tolerated: the filter
+            # below is gated on `> 0`, so they would silently disable the
+            # disk check rather than apply it. That is reachable — a
+            # snapshot whose disk_size is missing parses as 0 and reaches
+            # here through SNAPSHOT_DISK_GB, and the restore would then
+            # pick a target that cannot host the image.
+            if min_disk_gb <= 0:
+                print(
+                    f"select-capacity: --min-disk-gb must be greater than zero, got {min_disk_gb}",
+                    file=sys.stderr,
+                )
+                return 2
+            i += 2
+            continue
+        if args[i] == "--arch":
+            if i + 1 >= len(args):
+                print("select-capacity: --arch requires a value", file=sys.stderr)
+                return 2
+            arch = args[i + 1]
             i += 2
             continue
         print(f"select-capacity: unknown arg {args[i]!r}", file=sys.stderr)
@@ -2728,11 +2767,67 @@ def _select_capacity(args: list[str]) -> int:
     try:
         availability = _hetzner.fetch_availability(token)
     except _hetzner.HetznerCapacityError as exc:
-        print(f"select-capacity: Hetzner API failure: {exc}", file=sys.stderr)
+        # Type only, never str(exc): the message embeds the response body,
+        # which is upstream text we do not control. Per CLAUDE.md and the
+        # src/nexus_deploy path instructions.
+        print(
+            f"select-capacity: Hetzner API failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
         return 2
 
+    # Snapshot-restore constraints, when given. Applied BEFORE the
+    # availability walk so a type that could never host the image is
+    # never selected — the failure would otherwise only surface as an
+    # opaque `tofu apply` error.
+    #
+    # ``all_preferences`` keeps the UNFILTERED list for the status block.
+    # render_status_lines iterates what it is given, so handing it the
+    # filtered tuple would silently drop every excluded entry and the ⊘
+    # marker could never appear — which is exactly the information an
+    # operator needs when a restore cannot find a host.
+    excluded: dict[_hetzner.ServerSpec, str] = {}
+    all_preferences = preferences
+    if min_disk_gb > 0 or arch is not None:
+        try:
+            types = _hetzner.fetch_server_types(token)
+        except _hetzner.HetznerCapacityError as exc:
+            print(
+                f"select-capacity: Hetzner API failure ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return 2
+        preferences, excluded = _hetzner.filter_specs(
+            preferences,
+            types,
+            min_disk_gb=min_disk_gb,
+            arch=arch,
+        )
+        constraint = []
+        if min_disk_gb > 0:
+            constraint.append(f"disk >= {min_disk_gb}GB")
+        if arch is not None:
+            constraint.append(f"arch {arch}")
+        sys.stderr.write(
+            f"select-capacity: restore constraints ({', '.join(constraint)}) "
+            f"excluded {len(excluded)} of {len(all_preferences)} preferences\n",
+        )
+        if not preferences:
+            sys.stderr.write(
+                "✗ select-capacity: every preference was excluded by the restore "
+                "constraints — no server type can host this snapshot. Widen "
+                "SERVER_PREFERENCES, or spin up with force_fresh=true to rebuild "
+                "from the base image.\n",
+            )
+            return 2
+
     selected = _hetzner.select(preferences, availability)
-    status_lines = _hetzner.render_status_lines(preferences, availability, selected)
+    status_lines = _hetzner.render_status_lines(
+        all_preferences,
+        availability,
+        selected,
+        excluded,
+    )
 
     if selected is None:
         # PR #537 R7 #1: distinguish "every preference has an unknown
@@ -2876,7 +2971,7 @@ def _server_poweroff(args: list[str]) -> int:
     try:
         _hsnap.poweroff_server(server_id, token)
     except _hsnap.HetznerSnapshotError as exc:
-        print(f"server-poweroff: {exc}", file=sys.stderr)
+        print(f"server-poweroff: Hetzner API failure ({type(exc).__name__})", file=sys.stderr)
         return 2
     sys.stderr.write(f"✓ server-poweroff: server {server_id} is off\n")
     return 0
@@ -2924,7 +3019,10 @@ def _snapshot_create(args: list[str]) -> int:
     try:
         total = _hsnap.count_snapshots(token)
     except _hsnap.HetznerSnapshotError as exc:
-        print(f"snapshot-create: could not count existing snapshots: {exc}", file=sys.stderr)
+        print(
+            f"snapshot-create: could not count existing snapshots ({type(exc).__name__})",
+            file=sys.stderr,
+        )
         return 2
     if total >= _hsnap.DEFAULT_SNAPSHOT_LIMIT - 2:
         sys.stderr.write(
@@ -2944,13 +3042,14 @@ def _snapshot_create(args: list[str]) -> int:
             timestamp=timestamp,
         )
     except _hsnap.HetznerSnapshotError as exc:
-        print(f"snapshot-create: {exc}", file=sys.stderr)
+        print(f"snapshot-create: Hetzner API failure ({type(exc).__name__})", file=sys.stderr)
         return 2
 
     sys.stderr.write(f"✓ snapshot-create: {snapshot}\n")
     print(f"SNAPSHOT_IMAGE_ID={snapshot.image_id}")
     print(f"SNAPSHOT_DISK_GB={snapshot.disk_gb}")
     print(f"SNAPSHOT_ARCH={snapshot.architecture}")
+    print(f"SNAPSHOT_IMAGE_GB={snapshot.image_gb:.2f}")
     return 0
 
 
@@ -2987,7 +3086,7 @@ def _snapshot_resolve(args: list[str]) -> int:
             expect_epoch=expect_epoch or None,
         )
     except _hsnap.HetznerSnapshotError as exc:
-        print(f"snapshot-resolve: {exc}", file=sys.stderr)
+        print(f"snapshot-resolve: Hetzner API failure ({type(exc).__name__})", file=sys.stderr)
         return 2
 
     if snapshot is None:
@@ -3002,6 +3101,7 @@ def _snapshot_resolve(args: list[str]) -> int:
     print(f"SNAPSHOT_IMAGE_ID={snapshot.image_id}")
     print(f"SNAPSHOT_DISK_GB={snapshot.disk_gb}")
     print(f"SNAPSHOT_ARCH={snapshot.architecture}")
+    print(f"SNAPSHOT_IMAGE_GB={snapshot.image_gb:.2f}")
     return 0
 
 
@@ -3033,7 +3133,7 @@ def _snapshot_prune(args: list[str]) -> int:
         snapshots = _hsnap.list_snapshots(token, domain_slug=domain_slug)
         prunable = _hsnap.select_prunable(snapshots, keep=keep)
     except _hsnap.HetznerSnapshotError as exc:
-        print(f"snapshot-prune: {exc}", file=sys.stderr)
+        print(f"snapshot-prune: Hetzner API failure ({type(exc).__name__})", file=sys.stderr)
         return 2
 
     if not prunable:
@@ -3050,7 +3150,10 @@ def _snapshot_prune(args: list[str]) -> int:
         try:
             _hsnap.delete_snapshot(snapshot.image_id, token)
         except _hsnap.HetznerSnapshotError as exc:
-            print(f"snapshot-prune: failed to delete {snapshot}: {exc}", file=sys.stderr)
+            print(
+                f"snapshot-prune: failed to delete {snapshot} ({type(exc).__name__})",
+                file=sys.stderr,
+            )
             return 2
         sys.stderr.write(f"✓ snapshot-prune: deleted {snapshot}\n")
 

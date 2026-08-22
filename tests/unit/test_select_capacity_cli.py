@@ -396,7 +396,19 @@ def test_select_capacity_aborts_on_api_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """HetznerCapacityError (HTTP 401, network error, schema drift)
-    propagates to rc=2 with the original message."""
+    propagates to rc=2, reported by TYPE rather than by message.
+
+    This assertion was inverted in PR #651: it previously required the
+    exception text to appear. That contradicted the project rule
+    (CLAUDE.md, and the src/nexus_deploy path instructions) that error
+    logs carry `type(exc).__name__` and never `str(exc)`, because
+    exception messages embed upstream response bodies.
+
+    The trade-off is real and worth naming: HetznerCapacityError covers
+    auth, network, timeout and schema drift alike, so the log no longer
+    distinguishes them. The rule prefers that over the chance of a
+    credential reaching a public build log.
+    """
     monkeypatch.setenv("HCLOUD_TOKEN", "t")
 
     def _raise(_token: str, http_get: object = None) -> dict[str, set[str]]:
@@ -407,7 +419,8 @@ def test_select_capacity_aborts_on_api_error(
     assert rc == 2
     err = capsys.readouterr().err
     assert "Hetzner API failure" in err
-    assert "HTTP 401" in err
+    assert "HetznerCapacityError" in err
+    assert "HTTP 401" not in err
 
 
 def test_select_capacity_aborts_on_invalid_preferences(
@@ -523,3 +536,224 @@ def test_select_capacity_appends_keys_when_absent(
     # Original lines preserved.
     assert 'domain = "example.com"' in rewritten
     assert 'server_preferences = "cx43:fsn1, ccx33:nbg1"' in rewritten
+
+
+# ---------------------------------------------------------------------------
+# Restore constraints: --min-disk-gb / --arch  (PR #651 review)
+#
+# These flags existed as module functions with full coverage while the CLI
+# rejected them outright with "unknown arg". Every snapshot restore would
+# have failed at the capacity step. The module tests could not catch it
+# because they call filter_specs directly; only a CLI-level test does.
+# ---------------------------------------------------------------------------
+
+
+_TYPES = {
+    "cx43": _hetzner.ServerTypeInfo(name="cx43", disk_gb=160, architecture="x86"),
+    "cx53": _hetzner.ServerTypeInfo(name="cx53", disk_gb=320, architecture="x86"),
+    "cax31": _hetzner.ServerTypeInfo(name="cax31", disk_gb=160, architecture="arm"),
+}
+
+
+def test_min_disk_gb_flag_is_accepted(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression guard: this used to exit 2 with 'unknown arg'."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:hel1, cx53:hel1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"hel1": {"cx43", "cx53"}},
+    )
+    monkeypatch.setattr(_hetzner, "fetch_server_types", lambda _t, http_get=None: _TYPES)
+
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--min-disk-gb", "320"])
+    assert rc == 0
+    # cx43 has a 160GB disk and cannot host a 320GB image, so the walk
+    # must skip it even though it is first and in stock.
+    assert 'server_type     = "cx53"' in tfvars_with_legacy_pair.read_text()
+
+
+def test_arch_flag_excludes_mismatched_architecture(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cax31:hel1, cx43:hel1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"hel1": {"cax31", "cx43"}},
+    )
+    monkeypatch.setattr(_hetzner, "fetch_server_types", lambda _t, http_get=None: _TYPES)
+
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--arch", "x86"])
+    assert rc == 0
+    assert 'server_type     = "cx43"' in tfvars_with_legacy_pair.read_text()
+
+
+def test_all_preferences_excluded_is_rc2(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No type can host the image: fail with an actionable message rather
+    than letting `tofu apply` surface it as an opaque image error."""
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:hel1")
+    monkeypatch.setattr(
+        _hetzner, "fetch_availability", lambda _t, http_get=None: {"hel1": {"cx43"}}
+    )
+    monkeypatch.setattr(_hetzner, "fetch_server_types", lambda _t, http_get=None: _TYPES)
+
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--min-disk-gb", "999"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "every preference was excluded" in err
+    assert "force_fresh" in err
+
+
+def test_constraint_flags_are_optional(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without them, fetch_server_types must not even be called — the
+    legacy path stays a single API round-trip."""
+    called = {"n": 0}
+
+    def _boom(*_a: object, **_k: object) -> dict[str, object]:
+        called["n"] += 1
+        return {}
+
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setattr(
+        _hetzner, "fetch_availability", lambda _t, http_get=None: {"hel1": {"cx43"}}
+    )
+    monkeypatch.setattr(_hetzner, "fetch_server_types", _boom)
+
+    assert _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)]) == 0
+    assert called["n"] == 0
+
+
+def test_min_disk_gb_rejects_non_integer(tfvars_with_legacy_pair: Path) -> None:
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--min-disk-gb", "lots"])
+    assert rc == 2
+
+
+@pytest.mark.parametrize("flag", ["--min-disk-gb", "--arch"])
+def test_constraint_flag_without_value_is_rc2(
+    tfvars_with_legacy_pair: Path,
+    flag: str,
+) -> None:
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), flag])
+    assert rc == 2
+
+
+def test_excluded_preferences_appear_in_the_status_block(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The status block must show WHY a tier was skipped.
+
+    render_status_lines iterates whatever list it is handed, so passing
+    it the post-filter tuple silently drops every excluded entry and the
+    ⊘ marker can never appear — leaving an operator debugging a failed
+    restore with no indication that disk size was the reason. This is the
+    integration the module-level render test cannot cover, because that
+    one passes the excluded spec in directly.
+    """
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:hel1, cx53:hel1")
+    monkeypatch.setattr(
+        _hetzner,
+        "fetch_availability",
+        lambda _t, http_get=None: {"hel1": {"cx43", "cx53"}},
+    )
+    monkeypatch.setattr(_hetzner, "fetch_server_types", lambda _t, http_get=None: _TYPES)
+
+    assert _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--min-disk-gb", "320"]) == 0
+
+    err = capsys.readouterr().err
+    assert "⊘" in err
+    assert "cx43:hel1" in err
+    assert "disk 160GB < 320GB required" in err
+    # And the count must describe the original list, not the survivors.
+    assert "excluded 1 of 2 preferences" in err
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_min_disk_gb_rejects_non_positive(
+    tfvars_with_legacy_pair: Path,
+    value: str,
+) -> None:
+    """Zero and negatives must be refused, not tolerated.
+
+    The filter is gated on `min_disk_gb > 0`, so accepting these would
+    silently disable the disk check instead of applying it. It is
+    reachable: a snapshot whose `disk_size` is missing parses as 0 and
+    reaches the CLI through SNAPSHOT_DISK_GB, and the restore would then
+    pick a target that cannot host the image.
+    """
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--min-disk-gb", value])
+    assert rc == 2
+
+
+def test_api_failure_does_not_log_exception_text(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only the exception type reaches stderr.
+
+    HetznerCapacityError messages embed the upstream response body, which
+    is text we do not control. Per CLAUDE.md and the src/nexus_deploy
+    path instructions, error logs carry `type(exc).__name__`, never
+    `str(exc)`.
+    """
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+
+    def _raise(*_a: object, **_k: object) -> dict[str, set[str]]:
+        raise _hetzner.HetznerCapacityError("HTTP 401 for https://api — token=SUPERSECRET")
+
+    monkeypatch.setattr(_hetzner, "fetch_availability", _raise)
+
+    assert _select_capacity(["--tfvars", str(tfvars_with_legacy_pair)]) == 2
+    out = capsys.readouterr()
+    combined = out.err + out.out
+    assert "HetznerCapacityError" in combined
+    assert "SUPERSECRET" not in combined
+
+
+def test_server_types_failure_does_not_log_exception_text(
+    tfvars_with_legacy_pair: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The second API call needs the same guarantee as the first.
+
+    The `str(exc)` fix covered fetch_availability; fetch_server_types is
+    only reached on the snapshot path and had no test of its own. It is
+    the more exposed of the two, since it is the call the restore
+    constraints depend on.
+    """
+    monkeypatch.setenv("HCLOUD_TOKEN", "t")
+    monkeypatch.setenv("SERVER_PREFERENCES", "cx43:hel1")
+    monkeypatch.setattr(
+        _hetzner, "fetch_availability", lambda _t, http_get=None: {"hel1": {"cx43"}}
+    )
+
+    def _raise(*_a: object, **_k: object) -> dict[str, object]:
+        raise _hetzner.HetznerCapacityError("HTTP 401 for https://api — token=SUPERSECRET")
+
+    monkeypatch.setattr(_hetzner, "fetch_server_types", _raise)
+
+    rc = _select_capacity(["--tfvars", str(tfvars_with_legacy_pair), "--min-disk-gb", "320"])
+    assert rc == 2
+    out = capsys.readouterr()
+    combined = out.err + out.out
+    assert "HetznerCapacityError" in combined
+    assert "SUPERSECRET" not in combined
+    assert "HTTP 401" not in combined
