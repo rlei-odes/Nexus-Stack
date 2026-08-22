@@ -61,6 +61,63 @@ async function getConfigValue(db, key, defaultValue = null) {
   }
 }
 
+// Lifecycle workflow selection. The Worker is a standalone bundle
+// deployed by Terraform, so it cannot import the Pages functions'
+// _utils/workflow-selection.js — this is duplicated on purpose. Keep the
+// two in step; the alternative is a build step for the Worker.
+//
+// ONE mode, both names derived from it, so the pair cannot drift.
+// Deriving rather than reading the names also means no database value
+// ever reaches the GitHub API URL path.
+const LIFECYCLE_MODES = ['legacy', 'snapshot'];
+const DEFAULT_LIFECYCLE_MODE = 'legacy';
+const LIFECYCLE_WORKFLOWS = {
+  legacy: { teardown: 'teardown.yml', spinUp: 'spin-up.yml' },
+  snapshot: { teardown: 'teardown-snapshot.yml', spinUp: 'spin-up-snapshot.yml' },
+};
+
+// Returns {ok:true, mode, teardown, spinUp} or {ok:false, reason}.
+//
+// Deliberately does NOT fall back to a default when the mode cannot be
+// determined. This runs unattended every night, and the legacy pair is
+// the destructive one: guessing it at a stack that is on snapshots would
+// run an untargeted `tofu destroy`, rotate all 81 generated credentials
+// and orphan the snapshot. An unconfigured stack is a different case and
+// resolves successfully to 'legacy'.
+async function resolveLifecycle(db) {
+  if (!db) {
+    // Short-circuit rather than letting getConfigValue throw and be
+    // caught — a missing binding is a known state, not an exception, and
+    // it would otherwise log a stack trace on every scheduled run.
+    return { ok: false, reason: 'no D1 binding available' };
+  }
+
+  let row;
+  try {
+    row = await db
+      .prepare('SELECT value FROM config WHERE key = ?')
+      .bind('lifecycle_mode')
+      .first();
+  } catch (error) {
+    console.error('Failed to read config.lifecycle_mode from D1:', error);
+    return { ok: false, reason: 'D1 read failed' };
+  }
+
+  const value = row ? row.value : null;
+  if (!value) {
+    return { ok: true, mode: DEFAULT_LIFECYCLE_MODE, ...LIFECYCLE_WORKFLOWS[DEFAULT_LIFECYCLE_MODE] };
+  }
+  if (!LIFECYCLE_MODES.includes(value)) {
+    // The value itself is never logged: it is an unvalidated database
+    // string, and a secret written to the wrong key would be retained.
+    console.error(
+      `config.lifecycle_mode holds an unrecognised value (expected one of: ${LIFECYCLE_MODES.join(', ')})`
+    );
+    return { ok: false, reason: 'unrecognised lifecycle_mode' };
+  }
+  return { ok: true, mode: value, ...LIFECYCLE_WORKFLOWS[value] };
+}
+
 async function deleteConfigValue(db, key) {
   await db.prepare('DELETE FROM config WHERE key = ?').bind(key).run();
 }
@@ -371,12 +428,18 @@ async function checkInfraStatus(env) {
       return 'unknown';
     }
 
+    // Detection lists, not dispatch targets. Both pairs must be
+    // recognised regardless of which one is configured, otherwise the
+    // Control Plane reports 'unknown' infra state the moment a stack
+    // switches — and the Worker fail-closes on unknown state, which
+    // would silently stop scheduled teardowns.
     const WORKFLOW_PATHS = {
-      initialSetup: 'initial-setup.yaml',
-      spinUp: 'spin-up.yml',
-      teardown: 'teardown.yml',
-      destroy: 'destroy-all.yml',
+      initialSetup: ['initial-setup.yaml'],
+      spinUp: LIFECYCLE_MODES.map((m) => LIFECYCLE_WORKFLOWS[m].spinUp),
+      teardown: LIFECYCLE_MODES.map((m) => LIFECYCLE_WORKFLOWS[m].teardown),
+      destroy: ['destroy-all.yml'],
     };
+    const matchesPath = (path, candidates) => candidates.some((c) => path.includes(c));
 
     // Find the most recent run for each relevant workflow
     const workflows = { initialSetup: null, spinUp: null, teardown: null, destroy: null };
@@ -385,13 +448,13 @@ async function checkInfraStatus(env) {
       const path = run.path || '';
       const name = run.name || '';
 
-      if (!workflows.initialSetup && (path.includes(WORKFLOW_PATHS.initialSetup) || name.includes('Initial Setup'))) {
+      if (!workflows.initialSetup && (matchesPath(path, WORKFLOW_PATHS.initialSetup) || name.includes('Initial Setup'))) {
         workflows.initialSetup = run;
-      } else if (!workflows.spinUp && (path.includes(WORKFLOW_PATHS.spinUp) || name.includes('Spin Up') || name.includes('Spin-Up'))) {
+      } else if (!workflows.spinUp && (matchesPath(path, WORKFLOW_PATHS.spinUp) || name.includes('Spin Up') || name.includes('Spin-Up'))) {
         workflows.spinUp = run;
-      } else if (!workflows.teardown && (path.includes(WORKFLOW_PATHS.teardown) || name.includes('Teardown'))) {
+      } else if (!workflows.teardown && (matchesPath(path, WORKFLOW_PATHS.teardown) || name.includes('Teardown'))) {
         workflows.teardown = run;
-      } else if (!workflows.destroy && (path.includes(WORKFLOW_PATHS.destroy) || name.includes('Destroy'))) {
+      } else if (!workflows.destroy && (matchesPath(path, WORKFLOW_PATHS.destroy) || name.includes('Destroy'))) {
         workflows.destroy = run;
       }
     }
@@ -415,13 +478,13 @@ async function checkInfraStatus(env) {
       const lastName = lastRun.name || '';
       const lastConclusion = lastRun.conclusion || '';
 
-      if (lastPath.includes(WORKFLOW_PATHS.initialSetup) || lastName.includes('Initial Setup') ||
-          lastPath.includes(WORKFLOW_PATHS.spinUp) || lastName.includes('Spin Up') || lastName.includes('Spin-Up')) {
+      if (matchesPath(lastPath, WORKFLOW_PATHS.initialSetup) || lastName.includes('Initial Setup') ||
+          matchesPath(lastPath, WORKFLOW_PATHS.spinUp) || lastName.includes('Spin Up') || lastName.includes('Spin-Up')) {
         return 'deployed';
-      } else if (lastPath.includes(WORKFLOW_PATHS.teardown) || lastName.includes('Teardown')) {
+      } else if (matchesPath(lastPath, WORKFLOW_PATHS.teardown) || lastName.includes('Teardown')) {
         // If teardown failed, infra is likely still deployed
         return lastConclusion === 'success' ? 'torn-down' : 'deployed';
-      } else if (lastPath.includes(WORKFLOW_PATHS.destroy) || lastName.includes('Destroy')) {
+      } else if (matchesPath(lastPath, WORKFLOW_PATHS.destroy) || lastName.includes('Destroy')) {
         // If destroy failed, infra is at least torn down but not fully offline
         return lastConclusion === 'success' ? 'offline' : 'torn-down';
       }
@@ -579,7 +642,19 @@ async function triggerTeardown(env, config) {
   }
 
   try {
-    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/teardown.yml/dispatches`;
+    // The scheduled teardown runs unattended every night, which makes
+    // this the single most important place not to guess. Skipping costs
+    // one more day of server time; guessing wrong destroys a snapshot
+    // and rotates every credential. The stack stays up and the next run
+    // retries.
+    const lifecycle = await resolveLifecycle(env.NEXUS_DB);
+    if (!lifecycle.ok) {
+      const message = `Skipping scheduled teardown: cannot determine the lifecycle mode (${lifecycle.reason})`;
+      console.error(message);
+      await logToD1(env.NEXUS_DB, 'error', message);
+      return;
+    }
+    const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${lifecycle.teardown}/dispatches`;
 
     const response = await fetchWithTimeout(url, {
       method: 'POST',

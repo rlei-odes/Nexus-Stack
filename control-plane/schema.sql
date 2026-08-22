@@ -97,4 +97,14 @@ INSERT OR IGNORE INTO config (key, value) VALUES
     ('server_location', 'hel1'),
     ('notify_on_shutdown', 'true'),
     ('notify_on_spinup', 'true'),
-    ('silent_mode', 'false');
+    ('silent_mode', 'false'),
+    -- Which lifecycle workflow pair to dispatch: 'legacy' (destroy and
+    -- rebuild from ubuntu-24.04) or 'snapshot' (snapshot the disk,
+    -- destroy only the server, restore from the image).
+    --
+    -- ONE key, not one per workflow. Two independent keys could drift,
+    -- and a half-applied switch is harmful rather than merely untidy:
+    -- snapshot spin-up with legacy teardown means the nightly untargeted
+    -- `tofu destroy` rotates every generated credential and orphans the
+    -- snapshot it just produced.
+    ('lifecycle_mode', 'legacy');
