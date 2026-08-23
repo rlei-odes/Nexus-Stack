@@ -50,14 +50,20 @@ Nexus-Stack is an **open-source infrastructure-as-code project** that provides o
 Nexus-Stack/
 ├── Makefile                    # Main entry point - all commands here
 ├── README.md                   # User documentation
-├── AGENTS.md                   # Agent instructions (this file)
+├── CLAUDE.md                   # Agent instructions (this file)
+├── AGENTS.md                   # Deprecated stub, points at CLAUDE.md
 ├── services.yaml               # Service metadata (subdomain, port, description, image)
 ├── .github/
+│   ├── actions/               # Composite actions shared by the workflows
+│   │   ├── nexus-bootstrap/    # OpenTofu + uv + cloudflared + SSH key + R2 creds
+│   │   └── nexus-config-tfvars/ # Generates tofu/stack/config.tfvars
 │   └── workflows/             # GitHub Actions workflows
 │       ├── initial-setup.yaml  # Initial setup (triggers Control Plane + Spin Up)
 │       ├── setup-control-plane.yaml # Setup Control Plane only
 │       ├── spin-up.yml         # Spin-up workflow (re-deploy after teardown)
 │       ├── teardown.yml        # Teardown workflow (stops infrastructure)
+│       ├── spin-up-snapshot.yml # Spin-up restoring from a Hetzner disk snapshot
+│       ├── teardown-snapshot.yml # Teardown that snapshots the disk first
 │       ├── destroy-all.yml     # Destroy workflow (full cleanup)
 │       └── release.yml         # Release workflow
 ├── tofu/                       # OpenTofu/Terraform configuration
@@ -104,8 +110,9 @@ Nexus-Stack/
     │   ├── setup-guide.md      # Initial infrastructure setup
     │   ├── debugging.md        # Log inspection, systemd, Docker
     │   ├── ssh-access.md       # SSH via Cloudflare Tunnel
+    │   ├── snapshot-lifecycle.md # Disk-snapshot teardown/spin-up: switching + rollback
     │   ├── troubleshooting.md  # Common operational issues
-    │   └── docs-website-sync.md# How these docs sync to nexus-stack.ch
+    │   └── docs-website-sync.md # How these docs sync to nexus-stack.ch
     ├── stacks/                 # Per-service documentation (one .md per service)
     └── tutorials/              # Tutorials and walkthroughs
 ```
@@ -119,6 +126,22 @@ gh workflow run spin-up.yml         # Re-deploy after teardown
 gh workflow run teardown.yml        # Stop infrastructure
 gh workflow run destroy-all.yml -f confirm=DESTROY  # Full cleanup
 ```
+
+**Two lifecycles.** `spin-up.yml` / `teardown.yml` destroy and rebuild from
+`ubuntu-24.04`. `spin-up-snapshot.yml` / `teardown-snapshot.yml` take a Hetzner
+disk snapshot and restore from it — faster, and the only path that preserves
+data for stacks outside the five the R2 layer covers.
+
+Which pair a stack uses is the D1 config value `lifecycle_mode`
+(`legacy` | `snapshot`), read by the Control Plane. **Never dispatch the two
+pairs at the same stack interchangeably**: the legacy teardown runs an
+untargeted `tofu destroy` that regenerates all 81 service credentials, and the
+epoch guard then correctly refuses any existing snapshot. That is why it is one
+config key rather than one per workflow.
+
+See [docs/admin-guides/snapshot-lifecycle.md](docs/admin-guides/snapshot-lifecycle.md)
+for switching and rollback, and `docs/proposals/0002-hetzner-disk-snapshots.md`
+for the design.
 
 **Debugging Tools (local, requires SSH):**
 ```bash
