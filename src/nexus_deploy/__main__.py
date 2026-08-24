@@ -2922,6 +2922,61 @@ def _flag(args: list[str], name: str) -> str | None:
     return None
 
 
+def _validated_flags(
+    args: list[str],
+    *,
+    valued: tuple[str, ...] = (),
+    boolean: tuple[str, ...] = (),
+) -> set[str]:
+    """Validate an arg list strictly; report which flags were given.
+
+    :func:`_flag` scans for the flags it wants and ignores everything
+    else. That is tolerable for a handler whose worst case is an option
+    going unread; it is not tolerable for a destructive one, where it
+    fails quietly in three ways, all of them wrong:
+
+    * ``--domain-slug X --apply --keep 2`` — ``--keep`` is a
+      ``snapshot-prune`` option. Ignored, and purge does not retain, so
+      an operator reaching for the flag they know from the sibling
+      command deletes every snapshot when they asked to keep two.
+    * ``--domain-slug X --aply`` — a typo. Ignored, so a real purge
+      downgrades to a dry run that exits 0 while the images survive.
+    * ``--domain-slug --apply`` — the slug is missing, so ``--apply``
+      is taken as its value. The destructive path then runs against a
+      slug matching nothing and exits 0 having deleted none of the real
+      snapshots, reporting success.
+
+    Hence: a value may not itself look like a flag, and the return value
+    reports which names appeared **as flags**. Callers must use that
+    rather than ``"--x" in args`` — a membership test cannot tell a flag
+    from a value that happens to spell one, which is the third failure
+    above.
+
+    Hand-rolled to match ``secret-sync`` rather than pulling in argparse
+    for three flags.
+    """
+    seen: set[str] = set()
+    i = 0
+    while i < len(args):
+        token = args[i]
+        name = token[2:] if token.startswith("--") else None
+        if name is None or (name not in valued and name not in boolean):
+            raise _FlagError(f"unknown argument {token!r}")
+        if name in seen:
+            raise _FlagError(f"--{name} given more than once")
+        seen.add(name)
+        if name in valued:
+            if i + 1 >= len(args):
+                raise _FlagError(f"--{name} requires a value")
+            value = args[i + 1]
+            if value.startswith("--"):
+                raise _FlagError(f"--{name} requires a value, got flag {value!r}")
+            i += 2
+        else:
+            i += 1
+    return seen
+
+
 def _required_flag(args: list[str], name: str) -> str:
     value = _flag(args, name)
     if value is None:
@@ -3159,6 +3214,89 @@ def _snapshot_prune(args: list[str]) -> int:
 
     if not apply_changes:
         sys.stderr.write("snapshot-prune: dry run — pass --apply to delete\n")
+    return 0
+
+
+def _snapshot_purge(args: list[str]) -> int:
+    """`nexus-deploy snapshot-purge --domain-slug S [--apply]`.
+
+    Deletes EVERY snapshot of one stack. Label-scoped exactly like
+    ``snapshot-prune``, so it can never reach another tenant's images.
+
+    Deliberately a separate command rather than ``snapshot-prune
+    --keep 0``. ``select_prunable`` refuses ``keep < 1`` so a retention
+    pass can never leave a stack with nothing to restore from, and that
+    guard is worth keeping absolute. Purge has the opposite intent —
+    the stack itself is going away — and says so in its name rather
+    than by passing a value the other command exists to reject.
+
+    Written for ``destroy-all.yml``. A Hetzner snapshot survives ``tofu
+    destroy`` by design, which is precisely what makes it dead weight
+    after a full teardown: the destroy takes all 81 ``random_*``
+    resources with it, so the next initial-setup mints a new credential
+    epoch and the epoch guard will refuse the old image forever. It
+    keeps costing money and keeps occupying one of the 30 per-account
+    snapshot slots.
+
+    Images that are not ``available`` (an interrupted create) cannot be
+    deleted through the API. They are reported individually rather than
+    silently skipped — an orphan nobody knows about is the whole
+    problem this command exists to solve — but they do not fail the
+    run, since there is no action the caller could take to fix it in
+    the moment.
+
+    Exit codes: 0 done (or nothing to do), 2 on API failure.
+    """
+    try:
+        # Strict, unlike the other snapshot handlers: this one deletes,
+        # and every way of getting the arguments wrong is silent. See
+        # _validated_flags for the three concrete cases.
+        present = _validated_flags(args, valued=("domain-slug",), boolean=("apply",))
+        domain_slug = _required_flag(args, "domain-slug")
+        token = _snapshot_token()
+    except _FlagError as exc:
+        print(f"snapshot-purge: {exc}", file=sys.stderr)
+        return 2
+    # From the validated parse, NOT `"--apply" in args`: the latter
+    # cannot tell a flag from a value that spells one.
+    apply_changes = "apply" in present
+
+    try:
+        snapshots = _hsnap.list_snapshots(token, domain_slug=domain_slug)
+    except _hsnap.HetznerSnapshotError as exc:
+        print(
+            f"snapshot-purge: Hetzner API failure ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not snapshots:
+        sys.stderr.write(f"snapshot-purge: no snapshots for {domain_slug} — nothing to do\n")
+        return 0
+
+    for snapshot in snapshots:
+        if not snapshot.is_available:
+            sys.stderr.write(
+                f"⚠ snapshot-purge: #{snapshot.image_id} is '{snapshot.status}', "
+                f"not 'available' — the API cannot delete it. Remove it from the "
+                f"Hetzner console once the create settles.\n"
+            )
+            continue
+        if not apply_changes:
+            sys.stderr.write(f"snapshot-purge: would delete {snapshot}\n")
+            continue
+        try:
+            _hsnap.delete_snapshot(snapshot.image_id, token)
+        except _hsnap.HetznerSnapshotError as exc:
+            print(
+                f"snapshot-purge: failed to delete {snapshot} ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return 2
+        sys.stderr.write(f"✓ snapshot-purge: deleted {snapshot}\n")
+
+    if not apply_changes:
+        sys.stderr.write("snapshot-purge: dry run — pass --apply to delete\n")
     return 0
 
 
@@ -3781,6 +3919,8 @@ def main() -> int:
         return _snapshot_resolve(args[1:])
     if args[:1] == ["snapshot-prune"]:
         return _snapshot_prune(args[1:])
+    if args[:1] == ["snapshot-purge"]:
+        return _snapshot_purge(args[1:])
     if args[:1] == ["run-pipeline"]:
         return _run_pipeline(args[1:])
     if args[:1] == ["s3-snapshot"]:
@@ -3830,6 +3970,8 @@ def main() -> int:
         "(newest restorable snapshot; rc=0 found, rc=1 none — build fresh, rc=2 lookup failed), "
         "snapshot-prune --domain-slug SLUG [--keep 2] [--apply] "
         "(drop all but the newest N; dry-run unless --apply), "
+        "snapshot-purge --domain-slug SLUG [--apply] "
+        "(delete EVERY snapshot of one stack, for destroy-all; dry-run unless --apply), "
         "run-pipeline (top-level deploy entry; reads tofu state + "
         "config.tfvars; optional env: SSH_PRIVATE_KEY_CONTENT, "
         "GH_MIRROR_TOKEN, GH_MIRROR_REPOS, DOCKERHUB_USER, DOCKERHUB_TOKEN, "

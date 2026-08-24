@@ -457,6 +457,7 @@ def test_dispatcher_routes_subcommand(
         ("_server_poweroff", ["--server-id", "42"], "poweroff_server"),
         ("_snapshot_resolve", ["--domain-slug", "example-com"], "resolve_latest"),
         ("_snapshot_prune", ["--domain-slug", "example-com"], "list_snapshots"),
+        ("_snapshot_purge", ["--domain-slug", "example-com"], "list_snapshots"),
     ],
 )
 def test_api_errors_are_logged_by_type_only(
@@ -487,3 +488,245 @@ def test_flag_errors_keep_their_message(capsys: pytest.CaptureFixture[str]) -> N
     """
     assert cli._snapshot_create(["--server-id", "42"]) == 2
     assert "--domain-slug is required" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# snapshot-purge — destroy-all's cleanup
+#
+# A Hetzner snapshot survives `tofu destroy` by design, so destroy-all
+# leaves one behind unless something deletes it explicitly. What makes
+# that worse than a stray euro: the destroy takes all 81 random_*
+# resources with it, the next initial-setup mints a new credential
+# epoch, and the epoch guard then refuses the old image forever. It is
+# unusable AND it occupies one of the 30 per-account snapshot slots.
+# ---------------------------------------------------------------------------
+
+
+def test_purge_is_dry_run_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same guarantee as prune: deletion is irreversible, so opt in."""
+    deleted: list[int] = []
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: (_snap(1), _snap(2)))
+    monkeypatch.setattr(
+        _hsnap,
+        "delete_snapshot",
+        lambda image_id, token: deleted.append(image_id),
+    )
+
+    assert cli._snapshot_purge(["--domain-slug", "example-com"]) == 0
+    assert deleted == []
+    err = capsys.readouterr().err
+    assert "would delete" in err
+    assert "--apply" in err
+
+
+def test_purge_apply_deletes_every_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The point of the command: nothing is kept back.
+
+    This is what separates it from prune, whose `select_prunable`
+    refuses `keep < 1` precisely so a retention pass can never empty a
+    stack out.
+    """
+    deleted: list[int] = []
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: (_snap(1), _snap(2), _snap(3)))
+    monkeypatch.setattr(
+        _hsnap,
+        "delete_snapshot",
+        lambda image_id, token: deleted.append(image_id),
+    )
+
+    assert cli._snapshot_purge(["--domain-slug", "example-com", "--apply"]) == 0
+    assert deleted == [1, 2, 3]
+
+
+def test_purge_is_scoped_to_the_domain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never a project-wide wipe — other tenants share the account.
+
+    The 30-snapshot limit is per account, so a multi-tenant project has
+    other stacks' images sitting right next to these ones.
+    """
+    seen: dict[str, Any] = {}
+
+    def _fake_list(_token: str, *, domain_slug: str) -> tuple[Snapshot, ...]:
+        seen["domain_slug"] = domain_slug
+        return ()
+
+    monkeypatch.setattr(_hsnap, "list_snapshots", _fake_list)
+    assert cli._snapshot_purge(["--domain-slug", "example-com", "--apply"]) == 0
+    assert seen["domain_slug"] == "example-com"
+
+
+def test_purge_on_empty_listing_is_a_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A stack that never took a snapshot must not fail destroy-all."""
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: ())
+    assert cli._snapshot_purge(["--domain-slug", "example-com", "--apply"]) == 0
+    assert "nothing to do" in capsys.readouterr().err
+
+
+def test_purge_reports_images_it_cannot_delete(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `creating` image is skipped loudly, not silently.
+
+    The API cannot delete one mid-creation. Staying quiet would leave
+    exactly the orphan this command exists to prevent — and nobody
+    would know to go looking for it.
+    """
+    stuck = Snapshot(
+        image_id=7,
+        description="nexus-example-com-7",
+        created="2026-08-05T21:00:00+00:00",
+        disk_gb=160,
+        architecture="x86",
+        epoch=EPOCH,
+        server_type="cx43",
+        status="creating",
+        image_gb=0.0,
+    )
+    deleted: list[int] = []
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: (_snap(1), stuck))
+    monkeypatch.setattr(
+        _hsnap,
+        "delete_snapshot",
+        lambda image_id, token: deleted.append(image_id),
+    )
+
+    assert cli._snapshot_purge(["--domain-slug", "example-com", "--apply"]) == 0
+    assert deleted == [1]
+    err = capsys.readouterr().err
+    assert "#7" in err
+    assert "creating" in err
+
+
+def test_purge_aborts_when_a_delete_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rc=2 so destroy-all reports failure instead of a false all-clear."""
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: (_snap(1), _snap(2)))
+
+    def _raise(image_id: int, token: str) -> None:
+        raise HetznerSnapshotError("HTTP 409")
+
+    monkeypatch.setattr(_hsnap, "delete_snapshot", _raise)
+    assert cli._snapshot_purge(["--domain-slug", "example-com", "--apply"]) == 2
+
+
+def test_purge_requires_domain_slug(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli._snapshot_purge([]) == 2
+    assert "--domain-slug is required" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# snapshot-purge argument validation
+#
+# Strict, unlike the other snapshot handlers, because this one deletes and
+# both ways of getting the arguments wrong are SILENT:
+#
+#   --keep 2   borrowed from snapshot-prune, ignored -> deletes everything
+#              when the operator asked to retain two
+#   --aply     a typo, ignored -> a real purge silently downgrades to a
+#              dry run that exits 0, so destroy-all reports success while
+#              the images it was meant to remove survive
+#
+# The two failures point in opposite directions, which is why neither
+# default (accept-and-ignore) is defensible here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--domain-slug", "example-com", "--apply", "--keep", "2"], "unknown argument '--keep'"),
+        (["--domain-slug", "example-com", "--aply"], "unknown argument '--aply'"),
+        (["--domain-slug", "example-com", "extra"], "unknown argument 'extra'"),
+        (["--domain-slug", "example-com", "--apply", "--apply"], "--apply given more than once"),
+        (["--domain-slug"], "--domain-slug requires a value"),
+        # The slug is missing and --apply is swallowed as its value.
+        # Without the flag-shaped-value check this reached the
+        # DESTRUCTIVE path with domain_slug="--apply", matched no
+        # snapshots, and exited 0 — reporting success while every real
+        # snapshot survived. Same silent-no-op class the strict parsing
+        # exists to remove.
+        (["--domain-slug", "--apply"], "requires a value, got flag '--apply'"),
+        (["--apply", "--domain-slug"], "--domain-slug requires a value"),
+    ],
+)
+def test_purge_rejects_bad_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected: str,
+) -> None:
+    """rc=2 and, critically, nothing is deleted."""
+    deleted: list[int] = []
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: (_snap(1), _snap(2), _snap(3)))
+    monkeypatch.setattr(
+        _hsnap,
+        "delete_snapshot",
+        lambda image_id, token: deleted.append(image_id),
+    )
+
+    assert cli._snapshot_purge(argv) == 2
+    assert deleted == []
+    assert expected in capsys.readouterr().err
+
+
+def test_purge_rejects_keep_before_deleting_anything(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regression this validation exists for, stated on its own.
+
+    `snapshot-purge --domain-slug X --apply --keep 2` used to delete
+    every snapshot: --keep is a snapshot-prune option, it was ignored,
+    and purge does not retain. An operator reaching for the flag they
+    know from the sibling command got the opposite of what they asked
+    for, irreversibly.
+    """
+    deleted: list[int] = []
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: (_snap(1), _snap(2), _snap(3)))
+    monkeypatch.setattr(
+        _hsnap,
+        "delete_snapshot",
+        lambda image_id, token: deleted.append(image_id),
+    )
+
+    rc = cli._snapshot_purge(["--domain-slug", "example-com", "--apply", "--keep", "2"])
+    assert rc == 2
+    assert deleted == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--domain-slug", "example-com"],
+        ["--domain-slug", "example-com", "--apply"],
+        ["--apply", "--domain-slug", "example-com"],
+    ],
+)
+def test_purge_accepts_every_valid_form(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> None:
+    """Validation must not reject what the workflow actually sends."""
+    monkeypatch.setattr(_hsnap, "list_snapshots", lambda *a, **k: ())
+    assert cli._snapshot_purge(argv) == 0
+
+
+def test_purge_apply_is_read_from_the_parse_not_from_argv() -> None:
+    """`"--apply" in args` cannot tell a flag from a value spelling one.
+
+    `--domain-slug --apply` puts the literal string "--apply" in argv as
+    a VALUE. A membership test sees it and switches on the destructive
+    path. The handler therefore reads the validated parse instead, and
+    this asserts the underlying helper reports flags only.
+    """
+    assert cli._validated_flags(
+        ["--domain-slug", "example-com"],
+        valued=("domain-slug",),
+        boolean=("apply",),
+    ) == {"domain-slug"}
+
+    assert cli._validated_flags(
+        ["--domain-slug", "example-com", "--apply"],
+        valued=("domain-slug",),
+        boolean=("apply",),
+    ) == {"domain-slug", "apply"}
