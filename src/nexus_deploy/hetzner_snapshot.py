@@ -32,7 +32,7 @@ Public surface:
 * :func:`resolve_latest` — the newest usable snapshot, epoch-checked.
 * :func:`select_prunable` — which snapshots a ``keep=N`` policy drops.
 * :func:`delete_snapshot` — remove one image.
-* :func:`count_snapshots` — project-wide total, for the 30-image cap.
+* :func:`count_snapshots` — total visible to this token, for the cap.
 
 Every network call goes through an injectable ``http_request`` seam so
 the whole module is unit-testable without touching the network, mirroring
@@ -53,10 +53,20 @@ from typing import Any
 _API_BASE = "https://api.hetzner.cloud/v1"
 _DEFAULT_TIMEOUT = 30.0
 
-# Hetzner caps the number of snapshots per project. The value is a
-# default that support can raise on request, so treat it as a warning
-# threshold rather than a hard truth — the API is authoritative and
-# will reject the create call itself when the real limit is hit.
+# Hetzner's DEFAULT snapshot cap. Two properties matter and both are
+# easy to get wrong:
+#
+# * It is counted PER CUSTOMER across every project, not per project.
+#   Hetzner's Limits page says so directly: "Limits sind pro Kunde
+#   festgelegt und werden über alle Projekte gezählt." Splitting a
+#   fleet across projects therefore does not buy any headroom.
+# * It is a default, not a ceiling. Support raises it on request via
+#   the Cloud Console (Limits -> Request change -> Limit increase), so
+#   the real cap is account-specific and cannot be a constant here.
+#
+# Callers read the effective value from NEXUS_SNAPSHOT_LIMIT and fall
+# back to this. Either way it is only a warning threshold — the API is
+# authoritative and rejects the create call when the real limit is hit.
 DEFAULT_SNAPSHOT_LIMIT = 30
 
 # Label keys used to make a snapshot self-describing. The Hetzner
@@ -511,13 +521,50 @@ def list_snapshots(
 
 
 def count_snapshots(token: str, *, http_request: HttpRequest | None = None) -> int:
-    """Total snapshots in the project, for the pre-flight cap check.
+    """Every snapshot in this project, for the pre-flight cap check.
 
-    Counts *all* snapshots, not just this stack's, because the limit is
-    project-wide — a stack that only ever prunes its own images can
-    still be blocked by a sibling's.
+    Deliberately does NOT go through :func:`list_snapshots`. That one
+    filters on ``nexus_role``, which is exactly right for retention —
+    prune deletes what it enumerates, so it must never see an image it
+    does not own — and exactly wrong here. Hetzner's quota counts every
+    snapshot in the project: one taken by hand in the Console, one left
+    behind by another tool, one predating these labels. A count that
+    skips those reports a comfortable number right up until the API
+    rejects the create.
+
+    Reads ``meta.pagination.total_entries`` rather than measuring the
+    returned page. ``list_snapshots`` asks for ``per_page=100`` and does
+    not paginate, so counting its result would silently cap at 100 —
+    which stopped being hypothetical the moment a limit above 100 could
+    be configured. ``per_page=1`` keeps the payload minimal; the images
+    themselves are not wanted here, only how many there are.
+
+    KNOWN BLIND SPOT: an ``HCLOUD_TOKEN`` is scoped to one project,
+    while the limit is counted per customer across every project. With
+    a single project the two are equivalent. With several, this
+    under-counts, and it under-counts hardest in exactly the setup that
+    needs the warning most — one project per tenant spreads the images
+    out until no single project looks close to the cap. Hetzner exposes
+    no account-wide count to a project token, so the caller says what
+    this number actually covers rather than implying more.
     """
-    return len(list_snapshots(token, http_request=http_request))
+    req = _request(http_request)
+    # No label_selector: see above. per_page=1 because only the total
+    # is wanted.
+    payload = req("GET", f"{_API_BASE}/images?type=snapshot&per_page=1", token, None)
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    pagination = meta.get("pagination") if isinstance(meta, dict) else None
+    total = pagination.get("total_entries") if isinstance(pagination, dict) else None
+    # `type(total) is int` rather than isinstance: bool subclasses int in
+    # Python, so isinstance(True, int) passes and a `"total_entries": true`
+    # would silently become a count of 1. A negative total is equally
+    # meaningless. Both would suppress the warning while looking valid,
+    # which is the failure mode this whole function exists to avoid.
+    if type(total) is not int or total < 0:
+        raise HetznerSnapshotError(
+            "Hetzner /v1/images response has no usable meta.pagination.total_entries",
+        )
+    return total
 
 
 def resolve_latest(

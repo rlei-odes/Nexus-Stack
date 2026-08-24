@@ -231,24 +231,70 @@ def test_list_snapshots_schema_drift_raises() -> None:
         list_snapshots("tok", http_request=http)
 
 
-def test_count_snapshots_counts_project_wide() -> None:
-    """The cap is per project, so the count must not be label-scoped."""
-    http = _Recorder(
-        {
-            "/images": {
-                "images": [
-                    _image(1, created="2026-08-01T21:00:00+00:00"),
-                    _image(2, created="2026-08-02T21:00:00+00:00"),
-                ],
-            },
-        },
-    )
+def _pagination(total: int) -> dict[str, Any]:
+    return {"images": [], "meta": {"pagination": {"total_entries": total}}}
+
+
+def test_count_snapshots_is_not_label_scoped() -> None:
+    """The quota counts every image, including ones we did not create.
+
+    The regression: this used to reuse list_snapshots, which always
+    filters on nexus_role. A snapshot taken by hand in the Console, or
+    left by another tool, consumes quota but was invisible here — so
+    the pre-flight reported a comfortable number right up until the API
+    rejected the create.
+    """
+    http = _Recorder({"/images": _pagination(2)})
     assert count_snapshots("tok", http_request=http) == 2
     _method, url, _payload = http.calls[0]
-    # Role-scoped (only ours count against our retention decisions) but
-    # deliberately NOT domain-scoped: the cap is project-wide.
-    assert f"{LABEL_ROLE}%3D{ROLE_VALUE}" in url
+    assert "label_selector" not in url
+    assert LABEL_ROLE not in url
     assert LABEL_DOMAIN not in url
+
+
+def test_count_snapshots_reads_the_reported_total_not_the_page() -> None:
+    """Above the page size, counting the returned list caps at 100.
+
+    Hetzner reports the true figure in meta.pagination.total_entries,
+    so no pagination loop is needed — but it has to be read rather than
+    inferred from the returned images, which per_page deliberately
+    keeps at one.
+    """
+    http = _Recorder({"/images": _pagination(137)})
+    assert count_snapshots("tok", http_request=http) == 137
+    _method, url, _payload = http.calls[0]
+    assert "per_page=1" in url
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        pytest.param({}, id="no-meta"),
+        pytest.param({"meta": {}}, id="no-pagination"),
+        pytest.param({"meta": {"pagination": {}}}, id="no-total"),
+        pytest.param({"meta": {"pagination": {"total_entries": None}}}, id="null-total"),
+        pytest.param({"meta": {"pagination": {"total_entries": "7"}}}, id="string-total"),
+        # bool subclasses int, so isinstance(True, int) passes and this
+        # would silently become a count of 1.
+        pytest.param({"meta": {"pagination": {"total_entries": True}}}, id="bool-total"),
+        pytest.param({"meta": {"pagination": {"total_entries": -1}}}, id="negative-total"),
+    ],
+)
+def test_count_snapshots_rejects_an_unusable_total(meta: dict[str, Any]) -> None:
+    """Anything but a non-negative int must raise, not be coerced.
+
+    A silently wrong total suppresses the cap warning while looking
+    valid — the exact failure this function exists to prevent.
+    """
+    http = _Recorder({"/images": {"images": [], **meta}})
+    with pytest.raises(HetznerSnapshotError, match="total_entries"):
+        count_snapshots("tok", http_request=http)
+
+
+def test_count_snapshots_accepts_zero() -> None:
+    """An empty project is a valid answer, not a malformed one."""
+    http = _Recorder({"/images": _pagination(0)})
+    assert count_snapshots("tok", http_request=http) == 0
 
 
 # ---------------------------------------------------------------------------

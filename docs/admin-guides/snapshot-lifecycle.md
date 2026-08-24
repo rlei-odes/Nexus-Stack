@@ -159,11 +159,43 @@ Fixes, in order of preference:
 
 Do not trust the tier comments in `hetzner_capacity.py` for disk sizes — they were wrong once already. `fetch_server_types` reads the real values from the API at runtime.
 
-### The snapshot limit is reached
+### The snapshot limit — raise it before you switch a fleet
 
-Hetzner allows **30 snapshots across all projects** by default. Retention keeps 2 per stack, so a single project supports roughly 15 stacks before this bites. `snapshot-create` counts before creating and warns near the cap; it fails loudly naming foreign snapshots rather than deleting anything it does not own.
+Hetzner's default is **30 snapshots, counted per customer across every project.** Their Limits page states it directly:
 
-Ask Hetzner support to raise the limit, or reduce retention.
+> Limits sind pro Kunde festgelegt und werden über alle Projekte gezählt.
+
+Two consequences that are easy to get wrong:
+
+**Splitting across projects buys nothing.** One project per class, per tenant, per environment — none of it adds headroom. The images all count against the same customer total.
+
+**Retention of 2 means the cap is half your stack count.** At the default 30 that is roughly 15 stacks. Any fleet larger than that needs the limit raised *before* switching stacks to snapshot mode, not after the first teardown fails.
+
+#### Raising it
+
+In the [Hetzner Cloud Console](https://console.hetzner.cloud/), open **Limits → Request change → Limit increase**, tick **Snapshots**, and enter the target. Requests are reviewed manually during business hours, so allow for that rather than doing it the morning of a course.
+
+Size it as `2 × (number of servers)` to match the retention policy. If the server limit is also being raised, raise both together — a snapshot cap that outruns the server cap is wasted, and the reverse strands servers without a snapshot to restore from.
+
+#### Then tell Nexus-Stack about it
+
+The pre-flight check does not know what Hetzner granted. Set the repository variable so the warning fires near your real ceiling:
+
+```bash
+gh variable set SNAPSHOT_LIMIT --body 100
+```
+
+`teardown-snapshot.yml` passes it to `snapshot-create` as `NEXUS_SNAPSHOT_LIMIT`. Unset, it falls back to Hetzner's documented default of 30 — which is correct for an untouched account and wrong for yours the moment support raises it. Skipping this step is not dangerous, only noisy: every teardown from two below the default onwards warns you to raise a limit you already raised, which is how operators learn to skim past warnings.
+
+#### What the warning can and cannot see
+
+`snapshot-create` counts before creating and warns when the total approaches the limit. It does not enumerate anything — the count is a bare total, and nothing is named. The related guarantee is real but belongs to a different command: `select_prunable` only ever sees images carrying **both** the `nexus_role` and `nexus_domain` labels, so prune and purge can only delete images this stack owns.
+
+The count includes **every** snapshot in the project, not only the ones Nexus-Stack made — one taken by hand in the Console consumes quota exactly like ours does, so it has to be counted like ours.
+
+It has one blind spot left, and it is not fixable from here: an `HCLOUD_TOKEN` is scoped to a **single project**, while the limit counts **every** project. With one project the two are the same number. With several, the check under-counts — and it under-counts hardest in exactly the layout that needs it most, since one project per tenant spreads the images out until no single project looks close to the cap. Hetzner exposes no account-wide count to a project token, so the warning names what it actually covers rather than implying a total it cannot see.
+
+That is a concrete argument for keeping one project: the pre-flight warning only works when the project and the customer are the same scope.
 
 ### When the mode cannot be determined
 
