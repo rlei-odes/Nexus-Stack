@@ -47,6 +47,18 @@ import Layout from '../layouts/Layout.astro';
     <button class="btn-warning" id="btn-delay-teardown" disabled style="margin-top: 0.8rem;">Delay Teardown</button>
   </div>
 
+  <!-- Lifecycle -->
+  <div class="panel">
+    <h2>Lifecycle</h2>
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">Lifecycle mode</div>
+        <div class="setting-info" id="lifecycle-info">Loading...</div>
+      </div>
+      <div class="toggle-switch disabled" id="toggle-lifecycle"></div>
+    </div>
+  </div>
+
   <!-- Email Notifications -->
   <div class="panel">
     <h2>Email Notifications</h2>
@@ -360,8 +372,134 @@ import Layout from '../layouts/Layout.astro';
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Lifecycle mode
+  //
+  // Two modes, so a toggle: off = Rebuild, on = Snapshot. The info line
+  // always names the ACTIVE mode and what it means, so the current
+  // setting is readable even when the control is greyed out.
+  //
+  // Greyed out for everyone but the admin. The API enforces this anyway
+  // (POST answers 403); disabling the control means a student sees which
+  // mode the stack is on without being offered a switch that fails.
+  // ---------------------------------------------------------------------
+  let lifecycleModes = [];
+
+  async function loadLifecycle() {
+    const toggle = document.getElementById('toggle-lifecycle');
+    const info = document.getElementById('lifecycle-info');
+    if (!toggle || !info) return;
+    try {
+      const response = await fetch(API_URL + '/api/lifecycle', { credentials: 'same-origin' });
+      const data = await response.json();
+      if (!data.success) {
+        // Tag the error so the catch can tell an API message apart from
+        // a network or parse failure. The backend returns a specific 500
+        // when ADMIN_EMAIL is unset so the operator can see the
+        // misconfiguration — throwing that away here would undo the
+        // point of returning it.
+        const apiError = new Error(data.error || 'failed');
+        apiError.apiMessage = data.error || null;
+        throw apiError;
+      }
+      lifecycleModes = data.modes || [];
+
+      const active = lifecycleModes.find((m) => m.value === data.mode);
+      toggle.classList.toggle('active', data.mode === 'snapshot');
+
+      if (data.canEdit) {
+        toggle.classList.remove('disabled');
+        toggle.title = 'Switch between Rebuild and Snapshot';
+      } else {
+        toggle.classList.add('disabled');
+        toggle.title = 'Only the stack administrator can change the lifecycle';
+      }
+
+      // textContent throughout: this page has had innerHTML findings.
+      info.textContent = '';
+      const line1 = document.createElement('div');
+      line1.textContent = data.recognised
+        ? 'Active: ' + (active ? active.label : data.mode) + ' \u2014 ' + (active ? active.summary : '')
+        : 'The stored mode is not recognised \u2014 nothing will be dispatched until it is set.';
+      info.appendChild(line1);
+
+      if (active) {
+        const line2 = document.createElement('div');
+        line2.textContent = 'Keeps: ' + active.keeps;
+        info.appendChild(line2);
+        const line3 = document.createElement('div');
+        line3.textContent = 'Images: ' + active.images;
+        info.appendChild(line3);
+      }
+      if (!data.canEdit) {
+        const line4 = document.createElement('div');
+        line4.textContent = 'Only the stack administrator can change this.';
+        info.appendChild(line4);
+      }
+    } catch (error) {
+      // Clear the state as well as showing the error. Without this the
+      // toggle keeps whatever the last successful load set, so the page
+      // would show a definite-looking mode next to a message saying it
+      // could not be read — worse than showing nothing.
+      lifecycleModes = [];
+      toggle.classList.remove('active');
+      toggle.classList.add('disabled');
+      toggle.title = 'Lifecycle mode unavailable';
+      // Show the server's own message when there is one — "Server
+      // misconfigured: ADMIN_EMAIL is not set" is actionable in a way
+      // that "could not load" is not. A network or parse failure has no
+      // apiMessage and falls back to the generic text, since the
+      // browser's own wording ("Failed to fetch") explains nothing.
+      // textContent, so the message cannot carry markup either way.
+      info.textContent = error && error.apiMessage
+        ? 'Could not load the lifecycle mode: ' + error.apiMessage
+        : 'Could not load the lifecycle mode.';
+    }
+  }
+
+  async function saveLifecycle(mode) {
+    const entry = lifecycleModes.find((m) => m.value === mode);
+    const label = entry ? entry.label : mode;
+    // Rebuild is the direction that cannot be undone: the next teardown
+    // rotates every generated credential, after which existing snapshots
+    // are refused for good.
+    if (mode === 'rebuild') {
+      const ok = confirm(
+        'Switch to Rebuild?\n\n' +
+        'The next teardown will destroy everything and rotate all generated ' +
+        'credentials. Existing snapshots can no longer be restored after that, ' +
+        'and only the stacks covered by the R2 backup keep their data.'
+      );
+      if (!ok) { loadLifecycle(); return; }
+    }
+    try {
+      const response = await fetch(API_URL + '/api/lifecycle', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        showToast(data.changed ? 'Lifecycle set to ' + label : 'Already using ' + label);
+      } else {
+        showToast(data.error || 'Failed to update', 'error');
+      }
+    } catch {
+      showToast('Failed to update the lifecycle mode', 'error');
+    }
+    loadLifecycle();
+  }
+
+  document.getElementById('toggle-lifecycle')?.addEventListener('click', function () {
+    // .disabled sets pointer-events:none, so this cannot fire while
+    // greyed out — the guard is belt and braces.
+    if (this.classList.contains('disabled')) return;
+    saveLifecycle(this.classList.contains('active') ? 'rebuild' : 'snapshot');
+  });
+
   fetchInfo();
   loadScheduledTeardownConfig();
+  loadLifecycle();
   loadEmailSettings();
   loadHistory();
 </script>
