@@ -167,6 +167,74 @@ When `HCLOUD_TOKEN` is not set in the environment (e.g. running the CLI locally 
 
 Hetzner ARM (`cax*`) availability has been chronically constrained since early 2026 and is now ~40% MORE expensive than equivalent x86 (was ~50% cheaper at project start), so the default list excludes ARM entirely. If you need ARM, add it explicitly: `SERVER_PREFERENCES = "cax31:fsn1, cax31:nbg1, cx43:fsn1"`.
 
+## Ubuntu 26.04 and uutils coreutils
+
+Ubuntu 26.04 replaced GNU coreutils with the Rust reimplementation
+[uutils](https://uutils.github.io/coreutils/) as its default userland.
+Around 80 utilities changed implementation; `cp`, `mv` and `rm` stayed
+GNU.
+
+They are close, not identical. Two things to know when a deploy fails
+on 26.04 in a way it never did on 24.04:
+
+**Error messages differ in shape.** GNU names the offending path —
+`install: cannot stat '/dev/stdin': No such file or directory`. uutils
+is terser and may print only `install: No such file or directory`. If
+you are looking at a message with no path in it, that alone is a hint
+about which implementation produced it.
+
+**Passing a device path where a file is expected can fail.** The
+spin-up failure that surfaced this wrote the rclone config with
+`install -m 600 /dev/stdin <<'EOF'`, asking `install` to resolve a
+*path* to a heredoc. That aborted the restore before it produced any
+output, so the workflow log showed one line and nothing else.
+
+The fix, and the pattern to prefer whenever you write a file that
+holds credentials:
+
+```bash
+mkdir -p "$HOME/.config/rclone"
+TMP=$(mktemp "$HOME/.config/rclone/.rclone.conf.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+cat > "$TMP" <<'EOF'
+...
+EOF
+mv -fT "$TMP" "$HOME/.config/rclone/rclone.conf"
+```
+
+Four things this gets right, and each of them is a way the shorter
+forms go wrong:
+
+- **`cat` reads file descriptor 0** and performs no path lookup, so it
+  cannot fail the way `install /dev/stdin` did.
+- **Mode 0600 from the first byte.** `mktemp` creates with that mode by
+  construction and `mv` is a rename, so the mode survives. A plain
+  redirect would create the file 0644.
+- **No symlink-follow.** `mktemp` opens `O_EXCL` under a name that did
+  not exist, and `mv` *replaces* a symlink at the destination rather
+  than writing through it. A `rm -f` followed by a redirect leaves a
+  window in which the destination can be re-pointed.
+- **Atomic for readers.** The consumer sees the old file or the new
+  one, never a half-written one left by a session that died mid-write.
+- **`-T` on the `mv`.** Without it, a destination that happens to be a
+  *directory* makes `mv` move the temp file inside it rather than
+  replacing it — and the `trap` then cleans a path that no longer holds
+  the file, leaving the credentials sitting in `rclone.conf/`. `-T`
+  forces file semantics for every destination shape. It exists on GNU
+  and uutils; BSD `mv` has no equivalent, which matters only if you
+  reuse this pattern outside Linux.
+
+The `trap` matters specifically because the temp file holds
+credentials: without it, every failed run strands one under a fresh
+name.
+
+**Where else to look.** Any rendered remote script that shells out to
+coreutils is a candidate. Bash-heavy paths in this project are the
+deploy pipeline, the rendered `s3_persistence` snapshot and restore
+scripts, and the per-service configure hooks. Failures there tend to be
+quiet — wrong output rather than a non-zero exit — so a green step is
+not proof.
+
 ## General Tips
 
 ### SSH Access Issues

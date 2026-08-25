@@ -72,6 +72,16 @@ def _good_env() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _executable_lines(script: str) -> list[str]:
+    """Script lines that bash will actually run — comments stripped.
+
+    Needed because the rendered header *explains* why it no longer
+    uses ``install -m 600 /dev/stdin``, so a naive substring check
+    would match the explanation rather than a real invocation.
+    """
+    return [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
+
+
 @pytest.mark.parametrize(
     "value",
     ["true"],
@@ -320,7 +330,27 @@ def test_combined_script_writes_config_atomically_at_mode_600() -> None:
         postgres_targets=(),
         rsync_targets=(),
     )
-    assert 'install -m 600 /dev/stdin "$HOME/.config/rclone/rclone.conf"' in script
+    # mktemp into the same directory, then rename. No unlink-then-
+    # reopen window for a symlink to be planted in, mode 0600 by
+    # mktemp's construction, and atomic for a concurrent reader.
+    assert 'RCLONE_CONF_TMP=$(mktemp "$HOME/.config/rclone/.rclone.conf.XXXXXX")' in script
+    assert 'cat > "$RCLONE_CONF_TMP"' in script
+    # -T, not a bare mv: a destination that happens to be a DIRECTORY
+    # would otherwise make mv move the credential file *into* it, and
+    # the EXIT trap would then clean a path that no longer holds it.
+    assert 'mv -fT "$RCLONE_CONF_TMP" "$HOME/.config/rclone/rclone.conf"' in script
+    assert 'mv -f "$RCLONE_CONF_TMP"' not in script
+    # A credentials-bearing temp file must not survive a mid-script exit.
+    assert "trap 'rm -f \"$RCLONE_CONF_TMP\"' EXIT" in script
+    # The destination is never opened directly, which is what removes
+    # the symlink-follow path entirely.
+    assert 'cat > "$HOME/.config/rclone/rclone.conf"' not in script
+    # Regression guard for the Ubuntu 26.04 failure: `install` asking
+    # uutils to resolve a path to the heredoc died with a bare
+    # "install: No such file or directory" before any body output.
+    executable = _executable_lines(script)
+    assert not [ln for ln in executable if "/dev/stdin" in ln]
+    assert not [ln for ln in executable if ln.strip().startswith("install")]
 
 
 def test_combined_script_starts_with_shebang_and_safety_pragmas() -> None:
@@ -341,7 +371,7 @@ def test_combined_script_orders_config_before_body() -> None:
         postgres_targets=(),
         rsync_targets=(),
     )
-    config_pos = script.find("install -m 600")
+    config_pos = script.find("RCLONE_CONF_TMP=")
     body_pos = script.find("looking up latest snapshot")
     assert 0 < config_pos < body_pos
 
@@ -452,7 +482,7 @@ def test_combined_snapshot_script_writes_config_and_body() -> None:
     the restore direction. Single rendered script must:
 
     1. Write the rclone config at mode 600 to
-       ``~/.config/rclone/rclone.conf`` via ``install /dev/stdin``.
+       ``~/.config/rclone/rclone.conf`` atomically via same-dir mktemp.
     2. Then include the snapshot body — namespaced ``STACK`` /
        ``TEMPLATE_VERSION`` envs, the timestamp, the per-source
        rclone-sync invocations, and the latest.txt pointer write.
@@ -467,7 +497,10 @@ def test_combined_snapshot_script_writes_config_and_body() -> None:
         postgres_targets=postgres_targets,
         rsync_targets=rsync_targets,
     )
-    assert "install -m 600 /dev/stdin" in script
+    assert 'mv -fT "$RCLONE_CONF_TMP"' in script
+    executable = _executable_lines(script)
+    assert not [ln for ln in executable if "/dev/stdin" in ln]
+    assert not [ln for ln in executable if ln.strip().startswith("install")]
     assert ".config/rclone/rclone.conf" in script
     assert "STACK=nexus-test" in script
     assert "TEMPLATE_VERSION=v1.0.0" in script
@@ -487,7 +520,7 @@ def test_combined_snapshot_script_orders_config_before_body() -> None:
         postgres_targets=postgres_targets,
         rsync_targets=rsync_targets,
     )
-    config_pos = script.index("install -m 600 /dev/stdin")
+    config_pos = script.index("RCLONE_CONF_TMP=")
     body_pos = script.index("STACK=nexus-test")
     assert 0 < config_pos < body_pos
 
