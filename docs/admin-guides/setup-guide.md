@@ -231,15 +231,21 @@ Nothing to do here — the first run creates `R2_ACCESS_KEY_ID` and
 `R2_SECRET_ACCESS_KEY` and saves them as repository secrets itself. Every
 later deployment picks them up automatically.
 
-If the run stops with `GH_SECRETS_TOKEN is not configured`, add the token as
-described above and re-run the workflow. It mints a fresh R2 token and attempts
-to delete the one from the failed attempt.
+If the run stops with `GH_SECRETS_TOKEN is not configured`, nothing has been
+created yet — the workflow checks the token before minting anything, precisely so
+it never produces a credential it cannot store. Add the token as described above
+and re-run.
 
-That cleanup is best-effort: `init-r2-state.sh` treats a failed token listing or
-deletion as non-fatal, so a transient Cloudflare API error can leave the earlier
-token active. Watch the re-run for a `Could not delete stale token` warning, and
-if you see one, remove it under **Cloudflare dashboard → My Profile → API
-Tokens**.
+If it stops with `Could not save the R2 credentials`, a token *was* created and
+its secret went with the runner. Fix the permission and re-run: the next run
+deletes every token named for this stack before minting a replacement, so the
+orphan is cleaned up rather than left behind.
+
+That cleanup is enforced rather than assumed. `init-r2-state.sh` re-reads the
+token list after the deletions and aborts instead of creating a new token if any
+same-named token survived, or if the list could not be read at all. So a run
+either ends with exactly one live R2 token, or stops and names the token IDs to
+remove under **Cloudflare dashboard → My Profile → API Tokens**.
 
 ---
 
