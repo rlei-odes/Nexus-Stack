@@ -37,6 +37,21 @@ This is the largest class of real issues in this repo's recent history. When a P
 
 If a PR's prose contradicts one of these files, flag it as a factual error with the specific file path and snippet. Don't accept hand-waves about "usually" or "typically" for things that are concretely configured.
 
+### 4a. Claims about runtime behaviour, especially in error messages
+
+The same rule applies to sentences a *user will read while something is broken* — failure messages in workflows and scripts, recovery instructions, and the operator guides. These are written from the author's mental model rather than checked against the code, so they drift silently: nothing executes a sentence.
+
+Flag any claim of this shape unless the surrounding code guarantees it:
+
+- **"X was already deleted / created / saved"** where the operation *discards its exit status* — `|| true`, `|| echo …`, or an unchecked call. The operation may not have happened, and a recovery message is the worst place to be confidently wrong. Note that `2>/dev/null` alone does **not** qualify: it hides the diagnostic, not the status, so a caller that checks the status still knows what happened. `cmd 2>/dev/null || true` is best-effort because of the `|| true`.
+- **"the next run will take path Y"** without checking the condition that selects the path. In `setup-control-plane.yaml` that is `check_r2`, which requires *both* R2 secrets to be non-empty — so an incomplete pair takes the first-time path, not the recreate path.
+- **"nothing is left behind"** for a cleanup that does not verify its own result.
+- Documentation quoting an error string that the code does not print verbatim. An operator searching the log finds nothing. Prefer making the messages identical over documenting two variants.
+
+When a guarantee cannot be given, say so: *"this step cannot determine which"* is a better failure message than a confident wrong one, and it tells the operator to go look.
+
+Real examples, all from PR #687 review: a recovery message asserted deleted secrets that a `|| true` may have left in place; another said the next run takes a path it does not take; a documented error string matched only one of two code paths.
+
 ## 5. Error handling in critical operations
 
 Flag `|| echo "..."`, `2>/dev/null || true`, or similar patterns that silence errors in destructive operations:
@@ -45,6 +60,34 @@ Flag `|| echo "..."`, `2>/dev/null || true`, or similar patterns that silence er
 - Deployment steps that affect running services
 
 For these paths, the correct pattern is an `if ! …; then echo "ERROR: …"; exit 1; fi` block. `|| echo` is acceptable only for reading optional values, cleaning up temporary state, or appending to a log file that must not break the flow.
+
+### 5a. The failure indicator must be the exit status, never a by-product
+
+A `|| true` is the obvious version of this bug. The subtle version passes the rule above and still swallows the failure — watch for it specifically, because it reads as careful code:
+
+```bash
+# WRONG — the message doubles as the flag
+SAVE_ERROR=""
+if ! OUTPUT=$(printf '%s' "$VALUE" | gh secret set KEY 2>&1); then SAVE_ERROR="$OUTPUT"; fi
+if [ -z "$SAVE_ERROR" ]; then : "continues as if it worked"; fi
+```
+
+A command that exits non-zero while writing nothing to either stream leaves `SAVE_ERROR` empty, so the failure is indistinguishable from success. Keep the status and the message in separate variables:
+
+```bash
+# RIGHT
+SAVE_FAILED=0
+SAVE_ERROR=""
+if ! OUTPUT=$(printf '%s' "$VALUE" | gh secret set KEY 2>&1); then SAVE_FAILED=1; SAVE_ERROR="$OUTPUT"; fi
+if [ "$SAVE_FAILED" -ne 0 ]; then echo "  ${SAVE_ERROR:-(no output)}"; exit 1; fi
+```
+
+Both snippets pipe the value in rather than passing `gh secret set --body "$VALUE"`: `gh` reads the secret from standard input when `--body` is omitted, which keeps it out of the process argument list. Same rule as the service hooks in `src/nexus_deploy/services.py`.
+
+Two related shapes worth flagging in the same breath:
+
+- **A success message outside the success branch.** `cmd || true` forces the compound status to zero, so the failure is hidden from `set -e` and from any later check; an unconditional `echo "✅ done"` then states the opposite of what happened. The success line belongs inside the zero-status branch.
+- **Validating the container instead of the content.** Checking that a credentials file *exists* is not the same as checking that the values in it are non-empty. Handed an empty string, `gh secret set` stores an empty secret and exits zero, so the step reports success for something nothing downstream can use. Where a value must be usable, test the value.
 
 ## 6. Documentation conventions — watch for these specifically
 
