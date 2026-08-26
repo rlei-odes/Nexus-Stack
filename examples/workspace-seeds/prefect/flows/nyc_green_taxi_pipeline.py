@@ -13,9 +13,9 @@ Same TLC source, same R2 prefix, distinct file family — the two
 seeded flows coexist without overwriting each other and let students
 compare the two engines side-by-side on different-but-related data.
 
-This file was seeded into your Gitea workspace repo from
+This file was seeded into your Forgejo workspace repo from
 `nexus-stack/examples/workspace-seeds/prefect/flows/`
-during Initial Setup. Edit it in Gitea — the worker re-clones the
+during Initial Setup. Edit it in Forgejo — the worker re-clones the
 repo on every flow run via the `pull:` step in `prefect.yaml`, so
 your changes take effect on the next "Run" without a re-spin.
 Subsequent spin-ups will leave your edits untouched (seeding only
@@ -78,7 +78,7 @@ def upload_month(month: str, body: bytes) -> str:
 
     Returns the resulting object key so downstream tasks can chain on it
     deterministically. R2 credentials come from the prefect-worker
-    container's env vars (deploy.sh writes R2_* into stacks/prefect/.env).
+    container's env vars (the deploy pipeline writes R2_* into stacks/prefect/.env).
     """
     # `addressing_style="path"` is required for Cloudflare R2: without
     # it, botocore can fall back to virtual-host-style URLs

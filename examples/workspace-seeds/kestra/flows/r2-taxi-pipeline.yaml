@@ -12,12 +12,15 @@ description: |
        endpoint — no compute cluster, no Spark, no warehouse needed.
     3. Log aggregate stats from the result.
 
-  This file was seeded into your Gitea workspace repo at
+  This file was seeded into your Forgejo workspace repo at
   `nexus_seeds/kestra/flows/r2-taxi-pipeline.yaml` (from the
   Nexus-Stack source `examples/workspace-seeds/kestra/flows/`)
-  during Initial Setup. Edit the file in Gitea — Kestra picks up the
-  change within 15 minutes via `system.flow-sync` (which scans
-  `nexus_seeds/kestra/flows/`). Subsequent spin-ups will leave your
+  during Initial Setup. Edit the file in Forgejo, then
+  run `system.flow-sync` from the Kestra UI to pick it up
+    immediately; it also runs once on every spin-up. It is deliberately
+    unscheduled — a periodic pull with `delete: true` used to overwrite
+    edits made in the Kestra UI without any error.
+  `system.flow-sync` scans `nexus_seeds/kestra/flows/`. Subsequent spin-ups will leave your
   edits untouched (seeding only adds new files, it never overwrites).
 
   Want the full year? Extend the `values:` list under `bootstrap`
@@ -40,7 +43,7 @@ labels:
 #
 # Per Nexus-Stack convention (see `examples/README.md`), seeded example
 # flows MUST NEVER ship with schedule / cron triggers. Reason: a seeded
-# flow lands on EVERY student stack via the deploy.sh seed loop. A cron
+# flow lands on EVERY student stack via the seed loop. A cron
 # trigger would then fire on N student stacks, multiplying load on
 # external APIs (CloudFront, Databricks Free Edition quota), R2 egress
 # costs, and Kestra container CPU by the cohort size.

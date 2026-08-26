@@ -1,16 +1,17 @@
 # Placeholder so the `kestra/workflows/` directory exists in every
-# user's workspace Gitea repo from the first deploy.
+# user's workspace Forgejo repo from the first deploy.
 #
 # Why this file is here:
-# `system.git-sync` (the Kestra flow registered by deploy.sh) pulls
-# helper files from this directory every 15 minutes via the
-# SyncNamespaceFiles plugin. The plugin throws
+# `system.git-sync` (registered by the orchestrator's kestra-register
+# phase) pulls helper files from this directory via the
+# SyncNamespaceFiles plugin — once per spin-up, plus whenever it is
+# triggered manually. The plugin throws
 # `IllegalArgumentException: The directory 'kestra/workflows' was
 # not found in the git repository` and the run lands in FAILED
 # state when the directory is missing — flooding the Kestra
 # execution list with red dots even on a perfectly healthy stack.
 #
-# This .gitkeep gets seeded by `scripts/deploy.sh` like any other
+# This .gitkeep gets seeded by the orchestrator's seed phase like any other
 # file under `examples/workspace-seeds/`, materialising
 # `kestra/workflows/.gitkeep` in the fork. SyncNamespaceFiles
 # then sees an empty (but existent) directory and runs to SUCCESS.

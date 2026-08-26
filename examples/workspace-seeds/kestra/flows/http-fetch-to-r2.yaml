@@ -22,10 +22,13 @@ description: |
   Replace `source_url` and `r2_prefix` with whatever you want — any
   HTTP(S) endpoint that returns text or binary will work.
 
-  This file was seeded into your Gitea workspace repo from
+  This file was seeded into your Forgejo workspace repo from
   `nexus-stack/examples/workspace-seeds/kestra/flows/http-fetch-to-r2.yaml`.
-  Edit the file in Gitea — Kestra picks up the change within 15 minutes
-  via `system.flow-sync`. Subsequent spin-ups leave your edits
+  Edit the file in Forgejo, then
+  run `system.flow-sync` from the Kestra UI to pick it up
+    immediately; it also runs once on every spin-up. It is deliberately
+    unscheduled — a periodic pull with `delete: true` used to overwrite
+    edits made in the Kestra UI without any error. Subsequent spin-ups leave your edits
   untouched (seeding only adds new files, never overwrites).
 
   Manual trigger only — no `triggers:` block, by Nexus-Stack
@@ -41,7 +44,7 @@ labels:
 #
 # Per Nexus-Stack convention (see `examples/README.md`), seeded example
 # flows MUST NEVER ship with schedule / cron triggers. Reason: a seeded
-# flow lands on EVERY student stack via the deploy.sh seed loop. A cron
+# flow lands on EVERY student stack via the seed loop. A cron
 # trigger would then fire on N stacks, multiplying load on external APIs
 # and R2 egress costs by the cohort size.
 #

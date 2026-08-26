@@ -338,16 +338,15 @@ services:
     public: true
     category: "server-access"
     website: ""
-    description: "Public Git HTTPS proxy for external tools (Databricks, Git Desktop). Forwards to Gitea with built-in authentication."
-    long_description: "A lightweight Nginx-based reverse proxy that provides public HTTPS access to your Gitea repositories. Enables external tools like Databricks Repos, GitHub Desktop, and CI/CD systems to clone and push via standard Git HTTPS protocol with built-in authentication."
+    description: "The one endpoint NOT behind Cloudflare Access — public HTTPS to Forgejo, so git clients can authenticate. Enable only if you clone from outside the stack."
+    long_description: "A lightweight Nginx reverse proxy that exposes your Forgejo repositories over public HTTPS, so tools that cannot complete a Cloudflare Access browser login — git itself, Databricks Repos, GitHub Desktop, hosted CI — can clone and push. This is the only stack in Nexus-Stack reachable without Access: what protects it is Forgejo's own login, not the platform's email-OTP gate. Inside the stack you do not need it — Jupyter, Marimo, code-server, Meltano and Prefect clone the workspace repo over the internal Docker network at container start. Enable this only if you want to clone from your own machine or from an external service."
     image: "nginx:alpine"
 
   gitea:
     subdomain: "gitea"
     port: 3200
     public: false
-    core: true
-    category: "core"
+    category: "ci-cd"
     website: "https://gitea.com"
     description: "Self-hosted Git service with pull requests, code review, and CI/CD."
     long_description: "Gitea is a painless self-hosted Git service. It provides repository hosting, pull requests, code review, issue tracking, wikis, and CI/CD integration. Lightweight and fast, written in Go, with a familiar GitHub-like interface."
@@ -673,7 +672,7 @@ services:
     category: "core"
     website: "https://www.portainer.io"
     description: "Always-on Docker dashboard. First stop for diagnosing a misbehaving container — logs, state, restart, image inspection, network and volume views in a single pane."
-    long_description: "Portainer is a container management platform that simplifies Docker operations. View running containers, inspect logs, manage images, networks, and volumes through an intuitive web UI. Monitor resource usage, restart services, and deploy new containers without CLI access. Marked `core: true` because diagnosing a stuck container shouldn't require an opt-in step — Portainer ships always-on alongside Gitea, Grafana, and Infisical."
+    long_description: "Portainer is a container management platform that simplifies Docker operations. View running containers, inspect logs, manage images, networks, and volumes through an intuitive web UI. Monitor resource usage, restart services, and deploy new containers without CLI access. Marked `core: true` because diagnosing a stuck container shouldn't require an opt-in step — Portainer ships always-on alongside Forgejo, Grafana, and Infisical."
     image: "portainer/portainer-ce:2.40.0"
 
   pgadmin:
@@ -971,7 +970,7 @@ services:
     category: "ci-cd"
     website: "https://woodpecker-ci.org"
     description: "Lightweight Docker-native CI/CD engine with pipeline-as-code."
-    long_description: "Woodpecker CI is a community fork of Drone CI. Define pipelines in YAML, run builds in isolated Docker containers, and integrate with Gitea, GitHub, and GitLab. Lightweight, fast, and designed for self-hosted environments with multi-pipeline and matrix build support."
+    long_description: "Woodpecker CI is a community fork of Drone CI. Define pipelines in YAML, run builds in isolated Docker containers, and integrate with Forgejo, Gitea, GitHub, and GitLab. Lightweight, fast, and designed for self-hosted environments with multi-pipeline and matrix build support."
     image: "woodpeckerci/woodpecker-server:v3.13.0"
     support_images:
       woodpecker-agent: "woodpeckerci/woodpecker-agent:v3.13.0"
