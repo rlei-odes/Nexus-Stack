@@ -14,6 +14,7 @@ not new logic. Focus on:
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -456,6 +457,10 @@ def test_partial_phase_continues_to_downstream(
     monkeypatch.setattr(
         orchestrator, "_phase_services_configure", make_phase("services", "partial")
     )
+    monkeypatch.setattr(orchestrator, "_phase_forgejo_configure", make_phase("forgejo-cfg"))
+    monkeypatch.setattr(
+        orchestrator, "_phase_forgejo_runner_register", make_phase("forgejo-runner")
+    )
     monkeypatch.setattr(orchestrator, "_phase_gitea_configure", make_phase("gitea"))
     monkeypatch.setattr(orchestrator, "_phase_compose_restart", make_phase("compose-restart"))
     monkeypatch.setattr(orchestrator, "_phase_kestra_secret_sync", make_phase("kestra-ss"))
@@ -471,8 +476,8 @@ def test_partial_phase_continues_to_downstream(
     monkeypatch.setattr(orchestrator, "_phase_secret_sync_code_server", make_phase("ss-cs"))
 
     result = orchestrator.run_all()
-    # All 15 phases ran despite the partial in services-configure.
-    assert len(invoked) == 15
+    # All 17 phases ran despite the partial in services-configure.
+    assert len(invoked) == 17
     assert result.has_partial
     assert not result.has_hard_failure
 
@@ -1431,6 +1436,8 @@ def test_run_all_resets_results_between_runs(
     for phase_name in (
         "_phase_infisical_bootstrap",
         "_phase_services_configure",
+        "_phase_forgejo_configure",
+        "_phase_forgejo_runner_register",
         "_phase_gitea_configure",
         "_phase_compose_restart",
         "_phase_kestra_secret_sync",
@@ -1448,9 +1455,9 @@ def test_run_all_resets_results_between_runs(
         monkeypatch.setattr(orchestrator, phase_name, lambda _ssh, n=phase_name: _ok_phase(n))
     r1 = orchestrator.run_all()
     r2 = orchestrator.run_all()
-    # 15 phases per ``run_all`` invocation.
-    assert len(r1.phases) == 15
-    assert len(r2.phases) == 15
+    # 17 phases per ``run_all`` invocation.
+    assert len(r1.phases) == 17
+    assert len(r2.phases) == 17
 
 
 # ---------------------------------------------------------------------------
@@ -3646,3 +3653,183 @@ def test_transport_detail_redacts_before_truncating() -> None:
     )
 
     assert "SUPERSECRET" not in detail
+
+
+# Forgejo phases — behaviour, not just phase-count bookkeeping
+# ---------------------------------------------------------------------------
+
+
+def _forgejo_orchestrator(**overrides: Any) -> Orchestrator:
+    """An orchestrator with Forgejo enabled and its credentials set."""
+    fields: dict[str, Any] = {
+        "admin_username": "admin",
+        "forgejo_admin_password": "fj-admin",
+        "forgejo_user_password": "fj-user",
+        "forgejo_runner_secret": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    }
+    fields.update(overrides.pop("config", {}))
+    config = NexusConfig(**fields)
+    return Orchestrator(
+        config=config,
+        bootstrap_env=BootstrapEnv(
+            domain="example.com",
+            admin_email="admin@example.com",
+            gitea_user_email="student@example.com",
+        ),
+        enabled_services=overrides.pop("enabled_services", ["forgejo", "forgejo-runner"]),
+        project_id="proj-id",
+        infisical_token="infi-token",
+        **overrides,
+    )
+
+
+def test_forgejo_configure_skipped_when_stack_disabled() -> None:
+    orch = _forgejo_orchestrator(enabled_services=["kestra"])
+    result = orch._phase_forgejo_configure(MagicMock())
+
+    assert result.status == "skipped"
+    assert "not enabled" in result.detail
+
+
+def test_forgejo_configure_partial_without_admin_password() -> None:
+    """No admin password means no account can be created — and with
+    INSTALL_LOCK on, no account means the UI is locked for good."""
+    orch = _forgejo_orchestrator(config={"forgejo_admin_password": ""})
+    result = orch._phase_forgejo_configure(MagicMock())
+
+    assert result.status == "partial"
+    assert "FORGEJO_ADMIN_PASS" in result.detail
+
+
+def test_forgejo_configure_provisions_admin_and_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake(ssh: Any, accounts: Any, **kwargs: Any) -> Any:
+        captured["accounts"] = accounts
+        from nexus_deploy.forgejo import ConfigureResult
+
+        return ConfigureResult(status="configured", detail="accounts=admin, student")
+
+    monkeypatch.setattr("nexus_deploy.forgejo.run_configure", _fake)
+    result = _forgejo_orchestrator()._phase_forgejo_configure(MagicMock())
+
+    assert result.status == "ok"
+    accounts = captured["accounts"]
+    assert [a.username for a in accounts] == ["admin", "student"]
+    assert accounts[0].admin is True
+    assert accounts[1].admin is False
+
+
+def test_forgejo_configure_skips_the_user_when_it_collides_with_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stack where user_email's local part is `admin` must not try to
+    create the same account twice with two different passwords."""
+    captured: dict[str, Any] = {}
+
+    def _fake(ssh: Any, accounts: Any, **kwargs: Any) -> Any:
+        captured["accounts"] = accounts
+        from nexus_deploy.forgejo import ConfigureResult
+
+        return ConfigureResult(status="configured", detail="accounts=admin")
+
+    monkeypatch.setattr("nexus_deploy.forgejo.run_configure", _fake)
+    orch = _forgejo_orchestrator()
+    orch.bootstrap_env = dataclasses.replace(
+        orch.bootstrap_env, gitea_user_email="admin@example.com"
+    )
+    result = orch._phase_forgejo_configure(MagicMock())
+
+    assert result.status == "ok"
+    assert [a.username for a in captured["accounts"]] == ["admin"]
+
+
+def test_forgejo_configure_failure_is_partial_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken optional stack must not abandon the remaining phases."""
+    from nexus_deploy.forgejo import ConfigureResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.forgejo.run_configure",
+        lambda *a, **k: ConfigureResult(status="failed", detail="forgejo admin exited 1"),
+    )
+    result = _forgejo_orchestrator()._phase_forgejo_configure(MagicMock())
+
+    assert result.status == "partial"
+
+
+def test_forgejo_runner_register_skipped_when_stack_disabled() -> None:
+    orch = _forgejo_orchestrator(enabled_services=["kestra"])
+    result = orch._phase_forgejo_runner_register(MagicMock())
+
+    assert result.status == "skipped"
+
+
+def test_forgejo_runner_register_partial_without_secret() -> None:
+    orch = _forgejo_orchestrator(config={"forgejo_runner_secret": ""})
+    result = orch._phase_forgejo_runner_register(MagicMock())
+
+    assert result.status == "partial"
+    assert "FORGEJO_RUNNER_SECRET" in result.detail
+
+
+def test_forgejo_runner_register_passes_the_secret_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake(ssh: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        from nexus_deploy.forgejo_runner import RegisterResult
+
+        return RegisterResult(status="registered", detail="name=nexus-runner")
+
+    monkeypatch.setattr("nexus_deploy.forgejo_runner.run_register", _fake)
+    result = _forgejo_orchestrator()._phase_forgejo_runner_register(MagicMock())
+
+    assert result.status == "ok"
+    assert captured["secret"] == "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+
+def test_forgejo_runner_register_failure_is_partial_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nexus_deploy.forgejo_runner import RegisterResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.forgejo_runner.run_register",
+        lambda *a, **k: RegisterResult(status="failed", detail="forgejo-cli exited 1"),
+    )
+    result = _forgejo_orchestrator()._phase_forgejo_runner_register(MagicMock())
+
+    assert result.status == "partial"
+
+
+def test_forgejo_runner_register_skipped_when_only_the_forge_is_enabled() -> None:
+    """The forge is core and always on; the runner is opt-in. Telling a
+    forge with no runner about a runner secret would create a
+    registration nobody can use."""
+    orch = _forgejo_orchestrator(enabled_services=["forgejo"])
+    result = orch._phase_forgejo_runner_register(MagicMock())
+
+    assert result.status == "skipped"
+    assert "forgejo-runner" in result.detail
+
+
+def test_forgejo_configure_runs_without_the_runner_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Account provisioning belongs to the forge, so it must not depend
+    on CI being enabled."""
+    from nexus_deploy.forgejo import ConfigureResult
+
+    monkeypatch.setattr(
+        "nexus_deploy.forgejo.run_configure",
+        lambda *a, **k: ConfigureResult(status="configured", detail="accounts=admin"),
+    )
+    orch = _forgejo_orchestrator(enabled_services=["forgejo"])
+
+    assert orch._phase_forgejo_configure(MagicMock()).status == "ok"

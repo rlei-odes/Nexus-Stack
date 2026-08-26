@@ -120,7 +120,7 @@ def test_compute_folders_minimal_emits_unconditional_only() -> None:
     assert "external-s3" not in names
     assert "ssh" not in names
     # Unconditional core present
-    for required in ("config", "infisical", "kestra", "gitea", "woodpecker"):
+    for required in ("config", "infisical", "kestra", "gitea", "forgejo", "woodpecker"):
         assert required in names
 
 
@@ -1076,3 +1076,67 @@ def test_cli_infisical_provision_admin_returns_0_with_full_creds(
     assert "real-token" in out
     assert "PROJECT_ID=" in out
     assert "ws-real" in out
+
+
+# ---------------------------------------------------------------------------
+# Forgejo folder
+# ---------------------------------------------------------------------------
+
+
+def test_forgejo_folder_carries_every_generated_credential() -> None:
+    """A dropped or misspelled key here is invisible at deploy time —
+    provisioning simply never sees the value — so assert the whole set
+    rather than a sample."""
+    config = NexusConfig(
+        admin_username="nexus-admin",
+        forgejo_admin_password="fj-admin",
+        forgejo_user_password="fj-user",
+        forgejo_db_password="fj-db",
+        forgejo_runner_secret="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    )
+    folders = compute_folders(config, BootstrapEnv(domain="example.com"))
+    forgejo = next(f for f in folders if f.name == "forgejo")
+
+    assert forgejo.secrets == {
+        "FORGEJO_ADMIN_USERNAME": "nexus-admin",
+        "FORGEJO_ADMIN_PASSWORD": "fj-admin",
+        "FORGEJO_USER_PASSWORD": "fj-user",
+        "FORGEJO_DB_PASSWORD": "fj-db",
+    }
+
+
+def test_forgejo_runner_secret_is_never_published_to_infisical() -> None:
+    """Everything in Infisical is copied into Kestra's environment by
+    `secret_sync`, so publishing the runner's registration credential
+    would hand it to every flow author. Nothing reads it from here —
+    the pipeline takes it from the tofu output — so it stays out."""
+    config = NexusConfig(
+        admin_username="nexus-admin",
+        forgejo_runner_secret="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    )
+    folders = compute_folders(config, BootstrapEnv(domain="example.com"))
+
+    for folder in folders:
+        assert "FORGEJO_RUNNER_SECRET" not in folder.secrets, folder.name
+        assert "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678" not in folder.secrets.values()
+
+
+def test_forgejo_folder_drops_unset_credentials() -> None:
+    """Skip-empty preserves operator edits made in the Infisical UI
+    (issue #504) — an unset value must not overwrite one."""
+    config = NexusConfig(admin_username="nexus-admin", forgejo_db_password="fj-db")
+    folders = compute_folders(config, BootstrapEnv(domain="example.com"))
+    forgejo = next(f for f in folders if f.name == "forgejo")
+
+    assert "FORGEJO_ADMIN_PASSWORD" not in forgejo.secrets
+    assert forgejo.secrets["FORGEJO_DB_PASSWORD"] == "fj-db"
+
+
+def test_forgejo_folder_has_no_repo_url_yet() -> None:
+    """Forgejo does not host the workspace repo at this point, so
+    publishing a URL for it would be a claim the platform cannot keep."""
+    config = NexusConfig(admin_username="nexus-admin", forgejo_db_password="fj-db")
+    folders = compute_folders(config, BootstrapEnv(domain="example.com"))
+    forgejo = next(f for f in folders if f.name == "forgejo")
+
+    assert "FORGEJO_REPO_URL" not in forgejo.secrets

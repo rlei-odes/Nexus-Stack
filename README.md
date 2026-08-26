@@ -68,7 +68,7 @@ After deployment you'll have:
 
 ![Quick Start Flow](docs/assets/architecture-quickstart.svg)
 
-## Available Stacks (75)
+## Available Stacks (77)
 
 [![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)](https://akhq.io)
 [![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)](https://www.adminer.org)
@@ -91,6 +91,8 @@ After deployment you'll have:
 [![Evidence](https://img.shields.io/badge/Evidence-7B61FF?logo=markdown&logoColor=white)](https://evidence.dev)
 [![Filestash](https://img.shields.io/badge/Filestash-2B3A67?logo=files&logoColor=white)](https://www.filestash.app)
 [![Flink](https://img.shields.io/badge/Apache_Flink-E6526F?logo=apacheflink&logoColor=white)](https://flink.apache.org)
+[![Forgejo](https://img.shields.io/badge/Forgejo-FB923C?logo=forgejo&logoColor=white)](https://forgejo.org)
+[![Forgejo Runner](https://img.shields.io/badge/Forgejo_Runner-FB923C?logo=forgejo&logoColor=white)](docs/stacks/forgejo-runner.md)
 [![Garage](https://img.shields.io/badge/Garage-59C6A6?logo=amazons3&logoColor=white)](https://garagehq.deuxfleurs.fr)
 [![Git Proxy](https://img.shields.io/badge/Git_Proxy-009639?logo=nginx&logoColor=white)](docs/stacks/git-proxy.md)
 [![Gitea](https://img.shields.io/badge/Gitea-609926?logo=gitea&logoColor=white)](https://about.gitea.com)
@@ -169,6 +171,8 @@ After deployment you'll have:
 | **Evidence** | SQL + markdown BI for analytics engineers — pages diff as plain text, charts render inline, ships with a sample project | [evidence.dev](https://evidence.dev) |
 | **Filestash** | Web-based file manager with S3/FTP/SFTP/WebDAV backend support | [filestash.app](https://www.filestash.app) |
 | **Flink** | Distributed stream and batch processing engine (JobManager + TaskManager cluster) | [flink.apache.org](https://flink.apache.org) |
+| **Forgejo** | Community-governed Git forge with built-in Actions CI | [forgejo.org](https://forgejo.org) |
+| **Forgejo Runner** | Actions CI runner for Forgejo — optional, carries a privileged container | [Documentation](docs/stacks/forgejo-runner.md) |
 | **Garage** | Lightweight S3-compatible object storage for self-hosting | [garagehq.deuxfleurs.fr](https://garagehq.deuxfleurs.fr) |
 | **Git Proxy** | Public Git HTTPS proxy for external tools (Databricks, Git Desktop) | [Documentation](docs/stacks/git-proxy.md) |
 | **Gitea** | Self-hosted Git service with pull requests, code review, and CI/CD | [gitea.com](https://about.gitea.com) |
@@ -248,7 +252,7 @@ Manage your Nexus-Stack infrastructure via web interface at `https://control.YOU
 
 **Pre-select services during Initial Setup:**
 ```bash
-# Core services (Gitea, Grafana, Infisical, Portainer) are always enabled —
+# Core services (Forgejo, Gitea, Grafana, Infisical, Portainer) are always enabled —
 # pass any additional services you want active on the first spin-up.
 gh workflow run initial-setup.yaml -f enabled_services="n8n,kestra"
 ```

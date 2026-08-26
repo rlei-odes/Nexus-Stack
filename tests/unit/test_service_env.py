@@ -129,6 +129,10 @@ def full_config() -> NexusConfig:
         gitea_admin_password="gitea-admin",
         gitea_user_password="gitea-user",
         gitea_db_password="gitea-db",
+        forgejo_admin_password="forgejo-admin",
+        forgejo_user_password="forgejo-user",
+        forgejo_db_password="forgejo-db",
+        forgejo_runner_secret="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
         clickhouse_admin_password="ch-pw",
         wikijs_admin_password="wiki-admin",
         wikijs_db_password="wiki-db",
@@ -2071,3 +2075,188 @@ def test_separator_dash_lakefs_s3_domain(full_config: NexusConfig) -> None:
     ``s3.lakefs-user1.example.com``."""
     rendered = _render_lakefs(full_config, _flat_env())
     assert rendered.env_vars["LAKEFS_GATEWAYS_S3_DOMAIN_NAME"] == "s3.lakefs-user1.example.com"
+
+
+# ---------------------------------------------------------------------------
+# Forgejo renderer
+# ---------------------------------------------------------------------------
+
+
+def test_forgejo_renders_every_key_the_compose_reads(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """The compose file dereferences each of these; a dropped key means
+    the stack starts with an empty value rather than failing loudly."""
+    from nexus_deploy.service_env import _render_forgejo
+
+    rendered = _render_forgejo(full_config, full_env)
+
+    assert rendered.skip_reason is None
+    assert rendered.env_vars == {
+        "FORGEJO_DB_PASSWORD": "forgejo-db",
+        "FORGEJO_HOST": f"forgejo.{full_env.domain}",
+        "DOMAIN": full_env.domain or "",
+    }
+    # The registration secret belongs to the runner stack. A credential
+    # the forge never uses has no business in the environment of the
+    # one process here that is exposed through the tunnel.
+    assert "FORGEJO_RUNNER_SECRET" not in rendered.env_vars
+
+
+def test_forgejo_runner_instance_url_is_in_cluster_not_public(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """The runner reaches the forge over app-network — they are separate
+    stacks. A public URL would route it through the tunnel and
+    Cloudflare Access, which it cannot satisfy."""
+    from nexus_deploy.service_env import _render_forgejo_runner
+
+    rendered = _render_forgejo_runner(full_config, full_env)
+    assert rendered.env_vars["FORGEJO_INSTANCE_URL"] == "http://forgejo:3000"
+    assert "https://" not in rendered.env_vars["FORGEJO_INSTANCE_URL"]
+
+
+def test_forgejo_runner_env_carries_only_what_the_runner_needs(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    from nexus_deploy.service_env import _render_forgejo_runner
+
+    rendered = _render_forgejo_runner(full_config, full_env)
+
+    assert set(rendered.env_vars) == {"FORGEJO_RUNNER_SECRET", "FORGEJO_INSTANCE_URL"}
+    assert "FORGEJO_DB_PASSWORD" not in rendered.env_vars
+    # Cleartext registration credential — same reason SFTPGo's env is 0600.
+    assert rendered.mode == 0o600
+
+
+def test_forgejo_skipped_when_db_password_missing(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    from nexus_deploy.service_env import _render_forgejo
+
+    config = full_config.model_copy(update={"forgejo_db_password": ""})
+    assert _render_forgejo(config, full_env).skip_reason is not None
+
+
+def test_forgejo_runner_skipped_when_secret_missing(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Guarded as hard as any database password: rendering without it
+    starts a runner whose entrypoint fails under `set -e`, handing the
+    restart policy an endless loop — a stack that looks alive while its
+    CI can never work."""
+    from nexus_deploy.service_env import _render_forgejo_runner
+
+    config = full_config.model_copy(update={"forgejo_runner_secret": ""})
+    assert _render_forgejo_runner(config, full_env).skip_reason is not None
+
+
+def test_forgejo_forge_still_renders_without_a_runner_secret(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """The forge is core and must come up on servers that never enable
+    CI — so it cannot depend on the runner's credential existing."""
+    from nexus_deploy.service_env import _render_forgejo
+
+    config = full_config.model_copy(update={"forgejo_runner_secret": ""})
+    assert _render_forgejo(config, full_env).skip_reason is None
+
+
+def test_forgejo_env_file_is_mode_0600(full_config: NexusConfig, full_env: BootstrapEnv) -> None:
+    """This file carries the runner's registration credential and the
+    database password in cleartext. 0644 would make both readable to
+    every local account on the server — the same reason SFTPGo's env
+    is 0600."""
+    from nexus_deploy.service_env import _render_forgejo
+
+    assert _render_forgejo(full_config, full_env).mode == 0o600
+
+
+def test_forgejo_compose_gives_the_runner_secret_only_to_the_runner() -> None:
+    """Least privilege across the two stacks.
+
+    Since the split, the registration secret is rendered only into the
+    runner stack's `.env` and the forge's does not contain it at all.
+    Both stacks still name their values explicitly rather than using
+    `env_file:`, which is what keeps a future addition to either file
+    from silently reaching every container in it.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    forge = yaml.safe_load(Path("stacks/forgejo/docker-compose.yml").read_text())
+    runner = yaml.safe_load(Path("stacks/forgejo-runner/docker-compose.yml").read_text())
+
+    for compose in (forge, runner):
+        assert not [n for n, s in compose["services"].items() if "env_file" in s]
+
+    # The forge stack must not see the registration secret at all.
+    for spec in forge["services"].values():
+        assert "FORGEJO_RUNNER_SECRET" not in (spec.get("environment") or {})
+
+    holders = [
+        name
+        for name, spec in runner["services"].items()
+        if "FORGEJO_RUNNER_SECRET" in (spec.get("environment") or {})
+    ]
+    assert holders == ["forgejo-runner"]
+
+
+def test_forgejo_host_matches_what_tofu_provisions_not_the_separator(
+    full_config: NexusConfig, full_env: BootstrapEnv
+) -> None:
+    """Deliberately a plain dot, even when the separator says otherwise.
+
+    An earlier revision composed this with `service_host()`, reasoning
+    that a flat-subdomain tenant should get `forgejo-user1.example.com`.
+    That was wrong. The stack's DNS record, tunnel ingress and Access
+    application are all built as `${subdomain}.${var.domain}` in
+    `main.tf`, and `variables.tf` states outright that no stack-side
+    resource references `subdomain_separator`. Composing with it would
+    have Forgejo advertise a host nothing provisions — and ROOT_URL
+    drives clone URLs and every OAuth redirect, so it has to match what
+    is actually routed.
+    """
+    import dataclasses
+
+    from nexus_deploy.service_env import _render_forgejo
+
+    flat = dataclasses.replace(full_env, domain="user1.example.com", subdomain_separator="-")
+    assert (
+        _render_forgejo(full_config, flat).env_vars["FORGEJO_HOST"] == "forgejo.user1.example.com"
+    )
+
+    dotted = dataclasses.replace(full_env, domain="example.com", subdomain_separator=".")
+    assert _render_forgejo(full_config, dotted).env_vars["FORGEJO_HOST"] == "forgejo.example.com"
+
+
+def test_forgejo_compose_uses_the_rendered_host_not_a_hardcoded_dot() -> None:
+    """Guard the other half: the renderer can be right while the
+    compose file quietly keeps `forgejo.${DOMAIN}`."""
+    from pathlib import Path
+
+    lines = Path("stacks/forgejo/docker-compose.yml").read_text().splitlines()
+    # Comments only — the header explains *why* it is not the dotted
+    # form, so a naive substring check matches the explanation.
+    executable = [ln for ln in lines if not ln.lstrip().startswith("#")]
+
+    assert [ln for ln in executable if "${FORGEJO_HOST}" in ln]
+    assert not [ln for ln in executable if "forgejo.${DOMAIN}" in ln]
+
+
+def test_forgejo_runner_is_declared_internal_only_with_no_subdomain() -> None:
+    """The schema validator rejects an empty subdomain and port 0, so a
+    no-UI service is declared by omission plus the internal_only flag —
+    not by placeholder values. Getting this wrong fails the deploy
+    before any stack is applied, which no other unit test would catch.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    entry = yaml.safe_load(Path("services.yaml").read_text())["services"]["forgejo-runner"]
+
+    assert entry["internal_only"] is True
+    assert "subdomain" not in entry
+    assert entry.get("core", False) is False

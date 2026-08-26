@@ -12,6 +12,12 @@
 # Note: You also need stacks/<service>/docker-compose.yml for the container!
 #
 # CORE SERVICES (core: true):
+# - forgejo: Git forge and the CI the platform builds on. Core rather
+#            than opt-in because Nexus Conductor drives a class through
+#            it — a management plane that can be switched off is not a
+#            management plane. Note the cost: the stack includes a
+#            privileged docker-in-docker container, so every server runs
+#            one whether or not anybody uses Actions.
 # - gitea: Self-hosted Git service
 # - grafana: Observability platform
 # - infisical: Required for secret management
@@ -270,6 +276,47 @@ services:
     image: "nexus-flink:1.20.1"
     support_images:
       flink-taskmanager: "nexus-flink:1.20.1"
+
+  forgejo:
+    subdomain: "forgejo"
+    port: 3202
+    public: false
+    core: true
+    category: "core"
+    website: "https://forgejo.org"
+    description: "Self-hosted Git forge with pull requests, code review, and built-in Actions CI."
+    long_description: "Forgejo is a community-governed Git forge, hard-forked from Gitea and developed under a non-profit. It provides repository hosting, pull requests, code review, issue tracking, wikis, and Forgejo Actions — a CI system whose workflow syntax is familiar to anyone who has used GitHub Actions. Ships with its own Actions runner, so pipelines run on your own server with no external CI service."
+    image: "codeberg.org/forgejo/forgejo:15.0.7"
+    support_images:
+      # Deliberately NOT the shared `postgres` key. That key is used by
+      # 19 services and collapses to a single IMAGE_POSTGRES value, so
+      # claiming it here would silently retag every one of them —
+      # including Infisical, which is still on 14-alpine.
+      forgejo-postgres: "postgres:17-alpine"
+
+  forgejo-runner:
+    # internal_only, with no subdomain and no port. A runner listens on
+    # nothing — it polls Forgejo outbound — and has no web UI of its
+    # own; it appears in Forgejo under Site Administration -> Actions
+    # -> Runners. The validator only checks these fields when present,
+    # and rejects both an empty subdomain and port 0, so omitting them
+    # is the declaration rather than a placeholder.
+    internal_only: true
+    # Required by the schema validator, and inert for this service. A
+    # runner listens on nothing — it polls Forgejo outbound — and the
+    # tunnel, DNS and Access resources all key off `subdomain`, which
+    # an internal_only service does not have. 2375 is the dind API
+    # port the runner talks to inside the stack; it is never published
+    # and never routed.
+    port: 2375
+    public: false
+    category: "ci-cd"
+    website: "https://forgejo.org/docs/latest/admin/actions/"
+    description: "Actions CI runner for the Forgejo stack. Runs workflows on your own server."
+    long_description: "Executes Forgejo Actions jobs on this server, in containers created by a bundled docker-in-docker daemon. Optional and off by default: the Forgejo forge is core and always present, but CI is only useful if somebody writes workflows — and this is the part that carries a privileged container, so it should not sit on servers that never use it. Registers itself automatically; no token to paste."
+    image: "data.forgejo.org/forgejo/runner:13.0.0"
+    support_images:
+      forgejo-dind: "docker:29.7.2-dind"
 
   garage:
     subdomain: "garage"

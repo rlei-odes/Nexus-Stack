@@ -975,6 +975,41 @@ def compute_folders(config: NexusConfig, env: BootstrapEnv) -> list[FolderSpec]:
             ),
         )
     )
+    # Forgejo. No FORGEJO_REPO_URL yet — Forgejo does not host the
+    # workspace repo at this point, so there is no URL to publish. That
+    # entry arrives with the role swap.
+    #
+    # FORGEJO_RUNNER_SECRET is deliberately NOT published here, which
+    # breaks the convention that every generated credential lands in
+    # Infisical. The reason: `secret_sync` copies every Infisical
+    # folder into Kestra's environment, so anything in here is readable
+    # by any flow author via `{{ secret('NAME') }}`.
+    #
+    # My first version included it and argued the boundary was already
+    # crossed — the Gitea and Forgejo admin passwords are in Infisical
+    # and reachable the same way, so one more changes nothing. Two
+    # reviewers pushed back, and they were right that the argument is
+    # backwards: it justifies the existing exposure rather than this
+    # addition. Nothing reads the runner secret from Infisical anyway —
+    # the pipeline takes it from the tofu output and the compose file
+    # from the rendered .env — so publishing it bought nothing.
+    #
+    # An operator who needs it can read `tofu output -json secrets`.
+    # The broader question of an allowlist for the Kestra sync is
+    # tracked separately.
+    folders.append(
+        FolderSpec(
+            "forgejo",
+            _filter_empty(
+                {
+                    "FORGEJO_ADMIN_USERNAME": admin_username,
+                    "FORGEJO_ADMIN_PASSWORD": config.forgejo_admin_password,
+                    "FORGEJO_USER_PASSWORD": config.forgejo_user_password,
+                    "FORGEJO_DB_PASSWORD": config.forgejo_db_password,
+                }
+            ),
+        )
+    )
     folders.append(
         FolderSpec(
             "clickhouse",

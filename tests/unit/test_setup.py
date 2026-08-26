@@ -1168,3 +1168,36 @@ def test_cli_setup_wetty_ssh_agent_happy_path_returns_0(
     monkeypatch.setattr("nexus_deploy.__main__.SSHClient", _FakeSSH)
     rc = _setup_wetty_ssh_agent([])
     assert rc == 0
+
+
+def test_ensure_data_dirs_covers_the_forgejo_bind_mounts() -> None:
+    """Forgejo's paths need the same treatment as Gitea's, plus one
+    that Gitea does not have.
+
+    The runner drops to uid 1001 — the upstream image's own uid — and
+    `create-runner-file` cannot write `.runner` into a root-owned
+    directory. Without that chown the runner restart-loops on first
+    boot, so a regression removing it must not pass silently.
+    """
+    from unittest.mock import MagicMock
+
+    from nexus_deploy.setup import ensure_data_dirs
+
+    ssh = MagicMock()
+    ssh.run_script.return_value = MagicMock(returncode=0, stdout="")
+    ensure_data_dirs(ssh)
+    rendered = ssh.run_script.call_args.args[0]
+
+    for path in ("repos", "lfs", "db"):
+        assert f'"$MOUNT_POINT/forgejo/{path}"' in rendered, path
+    # The runner is a separate, opt-in stack and gets its own tree.
+    assert '"$MOUNT_POINT/forgejo-runner"' in rendered
+
+    # uid 1000 for the forge, 70 for its postgres, 1001 for the runner.
+    forgejo_block = rendered.split("Forgejo bind-mount sources")[1]
+    assert 'chown -R 1000:1000 "$MOUNT_POINT/forgejo/repos"' in forgejo_block
+    # LFS too: restored objects land owned by the SSH user, and Forgejo
+    # cannot write them back without this.
+    assert '"$MOUNT_POINT/forgejo/lfs"' in forgejo_block.split("chown -R 70:70")[0]
+    assert 'chown -R 70:70 "$MOUNT_POINT/forgejo/db"' in forgejo_block
+    assert 'chown -R 1001:1001 "$MOUNT_POINT/forgejo-runner"' in rendered
