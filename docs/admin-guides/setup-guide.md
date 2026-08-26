@@ -127,12 +127,27 @@ Add these secrets to your GitHub repository:
 | `HCLOUD_TOKEN` | Hetzner console | API token |
 | `DOMAIN` | Your domain | e.g. `example.com` |
 | `TF_VAR_admin_email` | Your email | Admin - full access including SSH |
+| `GH_SECRETS_TOKEN` | GitHub PAT | Stores the generated R2 credentials ([how to create](#gh_secrets_token)) |
+
+#### GH_SECRETS_TOKEN
+
+This token is what lets the setup workflow store the generated R2 credentials as repository secrets. It is also used as the runtime `GITHUB_TOKEN` in Cloudflare (for the scheduled teardown worker and Control Plane), so it must be able to dispatch workflows.
+
+Without it the first run stops with an explanatory error, and Cloudflare-based automation that triggers GitHub Actions will not work. The workflow used to print the credentials to the log as a fallback; it no longer does, because Actions logs on a public repository are readable by anyone and these keys open the OpenTofu state bucket.
+
+**How to create:**
+1. Go to **GitHub** → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
+2. Click **"Generate new token"**
+3. **Repository access**: Select your Nexus-Stack repository
+4. **Permissions** (Repository permissions):
+   - **Secrets** → **Read and write**
+   - **Actions** → **Read and write** (required so Cloudflare workers can dispatch workflows)
+5. Copy the token and save it as `GH_SECRETS_TOKEN` in your repository secrets
 
 ### Optional Secrets
 
 | Secret Name | Description |
 |-------------|-------------|
-| `GH_SECRETS_TOKEN` | GitHub PAT for R2 auto-save and Cloudflare runtime (see below) |
 | `TF_VAR_user_email` | User - all services except SSH (also receives notifications) |
 | `TF_VAR_guest_emails` | Comma-separated guests - Access whitelist only, no notifications |
 | `RESEND_API_KEY` | Email notifications via Resend |
@@ -154,19 +169,6 @@ Optional secrets (only set if you want to override defaults):
 |-------------|---------|---------------------|
 | `NEXUS_S3_PERSISTENCE` | `"true"` (workflow fallback) | Set explicitly to `"false"` to bypass persistence for an experiment. |
 | `PERSISTENCE_STACK_SLUG` | `github.event.repository.name` | Set if you want the manifest written under a different slug (e.g. for Education-mode forks that share a persistence bucket layout). |
-
-#### GH_SECRETS_TOKEN
-
-This token allows the initial setup workflow to automatically save R2 credentials as GitHub Secrets. It is also used as the runtime `GITHUB_TOKEN` in Cloudflare (for the scheduled teardown worker and Control Plane), so it must be able to dispatch workflows. Without it, you must manually copy the credentials from the workflow logs after the first run, and Cloudflare-based automation that triggers GitHub Actions will fail.
-
-**How to create:**
-1. Go to **GitHub** → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
-2. Click **"Generate new token"**
-3. **Repository access**: Select your Nexus-Stack repository
-4. **Permissions** (Repository permissions):
-   - **Secrets** → **Read and write**
-   - **Actions** → **Read and write** (required so Cloudflare workers can dispatch workflows)
-5. Copy the token and save it as `GH_SECRETS_TOKEN` in your repository secrets
 
 ### Optional Repository Variables
 
@@ -212,18 +214,32 @@ On **first run**, the pipeline will:
 3. Deploy the Control Plane
 4. Trigger the spin-up workflow
 
-> ⚠️ **Important:** R2 credentials are generated on the first run. If `GH_SECRETS_TOKEN` is configured (see [Optional Secrets](#optional-secrets)), they are saved automatically. Otherwise, copy them from the workflow logs and save them manually.
+> ⚠️ **Important:** R2 credentials are generated on the first run and stored as
+> repository secrets by the workflow. This needs `GH_SECRETS_TOKEN` with the
+> `Secrets: Read and write` permission — without it the setup stops with an
+> explanatory error rather than continuing.
+>
+> The credentials are never printed to the workflow log. Actions logs are
+> readable by anyone for a public repository, and these keys grant read access
+> to the OpenTofu state bucket, which holds every generated service credential
+> in plaintext. There is no safe way to hand them over through a log, so the
+> token is the only supported path.
 
-### Add R2 Credentials as Secrets
+### R2 Credentials
 
-If `GH_SECRETS_TOKEN` is configured, this step is automatic. Otherwise, after the first deploy, add these two secrets manually:
+Nothing to do here — the first run creates `R2_ACCESS_KEY_ID` and
+`R2_SECRET_ACCESS_KEY` and saves them as repository secrets itself. Every
+later deployment picks them up automatically.
 
-| Secret Name | Source |
-|-------------|--------|
-| `R2_ACCESS_KEY_ID` | Shown in first deploy logs |
-| `R2_SECRET_ACCESS_KEY` | Shown in first deploy logs |
+If the run stops with `GH_SECRETS_TOKEN is not configured`, add the token as
+described above and re-run the workflow. It mints a fresh R2 token and attempts
+to delete the one from the failed attempt.
 
-Once saved, all future deployments will use these credentials automatically.
+That cleanup is best-effort: `init-r2-state.sh` treats a failed token listing or
+deletion as non-fatal, so a transient Cloudflare API error can leave the earlier
+token active. Watch the re-run for a `Could not delete stale token` warning, and
+if you see one, remove it under **Cloudflare dashboard → My Profile → API
+Tokens**.
 
 ---
 
