@@ -13,6 +13,9 @@
     "@evidence-dev/evidence": "^40.1.8",
     "@evidence-dev/postgres": "^2.0.0"
   },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
   "type": "module",
   "engines": {
     "npm": ">=7.0.0",
