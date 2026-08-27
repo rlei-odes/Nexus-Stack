@@ -8,6 +8,11 @@ on:
         required: false
         default: ''
         type: string
+      smoke_check:
+        description: 'Check every container after the deploy: answering on its port, exited, or restart-looping (adds ~10s)'
+        required: false
+        default: true
+        type: boolean
       silent_mode:
         description: 'Suppress all automated emails for this run (persists in D1 until reset via toggle-silent-mode workflow)'
         required: false
@@ -73,6 +78,11 @@ on:
         description: 'SSH Private Key (from setup-control-plane, for initial setup)'
         required: false
         type: string
+      smoke_check:
+        description: 'Check every container after the deploy: answering on its port, exited, or restart-looping'
+        required: false
+        default: true
+        type: boolean
       server_image:
         description: 'Hetzner image to build from. Empty = ubuntu-26.04. A numeric image id restores from that snapshot.'
         required: false
@@ -1045,6 +1055,192 @@ jobs:
             echo "--- Docker Start Log ---"
             cat /tmp/docker-start.log || true
           fi
+
+      # Runs after the deploy, so a failure here means "the deploy
+      # finished and something is not answering" — never "the deploy
+      # failed". It therefore does not fail the job: the server is up,
+      # and one silent side service should not look like a broken
+      # spin-up. Failures surface as annotations instead, the same way
+      # degraded phases have since #688.
+      - name: Check services answer
+        if: inputs.smoke_check
+        continue-on-error: true
+        env:
+          # Single-quoted on the way in so THIS shell does not touch it —
+          # every expansion below belongs to the shell on the server.
+          #
+          # `docker ps -a`, not `docker ps`: a container that crashed on
+          # boot is no longer running, so listing only running containers
+          # would hide the exact condition this step exists to catch.
+          #
+          # The port is taken from any `<addr>:<port>-><cport>` binding
+          # rather than `0.0.0.0:` alone — Docker also publishes on
+          # `[::]:` and, where a compose file says so, on `127.0.0.1:`.
+          # Matching one address form silently skipped the others.
+          #
+          # Every published host port is probed, not just the first. Three
+          # stacks publish several — garage, risingwave, seaweedfs — and
+          # RisingWave shows why it matters: its first port is the Postgres
+          # wire protocol and its dashboard is on the second, so stopping at
+          # the first would have left the dashboard permanently unchecked.
+          # Ports are deduplicated because Docker lists the same one twice
+          # when it binds both 0.0.0.0 and [::].
+          #
+          # docker's stderr is deliberately NOT suppressed: if the daemon is
+          # down, that message travels back over the ssh channel and lands in
+          # the captured stderr, which is the difference between reporting
+          # "docker failed" and inventing "no containers".
+          #
+          # The HTTP code alone cannot tell a dead port from a healthy
+          # non-HTTP one: both report 000. The decisive signal is
+          # %{time_connect}, which is exactly zero when no TCP handshake
+          # completed — stripping "." and "0" from it leaves an empty string
+          # in precisely that case. Measured:
+          #
+          #   nothing listening       rc=7   time_connect=0.000000
+          #   listening, non-HTTP     rc=1   time_connect=0.000535
+          #   listening, then silent  rc=52  time_connect=0.000542
+          #   unroutable, hangs       rc=28  time_connect=0.000000
+          #
+          # The exit code alone would misfile the last row, because 28 occurs
+          # both when the handshake never completed and when a connected peer
+          # goes quiet. This matters because the
+          # generated docker-compose.firewall.yml publishes the tcp_ports from
+          # services.yaml — Postgres 5432, Redpanda 9092, ClickHouse 9004,
+          # SFTP 2022 and more — so without this a dozen healthy databases
+          # would be reported as broken on every run.
+          #
+          # The whole loop is inside `{ ...; wait; }` so that `wait` runs
+          # in the same subshell that spawned the probes. A pipeline's
+          # right-hand side is its own subshell; a `wait` placed after
+          # `done` belongs to the parent and would not wait for anything,
+          # leaving the probes orphaned and their output lost.
+          # shellcheck disable=SC2016
+          REMOTE_PROBE: 'docker ps -a --format "{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}" | { while IFS="$(printf "\t")" read -r n st stat pts; do case "$st" in running) ;; restarting) printf "%s\t-\tRESTARTING\n" "$n"; continue ;; exited) printf "%s\t-\tEXITED:%s\n" "$n" "$(printf "%s" "$stat" | grep -oE "\([0-9]+\)" | tr -cd "0-9")"; continue ;; *) printf "%s\t-\tSTATE:%s\n" "$n" "$st"; continue ;; esac; plist=$(printf "%s" "$pts" | grep -oE ":[0-9]+->" | sed "s/[^0-9]//g" | sort -un); if [ -z "$plist" ]; then printf "%s\t-\tNOPORT\n" "$n"; else for pt in $plist; do ( o=$(curl -s -o /dev/null -w "%{http_code} %{time_connect}" --max-time 4 "http://localhost:$pt/" 2>/dev/null); rc=$?; c=${o%% *}; tc=$(printf "%s" "${o##* }" | tr -d ".0"); if [ "$rc" = "0" ]; then printf "%s\t%s\t%s\n" "$n" "$pt" "${c:-000}"; elif [ -z "$tc" ]; then printf "%s\t%s\tDEAD\n" "$n" "$pt"; elif [ "$rc" = "28" ]; then printf "%s\t%s\tHUNG\n" "$n" "$pt"; else printf "%s\t%s\tNOHTTP:%s\n" "$n" "$pt" "$rc"; fi ) & done; fi; done; wait; }'
+        run: |
+          set -uo pipefail
+
+          # Container state comes from Docker rather than services.yaml:
+          # the YAML says what should have been bound, Docker reports what
+          # was. A disagreement between the two is exactly the defect
+          # worth catching, and consulting the YAML would hide it.
+          #
+          # Probes run ON the server and in parallel, so wall-clock is the
+          # slowest single probe rather than their sum. That matters when
+          # things are broken: twenty dead services sequentially at
+          # --max-time 4 would cost 80s; in parallel it stays at 4.
+          #
+          # Status and output are kept apart: an empty report has three
+          # possible causes and the annotation must not guess which.
+          SSH_FAILED=0
+          REPORT=""
+          if ! REPORT=$(ssh -o BatchMode=yes -o ConnectTimeout=15 nexus "$REMOTE_PROBE" 2>/tmp/smoke-ssh.err); then
+            SSH_FAILED=1
+          fi
+
+          if [ "$SSH_FAILED" -ne 0 ]; then
+            # ssh exits non-zero both when the connection fails and when the
+            # remote command does, and this step cannot tell which. Saying
+            # "could not reach the server" would be a guess. Newlines are
+            # folded out because a multi-line ::warning payload silently
+            # truncates at the first one.
+            SSH_ERR=$(tr '\n\r' '  ' < /tmp/smoke-ssh.err 2>/dev/null | head -c 300)
+            echo "::warning title=smoke-check::No service check ran: ssh exited non-zero, which means either the server was unreachable or the probe itself failed on it. stderr: ${SSH_ERR:-(empty)}"
+            exit 0
+          fi
+
+          if [ -z "$REPORT" ]; then
+            # ssh succeeded but nothing came back. `docker ps` keeps its
+            # stderr now, so if the daemon is down its message is in the
+            # captured file — quote it rather than assert an empty list.
+            EMPTY_ERR=$(tr '\n\r' '  ' < /tmp/smoke-ssh.err 2>/dev/null | head -c 300)
+            echo "::warning title=smoke-check::The server was reachable but the probe returned nothing. Docker reported: ${EMPTY_ERR:-(nothing on stderr, so it genuinely listed no containers)}"
+            exit 0
+          fi
+
+          healthy=0; faulty=0; quiet=0
+          while IFS="$(printf '\t')" read -r name port code; do
+            [ -n "$name" ] || continue
+            case "$code" in
+              # Any HTTP status means the application answered. A 401 or
+              # 403 is a service that is up and wants a login — success,
+              # not a failure. Only refused connections and 5xx are faults.
+              2??|3??|4??)
+                healthy=$((healthy + 1))
+                printf '  ok    %-26s :%-6s %s\n' "$name" "$port" "$code"
+                ;;
+              NOPORT)
+                quiet=$((quiet + 1))
+                printf '  --    %-26s %-7s no published port (internal-only)\n' "$name" ""
+                ;;
+              # A one-shot container that finished cleanly. The stacks do
+              # contain these (lakekeeper-bootstrap, openmetadata-migrate),
+              # so a zero exit is the job being done, not a failure.
+              EXITED:0)
+                quiet=$((quiet + 1))
+                printf '  --    %-26s %-7s ran once and exited cleanly\n' "$name" ""
+                ;;
+              EXITED:*)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s %-7s %s\n' "$name" "" "$code"
+                echo "::warning title=smoke-check: $name::Container exited with a non-zero status (${code#EXITED:}). The deploy finished; this service is not running."
+                ;;
+              RESTARTING)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s %-7s restart loop\n' "$name" ""
+                echo "::warning title=smoke-check: $name::Container is in a restart loop — it starts, fails, and is restarted. Check its logs for the crash reason."
+                ;;
+              # A listener that answered something other than HTTP. Healthy
+              # by every measure this step can take: the port accepted the
+              # connection. Databases, brokers and SFTP land here.
+              NOHTTP:*)
+                quiet=$((quiet + 1))
+                printf '  --    %-26s :%-6s listening, not an HTTP service\n' "$name" "$port"
+                ;;
+              # Connected, then nothing for the whole timeout. Every non-HTTP
+              # service on this box answers or closes immediately, so a peer
+              # that accepts and goes quiet is anomalous rather than exotic.
+              # Reported as what was observed, without naming a cause.
+              HUNG)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s :%-6s accepted, then silent\n' "$name" "$port"
+                echo "::warning title=smoke-check: $name::Port $port accepted the connection and then sent nothing for 4s. Something is listening but not responding."
+                ;;
+              # Nothing accepted the connection (curl exit 7). The container
+              # runs but the process inside never started listening.
+              DEAD)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s :%-6s nothing listening\n' "$name" "$port"
+                echo "::warning title=smoke-check: $name::Container is running but nothing is listening on port $port. The deploy finished; this service did not come up."
+                ;;
+              # The service answered — it is up, and it is erroring. A
+              # different problem from silence, so a different message.
+              5??)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s :%-6s %s\n' "$name" "$port" "$code"
+                echo "::warning title=smoke-check: $name::Answered with HTTP $code on port $port, so the process is up but failing — usually a bad config or an unreachable dependency."
+                ;;
+              # created / paused / dead. Never normal after a deploy, but
+              # the state is all this step knows — it must not claim a
+              # port was probed when none was.
+              STATE:*)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s %-7s %s\n' "$name" "" "$code"
+                echo "::warning title=smoke-check: $name::Container is in Docker state '${code#STATE:}', neither running nor cleanly exited. No port was probed."
+                ;;
+              # Everything above is accounted for, so this is a result the
+              # probe did not anticipate. Report it as unclassified rather
+              # than assert a cause.
+              *)
+                faulty=$((faulty + 1))
+                printf '  FAIL  %-26s :%-6s %s\n' "$name" "$port" "$code"
+                echo "::warning title=smoke-check: $name::Unclassified probe result '$code' on port $port. This is a gap in the check rather than a diagnosis — please report it."
+                ;;
+            esac
+          done <<< "$REPORT"
+
+          echo ""
+          echo "[smoke] $healthy answering HTTP, $faulty faulty, $quiet with no HTTP endpoint to check"
 
       - name: Show spin-up info
         run: |

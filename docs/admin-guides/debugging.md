@@ -26,6 +26,73 @@ If Wetty is enabled, access it via browser at `https://wetty.yourdomain.com`. Th
 
 ---
 
+## Start Here: The Spin-Up Smoke Check
+
+Before debugging by hand, read the **Check services answer** step at the end
+of the last Spin Up run. It looks at every container on the server — running
+or not — and tells you which one is the problem, often before you notice
+anything is wrong.
+
+It probes every published host port with HTTP — all of them, not just the
+first, since a stack like RisingWave puts its Postgres wire protocol on one
+port and its dashboard on another. It does not assume any of them speaks
+HTTP, though: a port nothing is listening on and a healthy database that
+simply is not a web server look identical in an HTTP status code. So the
+check measures whether the TCP connection was established at all, which
+keeps a non-HTTP listener out of the fault column. What does count as a
+fault is listed in the table below.
+
+```
+  ok    forgejo                    :3202   200
+  ok    portainer                  :9090   401
+  --    postgres                   :5432   listening, not an HTTP service
+  --    kestra-postgres                    no published port (internal-only)
+  --    lakekeeper-bootstrap               ran once and exited cleanly
+  FAIL  metabase                   :3000   nothing listening
+  FAIL  superset                   :8088   503
+  FAIL  openmetadata                       EXITED:1
+  FAIL  woodpecker-agent                   restart loop
+
+[smoke] 42 answering HTTP, 4 faulty, 13 with no HTTP endpoint to check
+```
+
+How to read it:
+
+| Line | Meaning |
+|---|---|
+| `ok` with any 2xx/3xx/4xx | The application answered. `401` / `403` is a healthy service asking for a login, not a fault. |
+| `--` / `no published port` | Internal-only container (databases, sidecars). Nothing to probe — not an error. |
+| `--` / `ran once and exited cleanly` | A one-shot job that finished, such as `lakekeeper-bootstrap` or `openmetadata-migrate`. Expected. |
+| `--` / `listening, not an HTTP service` | The port accepted the connection but answered something other than HTTP. Databases, brokers and SFTP land here — Postgres on 5432, Redpanda on 9092, ClickHouse on 9004. Healthy by every measure this check can take. |
+| `FAIL` / `nothing listening` | No TCP connection was established at all. The container runs but the process inside never started listening. |
+| `FAIL` / `accepted, then silent` | The port accepted the connection and then sent nothing for four seconds. Something is listening but not responding — distinct from a database that simply is not a web server, which answers or closes immediately. |
+| `FAIL` with `5xx` | The service answered, so it is up and erroring — usually a bad config or an unreachable dependency. A different problem from silence. |
+| `FAIL` with `EXITED:<n>` | The container stopped with a non-zero status. It crashed rather than started. |
+| `FAIL` with `restart loop` | The container starts, fails, and Docker restarts it, over and over. Its logs hold the crash reason. |
+| `FAIL` with `STATE:<x>` | The container is in a Docker state that is neither running nor cleanly exited — `created`, `paused` or `dead`. No port was probed. |
+| `FAIL` with anything else | A result the check did not anticipate. That is a gap in the check rather than a diagnosis of the service; worth reporting as a bug. |
+
+A `FAIL` never fails the workflow. The step runs *after* the deploy, so it
+reports "the deploy finished and this one service is silent" — the server
+itself is up. Failures appear as run annotations at the top of the run
+summary, so you see them without opening the log.
+
+Each `FAIL` names the container, which is exactly what
+[Step 2](#step-2-check-container-logs) needs:
+
+```bash
+ssh nexus "docker logs metabase --tail 100"
+```
+
+**Skipping it:** the check is on by default. When dispatching Spin Up, clear
+the *"Check every container after the deploy"* checkbox if you are iterating
+on something unrelated and want the shortest cycle. It costs about ten
+seconds, and that stays true when things are broken: the probes run on the
+server in parallel, so twenty dead services cost one 4-second timeout, not
+twenty.
+
+---
+
 ## Systematic Debugging Process
 
 When a service is not working, follow this systematic approach:
