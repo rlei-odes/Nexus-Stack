@@ -1,3 +1,12 @@
+# `plugins` is required by Evidence's config schema — `evidence sources`
+# aborts with "Invalid evidence.config.yaml file: plugins: Required"
+# without it. Each key is an npm package name from package.json.
+plugins:
+  components:
+    "@evidence-dev/core-components": {}
+  datasources:
+    "@evidence-dev/postgres": {}
+
 deployment:
   basePath: ""
 

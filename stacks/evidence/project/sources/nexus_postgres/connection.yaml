@@ -1,18 +1,24 @@
 # Nexus-Stack default Postgres source.
-# Credentials come from environment variables that the
-# docker-compose env_file populates from Infisical.
+#
+# Connection options are literal here, NOT ${VAR} placeholders:
+# Evidence applies ${VAR} interpolation to query files, not to
+# connection.yaml, so placeholders would reach the driver as literal
+# strings (a ${POSTGRES_PORT} port parses to NaN and the source fails
+# to connect). Secrets are injected from the environment instead, via
+# EVIDENCE_SOURCE__<source name>__<option>, which the compose file
+# sets for `password` from the Infisical-rendered .env.
+#
 # Add more sources by creating sibling directories under
 # stacks/evidence/project/sources/<name>/ with their own
-# connection.yaml that uses ${VAR} interpolation for any
-# credentials. Place .sql query files alongside it; Evidence
-# discovers both automatically on `npm run sources`.
+# connection.yaml, and register the driver package under
+# `plugins.datasources` in evidence.config.yaml. Place .sql query
+# files alongside it; Evidence discovers both on `npm run sources`.
 name: nexus_postgres
 type: postgres
 options:
-  host: ${POSTGRES_HOST}
-  port: ${POSTGRES_PORT}
-  database: ${POSTGRES_DATABASE}
-  user: ${POSTGRES_USER}
-  password: ${POSTGRES_PASSWORD}
+  host: postgres
+  port: 5432
+  database: postgres
+  user: nexus-postgres
   schema: public
   ssl: false

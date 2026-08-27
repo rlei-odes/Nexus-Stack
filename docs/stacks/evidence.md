@@ -48,18 +48,19 @@ Each source lives in its own directory under `project/sources/<name>/`:
 ```
 project/sources/
 ├── nexus_postgres/         # shipped with the stack
-│   ├── connection.yaml     # connection config (env-var interpolated)
+│   ├── connection.yaml     # connection config (literal options)
 │   └── database_overview.sql
 └── my_clickhouse/          # operator adds this
     ├── connection.yaml
     └── ...
 ```
 
-`connection.yaml` supports `${VAR}` interpolation against the container's environment, so the recommended pattern is:
+`connection.yaml` does **not** interpolate `${VAR}` — Evidence applies that substitution to query files only, so a placeholder there reaches the driver as a literal string. Credentials come from the environment instead, using Evidence's `EVIDENCE_SOURCE__<source name>__<option>` convention:
 
 1. Add the credentials to Infisical under a folder of your choice.
 2. Reference them from `stacks/evidence/.env` (the deploy pipeline renders this from Infisical on every spin-up).
-3. Use `${VAR}` in `connection.yaml` to reference them.
+3. Map them in `stacks/evidence/docker-compose.yml` as `EVIDENCE_SOURCE__<source name>__password: ${YOUR_VAR}`, leaving the non-secret options literal in `connection.yaml`.
+4. Register the driver package under `plugins.datasources` in `evidence.config.yaml` — a source whose plugin is not listed there is not loaded.
 
 For ClickHouse, Trino, MySQL, BigQuery, Snowflake, and others, see the [Evidence connector docs](https://docs.evidence.dev/core-concepts/data-sources/). Add the matching `@evidence-dev/<driver>` package to `stacks/evidence/project/package.json` and run `docker compose restart evidence` to pull it in.
 

@@ -23,11 +23,12 @@ select * from nexus_postgres.database_overview
 ## Adding more sources
 
 Drop a sibling directory under `project/sources/` with its own
-`connection.yaml` and Evidence will pick it up on the next `npm run sources`.
-Connection strings can reference environment variables via `${VAR}` syntax,
-so the recommended pattern is to add the relevant credentials to the
-`stacks/evidence/.env` file (which the deploy pipeline renders from
-Infisical) and reference them here.
+`connection.yaml`, and register its driver package under `plugins.datasources`
+in `evidence.config.yaml`. Keep the non-secret options literal — Evidence does
+not interpolate `${VAR}` in `connection.yaml`. Credentials are injected from
+the environment as `EVIDENCE_SOURCE__<source name>__<option>`, which
+`docker-compose.yml` maps from the `stacks/evidence/.env` file the deploy
+pipeline renders from Infisical.
 
 For ClickHouse, Trino, DuckDB, Iceberg/Lakekeeper and other backends, see
 the Evidence connector docs and add the matching `@evidence-dev/<driver>`
