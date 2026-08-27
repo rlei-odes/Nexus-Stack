@@ -154,6 +154,36 @@ Without it the first run stops with an explanatory error, and Cloudflare-based a
 | `DOCKERHUB_USERNAME` | Docker Hub username (higher pull limits) |
 | `DOCKERHUB_TOKEN` | Docker Hub access token |
 
+#### What each role may do in the Control Plane
+
+Cloudflare Access authenticates all three roles identically — it decides
+who reaches the site, not what they may press once there. The Control
+Plane enforces the difference itself:
+
+| Action | Admin | User | Guest |
+|---|:--:|:--:|:--:|
+| View status, services, logs | ✅ | ✅ | ✅ |
+| Spin up / tear down the stack | ✅ | ✅ | — |
+| Enable / disable services | ✅ | ✅ | — |
+| Destroy all infrastructure | ✅ | — | — |
+| Open host firewall ports | ✅ | — | — |
+| Redeploy the Control Plane | ✅ | — | — |
+| Email the Infisical credentials | ✅ | — | — |
+| Change email and teardown settings | ✅ | — | — |
+| Databricks configuration and sync | ✅ | — | — |
+| SSH to the server | ✅ | — | — |
+
+The line is self-service versus operator work. Starting and stopping the
+stack you work on is the reason the Control Plane exists, so users get it.
+Destroying infrastructure, opening ports on the host firewall and mailing
+out the Infisical master credentials are not reversible by the person who
+triggered them, so they stay with the admin.
+
+Guests are on the Access whitelist to look. Put someone in
+`TF_VAR_user_email` rather than `TF_VAR_guest_emails` if they need to run
+the stack — a guest attempting a state-changing action gets an HTTP 403
+with an explanatory message, not a silent failure.
+
 ### S3-Persistence Secrets (RFC 0001)
 
 Persistence moved from Hetzner block storage to R2 in RFC 0001. **Zero new operator-set secrets required** — the workflows derive everything from already-existing secrets and conventions:
