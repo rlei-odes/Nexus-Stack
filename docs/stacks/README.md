@@ -66,6 +66,8 @@ Two stateful stacks do still follow a rolling tag — `pg_ducklake` (`18-main`) 
 | PostgreSQL (Gitea DB) | `postgres` | `16-alpine` | Major |
 | LakeFS | `treeverse/lakefs` | `1.73.0` | Exact ¹ |
 | Mage | `mageai/mageai` | `0.9.79` | Exact ¹ |
+| OpenSearch | `opensearchproject/opensearch` | `2.19.6` | Exact ¹ |
+| OpenSearch Dashboards | `opensearchproject/opensearch-dashboards` | `2.19.6` | Exact ¹ |
 | Marquez | `marquezproject/marquez` | `0.51.1` | Exact ¹ |
 | Marquez Web | `marquezproject/marquez-web` | `0.51.1` | Exact ¹ |
 | PostgreSQL (Marquez DB) | `postgres` | `16-alpine` | Major |
@@ -200,6 +202,7 @@ Two stateful stacks do still follow a rolling tag — `pg_ducklake` (`18-main`) 
 | **NocoDB** | Airtable alternative (smart spreadsheet) | [nocodb.md](nocodb.md) |
 | **Ollama + Open WebUI** | Local LLM inference with chat interface | [ollama.md](ollama.md) |
 | **OpenMetadata** | Metadata management platform | [openmetadata.md](openmetadata.md) |
+| **OpenSearch** | Search & analytics engine with Dashboards | [opensearch.md](opensearch.md) |
 | **pg_ducklake** | PostgreSQL with DuckLake SQL-native lakehouse extension | [pg-ducklake.md](pg-ducklake.md) |
 | **pgAdmin** | PostgreSQL administration tool | [pgadmin.md](pgadmin.md) |
 | **Planka** | Kanban board for project management | [planka.md](planka.md) |

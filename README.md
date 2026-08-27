@@ -68,7 +68,7 @@ After deployment you'll have:
 
 ![Quick Start Flow](docs/assets/architecture-quickstart.svg)
 
-## Available Stacks (79)
+## Available Stacks (80)
 
 [![AKHQ](https://img.shields.io/badge/AKHQ-000000?logo=apachekafka&logoColor=white)](https://akhq.io)
 [![Adminer](https://img.shields.io/badge/Adminer-34567C?logo=adminer&logoColor=white)](https://www.adminer.org)
@@ -120,6 +120,7 @@ After deployment you'll have:
 [![NocoDB](https://img.shields.io/badge/NocoDB-1F2937?logo=nocodb&logoColor=white)](https://nocodb.com)
 [![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white)](https://ollama.com)
 [![OpenMetadata](https://img.shields.io/badge/OpenMetadata-7147E8?logoColor=white)](https://open-metadata.org)
+[![OpenSearch](https://img.shields.io/badge/OpenSearch-005EB8?logo=opensearch&logoColor=white)](https://opensearch.org)
 [![pg_ducklake](https://img.shields.io/badge/pg__ducklake-336791?logo=postgresql&logoColor=white)](https://pgducklake.select)
 [![pgAdmin](https://img.shields.io/badge/pgAdmin-336791?logo=postgresql&logoColor=white)](https://www.pgadmin.org)
 [![Planka](https://img.shields.io/badge/Planka-4D4D4D?logo=planka&logoColor=white)](https://planka.app)
@@ -202,6 +203,7 @@ After deployment you'll have:
 | **NocoDB** | Open-source Airtable alternative - turn any database into a spreadsheet | [nocodb.com](https://nocodb.com) |
 | **Ollama** | Local LLM inference with Open WebUI chat interface | [openwebui.com](https://openwebui.com) |
 | **OpenMetadata** | Open-source metadata management for data discovery and governance | [open-metadata.org](https://open-metadata.org) |
+| **OpenSearch** | Apache-2.0 search & analytics engine with Dashboards — speaks the Elasticsearch API | [opensearch.org](https://opensearch.org) |
 | **pg_ducklake** | PostgreSQL with DuckLake extension - SQL-native lakehouse with S3 storage | [pgducklake.select](https://pgducklake.select) |
 | **pgAdmin** | PostgreSQL administration and development platform | [pgadmin.org](https://www.pgadmin.org) |
 | **Planka** | Open-source kanban board (Trello alternative) with real-time multi-user collaboration | [planka.app](https://planka.app) |
