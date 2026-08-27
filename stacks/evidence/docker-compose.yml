@@ -54,14 +54,11 @@ services:
       PORT: "3000"
       # EVIDENCE_BASE_URL (used by Evidence for absolute links + OG tags)
       # is provided by env_file above — no explicit entry needed.
-      # Point the user-supplied sources/*/connection.yaml files at
-      # the in-stack Postgres for the bundled sample query. Operators
-      # extend the sources/ folder with additional connections.
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DATABASE: postgres
-      POSTGRES_USER: nexus-postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # The bundled nexus_postgres source keeps its non-secret options
+      # (host/port/database/user) literal in connection.yaml; only the
+      # password comes from the environment, using Evidence's
+      # EVIDENCE_SOURCE__<source name>__<option> convention.
+      EVIDENCE_SOURCE__nexus_postgres__password: ${POSTGRES_PASSWORD}
     volumes:
       # The sample project shipped under stacks/evidence/project/ is
       # synced to /opt/docker-server/stacks/evidence/project/ by the
