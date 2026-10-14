@@ -29,6 +29,8 @@
 // is open to any Access-authenticated caller so the UI can show the
 // current state without an admin session.
 import { requireAdmin } from './_utils/require-admin.js';
+import { requireViewer } from './_utils/require-viewer.js';
+import { isConfigurationDenial } from './_utils/deny.js';
 import { requireSameOrigin } from './_utils/require-same-origin.js';
 import {
   LIFECYCLE_MODES,
@@ -101,6 +103,16 @@ async function logChange(db, level, message, metadata) {
 
 export async function onRequestGet(context) {
   const { env, request } = context;
+
+  // The lifecycle mode decides what survives a teardown, so the dashboard
+  // shows it to everyone — but "everyone" means everyone on the Access
+  // whitelist, which is what this checks. requireAdmin below is a second,
+  // different question: not whether to answer, but whether to offer the
+  // control. Asking it first was the bug this ordering fixes; the D1 read
+  // happened before any identity was established at all.
+  const unauthenticated = await requireViewer(env, request);
+  if (unauthenticated) return unauthenticated;
+
   if (!env.NEXUS_DB) {
     return json({ success: false, error: 'D1 database not configured' }, 500);
   }
@@ -115,14 +127,18 @@ export async function onRequestGet(context) {
     // Access whitelist reaches this endpoint like anyone else.
     //
     // requireAdmin refuses for two different reasons and they must not
-    // collapse into one flag. 403 means "you are not the admin", which
-    // is an ordinary state and the whole point of canEdit. 500 means
-    // ADMIN_EMAIL is unset — nobody can change the setting and the stack
-    // is misconfigured. Reporting that as canEdit:false would show every
-    // caller a read-only page and hide the actual problem, so the denial
-    // is returned as-is and the operator sees it.
-    const denial = requireAdmin(env, request);
-    if (denial && denial.status !== 403) return denial;
+    // collapse into one flag. "You are not the admin" is an ordinary
+    // state and the whole point of canEdit. A deployment that cannot
+    // verify tokens at all — no ACCESS_AUD, no ACCESS_TEAM_DOMAIN, an
+    // unset ADMIN_EMAIL — is not: nobody can change the setting, and
+    // reporting it as canEdit:false would show every caller a read-only
+    // page and hide the actual problem.
+    //
+    // Which is which is not the status code. Verification failures are
+    // 403 like an ordinary refusal; the guards mark the difference, and
+    // isConfigurationDenial is how it is read without parsing a body.
+    const denial = await requireAdmin(env, request);
+    if (denial && isConfigurationDenial(denial)) return denial;
     const canEdit = denial === null;
     return json({
       success: true,
@@ -151,7 +167,7 @@ export async function onRequestPost(context) {
   // valid Access session, so authenticating it first proves nothing.
   const crossSite = requireSameOrigin(request);
   if (crossSite) return crossSite;
-  const denial = requireAdmin(env, request);
+  const denial = await requireAdmin(env, request);
   if (denial) return denial;
 
   if (!env.NEXUS_DB) {
@@ -197,9 +213,9 @@ export async function onRequestPost(context) {
 
     // No caller email in the metadata. `requireAdmin` above allows
     // exactly one identity through, so recording *who* adds no
-    // information — but /api/logs has no admin guard and the Monitoring
-    // page renders metadata verbatim, so it would put the admin address
-    // in front of every Access-authenticated user on the stack.
+    // information — but GET /api/logs is operator-level and the
+    // Monitoring page renders metadata verbatim, so it would put the
+    // admin address in front of every user on the stack.
     //
     // Different from the extension log in scheduled-teardown.js, which
     // does keep the address: extensions are counted per user, so there

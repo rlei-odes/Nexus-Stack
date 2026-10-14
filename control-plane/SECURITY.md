@@ -30,15 +30,42 @@
 
 1. **Cloudflare Access** (Layer 1)
    - Email-based authentication (OTP)
-   - Only `admin_email` can access `control.domain.com`
+   - The admin, the user addresses and the guest addresses can reach
+     `control.domain.com`; Access does not distinguish between them
    - Session: 24 hours
+   - Access covers `control.<domain>` and nothing else. Every other
+     hostname the Pages project answers on — `<project>.pages.dev` and
+     the per-deployment preview hostnames — is closed by the hostname
+     check in Layer 2 instead. OpenTofu briefly managed an Access
+     application for the production `pages.dev` hostname; it was removed
+     because owning it means owning whatever policy an operator attached,
+     and on the first real run that was a *reusable* account-level policy
+     shared with other applications, which the plan would have renamed
+     and rewritten. See the comment in `tofu/control-plane/main.tf`
 
-2. **Pages Functions** (Layer 2)
+2. **The Control Plane's own checks** (Layer 2)
+   - `functions/_middleware.js` answers only on the Control Plane's own
+     hostname and returns 404 on every other one — including the
+     `pages.dev` production and preview hostnames. Not a redirect: a
+     redirect would confirm which hostname is the real one
+   - `functions/api/_utils/access-jwt.js` verifies the Access token:
+     the RS256 signature against the team's JWKS, plus `iss`, `aud` and
+     `exp`. The `Cf-Access-Authenticated-User-Email` header is not read
+     anywhere — a header is something a caller can set
+   - Every endpoint names a guard: `requireAdmin`, `requireOperator` or
+     `requireViewer`. The two that intentionally need none — the health
+     check and the version banner — are listed in
+     `test/endpoint-guards.test.mjs`, which fails if a new one appears
+   - A deployment that cannot verify tokens (no `ACCESS_AUD` or
+     `ACCESS_TEAM_DOMAIN`) denies every request and names the missing
+     value, rather than falling back to trusting the header
+
+3. **Pages Functions** (Layer 3)
    - Server-side code execution
    - Environment variables isolated from frontend
    - No CORS issues (same origin)
 
-3. **GitHub Token Scope** (Layer 3)
+4. **GitHub Token Scope** (Layer 4)
    - Token requires `workflow` permission only
    - Limited to triggering workflows
    - Does not grant repo write access
@@ -100,7 +127,10 @@ Required permissions:
 | Attack Vector | Mitigation |
 |---------------|------------|
 | Token theft from frontend | ✅ Token never sent to browser |
-| CSRF | ✅ Cloudflare Access validates session |
+| CSRF | ✅ `requireSameOrigin` on every state-changing endpoint, plus a verified Access session |
+| A request on a hostname nobody protected | ✅ The middleware answers on one hostname and 404s the rest |
+| A self-set `Cf-Access-*` identity header | ✅ The header is not read; the token's signature is verified |
+| One Access identity acting as another | ✅ Per-endpoint guards compare the verified identity to `ADMIN_EMAIL` / `USER_EMAIL` |
 | Token in git history | ✅ Token set via env vars, not committed |
 | Man-in-the-middle | ✅ All traffic via HTTPS + Cloudflare proxy |
 | Brute force | ✅ Cloudflare Access rate limiting |

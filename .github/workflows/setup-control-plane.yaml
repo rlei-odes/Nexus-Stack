@@ -1070,6 +1070,104 @@ jobs:
             fi
           done
 
+      # A run of this workflow adopted the pages.dev Access application and
+      # its policy into state before that resource was removed from
+      # tofu/control-plane/main.tf. Config and state now disagree, and
+      # OpenTofu resolves that disagreement by DESTROYING — which here
+      # means deleting an Access application an operator created by hand
+      # and, worse, a reusable account-level policy that other
+      # applications share.
+      #
+      # `tofu state rm` is state-only: it makes OpenTofu forget the
+      # objects without touching them in Cloudflare. That is exactly the
+      # operation wanted, and it is the reason this step cannot be left
+      # out or replaced by a plain apply.
+      #
+      # Idempotent, and a no-op on every deployment that never adopted
+      # anything — which is all of them except the one where this was
+      # tried. Safe to delete once no state contains these addresses; it
+      # is kept because there is no way to know that from here.
+      - name: Forget the pages.dev Access objects (state only, never destroys)
+        run: |
+          cd tofu/control-plane
+          source ../.r2-credentials
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+
+          # The managed addresses, read ONCE with its status checked.
+          #
+          # `tofu state show "$RESOURCE"` would have been the obvious test,
+          # and it is wrong: its non-zero exit means both "not in state"
+          # and "the state could not be read". A transient backend error
+          # would silently `continue` past both resources, and if the apply
+          # behind it then succeeded, the cleanup would be skipped — the
+          # resources stay in state with nothing in the configuration, and
+          # the NEXT apply destroys them. Precisely what this step exists
+          # to prevent.
+          #
+          # `tofu show -json` rather than `tofu state list`, which looks
+          # like the natural fit and is not: on a state that does not exist
+          # yet it exits 1 with "No state file was found", so a loud
+          # failure on non-zero would break every first-time setup.
+          # Measured, in an initialized directory with no state:
+          #
+          #   tofu state list  -> exit 1, "No state file was found"
+          #   tofu show -json  -> exit 0, {"format_version":"1.0"}
+          STATE_FAILED=0
+          STATE_JSON=$(tofu show -json 2>&1) || STATE_FAILED=$?
+          if [ "$STATE_FAILED" -ne 0 ]; then
+            echo "::error title=access-state-forget::Could not read the OpenTofu state (exit ${STATE_FAILED}), so this step cannot tell whether the pages.dev Access objects are still in it. They are no longer in the configuration, so an apply that ran without this check would DESTROY the live Cloudflare objects. Output: $(printf '%s' "${STATE_JSON:-(no output)}" | tr '\n\r' '  ' | head -c 300)"
+            exit 1
+          fi
+          # Two checks, because they cover different things.
+          #
+          # First: is this a state document at all. An empty state is valid
+          # and yields no addresses; a non-JSON body is not, and must not
+          # read as "nothing to clean up".
+          if [ "$(printf '%s' "$STATE_JSON" | jq -r 'if has("format_version") then "ok" else "bad" end' 2>/dev/null || echo bad)" != "ok" ]; then
+            echo "::error title=access-state-forget::The OpenTofu state came back in a shape this step cannot read, so it cannot tell whether the pages.dev Access objects are still in it."
+            exit 1
+          fi
+
+          # Second: did reading the addresses out of it actually work. That
+          # is NOT implied by the check above — `has("format_version")`
+          # says nothing about `.values.root_module.resources`, and the
+          # extraction below errors on a document where that is not an
+          # array of objects. Measured:
+          #
+          #   {"format_version":"1.0"}                        -> exit 0, no output
+          #   {…,"resources":["a-string"]}                    -> exit 5
+          #   {…,"resources":{"not":"an array"}}              -> exit 5
+          #
+          # So its status is checked rather than discarded. A `|| echo ""`
+          # here would turn exit 5 into "no managed addresses", skip the
+          # cleanup, and leave the apply free to destroy the very objects
+          # this step exists to protect. Status and message stay separate.
+          EXTRACT_FAILED=0
+          MANAGED=$(printf '%s' "$STATE_JSON" | jq -r '.values.root_module.resources[]?.address // empty' 2>&1) || EXTRACT_FAILED=$?
+          if [ "$EXTRACT_FAILED" -ne 0 ]; then
+            echo "::error title=access-state-forget::Could not read the resource addresses out of the OpenTofu state (jq exit ${EXTRACT_FAILED}), so this step cannot tell whether the pages.dev Access objects are still in it. They are no longer in the configuration, so an apply that ran without this check would DESTROY the live Cloudflare objects. jq said: $(printf '%s' "${MANAGED:-(no output)}" | tr '\n\r' '  ' | head -c 200)"
+            exit 1
+          fi
+
+          for RESOURCE in \
+            cloudflare_zero_trust_access_policy.control_plane_pages_dev_email \
+            cloudflare_zero_trust_access_application.control_plane_pages_dev
+          do
+            if ! printf '%s\n' "$MANAGED" | grep -qxF "$RESOURCE"; then
+              continue
+            fi
+            echo "🧹 $RESOURCE is in state but no longer in the configuration - forgetting it"
+            # Not `|| true`. A failure here leaves the resource in state
+            # with nothing in the configuration, and the apply that
+            # follows would destroy a live Access object. Stop instead.
+            if ! tofu state rm "$RESOURCE"; then
+              echo "::error title=access-state-forget::Could not remove $RESOURCE from OpenTofu state. It is in state but not in the configuration, so the apply that follows would DESTROY the live Cloudflare object — an Access application created by hand, or a reusable policy shared with other applications. Run 'tofu state rm $RESOURCE' against tofu/control-plane before re-running. Nothing was changed in Cloudflare."
+              exit 1
+            fi
+            echo "✅ Forgotten (the Cloudflare object is untouched)"
+          done
+
       - name: Deploy Control Plane infrastructure
         run: |
           cd tofu/control-plane
@@ -1478,6 +1576,9 @@ jobs:
           SUBDOMAIN_SEPARATOR: ${{ secrets.SUBDOMAIN_SEPARATOR || '.' }}
           ADMIN_EMAIL: ${{ secrets.TF_VAR_admin_email }}
           USER_EMAIL: ${{ secrets.TF_VAR_user_email }}
+          # Optional. Set it when CLOUDFLARE_API_TOKEN lacks the Access
+          # Organizations read permission the step below would otherwise use.
+          CF_ACCESS_TEAM_DOMAIN: ${{ secrets.CF_ACCESS_TEAM_DOMAIN }}
         run: |
           echo "⚙️  Setting Control Plane secrets..."
           PROJECT_NAME="${{ steps.prefix.outputs.project_name }}"
@@ -1624,6 +1725,103 @@ jobs:
               echo "❌ Failed to set CONTROL_PLANE_URL - teardown emails will link to wrong host"
               exit 1
             fi
+          fi
+
+          # ACCESS_AUD + ACCESS_TEAM_DOMAIN — what the Pages Functions need to
+          # VERIFY an Access token rather than trust the header Cloudflare puts
+          # on it. Both fatal if missing: the guards in
+          # control-plane/functions/api/_utils/ deny every request when they
+          # cannot verify, so a Control Plane deployed without these answers
+          # 403 to its own admin. That is the direction to fail in — a
+          # locked-out operator notices within seconds, a trusted header does
+          # not — but it does mean the step cannot shrug this off.
+          echo "  Reading the Access AUD tag from Terraform..."
+          ACCESS_AUD=""
+          AUD_FAILED=0
+          AUD_ERROR=""
+          (
+            cd tofu/control-plane
+            source ../.r2-credentials
+            export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+            export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+            tofu output -raw access_aud
+          ) > /tmp/access-aud.txt 2> /tmp/access-aud.err || AUD_FAILED=1
+          if [ "$AUD_FAILED" -eq 0 ]; then
+            ACCESS_AUD=$(tr -d '[:space:]' < /tmp/access-aud.txt)
+          else
+            AUD_ERROR=$(tr '\n\r' '  ' < /tmp/access-aud.err | head -c 300)
+          fi
+          rm -f /tmp/access-aud.txt /tmp/access-aud.err
+          if [ -z "$ACCESS_AUD" ]; then
+            echo "::error title=access-aud::Could not read the access_aud Terraform output, so the Control Plane cannot verify Access tokens and would deny every request. tofu output: ${AUD_ERROR:-(empty value, no error)}"
+            exit 1
+          fi
+          # The AUD identifies an application; it authorises nothing. Masked
+          # anyway, because a log line nobody meant to publish is cheaper to
+          # prevent than to retract.
+          echo "::add-mask::$ACCESS_AUD"
+
+          # The Access team domain (<team>.cloudflareaccess.com) is an account
+          # property, and the Cloudflare Terraform provider v4 exposes it only
+          # through a resource that would MANAGE the organisation — so it is
+          # read here instead. An explicit secret wins when set; otherwise the
+          # account API is asked, which needs a token with Access:
+          # Organizations read. This step does not know the token's scopes, so
+          # it reports what the call actually returned rather than asserting
+          # anything about permissions.
+          ACCESS_TEAM_DOMAIN=$(printf '%s' "$CF_ACCESS_TEAM_DOMAIN" | tr -d '[:space:]')
+          if [ -n "$ACCESS_TEAM_DOMAIN" ]; then
+            echo "  Access team domain taken from the CF_ACCESS_TEAM_DOMAIN secret"
+          else
+            echo "  Asking the Cloudflare API for the Access team domain..."
+            # Status and message in SEPARATE variables. The first draft of
+            # this used `curl -s ... || echo ''`, which turns a network
+            # outage, a wrong account id, a revoked token and a token
+            # missing one permission into the same empty string — and then
+            # the message below would confidently blame the permission.
+            # --fail-with-body gives a non-zero status on an HTTP error
+            # while still handing over the body Cloudflare explains it in.
+            ORG_FAILED=0
+            ORG_RESPONSE=$(curl -sS --fail-with-body --max-time 30 \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/organizations" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" 2>&1) || ORG_FAILED=$?
+
+            # Only `.errors[0].message` is ever printed, never the body: a
+            # response from this endpoint carries account detail, and the
+            # remedy does not need it.
+            ORG_ERROR=$(printf '%s' "$ORG_RESPONSE" | jq -r '.errors[0].message // empty' 2>/dev/null || echo "")
+
+            if [ "$ORG_FAILED" -ne 0 ]; then
+              echo "::error title=access-team-domain::The Cloudflare API call for the Access team domain failed (curl exit ${ORG_FAILED}). Cloudflare said: ${ORG_ERROR:-(no error message in the response)}. The Control Plane verifies Access tokens against https://<team>.cloudflareaccess.com and denies every request without it. Fix: give CLOUDFLARE_API_TOKEN the 'Access: Organizations, Identity Providers, and Groups' permission, or set the team domain directly as the CF_ACCESS_TEAM_DOMAIN repository secret (Zero Trust -> Settings -> Custom Pages shows it, as 'yourteam.cloudflareaccess.com')."
+              exit 1
+            fi
+
+            ACCESS_TEAM_DOMAIN=$(printf '%s' "$ORG_RESPONSE" | jq -r '.result.auth_domain // empty' 2>/dev/null || echo "")
+            if [ -z "$ACCESS_TEAM_DOMAIN" ]; then
+              # The call succeeded and still produced nothing usable —
+              # a `success: false` body, or an account with Zero Trust
+              # never set up. Separate message, because the remedy is
+              # different: there may be no team domain to find.
+              echo "::error title=access-team-domain::The Cloudflare API answered but reported no Access team domain for this account. Cloudflare said: ${ORG_ERROR:-(no error message in the response)}. Either Zero Trust has not been set up on this account (see docs/admin-guides/setup-guide.md, 'Enable Services R2, Workers and Zero Trust'), or set the team domain as the CF_ACCESS_TEAM_DOMAIN repository secret."
+              exit 1
+            fi
+          fi
+
+          echo "  Access team domain resolved"
+
+          echo "  Setting ACCESS_AUD secret..."
+          if ! printf '%s' "$ACCESS_AUD" | npx wrangler@4.129.0 pages secret put ACCESS_AUD \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "❌ Failed to set ACCESS_AUD - the Control Plane would deny every request"
+            exit 1
+          fi
+
+          echo "  Setting ACCESS_TEAM_DOMAIN secret..."
+          if ! printf '%s' "$ACCESS_TEAM_DOMAIN" | npx wrangler@4.129.0 pages secret put ACCESS_TEAM_DOMAIN \
+            --project-name="$PROJECT_NAME" 2>&1; then
+            echo "❌ Failed to set ACCESS_TEAM_DOMAIN - the Control Plane would deny every request"
+            exit 1
           fi
 
           if [ -n "$ADMIN_EMAIL" ]; then

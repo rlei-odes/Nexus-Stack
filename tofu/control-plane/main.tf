@@ -280,6 +280,53 @@ resource "cloudflare_zero_trust_access_policy" "control_plane_email" {
 }
 
 # -----------------------------------------------------------------------------
+# The *.pages.dev Hostnames: Closed in Code, Not Here
+# -----------------------------------------------------------------------------
+# A Pages project answers on three kinds of hostname:
+#
+#   control.<domain>              the application above
+#   <project>.pages.dev           the production Pages hostname
+#   <hash>.<project>.pages.dev    one per preview deployment
+#
+# Only the first is in this zone, so the application above — which is
+# zone-scoped — cannot cover the others, and `pages.dev` is Cloudflare's
+# own zone. The obvious move is a second, account-scoped Access
+# application for `<project>.pages.dev`. This file had one. It is gone,
+# deliberately, and the reason is worth keeping:
+#
+# Owning that application means owning whatever policy is attached to it,
+# and an operator has every reason to have attached one already — the
+# hostname existed and needed protecting before this repository managed
+# it. On the first real run, the policy found there was a *reusable*
+# account-level policy shared with other applications. Terraform's plan
+# was to rename it and rewrite its email list, which would have changed
+# access for every application sharing it. Cloudflare refused the update
+# (`access.api.error.invalid_request: can not update reusable policies
+# through this endpoint`), which is the only reason it did not happen.
+#
+# That is not a gap to patch. A resource that must adopt whatever an
+# operator configured, in a shape this repository cannot predict, is the
+# wrong tool — and it was buying defence in depth that
+# control-plane/functions/_middleware.js already provides more completely:
+# the middleware answers 404 on every hostname but the Control Plane's
+# own, which covers the production pages.dev hostname AND the
+# per-deployment preview hostnames that no single Access application can
+# name. It is code, so it deploys with the application and survives the
+# destroy/recreate cycle this project performs routinely — the very
+# property the Access application was added for.
+#
+# So the division is: Access protects `control.<domain>`, where this
+# repository created the application and owns its policy. Every other
+# hostname the Pages project answers on is closed by the middleware. An
+# operator who additionally wants an Access prompt on `pages.dev` can
+# keep one in the dashboard; nothing here will fight them for it.
+#
+# If this is ever reinstated, the thing to solve first is the policy, not
+# the application: it needs a policy of its own that is not reusable and
+# not shared, or no managed policy at all — and "an Access application
+# with zero policies" is a behaviour to verify, not assume.
+
+# -----------------------------------------------------------------------------
 # Hetzner Object Storage Bucket (for LakeFS)
 # -----------------------------------------------------------------------------
 # This bucket persists through teardown - only destroyed on destroy-all.

@@ -1,0 +1,71 @@
+# =============================================================================
+# control-plane-tests — quality gate for the Cloudflare Pages Functions
+# =============================================================================
+# The Control Plane's authorization lives entirely in
+# control-plane/functions/: a hostname check in _middleware.js, Access-JWT
+# verification in api/_utils/access-jwt.js, and a guard on every endpoint.
+# Until this workflow existed, none of it was covered — control-plane had no
+# test script and no CI job, so the only check on a change there was review.
+#
+# `node --test` with no dependencies on purpose. The code under test uses
+# only Web APIs that Node and workerd both provide (crypto.subtle, Request,
+# Response, atob), so the tests sign real RS256 tokens against a real
+# keypair rather than mocking the verification they exist to check.
+# =============================================================================
+
+name: "CI: Control Plane Tests"
+
+on:
+  pull_request:
+    paths:
+      - "control-plane/functions/**"
+      - "control-plane/test/**"
+      - "control-plane/package.json"
+      - ".github/workflows/control-plane-tests.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "control-plane/functions/**"
+      - "control-plane/test/**"
+      - "control-plane/package.json"
+      - ".github/workflows/control-plane-tests.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Functions unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      # SHA-pinned because these are new `uses:` lines, which is the
+      # moment to pin (#652 tracks the rest of the migration). The SHAs
+      # are the ones job-image-toolchain.yaml and changelog-parse.yaml
+      # already use, so there is one version of each in the tree.
+      #
+      # `persist-credentials: false` because this job runs test files
+      # from the pull request's own tree and performs no later Git
+      # operation, so the token has nothing to do here.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          # Matches the engines field in control-plane/package.json. No
+          # cache: the suite installs nothing.
+          node-version: "22"
+
+      # `npm test`, so the command lives in package.json and cannot drift
+      # from what a contributor runs locally. It installs nothing: the
+      # suite has no dependencies, which is why there is no `npm ci`.
+      #
+      # The script passes an explicit file list rather than the directory.
+      # `node --test test/` resolves the bare path as a module on Node 22
+      # and fails with MODULE_NOT_FOUND — directory expansion is newer
+      # than the version pinned here, and it passed locally on Node 26.
+      - name: Run tests
+        run: npm test
