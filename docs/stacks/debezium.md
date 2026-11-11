@@ -20,6 +20,8 @@ Debezium monitors database transaction logs and emits every INSERT, UPDATE, and 
 | Default Port | `8097` (REST API, host) / `8083` (internal) |
 | Access | Internal only (no web UI) |
 | Manage via | Kafka-UI or AKHQ |
+| Memory | 1 GB container limit, 512 MB JVM heap (`HEAP_OPTS`) |
+| Requires | The `redpanda` stack — the broker address is fixed to `redpanda:9092` |
 | Website | [debezium.io](https://debezium.io) |
 | Source | [GitHub](https://github.com/debezium/debezium) |
 

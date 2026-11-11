@@ -30,10 +30,17 @@ services:
       - STATUS_STORAGE_REPLICATION_FACTOR=1
       - KEY_CONVERTER_SCHEMAS_ENABLE=false
       - VALUE_CONVERTER_SCHEMAS_ENABLE=false
+      # The heap has to be sized together with the limit below. Left unset,
+      # the image starts the JVM with -Xmx2G, the kernel OOM-kills it during
+      # the plugin scan (exit 137), and the container restarts in a loop with
+      # no error in its log. The entrypoint copies HEAP_OPTS to
+      # KAFKA_HEAP_OPTS; the remaining ~512 MB covers metaspace, threads and
+      # the direct buffers the Kafka clients allocate outside the heap.
+      - HEAP_OPTS=-Xms256M -Xmx512M
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: 1g
     networks:
       - app-network
     healthcheck:
