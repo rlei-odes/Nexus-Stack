@@ -1,9 +1,8 @@
 /**
  * Shared Infisical fetch helper.
  *
- * Enumerates every folder under the project's root, fetches all key/value
- * pairs per folder (and at root path `/`), and returns a grouped+sorted
- * structure. Consumed by:
+ * Fetches every key/value pair in the project with a single recursive request
+ * and returns them grouped by folder and sorted. Consumed by:
  *   - GET /api/secrets          (renders the Secrets page)
  *   - POST /api/databricks-sync (pushes the same inventory into Databricks)
  *
@@ -40,8 +39,10 @@ async function safeJsonParse(response, label) {
  * When Infisical env vars are missing, returns `{ configured: false, groups: [], warnings: [], message }`
  * rather than throwing, matching the prior /api/secrets behaviour.
  *
- * Thrown errors from this helper are only for unexpected failures (e.g. the folders
- * endpoint itself 5xx'd) — the caller should catch and surface them.
+ * `warnings` is always empty: the single request either returns the whole
+ * inventory or throws. The field stays because both callers pass it through.
+ * Thrown errors (Infisical unreachable, non-2xx, non-JSON) are for the caller
+ * to catch and surface.
  */
 export async function fetchAllInfisicalSecrets(env) {
   const token = env.INFISICAL_TOKEN;
@@ -84,52 +85,53 @@ export async function fetchAllInfisicalSecrets(env) {
     headers['CF-Access-Client-Secret'] = cfAccessClientSecret;
   }
 
-  // Step 1: list all folders under /
-  const foldersRes = await fetchWithTimeout(
-    `${baseUrl}/api/v1/folders?workspaceId=${projectId}&environment=${environment}&path=/`,
-    { headers }
-  );
+  // One recursive request for the whole project. A Pages Function may make
+  // at most 50 subrequests per invocation on the Workers free plan, and a
+  // stack carries one Infisical folder per service — over a hundred — so a
+  // request per folder cannot work. With `recursive=true` Infisical returns
+  // every secret under `/` and tags each with the `secretPath` of the folder
+  // it lives in, which is what the grouping below keys on.
+  //
+  // It also makes the result all-or-nothing: either the whole inventory
+  // arrives or this throws. A partial inventory is worse than none for
+  // POST /api/databricks-sync, which deletes scope keys it does not see here.
+  const params = new URLSearchParams({
+    workspaceId: projectId,
+    environment,
+    secretPath: '/',
+    recursive: 'true',
+  });
+  const res = await fetchWithTimeout(`${baseUrl}/api/v3/secrets/raw?${params}`, { headers });
 
-  if (!foldersRes.ok) {
-    const errText = await foldersRes.text();
-    throw new Error(`Failed to fetch folders from Infisical (${foldersRes.status}): ${errText.substring(0, 200)}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Failed to fetch secrets from Infisical (${res.status}): ${errText.substring(0, 200)}`);
   }
 
-  const foldersData = await safeJsonParse(foldersRes, 'Folders API');
-  const folders = foldersData.folders || [];
+  const data = await safeJsonParse(res, 'Secrets API');
+  return { configured: true, groups: groupSecretsByFolder(data.secrets || []), warnings: [] };
+}
 
-  // Step 2: fetch secrets from each folder (and the root path) in parallel
-  const warnings = [];
-  const fetchGroup = async (folderName, secretPath) => {
-    try {
-      const res = await fetchWithTimeout(
-        `${baseUrl}/api/v3/secrets/raw?workspaceId=${projectId}&environment=${environment}&secretPath=${secretPath}`,
-        { headers }
-      );
-      if (!res.ok) {
-        warnings.push(`${folderName}: HTTP ${res.status}`);
-        return null;
-      }
-      const data = await safeJsonParse(res, `Secrets API (${folderName})`);
-      const secrets = (data.secrets || [])
-        .filter(s => s.secretValue !== undefined && s.secretValue !== '')
-        .map(s => ({ key: s.secretKey, value: s.secretValue }))
-        .sort((a, b) => a.key.localeCompare(b.key));
-      if (secrets.length === 0) return null;
-      return { name: folderName, secrets };
-    } catch (err) {
-      warnings.push(`${folderName}: ${err.message}`);
-      return null;
-    }
-  };
-
-  const groupPromises = folders.map(f => fetchGroup(f.name, `/${f.name}`));
-  groupPromises.push(fetchGroup('root', '/'));
-
-  const results = await Promise.all(groupPromises);
-  const groups = results
-    .filter(Boolean)
+/**
+ * Group a recursive raw-secrets listing by folder.
+ *
+ * `/portainer` becomes the group `portainer`, a nested `/a/b` becomes `a/b`,
+ * and secrets at the project root (or with no `secretPath`) go to `root`.
+ * Empty values are dropped, and so is any folder left with nothing in it.
+ * Groups and the keys within them are sorted.
+ *
+ * @param {Array<{ secretKey: string, secretValue?: string, secretPath?: string }>} secrets
+ * @returns {Array<{ name: string, secrets: Array<{ key: string, value: string }> }>}
+ */
+export function groupSecretsByFolder(secrets) {
+  const byName = new Map();
+  for (const s of secrets) {
+    if (s.secretValue === undefined || s.secretValue === '') continue;
+    const name = (s.secretPath || '/').replace(/^\/+|\/+$/g, '') || 'root';
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push({ key: s.secretKey, value: s.secretValue });
+  }
+  return [...byName.entries()]
+    .map(([name, list]) => ({ name, secrets: list.sort((a, b) => a.key.localeCompare(b.key)) }))
     .sort((a, b) => a.name.localeCompare(b.name));
-
-  return { configured: true, groups, warnings };
 }
